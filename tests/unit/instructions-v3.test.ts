@@ -150,7 +150,7 @@ describe('WIGOLO_INSTRUCTIONS_FULL v3 routing patterns (resource)', () => {
 });
 
 describe('TOOL_DESCRIPTIONS v3 entries', () => {
-  it('has all 10 tool descriptions', () => {
+  it('has all 11 tool descriptions', () => {
     const keys = Object.keys(TOOL_DESCRIPTIONS);
     expect(keys).toContain('fetch');
     expect(keys).toContain('search');
@@ -162,7 +162,8 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('agent');
     expect(keys).toContain('diff');
     expect(keys).toContain('watch');
-    expect(keys.length).toBe(10);
+    expect(keys).toContain('index');
+    expect(keys.length).toBe(11);
   });
 
   it('find_similar description mentions url and concept inputs', () => {
@@ -292,8 +293,8 @@ describe('ToolName type', () => {
     // the contract this test locks in.
     const validNames: ToolName[] = [
       'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent', 'diff', 'watch',
+      'find_similar', 'research', 'agent', 'diff', 'watch', 'index',
     ];
-    expect(validNames.length).toBe(10);
+    expect(validNames.length).toBe(11);
   });
 });

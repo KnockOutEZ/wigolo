@@ -10,6 +10,7 @@ import type {
   ResearchInput,
   AgentInput,
   WatchJobInput,
+  IndexInput,
 } from '../../types.js';
 import { handleFetch } from '../../tools/fetch.js';
 import { handleSearch } from '../../tools/search.js';
@@ -21,6 +22,7 @@ import { handleResearch } from '../../tools/research.js';
 import { handleAgent } from '../../tools/agent.js';
 import { handleDiff, type DiffInput } from '../../tools/diff.js';
 import { handleWatch } from '../../tools/watch.js';
+import { handleIndex } from '../../tools/index.js';
 import { scheduleOverdueCheck } from '../../watch/scheduler.js';
 import { guardServeTarget } from './target-guard.js';
 import { guardResolvedServeTarget, type SsrfResult, type SsrfRejection } from '../../watch/ssrf.js';
@@ -218,6 +220,14 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
   return { status: 200, body: r.data };
 }
 
+async function dispatchIndex(input: IndexInput, _ctx: DispatchContext): Promise<DispatchResult> {
+  const result = await handleIndex(input);
+  if (result.error) {
+    return { status: 400, body: result };
+  }
+  return { status: 200, body: result };
+}
+
 /**
  * Per-tool dispatch behind the full router check pipeline. Every tool returns
  * plain JSON tool output on success; StageResult failures + crawl/cache in-band
@@ -253,6 +263,8 @@ export async function dispatchTool(tool: string, input: unknown, ctx: DispatchCo
       return dispatchDiff(body as unknown as DiffInput, ctx);
     case 'watch':
       return dispatchWatch(body as unknown as WatchJobInput, ctx);
+    case 'index':
+      return dispatchIndex(body as unknown as IndexInput, ctx);
     default:
       return { status: 501, body: notImplemented(tool).body };
   }

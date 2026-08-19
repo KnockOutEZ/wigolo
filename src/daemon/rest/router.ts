@@ -33,7 +33,7 @@ const log = createLogger('rest');
 
 const TOOLS = new Set([
   'search', 'fetch', 'crawl', 'cache', 'extract',
-  'find_similar', 'research', 'agent', 'diff', 'watch',
+  'find_similar', 'research', 'agent', 'diff', 'watch', 'index',
 ]);
 
 const SHIM_PREFIX = '/compat/firecrawl';

@@ -23,6 +23,7 @@ const COMMANDS: readonly string[] = [
   'agent',
   'diff',
   'watch',
+  'index',
   'help',
   'exit',
   'quit',

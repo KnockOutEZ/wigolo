@@ -1,6 +1,6 @@
 ---
 name: wigolo
-description: Local-first web intelligence MCP server for AI coding agents. Ten tools for search, fetch, crawl, cache, extract, find similar, research, agent-driven data gathering, page diffing, and change watching. No API keys. Results cached in a local knowledge store.
+description: Local-first web intelligence MCP server for AI coding agents. Eleven tools for search, fetch, crawl, cache, extract, find similar, research, agent-driven data gathering, page diffing, change watching, and local-file indexing. No API keys. Results cached in a local knowledge store.
 author: KnockOutEZ
 license: AGPL-3.0-only
 repository: https://github.com/KnockOutEZ/wigolo
@@ -29,11 +29,13 @@ tools:
     description: Compare two page versions — a live URL vs its cached copy, two URLs, or two markdown blobs. Unified patch, per-section hunks, or a counts summary at line, word, or section granularity.
   - name: watch
     description: Monitor a page for changes over time. Create lazy watch jobs on one or many URLs, list them, and check on demand with optional SSRF-guarded webhook delivery.
+  - name: index
+    description: Ingest local markdown and text files into the knowledge cache as never-expiring internal:// documents, searchable via cache source=internal.
 ---
 
 # wigolo
 
-Local-first web intelligence MCP server for AI coding agents. Ships ten tools over stdio. All network results land in a local knowledge cache.
+Local-first web intelligence MCP server for AI coding agents. Ships eleven tools over stdio. All network results land in a local knowledge cache.
 
 ## Host-LLM synthesis (read me first)
 
@@ -275,6 +277,25 @@ Example:
 
 Tip: webhook destinations are SSRF-guarded — a job cannot be pointed at internal or loopback addresses.
 
+### index
+
+Ingest local markdown/text files into the knowledge cache as `internal://` documents. Never expire by default. Query them with `cache({ query, source: "internal" })`.
+
+Parameters:
+- `source` (string, required): local file or directory path
+- `glob`: basename glob (default `*.md`)
+- `namespace`: URL prefix (default `docs`)
+- `recursive`: walk subdirectories (default true)
+- `ttl`: seconds; `0` never expires
+- `tags`: categorization strings
+
+Example:
+```json
+{ "source": "./docs", "namespace": "docs", "glob": "*.md" }
+```
+
+Tip: re-running index on unchanged files is a no-op (content hash skip).
+
 ## Workflow Patterns
 
 Quick routing:
@@ -288,6 +309,7 @@ Quick routing:
 - Use when `agent` — a natural-language task needs multi-step data gathering.
 - Use when `diff` — you need to see what changed between two versions of a page.
 - Use when `watch` — you want to monitor a page for changes over time.
+- Use when `index` — you want local docs searchable alongside the web cache.
 
 **Cache-first lookup.** Before any `fetch` or `search`, probe the cache.
 ```json
@@ -395,6 +417,7 @@ wigolo plugin add <git-url>    # clone plugin into ~/.wigolo/plugins/
 wigolo plugin list             # list installed plugins
 wigolo plugin remove <name>    # remove a plugin
 wigolo shell [--json]   # interactive REPL against subsystems
+wigolo index <path>     # ingest local files into the knowledge cache
 ```
 
 ## Configuration

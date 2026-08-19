@@ -33,6 +33,8 @@ import type {
   DiffResponse,
   WatchRequest,
   WatchResponse,
+  IndexRequest,
+  IndexResponse,
 } from './types.js';
 
 /** A `fetch`-compatible function; injectable for tests. */
@@ -280,6 +282,9 @@ export class WigoloClient {
 
   watch = (params: WatchRequest, call?: CallOptions): Promise<WatchResponse> =>
     this.post<WatchRequest, WatchResponse>('watch', params, call);
+
+  index = (params: IndexRequest, call?: CallOptions): Promise<IndexResponse> =>
+    this.post<IndexRequest, IndexResponse>('index', params, call);
 
   // ---- infrastructure GETs ----
 

@@ -25,6 +25,7 @@ import { handleResearch } from './tools/research.js';
 import { handleAgent } from './tools/agent.js';
 import { handleDiff } from './tools/diff.js';
 import { handleWatch } from './tools/watch.js';
+import { handleIndex } from './tools/index.js';
 import { scheduleOverdueCheck } from './watch/scheduler.js';
 import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
@@ -56,11 +57,12 @@ import {
   AGENT_TOOL_SCHEMA,
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
+  INDEX_TOOL_SCHEMA,
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput, IndexInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -369,6 +371,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.watch,
         inputSchema: WATCH_TOOL_SCHEMA,
       },
+      {
+        name: 'index',
+        description: TOOL_DESCRIPTIONS.index,
+        inputSchema: INDEX_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -538,6 +545,15 @@ export function createMcpServer(subsystems: Subsystems): Server {
       return {
         content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : { error: r.error, error_reason: r.error_reason, stage: r.stage, ...((r as { hint?: string }).hint ? { hint: (r as { hint?: string }).hint } : {}) }, null, 2) }],
         isError: !r.ok,
+      };
+    }
+
+    if (name === 'index') {
+      const input = (args ?? {}) as unknown as IndexInput;
+      const result = await handleIndex(input);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
       };
     }
 

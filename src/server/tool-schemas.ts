@@ -285,7 +285,7 @@ export const CACHE_TOOL_SCHEMA = {
     },
     clear: {
       type: 'boolean',
-      description: 'Clear matching cache entries (requires at least one filter: query, url_pattern, or since)',
+      description: 'Clear matching cache entries (requires at least one filter: query, url_pattern, since, source, or namespace)',
     },
     stats: {
       type: 'boolean',
@@ -313,6 +313,15 @@ export const CACHE_TOOL_SCHEMA = {
     max_tokens_out: {
       type: 'number',
       description: "Token-budget cap on total output (cl100k-base BPE). Caps the aggregate size of all returned markdown bodies; bodies past the budget are truncated or dropped.",
+    },
+    source: {
+      type: 'string',
+      enum: ['web', 'internal'],
+      description: 'Filter to web fetches or locally indexed documents.',
+    },
+    namespace: {
+      type: 'string',
+      description: 'Exact namespace filter for indexed documents (e.g. "docs", "wiki").',
     },
   },
 };
@@ -575,6 +584,54 @@ export const WATCH_TOOL_SCHEMA = {
   required: ['action'],
 };
 
+export const INDEX_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    source: {
+      type: 'string',
+      description: 'Local file or directory path to ingest (not a URL).',
+    },
+    glob: {
+      type: 'string',
+      description: 'Basename glob such as *.md or *.txt (default *.md).',
+    },
+    namespace: {
+      type: 'string',
+      description: 'Prefix for internal:// URLs (default docs).',
+    },
+    recursive: {
+      type: 'boolean',
+      description: 'Recurse into subdirectories (default true).',
+    },
+    ttl: {
+      type: 'number',
+      description: 'TTL in seconds; 0 means never expire (default 0).',
+    },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Categorization tags such as team:backend.',
+    },
+    dry_run: {
+      type: 'boolean',
+      description: 'Scan and report only; do not write to cache.',
+    },
+    max_files: {
+      type: 'number',
+      description: 'Maximum files per batch (default 10000).',
+    },
+    wait_for_embed: {
+      type: 'boolean',
+      description: 'Block until background embedding completes.',
+    },
+    watch: {
+      type: 'boolean',
+      description: 'Watch for file changes and auto re-index (blocks until stopped).',
+    },
+  },
+  required: ['source'],
+};
+
 export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   fetch: FETCH_TOOL_SCHEMA,
   search: SEARCH_TOOL_SCHEMA,
@@ -586,4 +643,5 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   agent: AGENT_TOOL_SCHEMA,
   diff: DIFF_TOOL_SCHEMA,
   watch: WATCH_TOOL_SCHEMA,
+  index: INDEX_TOOL_SCHEMA,
 };

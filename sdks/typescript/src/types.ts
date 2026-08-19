@@ -161,6 +161,8 @@ export interface CacheRequest {
   mode?: string;
   limit?: number;
   max_tokens_out?: number;
+  source?: 'web' | 'internal';
+  namespace?: string;
 }
 
 export type CacheResponse = WithExtras<{
@@ -314,6 +316,26 @@ export type WatchResponse = WithExtras<{
   jobs?: unknown[];
   changes_since_last?: unknown;
   notice?: string;
+}>;
+
+// ---- index ----
+
+export interface IndexRequest {
+  source: string;
+  glob?: string;
+  namespace?: string;
+  recursive?: boolean;
+  ttl?: number;
+  tags?: string[];
+}
+
+export type IndexResponse = WithExtras<{
+  indexed?: number;
+  skipped?: number;
+  failed?: number;
+  namespace?: string;
+  files?: unknown[];
+  error?: string;
 }>;
 
 // ---- infrastructure responses ----

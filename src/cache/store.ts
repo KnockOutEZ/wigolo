@@ -179,6 +179,18 @@ interface DbRow {
   content_completeness_level?: string | null;
   content_completeness_reason?: string | null;
   content_completeness_settled_by?: string | null;
+  namespace?: string | null;
+  tags?: string | null;
+}
+
+function parseTagsColumn(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function rowToCachedContent(row: DbRow): CachedContent {
@@ -209,6 +221,8 @@ function rowToCachedContent(row: DbRow): CachedContent {
     fetchedAt: row.fetched_at,
     expiresAt: row.expires_at,
     httpStatus: row.http_status ?? null,
+    namespace: row.namespace ?? 'web',
+    tags: parseTagsColumn(row.tags),
     ...(contentCompleteness ? { contentCompleteness } : {}),
   };
 }
@@ -472,11 +486,38 @@ export function getCachedSearchResults(
 
 const DEFAULT_FILTERED_LIMIT = 100;
 
+/** True when a cached URL is an internal:// document (local index tool). */
+export function isInternalCacheUrl(url: string): boolean {
+  return url.startsWith('internal://');
+}
+
+function applySourceNamespaceFilters(
+  conditions: string[],
+  params: unknown[],
+  options: { source?: 'web' | 'internal'; namespace?: string },
+  urlColumn: string,
+  namespaceColumn: string,
+): void {
+  if (options.source === 'internal') {
+    conditions.push(`${urlColumn} GLOB 'internal://*'`);
+  } else if (options.source === 'web') {
+    conditions.push(`${urlColumn} NOT GLOB 'internal://*'`);
+  }
+  if (options.namespace) {
+    conditions.push(`LOWER(COALESCE(${namespaceColumn}, 'web')) = ?`);
+    params.push(options.namespace.trim().toLowerCase());
+  }
+}
+
 export function searchCacheFiltered(options: {
   query?: string;
   urlPattern?: string;
   since?: string;
   limit?: number;
+  /** Restrict to web fetches or locally indexed documents. */
+  source?: 'web' | 'internal';
+  /** Exact namespace match (e.g. "docs", "wiki"). */
+  namespace?: string;
 }): CachedContent[] {
   const db = getDatabase();
   const conditions: string[] = [];
@@ -498,6 +539,14 @@ export function searchCacheFiltered(options: {
     conditions.push('url_cache.fetched_at > datetime(?)');
     params.push(options.since);
   }
+
+  applySourceNamespaceFilters(
+    conditions,
+    params,
+    options,
+    'url_cache.normalized_url',
+    'url_cache.namespace',
+  );
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const orderClause = options.query ? 'ORDER BY rank' : 'ORDER BY url_cache.fetched_at DESC';
@@ -532,6 +581,8 @@ export function clearCacheEntries(options: {
   query?: string;
   urlPattern?: string;
   since?: string;
+  source?: 'web' | 'internal';
+  namespace?: string;
 }): number {
   const db = getDatabase();
   const conditions: string[] = [];
@@ -553,6 +604,8 @@ export function clearCacheEntries(options: {
     conditions.push('fetched_at > datetime(?)');
     params.push(options.since);
   }
+
+  applySourceNamespaceFilters(conditions, params, options, 'normalized_url', 'namespace');
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const sql = `DELETE FROM url_cache ${whereClause}`;
@@ -597,15 +650,38 @@ export function getCacheStats(): CacheStats {
       COUNT(*) as total_urls,
       COALESCE(SUM(LENGTH(markdown) + LENGTH(COALESCE(raw_html, ''))), 0) as total_bytes,
       MIN(fetched_at) as oldest,
-      MAX(fetched_at) as newest
+      MAX(fetched_at) as newest,
+      SUM(CASE WHEN normalized_url GLOB 'internal://*' THEN 1 ELSE 0 END) as internal_urls,
+      SUM(CASE WHEN normalized_url NOT GLOB 'internal://*' THEN 1 ELSE 0 END) as web_urls
     FROM url_cache
-  `).get() as { total_urls: number; total_bytes: number; oldest: string | null; newest: string | null };
+  `).get() as {
+    total_urls: number;
+    total_bytes: number;
+    oldest: string | null;
+    newest: string | null;
+    internal_urls: number;
+    web_urls: number;
+  };
+
+  const nsRows = db.prepare(`
+    SELECT LOWER(COALESCE(namespace, 'web')) AS ns, COUNT(*) AS n
+    FROM url_cache
+    GROUP BY LOWER(COALESCE(namespace, 'web'))
+  `).all() as Array<{ ns: string; n: number }>;
+
+  const by_namespace: Record<string, number> = {};
+  for (const nsRow of nsRows) {
+    by_namespace[nsRow.ns] = nsRow.n;
+  }
 
   return {
     total_urls: row.total_urls,
     total_size_mb: Math.round((row.total_bytes / (1024 * 1024)) * 1e6) / 1e6,
     oldest: row.oldest ?? '',
     newest: row.newest ?? '',
+    internal_urls: row.internal_urls,
+    web_urls: row.web_urls,
+    by_namespace,
   };
 }
 

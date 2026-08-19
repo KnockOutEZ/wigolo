@@ -40,7 +40,7 @@ describe('validateInput (lazy ajv against tool schemas)', () => {
     }
   });
 
-  it('all 10 tool schemas compile (accepts a minimal valid body each)', async () => {
+  it('all 11 tool schemas compile (accepts a minimal valid body each)', async () => {
     const minimal: Record<string, unknown> = {
       fetch: { url: 'https://x.com' },
       search: { query: 'x' },
@@ -52,6 +52,7 @@ describe('validateInput (lazy ajv against tool schemas)', () => {
       agent: { prompt: 'do x' },
       diff: { old: 'a', new: 'b' },
       watch: { action: 'list' },
+      index: { source: '/tmp/docs' },
     };
     for (const [tool, body] of Object.entries(minimal)) {
       const r = await validateInput(tool, body);

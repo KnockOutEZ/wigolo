@@ -23,6 +23,7 @@ import {
   formatAgentResult,
   formatDiffResult,
   formatWatchResult,
+  formatIndexResult,
   formatJson,
 } from '../repl/formatters.js';
 import { executeSearch } from '../repl/commands/search.js';
@@ -35,6 +36,7 @@ import { executeResearch } from '../repl/commands/research.js';
 import { executeAgent } from '../repl/commands/agent.js';
 import { executeDiff } from '../repl/commands/diff.js';
 import { executeWatch } from '../repl/commands/watch.js';
+import { executeIndex } from '../repl/commands/index-docs.js';
 import { TOOL_HELP, isToolCommand, type ToolCommand } from './help.js';
 import type { ReplDeps } from '../repl/commands/types.js';
 import type {
@@ -49,6 +51,7 @@ import type {
   AgentOutput,
   DiffOutput,
   WatchJobOutput,
+  IndexOutput,
 } from '../types.js';
 
 const log = createLogger('cli');
@@ -124,6 +127,9 @@ function emit(
     case 'watch':
       writeOut(formatWatchResult(result as unknown as WatchJobOutput));
       break;
+    case 'index':
+      writeOut(formatIndexResult(result as unknown as IndexOutput));
+      break;
   }
 }
 
@@ -156,11 +162,13 @@ async function dispatch(
       return executeDiff(parsed, deps);
     case 'watch':
       return executeWatch(parsed, deps);
+    case 'index':
+      return executeIndex(parsed);
   }
 }
 
 /**
- * One-shot runner for the ten MCP tools. Initializes the DB + fetch router the
+ * One-shot runner for the eleven MCP tools. Initializes the DB + fetch router the
  * same way the interactive shell does, but is searxng-free BY CONSTRUCTION: it
  * never calls `resolveSearchBackend` and never constructs a sidecar process.
  * The `search`/`fetch` tools route through the core provider (its own direct

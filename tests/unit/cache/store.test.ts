@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { join } from 'node:path';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import {
   normalizeUrl,
@@ -18,6 +19,7 @@ import {
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
+import { cacheIndexedDocument, buildContentHash } from '../../../src/cache/internal-store.js';
 
 function makeRaw(url: string): RawFetchResult {
   return {
@@ -403,6 +405,31 @@ describe('getCacheStats', () => {
     expect(stats.oldest).toBeTruthy();
     expect(stats.newest).toBeTruthy();
     expect(stats.oldest <= stats.newest).toBe(true);
+  });
+
+  it('reports internal vs web URL counts and namespace breakdown', () => {
+    cacheContent(makeRaw('https://example.com/web'), makeExtraction({ markdown: 'web page' }));
+    const notePath = join(process.cwd(), 'package.json');
+    cacheIndexedDocument({
+      url: 'internal://docs/stats.md',
+      title: 'Stats',
+      markdown: '# Stats\n\ninternal',
+      contentHash: buildContentHash('# Stats\n\ninternal'),
+      namespace: 'docs',
+      tags: [],
+      expiresAt: null,
+      extractorUsed: 'index:markdown',
+      sourcePath: notePath,
+      sourceRoot: process.cwd(),
+      metadata: {},
+    });
+
+    const stats = getCacheStats();
+    expect(stats.total_urls).toBe(2);
+    expect(stats.web_urls).toBe(1);
+    expect(stats.internal_urls).toBe(1);
+    expect(stats.by_namespace?.web).toBe(1);
+    expect(stats.by_namespace?.docs).toBe(1);
   });
 
   // `cached_at` (returned by fetch/getCachedContent) can disagree with

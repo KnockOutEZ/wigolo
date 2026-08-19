@@ -30,6 +30,7 @@ const DEADLINES: Record<string, number> = {
   fetch: 120_000,
   extract: 120_000,
   watch: 120_000,
+  index: 120_000,
   crawl: 300_000,
   research: 300_000,
   agent: 300_000,

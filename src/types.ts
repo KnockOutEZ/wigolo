@@ -294,7 +294,13 @@ export interface ExtractionResult {
   site_data_blocked?: string;
 }
 
-export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
+export type ExtractorType =
+  | 'defuddle'
+  | 'readability'
+  | 'turndown'
+  | 'site-specific'
+  | 'index:markdown'
+  | 'index:pdf';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
@@ -317,11 +323,18 @@ export interface CachedContent {
   metadata: string;
   links: string;
   images: string;
-  fetchMethod: 'http' | 'browser';
+  fetchMethod: 'http' | 'browser' | 'index';
   extractorUsed: ExtractorType;
   contentHash: string;
   fetchedAt: string;
   expiresAt: string | null;
+  /**
+   * Document namespace. `'web'` for HTTP fetches; locally indexed documents
+   * use the caller-supplied namespace (e.g. `docs`, `wiki`).
+   */
+  namespace?: string;
+  /** Tags persisted as a JSON array on the row (e.g. `team:backend`). */
+  tags?: string[];
   /**
    * Upstream HTTP status code captured at fetch time. `null` on rows
    * persisted before the column existed; treated as "unknown" by callers.
@@ -1063,6 +1076,10 @@ export interface CacheInput {
   mode?: 'fts' | 'hybrid';
   limit?: number;
   max_tokens_out?: number;
+  /** Restrict results to web fetches or locally indexed documents. */
+  source?: 'web' | 'internal';
+  /** Exact namespace filter (e.g. "docs", "wiki"). */
+  namespace?: string;
 }
 
 export interface CacheResultItem {
@@ -1077,6 +1094,12 @@ export interface CacheStats {
   total_size_mb: number;
   oldest: string;
   newest: string;
+  /** Rows whose URL is `internal://…` (locally indexed). */
+  internal_urls?: number;
+  /** Rows whose URL is not `internal://…`. */
+  web_urls?: number;
+  /** Entry counts grouped by `namespace` column. */
+  by_namespace?: Record<string, number>;
 }
 
 export interface CacheOutput {
@@ -1093,6 +1116,59 @@ export interface ChangeReport {
   previous_hash?: string;
   current_hash?: string;
   diff_summary?: string;
+  error?: string;
+}
+
+// --- Index tool types ---
+
+export interface IndexInput {
+  /** Local filesystem path (file or directory). Remote URLs are rejected. */
+  source: string;
+  /** File glob; default `*.md`. */
+  glob?: string;
+  /** Namespace prefix for `internal://{namespace}/…` URLs (default `docs`). */
+  namespace?: string;
+  /** Recurse into subdirectories (default true). */
+  recursive?: boolean;
+  /** TTL in seconds; 0/omit = never expire. */
+  ttl?: number;
+  /** Categorization tags (e.g. `team:backend`). */
+  tags?: string[];
+  /** Scan and report only; do not write to cache. */
+  dry_run?: boolean;
+  /** Max files per batch (default 10_000). */
+  max_files?: number;
+  /** Block until background embedding queue drains. */
+  wait_for_embed?: boolean;
+  /** Watch source for changes and re-index (blocks until stopped). */
+  watch?: boolean;
+}
+
+export interface IndexFileResult {
+  path: string;
+  url: string;
+  status: 'indexed' | 'skipped' | 'failed';
+  error?: string;
+}
+
+export interface IndexOutput {
+  /** Files matched by the scanner. */
+  scanned?: number;
+  indexed: number;
+  skipped: number;
+  failed: number;
+  namespace: string;
+  files: IndexFileResult[];
+  /** Failure details (capped at 20). */
+  errors?: Array<{ path: string; reason: string }>;
+  /** Preview URLs from the scan (up to 5). */
+  sample_urls?: string[];
+  /** True when fs.watch is active (process must stay alive). */
+  watching?: boolean;
+  embed?: {
+    enqueued: number;
+    skipped_embed: number;
+  };
   error?: string;
 }
 

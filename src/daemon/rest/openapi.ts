@@ -15,6 +15,7 @@ import {
   AGENT_TOOL_SCHEMA,
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
+  INDEX_TOOL_SCHEMA,
 } from '../../server/tool-schemas.js';
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
@@ -25,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 /** Ordered tool list — drives path assembly and the /v1/tools index. */
 const TOOL_ORDER: ToolName[] = [
   'search', 'fetch', 'crawl', 'cache', 'extract',
-  'find_similar', 'research', 'agent', 'diff', 'watch',
+  'find_similar', 'research', 'agent', 'diff', 'watch', 'index',
 ];
 
 const TOOL_SCHEMAS: Record<ToolName, object> = {
@@ -39,6 +40,7 @@ const TOOL_SCHEMAS: Record<ToolName, object> = {
   agent: AGENT_TOOL_SCHEMA,
   diff: DIFF_TOOL_SCHEMA,
   watch: WATCH_TOOL_SCHEMA,
+  index: INDEX_TOOL_SCHEMA,
 };
 
 /**
@@ -91,6 +93,11 @@ const RESPONSE_FIELDS: Record<ToolName, Record<string, string>> = {
   },
   watch: {
     job: 'object', jobs: 'array', changes_since_last: 'array', notice: 'string',
+  },
+  index: {
+    scanned: 'number', indexed: 'number', skipped: 'number', failed: 'number',
+    namespace: 'string', files: 'array', sample_urls: 'array', watching: 'boolean',
+    embed: 'object', errors: 'array', error: 'string',
   },
 };
 
@@ -333,7 +340,7 @@ export function buildOpenApi(): object {
       version: readPackageVersion(),
       description: sanitize(
         'Local-first web intelligence over REST. Exposes the wigolo tools — search, ' +
-        'fetch, crawl, cache, extract, find_similar, research, agent, diff, watch — as ' +
+        'fetch, crawl, cache, extract, find_similar, research, agent, diff, watch, index — as ' +
         'POST /v1/{tool} endpoints. Results are structured JSON. Core work (search / ' +
         'fetch / crawl / extract / cache) needs no API keys; a browser engine handles ' +
         'JS-rendered pages, a content extractor produces clean markdown, and an ML ' +

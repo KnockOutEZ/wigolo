@@ -53,9 +53,9 @@ describe('MCP description token budgets', () => {
         // eslint-disable-next-line no-console
         console.log(`  ${a.tool}.${a.path}  ${a.tokens} / ${ARG_DESC_BUDGET}`);
       });
-    // All 10 tools ship with descriptions so they count toward the
+    // All 11 tools ship with descriptions so they count toward the
     // per-tool token budget walk.
-    expect(toolEntries.length).toBe(10);
+    expect(toolEntries.length).toBe(11);
     expect(argEntries.length).toBeGreaterThan(0); // sanity: walker actually walked
   });
 

@@ -46,6 +46,7 @@ const COMMAND_TO_TOOL: Record<string, ToolName> = {
   agent: 'agent',
   diff: 'diff',
   watch: 'watch',
+  index: 'index',
 };
 
 const MAX_FILE_BYTES = 1024 * 1024; // 1 MiB
@@ -65,6 +66,7 @@ export const ROUND_TRIP_EXCLUSIONS: Record<string, ReadonlySet<string>> = {
   find_similar: new Set(['url', 'concept']), // positional
   cache: new Set(['query', 'clear', 'stats']), // positional query + subcommands
   watch: new Set(['action']), // verb-mapped
+  index: new Set(['source']), // positional path
   diff: new Set(['old', 'new']), // curated string-wrap; schema objects excluded
 };
 

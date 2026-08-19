@@ -11,6 +11,7 @@ import type {
   AgentOutput,
   DiffOutput,
   WatchJobOutput,
+  IndexOutput,
   TableData,
   MetadataData,
 } from '../types.js';
@@ -405,6 +406,29 @@ export function formatWatchResult(output: WatchJobOutput & { error?: string }): 
     lines.push(chalk.dim(`  Note: ${output.notice}`));
   }
 
+  return lines.join('\n');
+}
+
+export function formatIndexResult(output: IndexOutput): string {
+  if (output.error) {
+    return chalk.red(`Index error: ${output.error}`);
+  }
+  const lines = [
+    `Index [${chalk.cyan(output.namespace)}]: ` +
+      `${chalk.green(String(output.indexed))} indexed, ` +
+      `${chalk.yellow(String(output.skipped))} skipped, ` +
+      `${output.failed > 0 ? chalk.red(String(output.failed)) : String(output.failed)} failed`,
+  ];
+  for (const file of output.files) {
+    const status =
+      file.status === 'indexed'
+        ? chalk.green(file.status)
+        : file.status === 'skipped'
+          ? chalk.yellow(file.status)
+          : chalk.red(file.status);
+    const extra = file.error ? ` (${file.error})` : '';
+    lines.push(`  ${status} ${file.path} → ${chalk.dim(file.url)}${extra}`);
+  }
   return lines.join('\n');
 }
 

@@ -132,6 +132,8 @@ export const manifest = {
       'mode',
       'limit',
       'max_tokens_out',
+      'source',
+      'namespace',
     ],
     responseKeys: ['results', 'stats', 'cleared', 'changes', 'error'],
     defaultTimeoutMs: 75000,
@@ -267,6 +269,13 @@ export const manifest = {
       'job_id',
     ],
     responseKeys: ['job', 'jobs', 'changes_since_last', 'notice'],
+    defaultTimeoutMs: 135000,
+  },
+  index: {
+    path: '/v1/index',
+    required: ['source'],
+    params: ['source', 'glob', 'namespace', 'recursive', 'ttl', 'tags'],
+    responseKeys: ['indexed', 'skipped', 'failed', 'namespace', 'files', 'error'],
     defaultTimeoutMs: 135000,
   },
 } as const;

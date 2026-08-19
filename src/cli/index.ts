@@ -29,6 +29,7 @@ export type Command =
   | 'agent'
   | 'diff'
   | 'watch'
+  | 'index'
   | 'help'
   | 'version'
   | 'unknown';
@@ -69,6 +70,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'agent',
   'diff',
   'watch',
+  'index',
 ]);
 
 const HELP_ALIASES: ReadonlySet<string> = new Set(['--help', '-h', 'help']);

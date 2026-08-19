@@ -164,7 +164,8 @@ export async function main(): Promise<void> {
     case 'research':
     case 'agent':
     case 'diff':
-    case 'watch': {
+    case 'watch':
+    case 'index': {
       const code = await runTool(command, args);
       await exitCli(code);
       break;

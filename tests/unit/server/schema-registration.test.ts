@@ -152,15 +152,15 @@ describe('diff + watch tool registration', () => {
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('tools/list exposes 10 tools including diff and watch', async () => {
+  it('tools/list exposes 11 tools including diff, watch, and index', async () => {
     const { client, teardown } = await connectClient();
     try {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual(
-        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'watch']
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'index', 'research', 'search', 'watch']
       );
-      expect(res.tools).toHaveLength(10);
+      expect(res.tools).toHaveLength(11);
     } finally {
       await teardown();
     }

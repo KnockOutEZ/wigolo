@@ -1,0 +1,7 @@
+-- Add namespace + tags to url_cache so locally indexed documents
+-- (internal://…) can be filtered separately from web fetches.
+--
+-- Applied via postStep in src/cache/migrations/runner.ts (guarded ADD COLUMN).
+-- Defaults:
+--   namespace = 'web'   — every pre-existing row is treated as web content
+--   tags = '[]'       — empty JSON array

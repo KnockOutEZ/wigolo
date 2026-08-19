@@ -4,6 +4,7 @@ import {
   clearCacheEntries,
   ftsSearchRanked,
   getCachedContentByNormalizedUrl,
+  isInternalCacheUrl,
 } from '../cache/store.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
@@ -38,11 +39,22 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
+        source: input.source,
+        namespace: input.namespace,
       });
 
       const changes: ChangeReport[] = [];
       for (const entry of entries) {
         try {
+          if (isInternalCacheUrl(entry.url) || isInternalCacheUrl(entry.normalizedUrl)) {
+            changes.push({
+              url: entry.url,
+              changed: false,
+              current_hash: entry.contentHash,
+              error: 'internal documents are not re-fetched; re-run index to refresh',
+            });
+            continue;
+          }
           if (!router) {
             changes.push({
               url: entry.url,
@@ -94,18 +106,22 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
     }
 
     if (input.clear) {
-      if (!input.query && !input.url_pattern && !input.since) {
-        return { error: 'clear requires at least one filter (query, url_pattern, or since)' };
+      if (!input.query && !input.url_pattern && !input.since && !input.source && !input.namespace) {
+        return { error: 'clear requires at least one filter (query, url_pattern, since, source, or namespace)' };
       }
       log.info('Clearing cache entries', {
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
+        source: input.source,
+        namespace: input.namespace,
       });
       const count = clearCacheEntries({
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
+        source: input.source,
+        namespace: input.namespace,
       });
       return { cleared: count };
     }
@@ -131,6 +147,8 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       query: input.query,
       urlPattern: input.url_pattern,
       since: input.since,
+      source: input.source,
+      namespace: input.namespace,
       limit: input.limit ?? DEFAULT_CACHE_QUERY_LIMIT,
     });
 
@@ -220,6 +238,16 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
     if (results.length >= limit) break;
     const cached = getCachedContentByNormalizedUrl(normalizedUrl);
     if (!cached) continue;
+    if (input.source === 'internal' && !isInternalCacheUrl(cached.url) && !isInternalCacheUrl(cached.normalizedUrl)) {
+      continue;
+    }
+    if (input.source === 'web' && (isInternalCacheUrl(cached.url) || isInternalCacheUrl(cached.normalizedUrl))) {
+      continue;
+    }
+    if (input.namespace) {
+      const ns = (cached.namespace ?? 'web').toLowerCase();
+      if (ns !== input.namespace.trim().toLowerCase()) continue;
+    }
     results.push({
       url: cached.url,
       title: cached.title,

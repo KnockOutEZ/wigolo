@@ -9,6 +9,7 @@ import {
   AGENT_TOOL_SCHEMA,
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
+  INDEX_TOOL_SCHEMA,
 } from '../../server/tool-schemas.js';
 
 /**
@@ -29,6 +30,7 @@ const SCHEMAS: Record<string, object> = {
   agent: AGENT_TOOL_SCHEMA,
   diff: DIFF_TOOL_SCHEMA,
   watch: WATCH_TOOL_SCHEMA,
+  index: INDEX_TOOL_SCHEMA,
 };
 
 export type ValidateResult = { ok: true } | { ok: false; detail: string };

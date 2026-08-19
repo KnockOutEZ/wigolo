@@ -461,6 +461,8 @@ class Client:
         mode: Optional[str] = None,
         limit: Optional[int] = None,
         max_tokens_out: Optional[int] = None,
+        source: Optional[str] = None,
+        namespace: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> Any:
         """Query or manage the local knowledge cache."""
@@ -476,6 +478,8 @@ class Client:
                 "mode": mode,
                 "limit": limit,
                 "max_tokens_out": max_tokens_out,
+                "source": source,
+                "namespace": namespace,
             },
             timeout,
         )
@@ -667,6 +671,31 @@ class Client:
                 "selector": selector,
                 "notification": notification,
                 "job_id": job_id,
+            },
+            timeout,
+        )
+
+    def index(
+        self,
+        *,
+        source: str,
+        glob: Optional[str] = None,
+        namespace: Optional[str] = None,
+        recursive: Optional[bool] = None,
+        ttl: Optional[int] = None,
+        tags: Optional[list[str]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Ingest local files into the knowledge cache."""
+        return self._call_tool(
+            "index",
+            {
+                "source": source,
+                "glob": glob,
+                "namespace": namespace,
+                "recursive": recursive,
+                "ttl": ttl,
+                "tags": tags,
             },
             timeout,
         )

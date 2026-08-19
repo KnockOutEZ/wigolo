@@ -3,7 +3,7 @@ import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../typ
 import { describeFetchError } from '../fetch/error-describe.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
-import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
+import { getCachedContent, cacheContent, isCacheUsable, isExpired } from '../cache/store.js';
 import { getConfig } from '../config.js';
 import { extractLinksAndImages, extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
@@ -176,6 +176,25 @@ export async function handleFetch(
     out.response_time_ms = Date.now() - _fetchStart;
     return out;
   };
+
+  // Locally indexed documents use internal:// URLs — serve from cache without
+  // HTTP validation or SSRF guards (which only accept http(s)).
+  if (typeof input.url === 'string' && input.url.startsWith('internal://')) {
+    const cached = getCachedContent(input.url);
+    if (!cached || isExpired(cached)) {
+      return {
+        ok: false,
+        error: 'cache_miss',
+        error_reason: `Internal document not in cache: ${input.url}`,
+        stage: 'fetch',
+        hint: 'Run index({ source: "<path>", namespace: "…" }) to ingest local files first',
+      };
+    }
+    log.info('Serving internal document from cache', { url: input.url });
+    const out = formatCachedResponse(cached, input);
+    await attachEvidence(out, input, cached.markdown);
+    return { ok: true, data: stampTime(out) };
+  }
 
   // Pre-validate the URL so an invalid-port error reads as
   // "invalid port" rather than the downstream "URL not in cache" / generic

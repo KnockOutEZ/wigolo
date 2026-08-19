@@ -33,6 +33,8 @@ import type {
   DiffResponse,
   WatchRequest,
   WatchResponse,
+  IndexRequest,
+  IndexResponse,
 } from '../src/types.js';
 
 /** Bidirectional type equality. */
@@ -58,6 +60,7 @@ type ResearchParams = (typeof manifest)['research']['params'][number];
 type AgentParams = (typeof manifest)['agent']['params'][number];
 type DiffParams = (typeof manifest)['diff']['params'][number];
 type WatchParams = (typeof manifest)['watch']['params'][number];
+type IndexParams = (typeof manifest)['index']['params'][number];
 
 type SearchResKeys = (typeof manifest)['search']['responseKeys'][number];
 type FetchResKeys = (typeof manifest)['fetch']['responseKeys'][number];
@@ -69,6 +72,7 @@ type ResearchResKeys = (typeof manifest)['research']['responseKeys'][number];
 type AgentResKeys = (typeof manifest)['agent']['responseKeys'][number];
 type DiffResKeys = (typeof manifest)['diff']['responseKeys'][number];
 type WatchResKeys = (typeof manifest)['watch']['responseKeys'][number];
+type IndexResKeys = (typeof manifest)['index']['responseKeys'][number];
 
 // ---- request param drift ----
 expectTrue<Eq<SearchParams, keyof SearchRequest>>();
@@ -81,6 +85,7 @@ expectTrue<Eq<ResearchParams, keyof ResearchRequest>>();
 expectTrue<Eq<AgentParams, keyof AgentRequest>>();
 expectTrue<Eq<DiffParams, keyof DiffRequest>>();
 expectTrue<Eq<WatchParams, keyof WatchRequest>>();
+expectTrue<Eq<IndexParams, keyof IndexRequest>>();
 
 // ---- response known-key drift ----
 expectTrue<Eq<SearchResKeys, KnownKeys<SearchResponse>>>();
@@ -93,3 +98,4 @@ expectTrue<Eq<ResearchResKeys, KnownKeys<ResearchResponse>>>();
 expectTrue<Eq<AgentResKeys, KnownKeys<AgentResponse>>>();
 expectTrue<Eq<DiffResKeys, KnownKeys<DiffResponse>>>();
 expectTrue<Eq<WatchResKeys, KnownKeys<WatchResponse>>>();
+expectTrue<Eq<IndexResKeys, KnownKeys<IndexResponse>>>();

@@ -45,8 +45,10 @@ export async function handleFindSimilar(
 
     // SSRF guard on the url seed — the seed is fetched raw downstream
     // (crawl-rank / cache-seed), bypassing handleFetch's own guard. Same
-    // allowPrivate wiring as the fetch tool.
-    if (url) {
+    // allowPrivate wiring as the fetch tool. Locally indexed documents use
+    // the internal:// scheme and never leave the cache — skip the HTTP SSRF
+    // gate for those seeds.
+    if (url && !url.startsWith('internal://')) {
       const ssrf = guardFetchUrl(url, 'url', { allowPrivate: getConfig().fetchAllowPrivate });
       if (!ssrf.ok) {
         return {
@@ -75,7 +77,9 @@ export async function handleFindSimilar(
     });
 
     let cacheSeeded = false;
-    if (url) {
+    // Cold-start web seed only applies to http(s) URLs — internal:// docs
+    // already live in the cache and must not trigger a live search.
+    if (url && !url.startsWith('internal://')) {
       try {
         const u = new URL(url);
         const host = u.hostname;

@@ -18,6 +18,7 @@ import {
   formatAgentResult,
   formatDiffResult,
   formatWatchResult,
+  formatIndexResult,
   formatJsonLine,
 } from './formatters.js';
 import { executeSearch } from './commands/search.js';
@@ -30,6 +31,7 @@ import { executeResearch } from './commands/research.js';
 import { executeAgent } from './commands/agent.js';
 import { executeDiff } from './commands/diff.js';
 import { executeWatch } from './commands/watch.js';
+import { executeIndex } from './commands/index-docs.js';
 import type { ReplDeps } from './commands/types.js';
 import type { CrawlOutput, MapOutput } from '../types.js';
 
@@ -81,6 +83,7 @@ function getHelpText(): string {
     '  agent <prompt> [--urls=u1,u2] [--max-pages=N] [--max-time=MS]',
     '  diff <url> [--output=unified|hunks|summary] [--granularity=line|word|section]',
     '  watch add <url> [--interval=SECONDS] | watch list | watch rm <id> | watch run <id>',
+    '  index <path> [--namespace=docs] [--glob=*.md] [--tags=a,b]',
     '',
     '  help       Show this help',
     '  exit       Exit the shell',
@@ -280,6 +283,11 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
         case 'watch': {
           const result = await executeWatch(parsed, deps);
           emitResult(formatWatchResult(result), result, useJson);
+          break;
+        }
+        case 'index': {
+          const result = await executeIndex(parsed);
+          emitResult(formatIndexResult(result), result, useJson);
           break;
         }
         default:

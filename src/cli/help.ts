@@ -19,7 +19,7 @@ export function getVersion(): string {
   }
 }
 
-/** The ten one-shot tool commands, plus the `find_similar` snake-case alias. */
+/** The eleven one-shot tool commands, plus the `find_similar` snake-case alias. */
 export const TOOL_COMMANDS = [
   'search',
   'fetch',
@@ -32,6 +32,7 @@ export const TOOL_COMMANDS = [
   'agent',
   'diff',
   'watch',
+  'index',
 ] as const;
 
 export type ToolCommand = (typeof TOOL_COMMANDS)[number];
@@ -161,6 +162,13 @@ const TOOL_USAGE: Record<ToolCommand, { usage: string; blurb: string }> = {
       'is active — a one-shot command cannot schedule them itself.\n' +
       '  watch add <url> | watch list | watch rm <id> | watch run <id> | watch pause <id> | watch resume <id>',
   },
+  index: {
+    usage: 'wigolo index <path> [flags]',
+    blurb:
+      'Ingest local markdown/text files into the knowledge cache as internal:// documents.\n' +
+      '  --namespace=docs           URL namespace (default docs)\n' +
+      '  --glob=*.md                Basename glob (default *.md)',
+  },
 };
 
 /** Curated shorthand-alias rows shown above the schema-derived table. */
@@ -257,6 +265,7 @@ Tools (one-shot; add --json for machine-readable output, --help for flags):
   agent <prompt>          Autonomous data gathering
   diff <url>              Diff a page against its cached copy
   watch <subcommand>      Manage change-watch jobs
+  index <path>            Ingest local files into the knowledge cache
 
 Advanced:
   warmup [--all|--browser|--reranker|--embeddings]

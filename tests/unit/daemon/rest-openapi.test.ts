@@ -14,7 +14,7 @@ import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
  * are contract breaks these rows pin.
  */
 
-const TOOLS = ['search', 'fetch', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch'];
+const TOOLS = ['search', 'fetch', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch', 'index'];
 
 // The imported schema objects also serve MCP ListTools; assembly must not mutate
 // them. Snapshot BEFORE any buildOpenApi() call.
@@ -29,6 +29,7 @@ const PRE_ASSEMBLY_SNAPSHOT: Record<string, string> = {
   AGENT_TOOL_SCHEMA: JSON.stringify(SCHEMAS.AGENT_TOOL_SCHEMA),
   DIFF_TOOL_SCHEMA: JSON.stringify(SCHEMAS.DIFF_TOOL_SCHEMA),
   WATCH_TOOL_SCHEMA: JSON.stringify(SCHEMAS.WATCH_TOOL_SCHEMA),
+  INDEX_TOOL_SCHEMA: JSON.stringify(SCHEMAS.INDEX_TOOL_SCHEMA),
 };
 
 describe('OpenAPI document assembly', () => {
@@ -52,7 +53,7 @@ describe('OpenAPI document assembly', () => {
     expect(doc.info.version).not.toBe('0.0.0');
   });
 
-  it('has a POST path for all 10 tools plus /v1/tools and the openapi aliases', () => {
+  it('has a POST path for all 11 tools plus /v1/tools and the openapi aliases', () => {
     const doc = buildOpenApi() as { paths: Record<string, Record<string, unknown>> };
     for (const tool of TOOLS) {
       expect(doc.paths[`/v1/${tool}`]).toBeDefined();
@@ -149,7 +150,7 @@ describe('OpenAPI document assembly', () => {
 describe('/v1/tools index', () => {
   it('returns one entry per tool with name/description/endpoint', () => {
     const index = buildToolsIndex() as { name: string; description: string; endpoint: string }[];
-    expect(index).toHaveLength(10);
+    expect(index).toHaveLength(11);
     for (const entry of index) {
       expect(typeof entry.name).toBe('string');
       expect(typeof entry.description).toBe('string');
@@ -213,10 +214,10 @@ describe('OpenAPI over a real DaemonHttpServer', () => {
     expect(JSON.stringify(b.body)).toBe(JSON.stringify(a.body));
   });
 
-  it('GET /v1/tools returns 10 entries', async () => {
+  it('GET /v1/tools returns 11 entries', async () => {
     const r = await get('/v1/tools');
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body)).toBe(true);
-    expect((r.body as unknown[]).length).toBe(10);
+    expect((r.body as unknown[]).length).toBe(11);
   });
 });

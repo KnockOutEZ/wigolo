@@ -179,6 +179,17 @@ const CONTENT_COMPLETENESS_COLUMNS = [
 // the whole effect is the guarded ADD COLUMN in the postStep (mirrors 008).
 const MIGRATION_010_CLEARANCE_ROUTE = '';
 
+// Namespace + tags on url_cache for local/internal document indexing
+// (issue #225). Empty SQL — guarded ADD COLUMNs live in the postStep
+// (mirrors 006 / 009). Default namespace 'web' keeps every legacy row
+// classified as web content; tags default to an empty JSON array.
+const MIGRATION_011_URL_CACHE_NAMESPACE_TAGS = '';
+
+const URL_CACHE_NAMESPACE_TAGS_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: 'namespace', ddl: "ALTER TABLE url_cache ADD COLUMN namespace TEXT DEFAULT 'web'" },
+  { name: 'tags', ddl: "ALTER TABLE url_cache ADD COLUMN tags TEXT DEFAULT '[]'" },
+];
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -286,6 +297,21 @@ export const MIGRATIONS: Migration[] = [
       if (!names.has('solved_route')) {
         db.exec('ALTER TABLE domain_routing ADD COLUMN solved_route TEXT');
       }
+    },
+  },
+  {
+    name: '011-url-cache-namespace-tags',
+    sql: MIGRATION_011_URL_CACHE_NAMESPACE_TAGS,
+    postStep: (db) => {
+      const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const names = new Set(cols.map((c) => c.name));
+      for (const col of URL_CACHE_NAMESPACE_TAGS_COLUMNS) {
+        if (!names.has(col.name)) {
+          db.exec(col.ddl);
+        }
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_url_cache_namespace ON url_cache(namespace)');
     },
   },
 ];

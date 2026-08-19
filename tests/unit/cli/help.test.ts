@@ -50,11 +50,11 @@ describe('printHelp', () => {
     expect(text).toContain('--version');
   });
 
-  it('lists all ten one-shot tool commands', () => {
+  it('lists all eleven one-shot tool commands', () => {
     const { stream, output } = captureStream();
     printHelp(stream);
     const text = output();
-    for (const tool of ['search', 'fetch', 'crawl', 'extract', 'cache', 'find-similar', 'research', 'agent', 'diff', 'watch']) {
+    for (const tool of ['search', 'fetch', 'crawl', 'extract', 'cache', 'find-similar', 'research', 'agent', 'diff', 'watch', 'index']) {
       expect(text).toContain(tool);
     }
     // The snake-case alias is documented next to find-similar.

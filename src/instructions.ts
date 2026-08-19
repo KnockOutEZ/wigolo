@@ -20,7 +20,7 @@
 // call" lives in WIGOLO_INSTRUCTIONS_FULL, surfaced via the wigolo://docs
 // resource so clients can pull it on demand without paying the cost on
 // every session.
-export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`diff\`, \`watch\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
+export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`diff\`, \`watch\`, \`index\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
 
 ## Backend
 
@@ -247,7 +247,7 @@ Key parameters:
 - stats: true to get cache size, entry count, oldest/newest dates.
 - clear: true to delete matching entries.
 
-Persists across sessions. No remote round-trip.`,
+Persists across sessions. No remote round-trip. Use \`source: "internal"\` / \`source: "web"\` to split locally indexed documents from web fetches; \`namespace\` matches an index namespace.`,
 
   extract: `Extract structured data from a URL or raw HTML. Use for specific data points (tables, prices, schema fields) rather than whole-page markdown.
 
@@ -334,6 +334,22 @@ Key parameters:
 \`list\` returns each job's \`staleness_seconds\` so you can see how overdue each check is: negative = not yet due, positive = overdue by N seconds. Pair with \`action: 'check'\` to force one immediately.
 
 Idempotent \`create\`: identical url + interval + selector returns the existing \`job_id\` — does not duplicate the row.`,
+
+  index: `Ingest local files into the knowledge cache as never-expiring internal:// documents.
+
+Key parameters:
+- source: local file or directory path (http(s) URLs are rejected).
+- glob: basename glob (default "*.md").
+- namespace: prefix for internal:// URLs (default "docs").
+- recursive: walk subdirectories (default true).
+- ttl: seconds; 0/omit = never expire.
+- tags: categorization strings (e.g. team:backend).
+- dry_run: scan only, no DB writes.
+- max_files: batch cap (default 10000).
+- wait_for_embed: block until embeddings finish.
+- watch: fs.watch auto re-index (blocks until SIGINT).
+
+Returns indexed/skipped/failed counts plus per-file status. Unchanged files (same content hash) are skipped. Query with \`cache({ query, source: "internal" })\` or \`fetch({ url: "internal://docs/…" })\`.`,
 } as const;
 
 export type ToolName = keyof typeof TOOL_DESCRIPTIONS;
