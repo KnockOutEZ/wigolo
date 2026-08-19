@@ -185,12 +185,25 @@ describe('url_versions — append on change (G-S14-1a)', () => {
     expect(cacheRows.n).toBe(1);
   });
 
-  it('does NOT append when an unchanged page is re-fetched', () => {
+  it('does NOT append or rewrite the retained row when an unchanged page is re-fetched', () => {
     // A page fetched 200 times unchanged must cost ONE row. The dedup key makes
     // that structural rather than a caller's discipline (D-S14-1).
+    //
+    // The row IDENTITY clause is what gives the append guard its own teeth. Row
+    // count alone is satisfied by the unique index whether or not the guard
+    // exists, because the insert is OR REPLACE — dropping the guard would leave
+    // the count at 1 while silently re-timing the version on every unchanged
+    // fetch, which is the failure a count assertion cannot see.
     const body = '# Stable\n\nUnchanged across every fetch.';
+    write(body);
+    const first = versionsFor()[0];
+
     for (let i = 0; i < 5; i++) write(body);
-    expect(versionsFor()).toHaveLength(1);
+
+    const rows = versionsFor();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(first.id);
+    expect(rows[0].fetched_at).toBe(first.fetched_at);
   });
 
   it('records the first fetch of a URL as version 1', () => {
