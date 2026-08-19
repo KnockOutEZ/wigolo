@@ -37,6 +37,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_url_versions_url_hash
 CREATE INDEX IF NOT EXISTS idx_url_versions_url_time
   ON url_versions(normalized_url, fetched_at, id);
 
--- The global byte + age bounds sweep the whole table oldest-first.
+-- The global byte + age bounds sweep the whole table oldest-first. byte_len is
+-- carried so the per-write "are we over budget?" SUM is index-only and the
+-- common case never has to build the eviction window at all.
 CREATE INDEX IF NOT EXISTS idx_url_versions_time
-  ON url_versions(fetched_at, id);
+  ON url_versions(fetched_at, id, byte_len);

@@ -85,12 +85,24 @@ function evict(db: Database.Database, normalizedUrl: string, bounds: RetentionBo
        )`,
   ).run(normalizedUrl, normalizedUrl, bounds.maxVersionsPerUrl);
 
-  // 3. Total bytes — global, because disk is a single shared resource. The
-  //    running sum is taken newest-first and a row is kept only while the
-  //    cumulative total INCLUDING it stays within budget. That also settles the
-  //    degenerate case a per-row guard would miss: a single version larger than
-  //    the whole budget is retained by nothing, so the ceiling cannot be
-  //    breached by one oversized page.
+  // 3. Total bytes — global, because disk is a single shared resource.
+  //
+  //    Short-circuited on a plain SUM first. The sweep below builds a windowed
+  //    running total over the whole table, and it runs on the fetch path every
+  //    time a page's content changes: a crawl of N changed pages would pay N
+  //    sweeps of a table that only exceeds its budget once. The SUM is served by
+  //    idx_url_versions_time, which carries byte_len for exactly this reason, so
+  //    the common case never builds the window at all.
+  const total = db.prepare('SELECT COALESCE(SUM(byte_len), 0) AS total FROM url_versions').get() as {
+    total: number;
+  };
+  if (total.total <= bounds.maxBytes) return;
+
+  //    A row is kept only while the running total INCLUDING it, taken
+  //    newest-first, stays within budget. That also settles the degenerate case
+  //    a per-row guard would miss: a single version larger than the whole budget
+  //    is retained by nothing, so the ceiling cannot be breached by one
+  //    oversized page.
   db.prepare(
     `DELETE FROM url_versions
      WHERE id NOT IN (

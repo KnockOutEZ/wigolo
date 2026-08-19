@@ -322,7 +322,7 @@ CREATE INDEX IF NOT EXISTS idx_url_versions_url_time
   ON url_versions(normalized_url, fetched_at, id);
 
 CREATE INDEX IF NOT EXISTS idx_url_versions_time
-  ON url_versions(fetched_at, id);
+  ON url_versions(fetched_at, id, byte_len);
 `;
 
 export const MIGRATIONS: Migration[] = [
