@@ -64,6 +64,49 @@ function makeHost(broadcasts: Record<string, unknown>[], brokerOver: Record<stri
 const persistedEntries = (broker: { call: ReturnType<typeof vi.fn> }): AuditRecordInput[] =>
   broker.call.mock.calls.filter(([m]) => m === 'persistAudit').map(([, p]) => (p as { entry: AuditRecordInput }).entry);
 
+/** The flow steps the host asked the broker to write, in call order. */
+const recordedSteps = (broker: { call: ReturnType<typeof vi.fn> }): Array<{ seq: number; auditSeq: number; action: string }> =>
+  broker.call.mock.calls
+    .filter(([m]) => m === 'recordFlowStep')
+    .map(([, p]) => (p as { step: { seq: number; auditSeq: number; action: string } }).step);
+
+describe('studio-host — K34: the Electron surface RECORDS flows, joined to durable audit rows', () => {
+  it('a driven act on this surface writes a flow step through the broker', async () => {
+    // K34 was: `studio-host.ts` never built a recorder, so a user driving Studio through the app produced
+    // no flows at all while the CLI surface recorded normally. This is the acceptance for closing it, and
+    // it is asserted at the broker seam because that is the only place the app CAN persist.
+    const { host, broker } = makeHost([]);
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
+    await host.handlers.act({ action: 'scroll', direction: 'down', amount: 100 });
+    await vi.waitFor(() => expect(recordedSteps(broker).length).toBeGreaterThanOrEqual(1));
+    expect(recordedSteps(broker)[0]).toMatchObject({ seq: 1, action: 'scroll' });
+  });
+
+  it('joins on the DURABLE audit seq the broker returned, not the host\'s in-memory count', async () => {
+    // The decisive case. Both counters start at 1, so they agree on a healthy broker and a test that did
+    // not FORCE them apart would pass either way. Here persistAudit returns a seq offset by 10, so an
+    // implementation reading the in-memory seq stores 1 and this reds.
+    let durable = 10;
+    const { host, broker } = makeHost([], { persistAudit: () => ({ seq: ++durable }) });
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
+    await host.handlers.act({ action: 'scroll', direction: 'down', amount: 100 });
+    await vi.waitFor(() => expect(recordedSteps(broker).length).toBeGreaterThanOrEqual(1));
+    expect(recordedSteps(broker)[0]?.auditSeq).toBe(11);
+  });
+
+  it('records NO flow step when the audit row failed to persist — no audit row, no step', async () => {
+    // Degrades to the sidecar's own rule rather than storing a join key to a row that does not exist.
+    // `013-studio-flows.sql` has no foreign key on audit_seq, so nothing downstream would reject it.
+    const { host, broker } = makeHost([], { persistAudit: () => { throw new Error('broker down'); } });
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
+    await host.handlers.act({ action: 'scroll', direction: 'down', amount: 100 });
+    await vi.waitFor(() => expect(broker.call.mock.calls.some(([m]) => m === 'persistAudit')).toBe(true));
+    // Give the recorder's chain a turn to settle before asserting an absence.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(recordedSteps(broker)).toEqual([]);
+  });
+});
+
 describe('studio-host — P6 F4 audit → broker persist + live broadcast', () => {
   it('a driven act records to the broker (persistAudit) AND fans a page-text-free {t:audit} broadcast', async () => {
     const broadcasts: Record<string, unknown>[] = [];

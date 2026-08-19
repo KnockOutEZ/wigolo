@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../../src/cache/migrations/runner.js';
 import { createActHandler, type ActControlToken } from '../../../../src/studio/act.js';
-import { createFlowRecorder } from '../../../../src/studio/flow/record.js';
+import { createFlowRecorder, isRecordableAct, narrowPageUrl } from '../../../../src/studio/flow/record.js';
+import { redactCredentialParams, CREDENTIAL_PARAM_NAMES } from '../../../../src/studio/credential.js';
 import { listFlowSteps, flowIdForSession } from '../../../../src/studio/flow/store.js';
 import { SessionAuditLog } from '../../../../src/studio/audit.js';
 import type { NavGrant } from '../../../../src/studio/nav-policy.js';
@@ -312,6 +313,70 @@ describe('the recorder — what lands in the sidecar', () => {
       [2, 'https://example.com/b'],
       [3, 'https://example.com/c'],
     ]);
+  });
+});
+
+describe('the recorder — a secret-shaped parameter is REDACTED from a navigate URL, and the step is kept (A175)', () => {
+  it('removes ?token= and keeps the rest of the URL', () => {
+    expect(narrowPageUrl('navigate', 'https://ex.com/reset?token=SECRET')).toBe('https://ex.com/reset');
+  });
+
+  it('removes ?sso_session= while leaving its BENIGN siblings byte-intact — the case that decides the design', () => {
+    // Stripping the whole query would break every search and filtered-list flow, which is most of what
+    // is worth replaying. Removing the one named parameter keeps the navigation replayable.
+    expect(narrowPageUrl('navigate', 'https://shop.com/search?q=shoes&page=2&sso_session=SECRET'))
+      .toBe('https://shop.com/search?q=shoes&page=2');
+  });
+
+  it('removes ?api_key= — matched on the WHOLE name normalised, which the parts alone would miss', () => {
+    // `api_key` is credential-shaped only as `apikey`; `sso_session` only in its `session` part. Either
+    // matching rule alone leaves a real name uncovered.
+    expect(narrowPageUrl('navigate', 'https://ex.com/x?api_key=S&view=grid')).toBe('https://ex.com/x?view=grid');
+  });
+
+  it('NEVER DROPS THE STEP — a navigate whose only parameter is a secret still records', () => {
+    // The property this design turns on. Refusing the step would leave the sequence numbers contiguous
+    // while the recording silently lost its navigation, and replay would then run the following clicks
+    // against whatever page was already open. A flow missing its navigate is worse than a stored token.
+    expect(isRecordableAct({ action: 'navigate', auditSeq: 1, pageUrl: 'https://ex.com/reset?token=SECRET' })).toBe(true);
+  });
+
+  it('leaves a benign query-parameterised navigate completely alone', () => {
+    expect(narrowPageUrl('navigate', 'https://shop.com/search?q=shoes&page=2')).toBe('https://shop.com/search?q=shoes&page=2');
+  });
+
+  it('does not fire on ?author= — the guard is a name test, not a substring test', () => {
+    // A substring test matches `auth` inside `author` and would quietly rewrite a URL because a page
+    // listed articles by author.
+    expect(narrowPageUrl('navigate', 'https://blog.com/posts?author=jane')).toBe('https://blog.com/posts?author=jane');
+  });
+
+  it('redacts a secret out of the FRAGMENT too, because that is where the OAuth implicit flow puts it', () => {
+    // `#tab=2` and `#access_token=…` are the same syntax; only the name tells them apart. A
+    // search-params-only guard would miss the most common secret-in-a-URL shape on the web.
+    expect(narrowPageUrl('navigate', 'https://cb.ex.com/cb#access_token=SECRET&state=xyz')).toBe('https://cb.ex.com/cb#state=xyz');
+    expect(narrowPageUrl('navigate', 'https://docs.ex.com/guide#installation')).toBe('https://docs.ex.com/guide#installation');
+  });
+
+  it('drops an UNPARSEABLE navigate url rather than storing it raw', () => {
+    // There is no way to redact a string that cannot be parsed, and returning it unchanged would pass a
+    // secret straight through the function whose job is removing it.
+    expect(redactCredentialParams('h ttp://%%%not-a-url?token=S')).toBe('');
+    expect(narrowPageUrl('navigate', 'h ttp://%%%not-a-url?token=S')).toBeUndefined();
+  });
+
+  it('leaves the NON-navigate verbs to the existing narrowing, which already drops search and hash', () => {
+    // Asymmetric on purpose: no other verb keeps a query string, so no other verb needs this guard.
+    expect(narrowPageUrl('click', 'https://ex.com/reset?token=SECRET#x')).toBe('https://ex.com/reset');
+    expect(isRecordableAct({ action: 'click', auditSeq: 1, pageUrl: 'https://ex.com/reset?token=SECRET', target: liveTarget() })).toBe(true);
+  });
+
+  it('keys on a FIXED constant, so re-tuning risk policy cannot widen what gets stored', () => {
+    for (const n of ['token', 'session', 'secret', 'password', 'apikey', 'authorization', 'jwt']) {
+      expect(CREDENTIAL_PARAM_NAMES.has(n), `${n} must be treated as credential-shaped`).toBe(true);
+    }
+    expect(CREDENTIAL_PARAM_NAMES.has('author')).toBe(false);
+    expect(CREDENTIAL_PARAM_NAMES.has('page')).toBe(false);
   });
 });
 

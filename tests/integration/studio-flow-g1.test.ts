@@ -298,7 +298,7 @@ describe('G1 — is a recording sufficient to attempt a run at all?', () => {
     }
   });
 
-  it('drops a session-bearing query string from the live page URL a non-navigate step stores', async () => {
+  it('drops a session-bearing query string from a non-navigate step AND redacts it from the navigate (A175)', async () => {
     // The corpus has no URL with a query string, so this drives one through the SAME shipped path
     // the corpus uses. `?sso_session=` is the realistic shape: it survives the credential-URL
     // guard, which matches login words as PATH segments, and it is server-authored — it appears
@@ -313,11 +313,16 @@ describe('G1 — is a recording sufficient to attempt a run at all?', () => {
     const others = flow.steps.filter((s) => s.action !== 'navigate');
     expect(navigate.length).toBe(1);
     expect(others.length).toBeGreaterThan(0);
-    // The instruction the agent issued is kept whole — it is the step, not context about it.
-    expect(navigate[0]!.pageUrl).toBe(landed);
+    // The instruction the agent issued is still A STEP — it is never dropped, because a recording that
+    // silently lost its navigation would replay the following clicks against whatever page was open.
+    // But the secret-shaped parameter is REDACTED out of it (A175): this assertion used to read
+    // `toBe(landed)`, which stored `sso_session=…SECRET` verbatim. `isCredentialUrl` cannot catch that —
+    // it matches login words as PATH segments and never reads the query.
+    expect(navigate[0]!.pageUrl).toBe('https://app.example.com/reports#tab=2');
     for (const s of others) expect(s.pageUrl).toBe('https://app.example.com/reports');
-    // And the secret is nowhere in any step that was not the agent's own instruction.
+    // And the secret is now nowhere in ANY step, including the agent's own instruction.
     expect(JSON.stringify(others)).not.toContain('SECRET');
+    expect(JSON.stringify(flow.steps)).not.toContain('SECRET');
     fresh.close();
   });
 

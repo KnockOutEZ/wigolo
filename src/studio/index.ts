@@ -202,3 +202,14 @@ export type { StudioMcpServerDeps } from '../daemon/studio-mcp-server.js';
 // Per-launch bearer + Origin/Host guard for the gateway.
 export { mintHostToken, resolveHostToken, checkOriginHost, checkAuth, checkAuthSubprotocol } from './auth.js';
 export type { HostTokenResolution } from './auth.js';
+
+// K34 — the flow sidecar's recorder for the Electron surface. The app cannot use `createFlowRecorder`:
+// that one inserts synchronously through a DB handle the Electron main does not have (the broker child
+// owns the native module), so the async recorder is exported alongside it rather than in place of it.
+// `flowIdForSession` comes too, because the host needs the flow id to ask the broker for MAX(seq).
+export { createBrokerFlowRecorder, createFlowRecorder, draftFlowStep, isRecordableAct } from './flow/record.js';
+export type { BrokerFlowRecorder, BrokerFlowRecorderDeps, FlowRecorderHook, FlowRecordInput, FlowStepFields } from './flow/record.js';
+export { flowIdForSession, insertFlowStep, listFlowSteps } from './flow/store.js';
+export type { FlowStep, FlowProjection, FlowTargetSeed, RecordedHealTier } from './flow/store.js';
+export { resolveFlowStep, HEAL_HALT_CONFIDENCES } from './flow/resolve-step.js';
+export type { StepResolution, StepResolved, StepHalted, StepDegraded, StepHaltReason } from './flow/resolve-step.js';
