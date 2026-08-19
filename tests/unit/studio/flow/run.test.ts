@@ -227,15 +227,18 @@ describe('runFlow — a degraded resolution RUNS and is reported (§5.3 as amend
 });
 
 describe('runFlow — a type step needs a per-run value, and never a stored one (§6)', () => {
-  it('halts on a type step whose slot has no value, BEFORE dispatching', async () => {
+  it('refuses a type step whose slot has no value, PRE-FLIGHT at seq 0', async () => {
     // Typing an empty string would report success while typing nothing — a silently wrong replay.
+    // This asserted `atSeq: 1` when the check was per-step; S13-3 moved it PRE-FLIGHT (`atSeq: 0`) so a
+    // flow whose type step comes last cannot execute its earlier steps before the missing value is
+    // noticed. The old position was not wrong, it was just later than it needed to be.
     const f = fakeAct();
     const r = await runFlow({
       steps: [step({ action: 'type', slot: 'search_query', target: seed({ role: 'textbox', name: 'Search' }) })],
       act: f.act,
       candidates: async () => [candidate('e-live', { role: 'textbox', name: 'Search' })],
     });
-    expect(r.halt).toEqual({ atSeq: 1, reason: 'slot_unfilled', detail: 'search_query' });
+    expect(r.halt).toEqual({ atSeq: 0, reason: 'slot_unfilled', detail: 'search_query' });
     expect(f.calls).toHaveLength(0);
   });
 
