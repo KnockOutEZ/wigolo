@@ -93,6 +93,13 @@ export interface Config {
    * not purge. Unbounded is deliberately not an available setting: a per-URL
    * history with no ceiling is the same defect class as the disk leak this
    * project has already paid for twice.
+   *
+   * `corpusMaxVersionBytes` is NOT a database-file size limit. It bounds the sum
+   * of the retained versions' markdown measured as UTF-8 bytes, and nothing else:
+   * not the title, not the stored URL, not the three indexes (two of which repeat
+   * `normalized_url`), not SQLite's own page and WAL overhead. Actual on-disk cost
+   * at the 512 MB default sits meaningfully above 512 MB, and freed pages are not
+   * returned to the OS because no auto_vacuum is set.
    */
   corpusMaxVersionsPerUrl: number;
   corpusMaxVersionBytes: number;

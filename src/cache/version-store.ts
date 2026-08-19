@@ -99,10 +99,13 @@ function evict(db: Database.Database, normalizedUrl: string, bounds: RetentionBo
   if (total.total <= bounds.maxBytes) return;
 
   //    A row is kept only while the running total INCLUDING it, taken
-  //    newest-first, stays within budget. That also settles the degenerate case
-  //    a per-row guard would miss: a single version larger than the whole budget
-  //    is retained by nothing, so the ceiling cannot be breached by one
-  //    oversized page.
+  //    newest-first, stays within budget. What this bounds is the RETAINED set,
+  //    not the database file: a row deleted here was still written first, and
+  //    db.ts sets no auto_vacuum, so its pages stay allocated to the file after
+  //    the delete. Oversized versions are therefore refused BEFORE the insert
+  //    (see recordVersion) rather than swept out afterwards — by the time a body
+  //    reaches this sweep, keeping the file's high-water mark down is no longer
+  //    possible.
   db.prepare(
     `DELETE FROM url_versions
      WHERE id NOT IN (
@@ -133,6 +136,21 @@ export function recordVersion(db: Database.Database, record: VersionRecord): voi
     if (isDisabled(bounds)) return;
 
     const byteLen = Buffer.byteLength(record.markdown, 'utf8');
+
+    // A version that alone exceeds the whole byte budget can never be retained,
+    // so refuse it before it is ever written rather than sweeping it out after.
+    //
+    // On disk that is the only way to bound anything: an inserted-then-deleted
+    // body still went through the WAL into the main file, and db.ts sets no
+    // auto_vacuum, so those pages are never returned to the OS. One very large
+    // extraction would otherwise raise the file's high-water mark permanently
+    // while SUM(byte_len) went on reading zero.
+    //
+    // It is also not merely a disk optimisation, which is why it has its own
+    // test: letting the body land would push the table over budget and fire the
+    // global sweep, whose newest-first accounting would spend the entire budget
+    // on the oversized row and evict unrelated URLs' versions as collateral.
+    if (byteLen > bounds.maxBytes) return;
 
     db.transaction(() => {
       if (newestHash(db, record.normalizedUrl) === record.contentHash) return;
@@ -167,18 +185,44 @@ export function recordVersion(db: Database.Database, record: VersionRecord): voi
 }
 
 /**
+ * Ids bound per DELETE. SQLite refuses a statement past 32766 parameters
+ * (measured on this repo's better-sqlite3: 32766 binds, 32767 throws
+ * `too many SQL variables`), and `clearCacheEntries` builds its id set from BOTH
+ * `url` and `normalized_url`, so it reaches that ceiling at ~16k cached rows.
+ * 900 leaves room under even the old 999-parameter default without making the
+ * statement count meaningful.
+ */
+const DELETE_CHUNK_SIZE = 900;
+
+/**
  * Drop every retained version for these normalized URLs.
  *
  * Called from `clearCacheEntries`. Without it, a user's explicit "clear this
  * from my machine" would leave full page bodies behind in a table they were
  * never told about — the same class of defect as clearing a row while leaving
  * its vector searchable.
+ *
+ * Chunked because the caller runs this INSIDE the transaction that already
+ * deleted from `url_cache`: a `too many SQL variables` throw here would roll
+ * that delete back too, turning a bulk clear into a silent no-op that leaves
+ * cache rows, vectors and versions all on disk.
+ *
+ * The sibling `deleteVectorsByExternalId` stays under the same ceiling by
+ * looping one id at a time, and that shape is load-bearing THERE for a reason
+ * that does not apply here: each id must first be resolved to a rowid, then fed
+ * to three dependent statements, so it could not be expressed as a set delete
+ * at any batch size. This is a single membership test on an indexed column, so
+ * batching does the same job in ~40 statements instead of ~33,000.
  */
 export function deleteVersionsForUrls(db: Database.Database, normalizedUrls: string[]): number {
   if (normalizedUrls.length === 0) return 0;
-  const placeholders = normalizedUrls.map(() => '?').join(',');
-  const result = db
-    .prepare(`DELETE FROM url_versions WHERE normalized_url IN (${placeholders})`)
-    .run(...normalizedUrls);
-  return result.changes;
+  let removed = 0;
+  for (let start = 0; start < normalizedUrls.length; start += DELETE_CHUNK_SIZE) {
+    const chunk = normalizedUrls.slice(start, start + DELETE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(',');
+    removed += db
+      .prepare(`DELETE FROM url_versions WHERE normalized_url IN (${placeholders})`)
+      .run(...chunk).changes;
+  }
+  return removed;
 }

@@ -206,6 +206,30 @@ describe('url_versions — append on change (G-S14-1a)', () => {
     expect(rows[0].fetched_at).toBe(first.fetched_at);
   });
 
+  it('treats a return to an EARLIER body as a change, re-timing it to the latest fetch', () => {
+    // The dedup key is the NEWEST retained version, not "any version we have
+    // ever seen". A page that reverts to a body it served before is a change
+    // from where it currently stands, and a store that answered "unchanged"
+    // would be asserting the page never moved.
+    //
+    // Two rows, not three: (normalized_url, content_hash) is unique, so the
+    // returning body is re-timed rather than duplicated.
+    write('# A');
+    const a1 = versionsFor()[0];
+    write('# B');
+    write('# A');
+
+    const rows = versionsFor();
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.markdown).sort()).toEqual(['# A', '# B']);
+
+    const a2 = rows.find(r => r.markdown === '# A');
+    expect(a2).toBeDefined();
+    // Re-timed: the returning body is the newest row now, not the oldest.
+    expect(a2!.id).toBeGreaterThan(a1.id);
+    expect(a2!.id).toBe(Math.max(...rows.map(r => r.id)));
+  });
+
   it('records the first fetch of a URL as version 1', () => {
     write('# First');
     const rows = versionsFor();
@@ -287,6 +311,24 @@ describe('url_versions — retention under forced growth (G-S14-1b)', () => {
     expect(versionsFor()).toHaveLength(0);
   });
 
+  it('refuses an oversized version WITHOUT disturbing the versions already retained', () => {
+    // The oversized body is rejected before the insert, not swept away after it.
+    // The distinction is observable two ways. On disk: an inserted-then-deleted
+    // body still passed through the WAL into the main file, and no auto_vacuum
+    // means those pages never go back to the OS. And here, in behaviour: letting
+    // it land would push the table over budget and fire the global sweep, whose
+    // newest-first accounting would blow the whole budget on the oversized row
+    // and evict an unrelated URL's only version as collateral.
+    setBounds({ bytes: 4 * 1024, versions: 10 });
+    write('# Small and innocent', 'https://quiet.example.com/p');
+    expect(versionsFor(normalizeUrl('https://quiet.example.com/p'))).toHaveLength(1);
+
+    write('w'.repeat(10 * 1024), 'https://huge.example.com/p');
+
+    expect(versionsFor(normalizeUrl('https://huge.example.com/p'))).toHaveLength(0);
+    expect(versionsFor(normalizeUrl('https://quiet.example.com/p'))).toHaveLength(1);
+  });
+
   it('evicts versions older than the age bound', () => {
     setBounds({ ageDays: 30 });
     const db = getDatabase();
@@ -324,6 +366,41 @@ describe('url_versions — retention under forced growth (G-S14-1b)', () => {
     const rows = versionsFor();
     expect(rows.length).toBeLessThanOrEqual(1);
     expect(totalBytes()).toBeLessThanOrEqual(3 * 1024);
+  });
+
+  it('binds the byte ceiling ACROSS URLs, evicting the minimum necessary', () => {
+    // The whole reason the byte sweep is global. 40 distinct URLs each hold ONE
+    // version — every one inside the per-URL count bound of 10, so the count
+    // bound never fires — yet together they are far over the byte budget. A
+    // per-URL-only scheme sees 40 compliant URLs and cannot bind at all.
+    //
+    // The FLOOR is what gives this test teeth, and a ceiling alone does not.
+    // Scoping the sweep's window to the URL being written makes the surrounding
+    // `id NOT IN (...)` match every OTHER URL's rows, so a scoped sweep still
+    // holds the ceiling — by destroying the rest of the table down to a single
+    // row. Both a correct global sweep and that mutation satisfy "<= budget";
+    // only the correct one also stays NEAR the budget, because oldest-first
+    // eviction removes exactly as much as it must and no more.
+    //
+    // ~1 KB per version against an 8 KB budget retains 7 versions (7 x 1026 =
+    // 7182; an 8th would reach 8208 and overshoot). The floor sits at 6 KB, well
+    // above that steady state and far above the ~1 KB a collapsing sweep leaves.
+    setBounds({ versions: 10, bytes: 8 * 1024 });
+    for (let i = 0; i < 40; i++) {
+      write(`${i}:${'q'.repeat(1024)}`, `https://many${i}.example.com/p`);
+      expect(totalBytes()).toBeLessThanOrEqual(8 * 1024);
+      // From here the budget has certainly been exceeded at least once, so the
+      // sweep has run and the retained set must be at its steady state.
+      if (i >= 10) expect(totalBytes()).toBeGreaterThanOrEqual(6 * 1024);
+    }
+
+    const distinctUrls = getDatabase()
+      .prepare('SELECT COUNT(DISTINCT normalized_url) AS n FROM url_versions')
+      .get() as { n: number };
+    // Survivors span several URLs, so retention really did cross URL boundaries
+    // rather than collapsing onto the one being written.
+    expect(distinctUrls.n).toBeGreaterThan(1);
+    expect(distinctUrls.n).toBeLessThan(40);
   });
 
   it('applies the per-URL count bound per URL, not across the whole table', () => {
@@ -414,5 +491,48 @@ describe('url_versions — user-initiated clear removes history too', () => {
 
     expect(versionsFor(normalizeUrl('https://a.example.com/p'))).toHaveLength(0);
     expect(versionsFor(normalizeUrl('https://b.example.com/p'))).toHaveLength(1);
+  });
+
+  it('completes a bulk clear whose id set exceeds SQLite\'s parameter limit', () => {
+    // clearCacheEntries collects BOTH `url` and `normalized_url` per doomed row,
+    // so the id set is ~2x the matched rows. Binding one placeholder per id
+    // throws `too many SQL variables` past 32766 — and it throws INSIDE the
+    // transaction that already ran `DELETE FROM url_cache`, so the whole clear
+    // rolls back and the user's "delete this from my machine" silently keeps
+    // everything: cache rows, vectors and versions all stay on disk.
+    //
+    // Forced, not observed: 16400 rows put the id set at ~32800, over the limit
+    // by construction rather than by hoping a real cache grows that large.
+    const ROWS = 16400;
+    const db = getDatabase();
+    const insertCache = db.prepare(`
+      INSERT INTO url_cache (url, normalized_url, title, markdown, content_hash, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertVersion = db.prepare(`
+      INSERT INTO url_versions (normalized_url, content_hash, markdown, title, http_status, fetched_at, byte_len)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    db.transaction(() => {
+      for (let i = 0; i < ROWS; i++) {
+        // Trailing slash makes `url` and `normalized_url` DISTINCT strings, which
+        // is what doubles the id set — the same shape the real writers produce.
+        const normalized = `https://bulk.example.com/p${i}`;
+        insertCache.run(`${normalized}/`, normalized, 'T', 'body', `h${i}`, '2026-08-18 00:00:00');
+        insertVersion.run(normalized, `h${i}`, 'body', 'T', 200, '2026-08-18 00:00:00', 4);
+      }
+    })();
+
+    const cleared = clearCacheEntries({ urlPattern: 'https://bulk.example.com/*' });
+
+    expect(cleared).toBe(ROWS);
+    const cacheLeft = db
+      .prepare("SELECT COUNT(*) AS n FROM url_cache WHERE normalized_url GLOB 'https://bulk.example.com/*'")
+      .get() as { n: number };
+    const versionsLeft = db
+      .prepare("SELECT COUNT(*) AS n FROM url_versions WHERE normalized_url GLOB 'https://bulk.example.com/*'")
+      .get() as { n: number };
+    expect(cacheLeft.n).toBe(0);
+    expect(versionsLeft.n).toBe(0);
   });
 });
