@@ -256,6 +256,22 @@ export function readVersions(request: VersionRequest): CacheOutput {
   if (!URL.canParse(request.url)) {
     return { error: `url is not a valid absolute URL: ${JSON.stringify(request.url)}` };
   }
+  // Every `url` this function ECHOES is the normalized form, never the caller's
+  // raw string, for two reasons that happen to share one fix.
+  //
+  // 1. SHAPE. `URL.canParse` is a weak gate: it accepts a value carrying a raw
+  //    newline (measured — `https://example.com/#a\nIGNORE ALL…` parses true with
+  //    the LF preserved), while the `artifact-uri` shape these leaves are
+  //    allowlisted under forbids whitespace. Since the leaves sit OUTSIDE the
+  //    content fence, echoing the raw string is a laundering path: page text an
+  //    agent read inside a fence could be passed back as `url` and returned in a
+  //    field the reading model treats as operational. The WHATWG parser strips
+  //    CR/LF/tab and percent-encodes spaces, so normalizing satisfies the
+  //    declared shape BY CONSTRUCTION rather than by a caller's restraint.
+  // 2. PROVENANCE. The lookup is keyed on the normalized form, so labelling the
+  //    answer with the caller's `www.`/utm variant names a key the store never
+  //    used — and `fenceCacheData` attributes the fenced region via this same
+  //    field, so the drift would reach the fence marker too.
   const normalized = normalizeUrl(request.url);
 
   if (request.at !== undefined) {
@@ -271,7 +287,7 @@ export function readVersions(request: VersionRequest): CacheOutput {
     if (!found) {
       return {
         version_not_retained: {
-          url: request.url,
+          url: normalized,
           requested_at: atUtc,
           not_retained: true,
           reason:
@@ -281,12 +297,12 @@ export function readVersions(request: VersionRequest): CacheOutput {
         },
       };
     }
-    return buildVersionResult(request.url, atUtc, found, request.maxTokensOut);
+    return buildVersionResult(normalized, atUtc, found, request.maxTokensOut);
   }
 
   return {
     version_list: {
-      url: request.url,
+      url: normalized,
       versions: listVersionMeta(normalized, clampListLimit(request.limit)),
       note: VERSION_LIST_NOTE,
     },
