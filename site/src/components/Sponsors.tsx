@@ -9,11 +9,9 @@ export default function Sponsors() {
         <span className={styles.eyebrow}>Sponsors</span>
         <h2 className={styles.title}>Thank you</h2>
         <p className={styles.body}>
-          wigolo is free for everyone, and it stays that way because people
-          choose to support it rather than because anyone has to pay for it.
-          These sponsors backed the project with nothing asked in return — no
-          say over the roadmap, no feature they get and you don&rsquo;t. That
-          generosity is why the tools are keyless and the cache is yours.
+          wigolo is free for everyone and stays that way. The sponsors below
+          help keep it maintained. They get no say over the roadmap and no
+          feature you don&rsquo;t also get.
         </p>
 
         <ul className={styles.list}>

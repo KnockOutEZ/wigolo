@@ -130,7 +130,7 @@ Here's what one real result looks like, dissected. It includes the failed engine
 
 ## Sponsors
 
-A sincere thank you to the sponsors below. They chose to support a project they didn't have to, and asked for nothing in return — no say over the roadmap, no feature they get and you don't. That generosity is part of what keeps the core tools keyless for everyone else.
+Thank you to the sponsors below, who help keep wigolo maintained and free to use. They get no say over the roadmap and no feature you don't also get.
 
 <div align="center">
 
@@ -145,7 +145,7 @@ A sincere thank you to the sponsors below. They chose to support a project they 
 
 </div>
 
-**wigolo is free for all and is meant to stay that way.** If you or your company would like to help keep a free-forever project maintained, there's room for more sponsors alongside the ones above — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**. Details are in [SPONSORS.md](SPONSORS.md); a coffee-sized one-off works too, via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez). Every bit of it goes back into the project.
+**wigolo is free for all and is meant to stay that way.** If you or your company would like to help keep it maintained, there's room for more sponsors — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**, or see [SPONSORS.md](SPONSORS.md) for the terms. A one-off via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez) is welcome too.
 
 ## Benchmark
 

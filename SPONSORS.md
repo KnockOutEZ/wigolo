@@ -3,9 +3,9 @@
 **wigolo is free for all, and it is meant to stay that way.**
 
 There is no paid tier, no metered plan, and no feature held back for people who
-pay. The core tools — search, fetch, crawl, extract, cache, find-similar — need
-no API keys and send nothing to a third party. That is the whole point of the
-project, and sponsorship is what makes it sustainable to keep it that way.
+pay. The core tools need no API keys and send nothing to a third party. That is
+the whole point of the project, and sponsorship is what makes it sustainable to
+keep it that way.
 
 ## Thank you
 
@@ -22,9 +22,7 @@ project, and sponsorship is what makes it sustainable to keep it that way.
 (formerly LambdaTest) is the world's first full-stack agentic AI quality
 engineering platform, trusted by 18,000+ enterprises.
 
-TestMu AI is wigolo's first sponsor — they backed a single-developer project
-before there was any obligation to, and asked for nothing beyond a logo in
-return. Sincere thanks for that.
+TestMu AI is wigolo's first sponsor. Thanks for the support.
 
 ## Want to sponsor wigolo?
 
@@ -40,25 +38,21 @@ A one-off contribution is just as welcome as a sponsorship, via
 
 ### What sponsorship funds
 
-Sponsorship goes into the work itself, not overhead: maintenance and releases
-across macOS, Linux, and Windows; keeping the search and extraction quality
-competitive with the funded paid services; CI and benchmarking; and the time to
-answer issues from people running wigolo in anger.
+Sponsorship goes into the work itself: maintenance and releases across macOS,
+Linux, and Windows; search and extraction quality; CI and benchmarking; and the
+time to answer issues from people running wigolo in production.
 
 ### What a sponsor gets
 
-- A logo and a one-line description in the **README sponsors section** — placed
-  above the benchmark, not buried at the bottom.
+- A logo and a one-line description in the **README sponsors section**.
 - The same placement on the **[project website](https://knockoutez.github.io/wigolo/)**
   and on this page.
-- A link on every placement, and **honest reporting on what it did** — see
+- A link on every placement, and reporting on what it did — see
   [Reporting](#reporting) below.
-- My genuine thanks, publicly.
 
 ### What a sponsor does not get
 
-These are the project's standing terms, and they aren't negotiable — a sponsor
-who reads them and still wants in is exactly the kind of sponsor wigolo wants.
+These are the project's standing terms, and they aren't negotiable.
 
 - **No influence over the roadmap or the code.** Nothing gets built, ranked,
   prioritised, or benchmarked differently because of sponsorship.
@@ -77,22 +71,21 @@ we'll find something that fits.
 
 ## Reporting
 
-Sponsors get real numbers instead of a vague promise of exposure, and the way
-they're collected is public.
+Sponsors get numbers, and the way they're collected is public.
 
 Every sponsor link on every surface points at a **`/go/<slug>/` link on the
 wigolo site** rather than straight at the sponsor. That hop counts the click,
 then forwards to the sponsor's own URL with a `utm_content` tag naming the
-placement it came from — so `readme`, `site-home`, and `sponsors-page` are
-separable in both my numbers and the sponsor's own analytics.
+placement it came from, so each placement is separable in both my numbers and
+the sponsor's own analytics.
 
 What this means in practice:
 
 - **Clicks, by placement, over time** — from the project's own counter.
 - **Reach, as a proxy for impressions** — repository traffic and the site's
-  pageviews. Nobody can count README impressions accurately (GitHub proxies and
-  caches images, so a tracking pixel there would lie); repo views are the honest
-  stand-in, and they're reported as exactly that.
+  pageviews. README impressions can't be counted accurately, because GitHub
+  proxies and caches images; repo views are the stand-in, and they're reported
+  as exactly that.
 - **What is never collected** — no cookies, no third-party tracking script, no
   local storage, and nothing stored about the individual visitor. The counter
   records that a click on a placement happened, not who made it.
