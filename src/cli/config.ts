@@ -344,8 +344,12 @@ export async function runConfig(args: string[]): Promise<number> {
       return 1;
     }
     const cutoffMs = Date.now() - durationMs;
-    const { deleted } = pruneStudioAudit(db, { cutoffMs });
-    process.stdout.write(`Pruned ${deleted} studio audit row(s) older than ${flags.olderThan}.\n`);
+    const { deleted, flowStepsDeleted } = pruneStudioAudit(db, { cutoffMs });
+    // The prune removes recorded flow steps alongside the audit rows. Reporting only the audit
+    // count would understate what the operator just deleted.
+    process.stdout.write(
+      `Pruned ${deleted} studio audit row(s) and ${flowStepsDeleted} recorded flow step(s) older than ${flags.olderThan}.\n`,
+    );
     return 0;
   }
 

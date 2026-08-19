@@ -53,8 +53,10 @@ function harness(opts: {
   target?: StructuredTarget | null;
   currentUrl?: string;
   withAudit?: boolean;
+  /** Reuse an existing DB — the restart case, where a SECOND recorder opens the SAME store. */
+  db?: Database.Database;
 } = {}): Harness {
-  const db = migratedDb();
+  const db = opts.db ?? migratedDb();
   const sessionId = opts.sessionId ?? 'sess-flow';
   const seeded: number[] = [];
   const resolved: ResolveResult = opts.resolve ?? { backendNodeId: 42, center: { x: 10, y: 10 }, role: 'button', name: 'Next page' };
@@ -292,15 +294,24 @@ describe('the recorder — what lands in the sidecar', () => {
     expect(audited.n).toBe(1);
   });
 
-  it('resumes numbering after a restart rather than colliding on seq 1', async () => {
-    const a = harness({ sessionId: 'sess-resume', currentUrl: 'https://example.com/a' });
+  it('resumes numbering after a restart rather than dropping the middle of the flow', async () => {
+    // The restart case only exists if BOTH recorders open the same store — a fresh `:memory:` DB
+    // per recorder is two unrelated flows and can never collide. Sharing it makes the
+    // `SELECT MAX(seq)` recovery load-bearing: without it the second recorder restarts at seq 1,
+    // and `INSERT OR IGNORE` on the unique (flow_id, seq) index SILENTLY drops the colliding row.
+    // The flow would then be missing its middle, which is the exact failure the resume prevents.
+    const shared = migratedDb();
+    const a = harness({ sessionId: 'sess-resume', currentUrl: 'https://example.com/a', db: shared });
     await a.act({ action: 'click', ref: 'e1' });
-    const b = harness({ sessionId: 'sess-resume', currentUrl: 'https://example.com/a' });
-    // A second recorder over the SAME db + session (the restart case).
-    const db2 = a.db;
-    void db2;
-    await b.act({ action: 'click', ref: 'e2' });
-    expect(b.steps().map((s) => s.seq)).toEqual([1]);
+    await a.act({ action: 'navigate', url: 'https://example.com/b' });
+    const b = harness({ sessionId: 'sess-resume', currentUrl: 'https://example.com/a', db: shared });
+    await b.act({ action: 'navigate', url: 'https://example.com/c' });
+    // Three acts, three steps, contiguous — no seq reused and nothing swallowed.
+    expect(b.steps().map((s) => [s.seq, s.pageUrl])).toEqual([
+      [1, 'https://example.com/a'],
+      [2, 'https://example.com/b'],
+      [3, 'https://example.com/c'],
+    ]);
   });
 });
 
