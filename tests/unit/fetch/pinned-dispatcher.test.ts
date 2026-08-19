@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import * as http from 'node:http';
 import { AddressInfo } from 'node:net';
-import { pinnedFetch } from '../../../src/fetch/pinned-dispatcher.js';
+import { createPinnedDispatcher, pinnedFetch } from '../../../src/fetch/pinned-dispatcher.js';
 
 function getPort(server: http.Server): number {
   return (server.address() as AddressInfo).port;
@@ -21,10 +21,13 @@ function closeServer(server: http.Server): Promise<void> {
 }
 
 describe('pinnedFetch (HTTP-tier DNS-rebinding pin)', () => {
-  let server: http.Server;
+  let server: http.Server | undefined;
 
   afterEach(async () => {
-    if (server) await closeServer(server);
+    if (server) {
+      await closeServer(server);
+      server = undefined;
+    }
   });
 
   it('connects to the validated IP while keeping the original Host header', async () => {
@@ -78,5 +81,38 @@ describe('pinnedFetch (HTTP-tier DNS-rebinding pin)', () => {
     const response = await pinnedFetch(url, { redirect: 'manual' }, []);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('literal');
+  });
+
+  it('does not override TLS servername; connect.lookup returns only the pinned IP', async () => {
+    // WHY: cert verification and SNI follow Agent connect.servername, then the
+    // URL hostname. Setting servername to the pinned IP would make TLS check
+    // the address. We omit it so undici keeps the original name, and lookup
+    // is the only resolver — it must not consult DNS again.
+    const agent = createPinnedDispatcher([{ address: '127.0.0.1', family: 4 }]);
+    try {
+      const optsSym = Object.getOwnPropertySymbols(agent).find((s) => String(s) === 'Symbol(options)');
+      expect(optsSym).toBeDefined();
+      const connect = (agent as unknown as Record<symbol, {
+        connect: {
+          servername?: string;
+          lookup?: (
+            hostname: string,
+            options: { all: true },
+            callback: (err: Error | null, addrs: { address: string; family: number }[]) => void,
+          ) => void;
+        };
+      }>)[optsSym!].connect;
+      expect(connect.servername).toBeUndefined();
+      expect(typeof connect.lookup).toBe('function');
+      const pinned = await new Promise<{ address: string; family: number }[]>((resolve, reject) => {
+        connect.lookup!('ssrf-pin.test', { all: true }, (err, addrs) => {
+          if (err) reject(err);
+          else resolve(addrs);
+        });
+      });
+      expect(pinned).toEqual([{ address: '127.0.0.1', family: 4 }]);
+    } finally {
+      await agent.close();
+    }
   });
 });
