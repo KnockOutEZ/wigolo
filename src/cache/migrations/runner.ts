@@ -325,6 +325,26 @@ CREATE INDEX IF NOT EXISTS idx_url_versions_time
   ON url_versions(fetched_at, id, byte_len);
 `;
 
+// S14-2: reach a retained version BY HASH without scanning the body table.
+//
+// A SEPARATE migration rather than an edit to 013: 013 has already applied on
+// machines that record it in schema_migrations and will never re-run it, so an
+// amended 013 would create this index on new installs only — exactly the split
+// where the slow path survives unseen.
+//
+// None of 013's three indexes leads on content_hash, so `WHERE content_hash = ?`
+// scanned the whole url_versions b-tree — the table holding full page bodies up
+// to the byte budget. `diff`'s old.content_hash reaches that lookup on EVERY hash
+// that misses the live row, which is both the ordinary case the feature exists
+// for and the case for every bogus hash a caller can invent, with no rate limit.
+//
+// fetched_at and id ride along so the newest-first pick that resolves ties is
+// served from the index instead of fetching rows to sort them.
+const MIGRATION_014_URL_VERSIONS_HASH_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_url_versions_hash
+  ON url_versions(content_hash, fetched_at, id);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -504,6 +524,7 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   { name: '013-url-versions', sql: MIGRATION_013_URL_VERSIONS },
+  { name: '014-url-versions-hash-index', sql: MIGRATION_014_URL_VERSIONS_HASH_INDEX },
 ];
 
 function isReadOnlyError(err: unknown): boolean {

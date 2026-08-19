@@ -51,6 +51,7 @@ const STUDIO_RELEASED = [
 const POST_MERGE_ADDED = [
   '012-url-cache-content-hash-index',
   '013-url-versions',
+  '014-url-versions-hash-index',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */

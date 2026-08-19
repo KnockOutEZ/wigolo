@@ -6,7 +6,7 @@ import {
   normalizeUrl,
   getCachedContentByHash,
 } from '../../../src/cache/store.js';
-import { toVersionTimestamp } from '../../../src/cache/version-read.js';
+import { toVersionTimestamp, versionByHash } from '../../../src/cache/version-read.js';
 import { handleCache } from '../../../src/tools/cache.js';
 import { handleDiff } from '../../../src/tools/diff.js';
 import { resetConfig } from '../../../src/config.js';
@@ -196,6 +196,48 @@ describe('toVersionTimestamp — the caller\'s `at` in the shape fetched_at is s
     // confident answer about the wrong moment.
     expect(toVersionTimestamp('last tuesday')).toBeNull();
     expect(toVersionTimestamp('')).toBeNull();
+  });
+});
+
+describe('versionByHash — reached without scanning the body table', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+    resetConfig();
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    for (const key of ENV_KEYS) delete process.env[key];
+    resetConfig();
+  });
+
+  it('resolves a hash through an index, not a full scan of url_versions', () => {
+    // url_versions holds full page bodies up to the byte budget, and `diff`
+    // reaches this lookup on EVERY hash that misses the live row — the ordinary
+    // case the time axis exists for, and the case for every bogus hash a caller
+    // can invent, with no rate limit. A scan there is caller-triggerable work
+    // proportional to the whole corpus.
+    //
+    // Asserted on the QUERY PLAN rather than on a duration: a timing threshold on
+    // a small test corpus proves nothing, and the plan is the property that
+    // actually holds as the table grows.
+    write(BODY_1);
+    const plan = getDatabase()
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT markdown FROM url_versions
+          WHERE content_hash = ? ORDER BY fetched_at DESC, id DESC LIMIT 1`,
+      )
+      .all(hashOf(BODY_1)) as Array<{ detail: string }>;
+
+    const detail = plan.map(r => r.detail).join(' | ');
+    expect(detail).toMatch(/USING (COVERING )?INDEX idx_url_versions_hash/);
+    expect(detail).not.toMatch(/SCAN url_versions/);
+  });
+
+  it('still returns the right body through that index', () => {
+    write(BODY_1);
+    write(BODY_3);
+    expect(versionByHash(hashOf(BODY_1))!.markdown).toBe(BODY_1);
   });
 });
 
