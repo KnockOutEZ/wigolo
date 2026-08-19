@@ -127,6 +127,25 @@ describe('toVersionTimestamp — the caller\'s `at` in the shape fetched_at is s
     expect(toVersionTimestamp('2026-08-18 12:00:01')).toBe('2026-08-18 12:00:01');
   });
 
+  it('passes it through on a host that is NOT on UTC', () => {
+    // The clause above cannot fail on a UTC runner: a Date round trip of a
+    // zone-less value there produces the identical string, so the check agrees
+    // with the mutation it exists to catch. Measured — removing the passthrough
+    // reds 7 tests under TZ=Asia/Dhaka and 0 under TZ=UTC, and CI runs UTC.
+    // Forcing the offset is what makes the protection visible anywhere.
+    const previous = process.env.TZ;
+    process.env.TZ = 'Asia/Dhaka';
+    try {
+      // The forcing must be shown to have worked, or this passes vacuously on a
+      // runtime that ignores a mid-process TZ change.
+      expect(new Date().getTimezoneOffset()).not.toBe(0);
+      expect(toVersionTimestamp('2026-08-18 12:00:01')).toBe('2026-08-18 12:00:01');
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
   it('converts a Z-suffixed ISO timestamp to the stored shape', () => {
     expect(toVersionTimestamp('2026-08-18T12:00:01Z')).toBe('2026-08-18 12:00:01');
   });
