@@ -323,6 +323,40 @@ export const cacheFixture = () => ({
     hint: 'raise max_tokens_out or narrow the query to see the rest',
   },
   changes_truncation: { matched: 9, checked: 1, limit_clamped_from: 50, hint: 'raise limit to check the rest' },
+  // S14-2 time axis. `markdown` and `title` are page-derived by the same route
+  // `results[]` is — a retained body is no less attacker-authored for being old.
+  version: {
+    url: CACHE_URL,
+    requested_at: '2026-08-17 12:00:00',
+    observed_at: '2026-08-17 11:00:00',
+    content_hash: 'e'.repeat(64),
+    title: pageText('cache.version.title'),
+    http_status: 200,
+    markdown: pageBody('cache.version.markdown'),
+    bytes: 128,
+    source: 'cache',
+    trusted: false,
+    truncated: 'partial',
+  },
+  version_not_retained: {
+    url: CACHE_URL,
+    requested_at: '2026-08-01 00:00:00',
+    not_retained: true,
+    reason: 'No version of this page observed at or before that time is retained.',
+  },
+  version_list: {
+    url: CACHE_URL,
+    versions: [
+      {
+        observed_at: '2026-08-17 11:00:00',
+        content_hash: 'f'.repeat(64),
+        title: pageText('cache.version_list.versions[].title'),
+        http_status: 200,
+        bytes: 128,
+      },
+    ],
+    note: 'Retained versions only, newest first.',
+  },
 });
 
 export const extractStructuredFixture = () => ({

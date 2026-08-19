@@ -152,7 +152,13 @@ export interface RawValueAllowance {
  * six to dead fields, one to a checked template), and the count gate detected none of that. It is a
  * ratchet on the size of the unverifiable surface, not evidence about its contents.
  */
-export const AUTHORED_PROSE_BUDGET = 23;
+// 23 -> 25 (S14-2): `version_list.note` and `version_not_retained.reason`. Both are module-level
+// literals with NO interpolation slot at all — nothing, caller or page, is spliced into either — and
+// both carry a `pattern` pinning the producer's opening bytes, so unlike the rest of this class they
+// are checked on every run. The ratchet still moves, which is why it is stated here rather than
+// quietly widened: the honest reading is that the unverifiable surface grew by two entries that
+// happen to be verifiable, and a later pass should give that sub-class its own shape.
+export const AUTHORED_PROSE_BUDGET = 25;
 
 /**
  * Containers whose KEYS are not page-derived.
@@ -331,6 +337,24 @@ export const ALLOWED_RAW: RawValueAllowance[] = [
   { path: 'find_similar:$.results[].source', why: 'FindSimilarSource provenance tag: cache | search, or a registered artifact provider id.', producer: 'src/types.ts:1229', shape: 'machine-code' },
   { path: 'cache:$.results[].source', why: 'CacheItemSource: `cache`, or a registered artifact provider id — wigolo-registered, never page text.', producer: 'src/types.ts:1226', shape: 'machine-code' },
   { path: 'cache:$.results[].truncated', why: 'Budget marker, partial | omitted, set by the output-budget trimmer so an emptied body does not read as a blank page.', producer: 'src/types.ts:1256', shape: 'machine-code' },
+  // ── S14-2 time axis ───────────────────────────────────────────────────────────────────────────
+  // The page-derived leaves of these shapes (version.markdown, version.title,
+  // version_list.versions[].title) are FENCED in fenceCacheData and so never reach here. What is
+  // left is the coordinate system around them: a URL the agent dereferences, digests it compares,
+  // timestamps wigolo wrote, and two wigolo-authored sentences.
+  { path: 'cache:$.version.url', why: 'The page the retained body belongs to; the handle an agent re-fetches or diffs against, and the origin attributed to that body own fence marker.', producer: 'src/cache/version-read.ts:1', shape: 'artifact-uri' },
+  { path: 'cache:$.version.content_hash', why: 'SHA-256 over the retained markdown, computed by cacheContent before the row is written. A digest of content is not content — fixed-width hex a page cannot steer into prose.', producer: 'src/cache/store.ts:100', shape: 'sha256-hex' },
+  { path: 'cache:$.version.observed_at', why: 'The url_versions.fetched_at wigolo wrote when it observed this body. A wigolo clock reading, never a date parsed off the page.', producer: 'src/cache/store.ts:171', shape: 'iso-8601' },
+  { path: 'cache:$.version.requested_at', why: 'The caller own `at` normalized to zone-less UTC by toVersionTimestamp, which only ever emits that fixed shape or null. Caller-supplied, not page-supplied.', producer: 'src/cache/version-read.ts:96', shape: 'iso-8601' },
+  { path: 'cache:$.version.source', why: 'CacheItemSource provenance tag, the same wigolo-registered vocabulary results[].source carries.', producer: 'src/types.ts:1226', shape: 'machine-code' },
+  { path: 'cache:$.version.truncated', why: 'Budget marker, partial | omitted, set by the same output-budget trimmer the results[] rows go through.', producer: 'src/types.ts:1256', shape: 'machine-code' },
+  { path: 'cache:$.version_not_retained.url', why: 'The page asked about, echoed back so the miss is attributable. Dereferenceable for the same reason every other cache url is.', producer: 'src/cache/version-read.ts:1', shape: 'artifact-uri' },
+  { path: 'cache:$.version_not_retained.requested_at', why: 'The normalized `at` the miss is reported against, from the same toVersionTimestamp output as the hit shape.', producer: 'src/cache/version-read.ts:96', shape: 'iso-8601' },
+  { path: 'cache:$.version_list.url', why: 'The page whose retained versions are listed; the handle the agent pairs each content_hash with.', producer: 'src/cache/version-read.ts:1', shape: 'artifact-uri' },
+  { path: 'cache:$.version_list.versions[].content_hash', why: 'SHA-256 over that retained body, the handle diff old.content_hash resolves. Same digest column as the hit shape.', producer: 'src/cache/store.ts:100', shape: 'sha256-hex' },
+  { path: 'cache:$.version_list.versions[].observed_at', why: 'The url_versions.fetched_at wigolo wrote for that entry — a wigolo clock reading, never page text.', producer: 'src/cache/store.ts:171', shape: 'iso-8601' },
+  { path: 'cache:$.version_list.note', why: 'The VERSION_LIST_NOTE module constant, stating that retention is bounded and swept oldest-first across URLs so gaps are not evidence the page held still. A fixed literal with no interpolation slot — nothing, caller or page, is spliced into it.', producer: 'src/cache/version-read.ts:63', shape: 'authored-prose', pattern: /^Retained versions only, newest first[\s\S]*$/ },
+  { path: 'cache:$.version_not_retained.reason', why: 'The fixed sentence the point-in-time miss carries, saying nothing retained matches that moment and that this is not evidence the page was unchanged. A literal in readVersions with no interpolation slot.', producer: 'src/cache/version-read.ts:212', shape: 'authored-prose', pattern: /^No version of this page observed at or before that time is retained\.[\s\S]*$/ },
   { path: 'extract:structured:$.mode', why: 'The caller own mode argument echoed back for correlation; the input schema validates it against a closed enum on the way in.', producer: 'src/types.ts:1386', shape: 'machine-code' },
   { path: 'extract:tables:$.mode', why: 'The caller own mode argument echoed back on the tables shape, exactly as on the structured shape above.', producer: 'src/types.ts:1386', shape: 'machine-code' },
   { path: 'diff:$.hunks[].change_type', why: 'DiffHunk.change_type, added | removed | modified, assigned by the LCS edit script rather than by page bytes.', producer: 'src/types.ts:1459', shape: 'machine-code' },
@@ -500,6 +524,10 @@ export const KEY_POLICIES: KeyPolicy[] = [
   { path: 'cache:$.stats{key}', declaredBy: 'CacheStats' },
   { path: 'cache:$.changes[]{key}', declaredBy: 'ChangeReport' },
   { path: 'cache:$.truncation{key}', declaredBy: 'CacheTruncation' },
+  { path: 'cache:$.version{key}', declaredBy: 'CacheVersionResult' },
+  { path: 'cache:$.version_not_retained{key}', declaredBy: 'CacheVersionNotRetained' },
+  { path: 'cache:$.version_list{key}', declaredBy: 'CacheVersionList' },
+  { path: 'cache:$.version_list.versions[]{key}', declaredBy: 'CacheVersionListEntry' },
   { path: 'cache:$.changes_truncation{key}', declaredBy: 'ChangesTruncation' },
   { path: 'extract:structured:${key}', declaredBy: 'ExtractOutput' },
   { path: 'extract:tables:${key}', declaredBy: 'ExtractOutput' },
