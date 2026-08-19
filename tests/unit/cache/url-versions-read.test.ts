@@ -127,23 +127,52 @@ describe('toVersionTimestamp — the caller\'s `at` in the shape fetched_at is s
     expect(toVersionTimestamp('2026-08-18 12:00:01')).toBe('2026-08-18 12:00:01');
   });
 
-  it('passes it through on a host that is NOT on UTC', () => {
+  it('reads EVERY offset-less shape as UTC on a host that is NOT on UTC', () => {
     // The clause above cannot fail on a UTC runner: a Date round trip of a
     // zone-less value there produces the identical string, so the check agrees
-    // with the mutation it exists to catch. Measured — removing the passthrough
-    // reds 7 tests under TZ=Asia/Dhaka and 0 under TZ=UTC, and CI runs UTC.
+    // with the mutation it exists to catch. Measured — removing the UTC pinning
+    // reds under TZ=Asia/Dhaka and not at all under TZ=UTC, and CI runs UTC.
     // Forcing the offset is what makes the protection visible anywhere.
+    //
+    // EVERY shape, not just the stored one. The first version of this test drove
+    // only the space form, so the `T` form — plain ISO 8601, and what this tool's
+    // own schema invites — went unwitnessed and shipped shifted: on a host west
+    // of UTC the coordinate moved FORWARD and a later body answered a past
+    // question. A fix whose test exercises the sibling shape is how that
+    // happened, so the table below is the shape it is.
     const previous = process.env.TZ;
-    process.env.TZ = 'Asia/Dhaka';
+    process.env.TZ = 'America/New_York';
     try {
       // The forcing must be shown to have worked, or this passes vacuously on a
       // runtime that ignores a mid-process TZ change.
       expect(new Date().getTimezoneOffset()).not.toBe(0);
       expect(toVersionTimestamp('2026-08-18 12:00:01')).toBe('2026-08-18 12:00:01');
+      expect(toVersionTimestamp('2026-08-18T12:00:01')).toBe('2026-08-18 12:00:01');
+      expect(toVersionTimestamp('2026-08-18T12:00')).toBe('2026-08-18 12:00:00');
+      expect(toVersionTimestamp('2026-08-18T12:00:01.900')).toBe('2026-08-18 12:00:01');
+      expect(toVersionTimestamp('2026-08-18')).toBe('2026-08-18 00:00:00');
     } finally {
       if (previous === undefined) delete process.env.TZ;
       else process.env.TZ = previous;
     }
+  });
+
+  it('refuses a non-ISO shape rather than reading it in the host\'s zone', () => {
+    // `Date.parse` accepts these and resolves every one of them as LOCAL, so
+    // accepting them would reintroduce the same forward shift by another door.
+    // Refusing is the fail-safe direction: the caller gets an explicit error
+    // naming what is readable instead of a confidently wrong instant. It is also
+    // what the schema already promises — ISO 8601, an offset, or YYYY-MM-DD.
+    for (const shape of ['2026/08/18 13:00:00', 'Aug 18 2026 13:00:00', 'August 18, 2026']) {
+      expect(toVersionTimestamp(shape), `${shape} must be refused, not localized`).toBeNull();
+    }
+  });
+
+  it('refuses a year outside the four-digit range instead of reading it as "nothing retained"', () => {
+    // +275760-09-13 sorts BELOW every 2xxx- row under the string compare the
+    // query uses, so an out-of-range year would come back as a confident
+    // not-retained rather than as the input error it is.
+    expect(toVersionTimestamp('+275760-09-13T00:00:00Z')).toBeNull();
   });
 
   it('converts a Z-suffixed ISO timestamp to the stored shape', () => {

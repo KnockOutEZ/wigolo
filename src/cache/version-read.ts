@@ -119,20 +119,45 @@ function toRetained(row: VersionRow): RetainedVersion {
  * A value that DOES carry `Z` or an explicit offset is unambiguous and goes to
  * `Date.parse`, which resolves it correctly.
  *
+ * ACCEPTED SHAPES ARE AN ALLOWLIST, and that is the actual fix rather than a
+ * patch of the one shape that was reported. Widening the zone-less guard from
+ * the space form to `[T ]` closes two members of a class with more members:
+ * `Date.parse` also accepts `2026/08/18 13:00:00`, `Aug 18 2026 13:00:00` and
+ * other implementation-defined legacy forms, and reads every one of them as
+ * LOCAL. Any of them would shift exactly as the `T` form did. So anything
+ * outside the three ISO shapes below is REFUSED rather than guessed at:
+ * the caller gets an explicit error naming what is readable, which is strictly
+ * better than a confidently wrong instant. It also makes the code agree with the
+ * contract the schema already states — "ISO 8601, a UTC offset, or YYYY-MM-DD".
+ *
  * Sub-second precision truncates DOWN, which keeps "at or before" true: rounding
  * up could reach a version the page had not served yet at the instant asked for.
  */
 export function toVersionTimestamp(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
+
+  // Offset-less: pin to UTC ourselves rather than letting the host's zone decide.
   if (ZONELESS_DATETIME.test(trimmed)) {
-    const ms = Date.parse(`${trimmed.replace(' ', 'T')}Z`);
-    if (Number.isNaN(ms)) return null;
-    return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    return toStoredShape(Date.parse(`${trimmed.replace(' ', 'T')}Z`));
   }
-  const ms = Date.parse(trimmed);
+  // Date-only and explicitly-zoned forms are already unambiguous to the parser.
+  if (DATE_ONLY.test(trimmed) || ZONED_DATETIME.test(trimmed)) {
+    return toStoredShape(Date.parse(trimmed));
+  }
+  return null;
+}
+
+/** An epoch reading in the zone-less UTC shape `fetched_at` uses, or null. */
+function toStoredShape(ms: number): string | null {
   if (Number.isNaN(ms)) return null;
-  return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+  const iso = new Date(ms).toISOString();
+  // A year outside 0000-9999 widens to the expanded form (`+275760-…`), which
+  // sorts BELOW every `2xxx-` row under the string compare the query uses and
+  // would silently read as "nothing retained". Refused instead, so an
+  // out-of-range year cannot masquerade as an answer about the store.
+  if (!/^\d{4}-/.test(iso)) return null;
+  return iso.replace('T', ' ').replace(/\.\d+Z$/, '');
 }
 
 /**
