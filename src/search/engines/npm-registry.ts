@@ -28,6 +28,13 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+function normalizedMaxResults(value: number | undefined, fallback = 10): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value)) return fallback;
+  if (value <= 0) return 0;
+  return Math.floor(value);
+}
+
 function packagePageUrl(name: string, candidate: unknown): string {
   const fallback = `https://www.npmjs.com/package/${name}`;
   const raw = asString(candidate);
@@ -56,7 +63,7 @@ export class NpmRegistryEngine implements SearchEngine {
 
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
-    const maxResults = Math.max(options.maxResults ?? 10, 0);
+    const maxResults = normalizedMaxResults(options.maxResults);
     if (maxResults === 0) return [];
     const size = Math.min(maxResults, MAX_SIZE);
 
@@ -88,6 +95,7 @@ export class NpmRegistryEngine implements SearchEngine {
 
     for (const obj of objects) {
       if (results.length >= maxResults) break;
+      if (!obj || typeof obj !== 'object') continue;
       const pkg = obj.package;
       const name = asString(pkg?.name);
       if (!name) continue;

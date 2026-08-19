@@ -168,6 +168,39 @@ describe('NpmRegistryEngine', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('floors fractional maxResults before requesting and parsing', async () => {
+    const body = {
+      objects: [
+        { package: { name: 'one', version: '1.0.0' } },
+        { package: { name: 'two', version: '1.0.0' } },
+      ],
+    };
+    const { calls } = captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 1.5 });
+    expect(calls[0].url).toContain('size=1');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('one');
+  });
+
+  it('falls back to the default limit when maxResults is NaN', async () => {
+    const { calls } = captureFetch({ objects: [] });
+    await new NpmRegistryEngine().search('q', { maxResults: Number.NaN });
+    expect(calls[0].url).toContain('size=10');
+  });
+
+  it('skips null registry objects without failing the search', async () => {
+    const body = {
+      objects: [
+        null,
+        { package: { name: 'valid', version: '1.0.0' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('valid');
+  });
+
   it('passes timeoutMs to AbortSignal.timeout', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     captureFetch({ objects: [] });
