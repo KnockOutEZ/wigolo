@@ -2,7 +2,7 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll, type ResolvedAddress } from '../watch/ssrf.js';
-import { pinnedFetch } from './pinned-dispatcher.js';
+import { discardResponseBody, pinnedFetch } from './pinned-dispatcher.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -253,6 +253,7 @@ async function fetchWithRedirects(
 
     if (REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get('location');
+      await discardResponseBody(response);
       if (!location) {
         throw new HttpFetchError(`Redirect with no location header at ${currentUrl}`, false);
       }
@@ -279,6 +280,7 @@ async function fetchWithRedirects(
     }
 
     if (RETRYABLE_STATUSES.has(response.status)) {
+      await discardResponseBody(response);
       throw new HttpFetchError(`HTTP ${response.status} from ${currentUrl}`, true);
     }
 

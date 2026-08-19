@@ -19,7 +19,7 @@
 
 import { createLogger } from '../logger.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll, type ResolvedAddress } from '../watch/ssrf.js';
-import { pinnedFetch } from './pinned-dispatcher.js';
+import { discardResponseBody, pinnedFetch } from './pinned-dispatcher.js';
 import { redactUrl } from '../util/redact-url.js';
 import type { RawFetchResult } from '../types.js';
 
@@ -167,6 +167,7 @@ export async function _guardedFollow(
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get('location');
       if (!loc) return resp;
+      await discardResponseBody(resp);
       let next: string;
       try {
         next = new URL(loc, current).toString();

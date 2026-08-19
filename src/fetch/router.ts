@@ -44,7 +44,7 @@ import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost, type ResolvedAddress } from '../watch/ssrf.js';
-import { pinnedFetch } from './pinned-dispatcher.js';
+import { discardResponseBody, pinnedFetch } from './pinned-dispatcher.js';
 import {
   isRedditUrl,
   fetchViaRedditApi,
@@ -349,8 +349,8 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
       const resp = await pinnedFetch(current, { ...init, redirect: 'manual', signal: combined.signal }, pinAddresses);
       if (resp.status >= 300 && resp.status < 400) {
         const loc = resp.headers.get('location');
+        await discardResponseBody(resp);
         if (!loc) return resp;
-        try { await resp.arrayBuffer(); } catch { /* drain */ }
         current = new URL(loc, current).toString();
         if (!guardFetchUrl(current, 'redirect location', { allowPrivate }).ok) return null;
         continue;
@@ -364,9 +364,16 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
     const head = await guardedFetch(url, { method: 'HEAD' });
     if (!head) return false;
     const ct = head.headers.get('content-type')?.toLowerCase() ?? '';
-    if (ct.includes('application/pdf')) return true;
+    if (ct.includes('application/pdf')) {
+      await discardResponseBody(head);
+      return true;
+    }
     // HEAD returned a definitive non-PDF content-type → trust it, skip the GET.
-    if (ct && !ct.includes('application/octet-stream')) return false;
+    if (ct && !ct.includes('application/octet-stream')) {
+      await discardResponseBody(head);
+      return false;
+    }
+    await discardResponseBody(head);
     // No / ambiguous content-type: sniff the first bytes with a ranged GET.
     const ranged = await guardedFetch(url, {
       method: 'GET',
@@ -374,7 +381,10 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
     });
     if (!ranged) return false;
     const rangedCt = ranged.headers.get('content-type')?.toLowerCase() ?? '';
-    if (rangedCt.includes('application/pdf')) return true;
+    if (rangedCt.includes('application/pdf')) {
+      await discardResponseBody(ranged);
+      return true;
+    }
     // Read only the first chunk from the stream — a server that ignores the
     // Range header would otherwise stream the whole file into memory. We only
     // need the 5-byte %PDF- marker; cancel the body once we have it.

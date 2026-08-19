@@ -47,6 +47,15 @@ export function createPinnedDispatcher(addresses: ResolvedAddress[]): Agent {
   });
 }
 
+/** Cancel an unused response body so `Agent.close()` can finish. */
+export async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* already consumed or closed */
+  }
+}
+
 /**
  * Fetch `url` with the socket pinned to `addresses` when the set is non-empty.
  * The Agent is closed in the background after the response is returned so the
