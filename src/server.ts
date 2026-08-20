@@ -550,6 +550,42 @@ export function createMcpServer(subsystems: Subsystems): Server {
   return server;
 }
 
+/**
+ * Builds the process-wide shutdown handler: runs each cleanup phase even if
+ * an earlier one fails, force-exits if teardown hangs, and is safe to invoke
+ * from multiple triggers (signals, stdin EOF).
+ */
+export function createShutdownHandler(
+  subs: Pick<Subsystems, 'shutdown'>,
+  server: Pick<Server, 'close'>,
+  exit: (code: number) => void = (code) => process.exit(code),
+): () => Promise<void> {
+  let shuttingDown = false;
+  return async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // If teardown hangs (e.g. a wedged browser), force-exit rather than
+    // linger as an orphan. Kept ref'd so the event loop can't drain
+    // mid-cleanup and exit before the explicit exit below.
+    const watchdog = setTimeout(() => exit(1), 10_000);
+    let failed = false;
+    try {
+      await subs.shutdown();
+    } catch (err) {
+      failed = true;
+      log.error('subsystem shutdown failed', { error: String(err) });
+    }
+    try {
+      await server.close();
+    } catch (err) {
+      failed = true;
+      log.error('server close failed', { error: String(err) });
+    }
+    clearTimeout(watchdog);
+    exit(failed ? 1 : 0);
+  };
+}
+
 export async function startServer(): Promise<void> {
   const subs = await initSubsystems();
   const server = createMcpServer(subs);
@@ -565,17 +601,7 @@ export async function startServer(): Promise<void> {
     log.warn('search engine bootstrap failed', { error: String(err) });
   });
 
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    // If subsystem teardown hangs (e.g. a wedged browser), force-exit rather
-    // than linger as an orphan.
-    setTimeout(() => process.exit(1), 10_000).unref();
-    await subs.shutdown();
-    await server.close();
-    process.exit(0);
-  };
+  const shutdown = createShutdownHandler(subs, server);
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
