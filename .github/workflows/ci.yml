@@ -89,8 +89,10 @@ jobs:
   # `check:studio-typecheck` is here rather than in `studio-unit` for the same reason as its
   # siblings: it is a path/AST walk needing no build, and this job deliberately has no build step.
   # It does NOT type-check the app (that is `studio-unit`'s `npm run lint -w apps/studio`); it
-  # asserts that arrangement is still intact — `apps/studio/tsconfig.json` covers every app
-  # src/test/config file, is strict, and is invoked by this workflow.
+  # asserts that arrangement is still intact — `apps/studio/tsconfig.json` covers every TypeScript
+  # file under the app, is strict, the app's `lint` script actually runs `tsc --noEmit`, and an
+  # uncommented `run:` step in this workflow invokes it. Comments are stripped before that last
+  # check, so this very paragraph cannot stand in for the step it describes.
   #
   # Runs on all three desktop OS. Every check in `gate:studio` other than `lint` is a tsconfig
   # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a

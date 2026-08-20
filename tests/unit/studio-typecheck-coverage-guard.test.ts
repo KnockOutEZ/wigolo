@@ -1,23 +1,38 @@
 /**
  * Negative + positive tests for `scripts/check-studio-typecheck-coverage.mjs` (known issue P7).
  *
- * The guard exists because three one-line edits silently restore P7 — a narrowed `include`, a
- * `strict: false`, and a deleted CI step — each of which leaves every other gate green. A guard for
- * that class is worthless unless it demonstrably fires on each of the three, so each way of
- * reopening the gap gets a test that FAILS if the guard stops detecting it, plus a must-not-fire
- * case so the guard cannot pass by simply always failing.
+ * The guard exists because a one-line edit silently restores P7 — the gap where a file is checked by
+ * nothing and every gate stays green. Its first shipped form closed three such edits (a narrowed
+ * `include`, a `strict: false`, a deleted CI step) and left four more open, all confirmed at SD0
+ * phase-exit:
  *
- * Every case runs against a synthetic repo root rather than the real one: the guard's whole job is
- * to notice a broken arrangement, and the real tree is (by construction) never broken.
+ *   4. the guard never looked at what the invoked script IS — redefining `apps/studio`'s `lint` to
+ *      `true` left every other assertion true and the guard printed OK,
+ *   5. the CI assertion was a raw substring over YAML, and this workflow carries the literal inside a
+ *      comment, so deleting the real step kept it satisfied,
+ *   6. the expected-file universe was hand-coded to `src` + `tests` + root `*.config.ts` and knew
+ *      only `.ts`/`.tsx`, so `apps/studio/scripts/x.ts` or any `.mts`/`.cts` was expected by nothing
+ *      and checked by nothing — P7's own failure class, one directory over,
+ *   7. nothing asserted that anything invokes the guard, so deleting it from `gate:studio` made it a
+ *      local command nobody runs — P7 one level up.
+ *
+ * A guard for that class is worthless unless it demonstrably fires on each way in, so every bypass
+ * gets a must-fire case that goes red if the guard stops detecting it, plus must-not-fire cases so
+ * the guard cannot pass by simply always failing.
+ *
+ * Cases 1–6 run against a synthetic repo root rather than the real one: the guard's whole job is to
+ * notice a broken arrangement, and the real tree is (by construction) never broken. Case 7 is the
+ * exception — "is this guard wired to anything" is a fact about THIS repo, so it reads this repo.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GUARD = fileURLToPath(new URL('../../scripts/check-studio-typecheck-coverage.mjs', import.meta.url));
+const REPO = fileURLToPath(new URL('../..', import.meta.url));
 
 const WORKFLOW_WITH_STEP = `name: CI
 jobs:
@@ -35,12 +50,43 @@ jobs:
         run: npm test -w apps/studio
 `;
 
+/**
+ * The real ci.yml carries the invocation inside a prose comment explaining why it must not be
+ * removed. A substring check over the raw file is satisfied by that comment alone, so deleting the
+ * only real step is a green edit.
+ */
+const WORKFLOW_COMMENT_ONLY = `name: CI
+jobs:
+  studio-unit:
+    steps:
+      # Removing this step reopens P7. The step below is \`npm run lint -w apps/studio\`.
+      - name: Unit tests (studio)
+        run: npm test -w apps/studio
+`;
+
+/**
+ * A real step annotated in place. Anchoring to a whole `run:` line without stripping comments first
+ * would reject this — the step is present and correct, so the guard would be firing on a healthy
+ * tree, which gets guards deleted rather than obeyed.
+ */
+const WORKFLOW_TRAILING_COMMENT = `name: CI
+jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio  # do not remove — this IS the app's type-check
+`;
+
 interface Fixture {
   readonly include?: readonly string[];
   readonly strict?: boolean;
   readonly workflow?: string;
   /** Extra files to drop into `apps/studio/src` beyond the baseline one. */
   readonly extraSrc?: readonly string[];
+  /** Arbitrary extra files, keyed by path relative to `apps/studio`. */
+  readonly extraApp?: Readonly<Record<string, string>>;
+  /** `apps/studio`'s `lint` script. `null` removes the key entirely. */
+  readonly lintScript?: string | null;
 }
 
 let root: string;
@@ -57,6 +103,17 @@ function buildFixture(f: Fixture = {}): void {
   for (const name of f.extraSrc ?? []) {
     writeFileSync(join(app, 'src', name), 'export const extra = 1;\n');
   }
+  for (const [rel, body] of Object.entries(f.extraApp ?? {})) {
+    const target = join(app, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, body);
+  }
+
+  const lint = f.lintScript === undefined ? 'tsc --noEmit' : f.lintScript;
+  writeFileSync(
+    join(app, 'package.json'),
+    JSON.stringify({ name: 'studio', scripts: { test: 'vitest run', ...(lint === null ? {} : { lint }) } }, null, 2)
+  );
 
   writeFileSync(
     join(app, 'tsconfig.json'),
@@ -70,12 +127,14 @@ function buildFixture(f: Fixture = {}): void {
 }
 
 function runGuard(): { status: number; output: string } {
-  const r = spawnSync(process.execPath, [GUARD, root], { encoding: 'utf8' });
-  return { status: r.status ?? -1, output: `${r.stdout}${r.stderr}` };
+  // A guard that hangs must fail this suite, not stall it: without a timeout a spin in the tree walk
+  // blocks vitest until the job's 30-minute ceiling, which reads as infrastructure, not as a bug.
+  const r = spawnSync(process.execPath, [GUARD, root], { encoding: 'utf8', timeout: 30_000 });
+  return { status: r.status ?? -1, output: `${r.stdout ?? ''}${r.stderr ?? ''}${r.signal ? `\nkilled by ${r.signal}` : ''}` };
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'sd9-p7-guard-'));
+  root = mkdtempSync(join(tmpdir(), 'sd60-p7-guard-'));
 });
 
 afterEach(() => {
@@ -119,5 +178,108 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     const { status, output } = runGuard();
     expect(status).toBe(1);
     expect(output).toContain('npm run lint -w apps/studio');
+  });
+
+  // Bypass 4 — the invoked script's identity.
+  // Mutant: drop the `lint` script assertion from the guard. Blast radius: the two cases below go
+  // green while `npm run lint -w apps/studio` type-checks nothing, which is P7 with every other
+  // assertion in this file still true. Reproduced live in the real tree at SD0 phase-exit.
+  it('fails when the `lint` script no longer type-checks — the CI step runs whatever it is', () => {
+    buildFixture({ lintScript: 'true' });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('lint');
+    expect(output).toContain('tsc --noEmit');
+  });
+
+  it('fails when apps/studio has no `lint` script at all', () => {
+    buildFixture({ lintScript: null });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('lint');
+  });
+
+  it('accepts a `lint` script that names its project explicitly', () => {
+    // Must-not-fire: `-p <path>` is a legitimate way to write the same check, and a guard that
+    // rejected it would push the next author to weaken the assertion rather than satisfy it.
+    buildFixture({ lintScript: 'tsc -p tsconfig.json --noEmit' });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  // Bypass 5 — the CI assertion was a substring over raw YAML.
+  // Mutant: revert the comment-stripping + line anchoring to `raw.includes(CI_INVOCATION)`. Blast
+  // radius: the case below goes green with no step invoking the app type-check at all, because the
+  // comment explaining the step satisfies the check the step was supposed to.
+  it('fails when the invocation survives only inside a ci.yml comment', () => {
+    buildFixture({ workflow: WORKFLOW_COMMENT_ONLY });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('npm run lint -w apps/studio');
+  });
+
+  it('accepts a real step carrying a trailing comment', () => {
+    // Must-not-fire, and the case that separates the two mechanisms: line-anchoring alone rejects
+    // this healthy workflow, so the comment strip is load-bearing rather than belt-and-braces.
+    buildFixture({ workflow: WORKFLOW_TRAILING_COMMENT });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  // Bypass 6 — the expected-file universe was hand-coded.
+  // Mutant: narrow the walk back to `src` + `tests` + root `*.config.ts`, or drop `.mts`/`.cts` from
+  // the extension set. Blast radius: the first two cases below go green while the named file is
+  // expected by nothing and checked by nothing — the guard's own failure class one directory over.
+  it('fails when a .ts file outside src/tests is covered by nothing', () => {
+    buildFixture({ extraApp: { 'scripts/make-icons.ts': 'export const icons = 1;\n' } });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('scripts/make-icons.ts');
+  });
+
+  it('fails when a .mts / .cts file is covered by nothing', () => {
+    buildFixture({
+      extraApp: { 'tooling.mts': 'export const t = 1;\n', 'legacy.cts': 'export const l = 1;\n' },
+    });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('tooling.mts');
+    expect(output).toContain('legacy.cts');
+  });
+
+  it('ignores node_modules, out and dist — build output is not source the app must type-check', () => {
+    // Must-not-fire: the widened walk runs over a tree that always contains installed dependencies
+    // and build output. Flagging those would make the guard fire on every correctly wired repo,
+    // i.e. it would be turned off rather than satisfied.
+    buildFixture({
+      extraApp: {
+        'node_modules/dep/index.d.ts': 'export declare const d: number;\n',
+        'out/main/index.ts': 'export const built = 1;\n',
+        'dist/renderer.mts': 'export const built = 2;\n',
+      },
+    });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  // Bypass 7 — nothing asserted that anything invokes the guard.
+  // Mutant: delete `npm run check:studio-typecheck &&` from `gate:studio`, or the `gate:studio` step
+  // from ci.yml. Blast radius: every suite in the repo stays green while this entire file guards a
+  // command nobody runs. Same shape, and the same assertion pair, as
+  // `tests/unit/electron-quarantine.test.ts`.
+  it('is gated, not documented: gate:studio chains the guard', () => {
+    const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts['check:studio-typecheck']).toContain('scripts/check-studio-typecheck-coverage.mjs');
+    expect(pkg.scripts['gate:studio']).toContain('check:studio-typecheck');
+  });
+
+  it('is gated, not documented: the CI gate job runs gate:studio', () => {
+    const ci = readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(ci).toMatch(/^\s*run: npm run gate:studio\s*$/m);
   });
 });
