@@ -1,5 +1,6 @@
-// Inline stroke icons (currentColor, no external font — CSP-safe + offline). 1.6px strokes at 16px
-// read crisply on the dark chrome. Kept intentionally minimal to match the refined browser aesthetic.
+// Inline stroke icons (currentColor, no external font — CSP-safe + offline). Drawing with
+// `stroke: currentColor` is what lets one icon serve both registers: the glyph takes whichever text or
+// accent token its container resolved, so there is no light-mode copy of any icon.
 import type { CSSProperties } from 'react';
 
 const base = (size: number): { width: number; height: number; viewBox: string; fill: string; stroke: string; strokeWidth: number; strokeLinecap: 'round'; strokeLinejoin: 'round'; style?: CSSProperties } => ({
@@ -20,7 +21,7 @@ export const IconSend = ({ size = 15 }: { size?: number }) => (<svg {...base(siz
 export const IconPause = ({ size = 14 }: { size?: number }) => (<svg {...base(size)}><path d="M8 5v14M16 5v14" /></svg>);
 export const IconClip = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /></svg>);
 
-/** The agent mark — a four-point spark (violet in use), the studio's identity glyph. */
+/** The agent mark — a four-point spark, the studio's identity glyph. Never a vendor logo (§4). */
 export const IconSpark = ({ size = 15 }: { size?: number }) => (
   <svg {...base(size)}><path d="M12 3c.6 3.6 1.8 4.8 5.4 5.4-3.6.6-4.8 1.8-5.4 5.4-.6-3.6-1.8-4.8-5.4-5.4C10.2 7.8 11.4 6.6 12 3z" fill="currentColor" stroke="none" /><path d="M18.5 15c.3 1.8.9 2.4 2.7 2.7-1.8.3-2.4.9-2.7 2.7-.3-1.8-.9-2.4-2.7-2.7 1.8-.3 2.4-.9 2.7-2.7z" fill="currentColor" stroke="none" /></svg>
 );

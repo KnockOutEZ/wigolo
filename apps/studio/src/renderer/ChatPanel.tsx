@@ -2,8 +2,9 @@ import type { ChatMsgDto } from '../shared/ipc';
 
 /**
  * The chat rail transcript (spec §3): the agent talks to the human via studio_say, the human replies in
- * the composer. Agent text renders in the editorial serif voice; both render as inert text nodes (React
- * escapes) — page content the agent might quote can never execute or smuggle markup.
+ * the composer. Both are human language, so both render in the sans body voice — the studio chrome is
+ * not rendered web content, which is the only place serif is allowed. Both render as inert text nodes
+ * (React escapes) — page content the agent might quote can never execute or smuggle markup.
  */
 export function ChatPanel({ messages }: { messages: ChatMsgDto[] }) {
   return (
