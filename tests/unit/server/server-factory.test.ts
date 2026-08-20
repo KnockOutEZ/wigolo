@@ -209,3 +209,56 @@ describe('createMcpServer', () => {
     expect(typeof startServer).toBe('function');
   });
 });
+
+describe('createShutdownHandler', () => {
+  it('runs both cleanup phases and exits 0 on success', async () => {
+    const { createShutdownHandler } = await import('../../../src/server.js');
+    const subsShutdown = vi.fn().mockResolvedValue(undefined);
+    const serverClose = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+
+    await createShutdownHandler({ shutdown: subsShutdown }, { close: serverClose }, exit)();
+
+    expect(subsShutdown).toHaveBeenCalledTimes(1);
+    expect(serverClose).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('still closes the server and exits 1 when subsystem shutdown rejects', async () => {
+    const { createShutdownHandler } = await import('../../../src/server.js');
+    const subsShutdown = vi.fn().mockRejectedValue(new Error('cleanup failed'));
+    const serverClose = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+
+    await createShutdownHandler({ shutdown: subsShutdown }, { close: serverClose }, exit)();
+
+    expect(serverClose).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('exits 1 when server.close rejects', async () => {
+    const { createShutdownHandler } = await import('../../../src/server.js');
+    const subsShutdown = vi.fn().mockResolvedValue(undefined);
+    const serverClose = vi.fn().mockRejectedValue(new Error('close failed'));
+    const exit = vi.fn();
+
+    await createShutdownHandler({ shutdown: subsShutdown }, { close: serverClose }, exit)();
+
+    expect(subsShutdown).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('is idempotent — concurrent triggers run cleanup only once', async () => {
+    const { createShutdownHandler } = await import('../../../src/server.js');
+    const subsShutdown = vi.fn().mockResolvedValue(undefined);
+    const serverClose = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+
+    const shutdown = createShutdownHandler({ shutdown: subsShutdown }, { close: serverClose }, exit);
+    await Promise.all([shutdown(), shutdown(), shutdown()]);
+
+    expect(subsShutdown).toHaveBeenCalledTimes(1);
+    expect(serverClose).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+  });
+});
