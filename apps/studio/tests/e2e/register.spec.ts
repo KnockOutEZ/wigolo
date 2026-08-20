@@ -62,13 +62,23 @@ describe.skipIf(!RUN)('style registers (e2e, real browser engine)', () => {
     expect(await resolved('--agent')).toBe('oklch(0.8 0.06 250)');
   });
 
-  it('resolves the legacy alias bridge through the tokens, so the shipped components inherit both registers', async () => {
-    // The 13 components still reference `--surface`, `--text` and friends, and they must land on the
-    // layer. Checked as a USED value on a real element as well: a broken alias resolves to nothing,
-    // which keeps the layout and silently drops the colour.
-    expect(await resolved('--surface')).toBe('#060606');
-    expect(await resolved('--text')).toBe('rgba(255,255,255,.95)');
-    expect(await railBackground()).toBe('rgb(6, 6, 6)');
+  it('paints the components from the tokens directly, with the alias bridge gone', async () => {
+    // The restyle moved all 13 components onto real tokens and deleted the bridge, so the retired
+    // names must now resolve to NOTHING — and the components must still be painted. Both halves
+    // matter: a custom property fails soft, so a component left on a retired name would keep its
+    // layout and silently lose its colour, which no screenshot of the register it looked right in
+    // would reveal. Checked as a USED value on a real element, not just as a declaration.
+    for (const retired of ['--surface', '--text', '--text-dim', '--border', '--chrome-font', '--r-md']) {
+      expect(await resolved(retired), `${retired} must be gone`).toBe('');
+    }
+    expect(await railBackground()).toBe('rgb(6, 6, 6)'); // --surface-panel, resolved and applied
+    // A used value, not a declaration: the chrome's body font really is the sans family + body size.
+    expect(
+      await chrome.evaluate(() => {
+        const cs = getComputedStyle(document.body);
+        return `${cs.fontSize} ${cs.fontFamily.split(',')[0]}`;
+      }),
+    ).toBe('12.5px "Helvetica Neue"');
   });
 
   it('re-anchors the whole app when the system register changes, with no reload', async () => {
