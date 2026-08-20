@@ -1,7 +1,7 @@
 import type { TabInfo } from '../../src/shared/ipc';
 import { IconClose } from './icons';
 
-/** Derive a page-origin favicon glyph slot — a colored initial when no favicon is known yet. */
+/** Derive a page-origin favicon glyph slot — a neutral initial when no favicon is known yet. */
 function faviconInitial(t: TabInfo): string {
   try {
     const h = new URL(t.url).hostname.replace(/^www\./, '');
@@ -16,7 +16,11 @@ export function TabStrip(props: {
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
-  /** Per-tab co-drive provenance (spec §4): human=green, agent-foreground=violet, agent-bg=amber pulse. */
+  /**
+   * Per-tab co-drive provenance. Two accent families only: `agent` is the agent hue, `working` is the
+   * attention hue plus a pulse (an agent working in the background is the one that may want you), and
+   * `human` is provenance rather than a state so it takes the neutral studio role.
+   */
   provenance?: (id: string) => 'human' | 'agent' | 'working' | 'none';
 }) {
   return (
@@ -29,18 +33,11 @@ export function TabStrip(props: {
           onClick={() => props.onFocus(t.id)}
           title={t.title || t.url}
         >
-          {/* provenance dot (spec §4) when the agent/human has driven this tab; else the neutral favicon chip */}
+          {/* provenance dot when the agent/human has driven this tab; else the neutral favicon chip */}
           {(() => {
             const p = props.provenance?.(t.id) ?? 'none';
             if (p === 'none') {
-              return (
-                <span
-                  className="tab__fav"
-                  style={{ display: 'grid', placeItems: 'center', fontSize: 9, fontWeight: 700, background: 'var(--surface-hover)', color: 'var(--text-dim)' }}
-                >
-                  {faviconInitial(t)}
-                </span>
-              );
+              return <span className="tab__fav">{faviconInitial(t)}</span>;
             }
             const title = p === 'working' ? 'agent working in background' : p === 'agent' ? 'agent drove last' : 'you drove last';
             return <span className={`tab__dot tab__dot--${p}`} title={title} />;
