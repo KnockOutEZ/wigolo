@@ -11,6 +11,7 @@ import type {
   AgentInput,
   AgentOutput,
   EvidenceItem,
+  ProgressCallback,
   SearchEngine,
   StageResult,
 } from '../types.js';
@@ -31,6 +32,7 @@ export async function handleAgent(
   router: SmartRouter,
   _backendStatus?: unknown,
   server?: SamplingCapableServer,
+  onProgress?: ProgressCallback,
 ): Promise<StageResult<AgentOutput>> {
   try {
     if (!input.prompt || typeof input.prompt !== 'string' || input.prompt.trim().length === 0) {
@@ -88,6 +90,7 @@ export async function handleAgent(
       engines,
       router,
       server,
+      input.stream ? onProgress : undefined,
     );
     result.response_time_ms = Date.now() - _start;
 
