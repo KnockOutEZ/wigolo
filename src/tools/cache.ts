@@ -314,7 +314,7 @@ async function vectorSearchFiltered(
       filtered.push(hit);
       if (filtered.length >= limit) return filtered;
     }
-    if (hits.length < knnLimit) break;
+    if (hits.length < knnLimit || knnLimit === maxKnn) break;
     knnLimit = Math.min(knnLimit * 2, maxKnn);
   }
 

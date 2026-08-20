@@ -89,4 +89,40 @@ describe('cacheIndexedDocument', () => {
     expect(cacheIndexedDocument(doc)).toBe('insert');
     expect(cacheIndexedDocument(doc)).toBe('skip');
   });
+
+  it('upserts on normalized_url when the stored url differs', () => {
+    const path = join(dir, 'slash.md');
+    writeFileSync(path, 'v1');
+    const base = {
+      title: 'slash',
+      namespace: 'docs',
+      tags: [] as string[],
+      expiresAt: null,
+      extractorUsed: 'index:markdown',
+      metadata: {},
+      sourcePath: path,
+      sourceRoot: dir,
+    };
+    expect(
+      cacheIndexedDocument({
+        ...base,
+        url: 'internal://docs/slash.md/',
+        markdown: 'v1',
+        contentHash: buildContentHash('v1'),
+      }),
+    ).toBe('insert');
+
+    writeFileSync(path, 'v2');
+    expect(
+      cacheIndexedDocument({
+        ...base,
+        url: 'internal://docs/slash.md',
+        markdown: 'v2',
+        contentHash: buildContentHash('v2'),
+      }),
+    ).toBe('update');
+
+    const cached = getCachedContent('internal://docs/slash.md');
+    expect(cached?.markdown).toBe('v2');
+  });
 });

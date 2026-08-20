@@ -15,6 +15,13 @@ describe('buildInternalUrl', () => {
   it('rejects namespace with path separators', () => {
     expect(() => buildInternalUrl('bad/name', 'x.md')).toThrow(/invalid namespace/i);
   });
+
+  it('rejects namespace with URL delimiters, spaces, or colons', () => {
+    expect(() => buildInternalUrl('docs extra', 'x.md')).toThrow(/invalid namespace/i);
+    expect(() => buildInternalUrl('docs:1', 'x.md')).toThrow(/invalid namespace/i);
+    expect(() => buildInternalUrl('docs#frag', 'x.md')).toThrow(/invalid namespace/i);
+    expect(() => buildInternalUrl('user@docs', 'x.md')).toThrow(/invalid namespace/i);
+  });
 });
 
 describe('titleFromMarkdown', () => {

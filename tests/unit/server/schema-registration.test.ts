@@ -138,18 +138,26 @@ async function connectClient() {
 
 describe('diff + watch tool registration', () => {
   let tmpDataDir: string;
+  let tmpPluginsDir: string;
+  let prevPluginsDir: string | undefined;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(join(tmpdir(), 'wigolo-schema-reg-'));
+    tmpPluginsDir = mkdtempSync(join(tmpdir(), 'wigolo-schema-plugins-'));
     process.env.WIGOLO_DATA_DIR = tmpDataDir;
+    prevPluginsDir = process.env.WIGOLO_PLUGINS_DIR;
+    process.env.WIGOLO_PLUGINS_DIR = tmpPluginsDir;
     resetConfig();
     _resetMigrationGuard();
     vi.clearAllMocks();
   });
   afterEach(() => {
     delete process.env.WIGOLO_DATA_DIR;
+    if (prevPluginsDir === undefined) delete process.env.WIGOLO_PLUGINS_DIR;
+    else process.env.WIGOLO_PLUGINS_DIR = prevPluginsDir;
     resetConfig();
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(tmpPluginsDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   it('tools/list exposes 11 tools including diff, watch, and index', async () => {

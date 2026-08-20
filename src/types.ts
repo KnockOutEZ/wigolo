@@ -1140,7 +1140,7 @@ export interface IndexInput {
   max_files?: number;
   /** Block until background embedding queue drains. */
   wait_for_embed?: boolean;
-  /** Watch source for changes and re-index (blocks until stopped). */
+  /** CLI-only: watch source for changes and re-index until stopped. Rejected over MCP and REST. */
   watch?: boolean;
 }
 

@@ -66,7 +66,8 @@ export function resolveLocalSource(source: string): { ok: true; root: string } |
   if (!trimmed) {
     return { ok: false, error: 'source must be a non-empty local path' };
   }
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+  const windowsDrive = /^[a-zA-Z]:[\\/]/.test(trimmed);
+  if (!windowsDrive && /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
     return {
       ok: false,
       error: `source must be a local filesystem path (got scheme in "${trimmed}")`,

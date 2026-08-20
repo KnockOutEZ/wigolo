@@ -3,7 +3,7 @@ import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { ingestFiles, buildInternalUrl } from '../indexing/ingester.js';
 import { resolveLocalSource, scanLocalFiles, MAX_INDEX_FILES } from '../indexing/scanner.js';
 import { startIndexWatcher, waitForWatchStop } from '../indexing/watcher.js';
-import { INVALID_NAMESPACE } from '../indexing/url-builder.js';
+import { VALID_NAMESPACE } from '../indexing/url-builder.js';
 import type { IndexInput, IndexOutput, IndexFileResult } from '../types.js';
 
 const log = createLogger('indexing');
@@ -55,7 +55,7 @@ export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
     return { ...empty, error: 'source is required' };
   }
 
-  if (INVALID_NAMESPACE.test(namespace) || !namespace) {
+  if (!VALID_NAMESPACE.test(namespace)) {
     return { ...empty, error: `invalid namespace: ${JSON.stringify(input.namespace)}` };
   }
 

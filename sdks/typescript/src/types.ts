@@ -330,7 +330,7 @@ export interface IndexRequest {
   dry_run?: boolean;
   max_files?: number;
   wait_for_embed?: boolean;
-  /** Not supported over REST — use CLI or MCP stdio. */
+  /** CLI-only. Not supported over REST or MCP. */
   watch?: boolean;
 }
 

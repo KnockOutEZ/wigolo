@@ -1,4 +1,5 @@
-export const INVALID_NAMESPACE = /[/\\]|\.\./;
+/** ASCII hostname-safe namespace: letters, digits, underscore, hyphen. */
+export const VALID_NAMESPACE = /^[a-z0-9_-]+$/;
 
 /**
  * Build an `internal://{namespace}/{posix-relative}` URL.
@@ -6,7 +7,7 @@ export const INVALID_NAMESPACE = /[/\\]|\.\./;
  */
 export function buildInternalUrl(namespace: string, relativePath: string): string {
   const ns = (namespace.trim() || 'docs').toLowerCase();
-  if (!ns || INVALID_NAMESPACE.test(ns)) {
+  if (!VALID_NAMESPACE.test(ns)) {
     throw new Error(`invalid namespace: ${JSON.stringify(namespace)}`);
   }
   const segments = relativePath

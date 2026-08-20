@@ -105,4 +105,14 @@ describe('handleIndex', () => {
     const out = await handleIndex({ source: docs, max_files: 2 });
     expect(out.error).toMatch(/batch limit exceeded/i);
   });
+
+  it('rejects non-integer max_files', async () => {
+    const out = await handleIndex({ source: dir, max_files: 2.5 });
+    expect(out.error).toMatch(/positive integer/i);
+  });
+
+  it('rejects namespace values that are not URL-safe', async () => {
+    const out = await handleIndex({ source: dir, namespace: 'docs extra' });
+    expect(out.error).toMatch(/invalid namespace/i);
+  });
 });

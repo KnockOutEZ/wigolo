@@ -46,10 +46,14 @@ export async function readLocalFile(absolutePath: string, relativePath: string):
         const parsed = await parser.getText({});
         text = typeof parsed?.text === 'string' ? parsed.text.trim() : '';
       } finally {
-        if (typeof parser.destroy === 'function') {
-          await parser.destroy();
-        } else if (typeof (parser as { close?: () => Promise<void> }).close === 'function') {
-          await (parser as { close: () => Promise<void> }).close();
+        try {
+          if (typeof parser.destroy === 'function') {
+            await parser.destroy();
+          } else if (typeof (parser as { close?: () => Promise<void> }).close === 'function') {
+            await (parser as { close: () => Promise<void> }).close();
+          }
+        } catch {
+          // Cleanup must not replace a parse failure.
         }
       }
     } catch (err) {

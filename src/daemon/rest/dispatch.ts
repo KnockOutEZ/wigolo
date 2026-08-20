@@ -171,8 +171,12 @@ async function dispatchExtract(input: ExtractInput, ctx: DispatchContext): Promi
 
 async function dispatchFindSimilar(input: FindSimilarInput, ctx: DispatchContext): Promise<DispatchResult> {
   if (input.url !== undefined && input.url !== '') {
-    const refused = await guardUrlField(input.url, ctx);
-    if (refused) return refused;
+    const seed = String(input.url);
+    // Locally indexed documents never leave cache — skip HTTP SSRF on this route.
+    if (!seed.startsWith('internal://')) {
+      const refused = await guardUrlField(input.url, ctx);
+      if (refused) return refused;
+    }
   }
   const { searchEngines, router, backendStatus } = ctx.subsystems;
   const r = await handleFindSimilar(input, searchEngines, router, backendStatus);
@@ -226,8 +230,8 @@ async function dispatchIndex(input: IndexInput, _ctx: DispatchContext): Promise<
       status: 400,
       body: errorEnvelope(
         'watch_unsupported',
-        'index watch mode is not available over REST; use the CLI (`wigolo index --watch`) or MCP stdio',
-        { stage: 'validate', hint: 'omit watch or use CLI/MCP' },
+        'index watch mode is not available over REST; use the CLI (`wigolo index --watch`)',
+        { stage: 'validate', hint: 'omit watch or use the CLI' },
       ),
     };
   }

@@ -16,6 +16,7 @@ vi.mock('../../../src/tools/research.js', () => ({ handleResearch: vi.fn() }));
 vi.mock('../../../src/tools/agent.js', () => ({ handleAgent: vi.fn() }));
 vi.mock('../../../src/tools/diff.js', () => ({ handleDiff: vi.fn() }));
 vi.mock('../../../src/tools/watch.js', () => ({ handleWatch: vi.fn() }));
+vi.mock('../../../src/tools/index.js', () => ({ handleIndex: vi.fn() }));
 vi.mock('../../../src/watch/scheduler.js', () => ({
   scheduleOverdueCheck: vi.fn(),
 }));
@@ -30,6 +31,7 @@ import { handleResearch } from '../../../src/tools/research.js';
 import { handleAgent } from '../../../src/tools/agent.js';
 import { handleDiff } from '../../../src/tools/diff.js';
 import { handleWatch } from '../../../src/tools/watch.js';
+import { handleIndex } from '../../../src/tools/index.js';
 import { scheduleOverdueCheck } from '../../../src/watch/scheduler.js';
 
 beforeEach(() => {
@@ -141,6 +143,21 @@ describe('dispatchTool — the 8 filled tools return plain JSON on success', () 
     expect((r.body as { results: unknown[] }).results).toEqual([]);
   });
 
+  it('find_similar allows internal:// seeds through to the handler', async () => {
+    vi.mocked(handleFindSimilar).mockResolvedValue({ ok: true, data: { results: [] } } as never);
+    const r = await dispatchTool('find_similar', { url: 'internal://docs/architecture.md' }, fakeCtx());
+    expect(r.status).toBe(200);
+    expect(handleFindSimilar).toHaveBeenCalled();
+  });
+
+  it('find_similar still guards http(s) seeds', async () => {
+    const ctx = fakeCtx();
+    ctx.bindIsLoopback = false;
+    const r = await dispatchTool('find_similar', { url: 'http://127.0.0.1/' }, ctx);
+    expect(r.status).toBe(400);
+    expect(handleFindSimilar).not.toHaveBeenCalled();
+  });
+
   it('research success → 200 with brief', async () => {
     vi.mocked(handleResearch).mockResolvedValue({ ok: true, data: { brief: { topics: [] } } } as never);
     const r = await dispatchTool('research', { question: 'x' }, fakeCtx());
@@ -173,6 +190,14 @@ describe('dispatchTool — the 8 filled tools return plain JSON on success', () 
     vi.mocked(handleWatch).mockResolvedValue({ ok: true, data: { jobs: [] } } as never);
     await dispatchTool('watch', { action: 'list' }, fakeCtx());
     expect(scheduleOverdueCheck).not.toHaveBeenCalled();
+  });
+
+  it('index watch=true is rejected as CLI-only without calling handleIndex', async () => {
+    const r = await dispatchTool('index', { source: './docs', watch: true }, fakeCtx());
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/CLI/);
+    expect(JSON.stringify(r.body)).not.toMatch(/MCP stdio/);
+    expect(handleIndex).not.toHaveBeenCalled();
   });
 });
 

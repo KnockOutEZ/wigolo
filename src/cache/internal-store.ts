@@ -58,8 +58,8 @@ export function cacheIndexedDocument(doc: IndexedDocumentWrite): CacheIndexedOut
         @contentHash, @fetchedAt, @expiresAt, NULL,
         @namespace, @tags
       )
-      ON CONFLICT(url) DO UPDATE SET
-        normalized_url = excluded.normalized_url,
+      ON CONFLICT(normalized_url) DO UPDATE SET
+        url = excluded.url,
         title = excluded.title,
         markdown = excluded.markdown,
         metadata = excluded.metadata,

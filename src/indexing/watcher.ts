@@ -1,5 +1,5 @@
 import { watch, type FSWatcher, statSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { createLogger } from '../logger.js';
 import { ingestFile } from './ingester.js';
 import { matchSimpleGlob } from './scanner.js';
@@ -62,12 +62,11 @@ export function startIndexWatcher(options: IndexWatcherOptions): IndexWatcherHan
     if (singleFileName && basename(absPath) !== singleFileName) return;
     const name = basename(absPath);
     if (!matchSimpleGlob(name, options.glob)) return;
+    const rel = relative(options.root, absPath);
     const relativePath =
-      absPath === options.root
+      !rel || rel === '.' || rel.startsWith('..')
         ? name
-        : absPath.startsWith(`${options.root}/`)
-          ? absPath.slice(options.root.length + 1)
-          : name;
+        : rel.split(sep).join('/');
     try {
       const r = await ingestFile(
         { absolutePath: absPath, relativePath },

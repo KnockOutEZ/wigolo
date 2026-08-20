@@ -49,6 +49,12 @@ describe('resolveLocalSource', () => {
     const r = resolveLocalSource(join(dir, 'nope'));
     expect(r.ok).toBe(false);
   });
+
+  it('does not treat a Windows drive path as a URI scheme', () => {
+    const r = resolveLocalSource('Z:\\wigolo-index-source-missing');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).not.toMatch(/scheme/i);
+  });
 });
 
 describe('scanLocalFiles', () => {

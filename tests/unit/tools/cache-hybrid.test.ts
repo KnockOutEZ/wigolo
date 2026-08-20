@@ -11,6 +11,7 @@ vi.mock('../../../src/cache/store.js', () => ({
   clearCacheEntries: vi.fn(),
   ftsSearchRanked: vi.fn(),
   getCachedContentByNormalizedUrl: vi.fn(),
+  isInternalCacheUrl: (url: string) => String(url).startsWith('internal://'),
 }));
 
 vi.mock('../../../src/logger.js', () => ({
@@ -211,5 +212,35 @@ describe('handleCache --- hybrid mode', () => {
 
     const out = await handleCache({ query: 'foo', mode: 'hybrid', limit: 3 });
     expect(out.results!.map(r => r.url)).toEqual(['https://a']);
+  });
+
+  it('stops KNN expansion after the final batch when filters never fill the limit', async () => {
+    vi.mocked(ftsSearchRanked).mockReturnValue([]);
+    const search = vi.fn(async (_q: Float32Array, k: number) =>
+      Array.from({ length: k }, (_, i) => ({
+        id: `w${i}`,
+        score: 0.1,
+        metadata: { url: `https://web.example/${i}`, contentHash: 'h', modelId: 'test' },
+      })),
+    );
+    vi.mocked(getEmbedProvider).mockResolvedValue({
+      modelId: 'test',
+      dim: 4,
+      embed: vi.fn().mockResolvedValue([new Float32Array([1, 0, 0, 0])]),
+    });
+    vi.mocked(getVectorStore).mockResolvedValue({
+      upsert: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+      size: vi.fn().mockResolvedValue(500),
+      search,
+    });
+    vi.mocked(getCachedContentByNormalizedUrl).mockImplementation((url: string) =>
+      makeCachedContent({ url, normalizedUrl: url }),
+    );
+
+    const out = await handleCache({ query: 'foo', mode: 'hybrid', source: 'internal', limit: 5 });
+    expect(search.mock.calls.length).toBeGreaterThan(0);
+    expect(search.mock.calls.length).toBeLessThan(20);
+    expect(out.results).toEqual([]);
   });
 });

@@ -626,7 +626,7 @@ export const INDEX_TOOL_SCHEMA = {
     },
     watch: {
       type: 'boolean',
-      description: 'Watch for file changes and auto re-index (blocks until stopped).',
+      description: 'CLI-only: watch for file changes and re-index until stopped. Rejected over MCP and REST.',
     },
   },
   required: ['source'],
