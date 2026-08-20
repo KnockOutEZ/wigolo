@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
+import { app, BrowserWindow, WebContentsView, ipcMain, nativeTheme } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, hiddenWindowPresentation, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
@@ -13,6 +13,7 @@ import { startGateway, type Gateway } from './gateway';
 import { readStorageState, applyStorageState, type CookieJar } from './electron-storage';
 import type { DebuggerLike } from './cdp-transport';
 import { IPC, type PendingApprovalDto, type CaptureDto, type ChatMsgDto } from '../shared/ipc';
+import { tokenValue, type Register } from '../renderer/tokens';
 import { ProfileStore } from 'wigolo/studio';
 import type { ControlParty, NavGrant } from 'wigolo/studio';
 
@@ -65,6 +66,18 @@ function makeViewFactory(win: BrowserWindow): () => TabView {
 
 const hidden = resolveHiddenMode({ argv: process.argv, env: process.env });
 
+/**
+ * The window's own ground, resolved from the SAME token definition the renderer resolves against.
+ *
+ * This colour is painted by the OS before the renderer has a frame and behind the stage while the
+ * WebContentsView is between pages, so a hard-coded value here is a seam that only shows up in the
+ * register the developer was not looking at — the whole point of one token layer is that there is no
+ * second place holding a copy of `--bg`.
+ */
+function windowRegister(): Register {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+}
+
 async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
     width: 1360,
@@ -73,9 +86,17 @@ async function createWindow(): Promise<void> {
     // hidden-inset titlebar: the tab strip lives IN the titlebar with the macOS traffic lights inline
     // (the refined browser look). Falls back to a standard frame off macOS.
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    backgroundColor: '#0c0c10',
+    backgroundColor: tokenValue('--bg', windowRegister()),
     webPreferences: chromeWebPreferences(join(import.meta.dirname, '../preload/index.cjs')),
   });
+
+  // The renderer follows `prefers-color-scheme` live; the frame has to move with it or a register
+  // switch leaves the old ground showing around the stage until the next navigation.
+  const onNativeThemeUpdated = (): void => {
+    if (!win.isDestroyed()) win.setBackgroundColor(tokenValue('--bg', windowRegister()));
+  };
+  nativeTheme.on('updated', onNativeThemeUpdated);
+  win.on('closed', () => nativeTheme.off('updated', onNativeThemeUpdated));
 
   // The Agent rail occupies a fixed right column; the WebContentsView stage is everything left of it,
   // below the chrome. Toggling the rail (from the renderer) reflows the stage to reclaim/yield the column.

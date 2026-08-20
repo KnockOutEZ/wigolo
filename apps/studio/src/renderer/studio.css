@@ -1,34 +1,18 @@
-/* Wigolo Studio chrome — refined dark browser aesthetic (Comet-caliber): near-black surfaces,
-   soft rounding, a hidden-inset titlebar with pill tabs, a centered rounded omnibox, and a right
-   Agent rail. Wigolo's identity color is violet (agent presence, spec §4); the color language for
-   provenance dots follows spec §4 (green=human, violet=agent, amber=working/pending, red=blocked). */
+/* Wigolo Studio chrome — a hidden-inset titlebar with pill tabs, a centered rounded omnibox, and a
+   right Agent rail.
+
+   Every colour, radius and family in here resolves against the token layer in `tokens.ts`, which
+   carries both registers from one definition (DESIGN_SYSTEM.md §3 dark, §11 light). This file
+   declares no colour of its own — that is what makes the dark and light registers the same
+   stylesheet rather than two, and it is why a register switch is an attribute write.
+
+   Two accent families exist and each means one thing: `--agent` is agent identity and agent-caused
+   state, `--attention` is ONLY "needs you" / blocked / risky. The violet / green / red palette this
+   file used to define is gone; the `--human`, `--working`, `--blocked`, `--ok` and `--danger` names
+   still referenced below are aliases resolved by the layer, and the restyle that rebuilds these
+   components against the §4 inventory removes them. */
 
 :root {
-  --bg: #0c0c10;
-  --surface: #15151b;
-  --surface-2: #1c1c24;
-  --surface-hover: #24242e;
-  --border: #26262f;
-  --border-soft: #1e1e26;
-
-  --text: #e8e8ef;
-  --text-dim: #9c9caa;
-  --text-faint: #63636f;
-
-  --agent: #8b7cf6;      /* violet — agent presence */
-  --agent-dim: rgba(139, 124, 246, 0.16);
-  --human: #4ade80;      /* green — human/approved */
-  --working: #fbbf24;    /* amber — background work / pending approval */
-  --blocked: #f87171;    /* red — blocked / fenced */
-
-  --r-pill: 999px;
-  --r-lg: 14px;
-  --r-md: 10px;
-  --r-sm: 7px;
-
-  --chrome-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-  --serif: "New York", ui-serif, Georgia, "Times New Roman", serif;
-
   --titlebar-h: 40px;
   --toolbar-h: 48px;
   --shadow-rail: -1px 0 0 0 var(--border);
@@ -78,9 +62,11 @@ button { font-family: inherit; }
 .tab:hover { background: var(--surface); color: var(--text); }
 .tab--active { background: var(--surface-2); color: var(--text); }
 .tab__dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.tab__dot--agent { background: var(--agent); box-shadow: 0 0 6px var(--agent); }
+/* No glow on any of these: §3 allows the three listed shadows and nothing else, and a glow was the
+   only thing separating "agent" from "working" apart from hue — the pulse carries that now. */
+.tab__dot--agent { background: var(--agent); }
 .tab__dot--human { background: var(--human); }
-.tab__dot--working { background: var(--working); box-shadow: 0 0 6px var(--working); animation: dot-pulse 1.2s ease-in-out infinite; }
+.tab__dot--working { background: var(--working); animation: dot-pulse 1.2s ease-in-out infinite; }
 @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .tab__fav { width: 14px; height: 14px; flex: none; border-radius: 3px; opacity: .8; }
 .tab__title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
@@ -151,13 +137,13 @@ button { font-family: inherit; }
   background: var(--agent-dim); border-bottom: 1px solid var(--border-soft);
   color: var(--text); font-size: 12.5px;
 }
-.drive-banner__dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--agent); box-shadow: 0 0 6px var(--agent); animation: dot-pulse 1.6s ease-in-out infinite; }
+.drive-banner__dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--agent); animation: dot-pulse 1.6s ease-in-out infinite; }
 .drive-banner__step { font-family: var(--serif); font-size: 14px; color: var(--text); }
 .drive-banner__hint { color: var(--text-faint); font-size: 11.5px; margin-left: auto; }
 .drive-banner__pause {
   flex: none; display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 12px;
   border: none; border-radius: var(--r-pill); cursor: default;
-  background: var(--agent); color: #12101f; font: 600 12px var(--chrome-font);
+  background: var(--agent); color: var(--on-accent-text); font: 600 12px var(--chrome-font);
   transition: filter .12s;
 }
 .drive-banner__pause:hover { filter: brightness(1.1); }
@@ -203,9 +189,10 @@ button { font-family: inherit; }
   background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-md);
   display: flex; flex-direction: column; gap: 7px;
 }
-.grant-card--on { border-color: rgba(74, 222, 128, .35); background: rgba(74, 222, 128, .06); }
+/* Granted is agent-caused state, not something that needs a person — so it reads agent, not amber. */
+.grant-card--on { border-color: var(--agent-edge); background: var(--agent-tint); }
 .grant-card__title { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-dim); }
-.grant-card--on .grant-card__title { color: var(--human); }
+.grant-card--on .grant-card__title { color: var(--agent-text); }
 .grant-card__body { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
 .grant-card__body b { color: var(--text); font-weight: 600; }
 .grant-card__btn {
@@ -213,22 +200,23 @@ button { font-family: inherit; }
   border: 1px solid var(--agent); background: var(--agent-dim); color: var(--agent); font: 600 12px var(--chrome-font);
   transition: background .12s;
 }
-.grant-card__btn:hover { background: rgba(139, 124, 246, .24); }
+.grant-card__btn:hover { background: var(--agent-tint-strong); }
 .grant-card__btn--revoke { border-color: var(--border); background: transparent; color: var(--text-dim); }
 .grant-card__btn--revoke:hover { border-color: var(--blocked); color: var(--blocked); background: transparent; }
 
-/* P5 login-wall handoff card — violet=active (agent-paused, human action needed), green=done, amber=failed. */
+/* P5 login-wall handoff card — agent=active (agent-paused) and done; attention=failed, which is the
+   only one of the three that wants a person. */
 .login-card {
   margin: 0 12px 10px; padding: 11px 13px;
   background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-md);
   display: flex; flex-direction: column; gap: 6px;
 }
 .login-card--active { border-color: var(--agent); background: var(--agent-dim); }
-.login-card--done { border-color: rgba(74, 222, 128, .35); background: rgba(74, 222, 128, .06); }
-.login-card--failed { border-color: rgba(245, 179, 90, .38); background: rgba(245, 179, 90, .07); }
+.login-card--done { border-color: var(--agent-edge); background: var(--agent-tint); }
+.login-card--failed { border-color: var(--attention-edge); background: var(--attention-tint); }
 .login-card__title { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-dim); }
 .login-card--active .login-card__title { color: var(--agent); }
-.login-card--done .login-card__title { color: var(--human); }
+.login-card--done .login-card__title { color: var(--agent-text); }
 .login-card__body { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
 .login-card__body strong { color: var(--text); font-weight: 600; }
 
@@ -246,31 +234,33 @@ button { font-family: inherit; }
 .composer__hint { font-size: 11px; color: var(--text-faint); }
 .composer__send {
   width: 28px; height: 28px; border: none; border-radius: 50%; cursor: default;
-  background: var(--agent); color: #12101f; display: grid; place-items: center;
+  background: var(--agent); color: var(--on-accent-text); display: grid; place-items: center;
   transition: filter .12s;
 }
 .composer__send:hover { filter: brightness(1.1); }
 
-/* ── Approval card (spec §5 placeholder; amber = pending) ──────────────── */
+/* ── Approval card — pending means it wants a person, so attention is exactly right here ── */
 .approval {
-  border: 1px solid rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .07);
+  border: 1px solid var(--attention-edge); background: var(--attention-tint);
   border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 12px;
 }
 .approval__label {
   font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
   color: var(--working); margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
 }
-.approval__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--working); box-shadow: 0 0 6px var(--working); }
+.approval__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--working); }
 .approval__glyph { font-size: 11px; }
 .approval__body { font-family: var(--serif); font-size: 14.5px; line-height: 1.5; margin-bottom: 12px; }
 .approval__body b { font-weight: 600; }
-/* Per-risk accent (spec §4): money=amber (base), credential=violet, destructive=red. */
-.approval--credential { border-color: rgba(139, 124, 246, .4); background: var(--agent-dim); }
+/* Per-risk accent: money is the attention base, a credential prompt is agent-caused state, and
+   destructive stays attention. Two families cover all three — the old third colour said nothing the
+   label did not already say. */
+.approval--credential { border-color: var(--agent-edge-strong); background: var(--agent-tint-strong); }
 .approval--credential .approval__label, .approval--credential .approval__dot { color: var(--agent); }
-.approval--credential .approval__dot { background: var(--agent); box-shadow: 0 0 6px var(--agent); }
-.approval--destructive { border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .07); }
-.approval--destructive .approval__label { color: var(--blocked); }
-.approval--destructive .approval__dot { background: var(--blocked); box-shadow: 0 0 6px var(--blocked); }
+.approval--credential .approval__dot { background: var(--agent); }
+.approval--destructive { border-color: var(--attention-edge-strong); background: var(--attention-tint-strong); }
+.approval--destructive .approval__label { color: var(--attention-text); }
+.approval--destructive .approval__dot { background: var(--attention); }
 .approval__actions { display: flex; gap: 8px; }
 .btn {
   flex: 1; height: 30px; border-radius: 8px; border: 1px solid var(--border); cursor: default;
@@ -278,9 +268,11 @@ button { font-family: inherit; }
   transition: background .12s, border-color .12s;
 }
 .btn:hover { background: var(--surface-hover); }
-.btn--allow { background: var(--human); border-color: var(--human); color: #08210f; }
-.btn--allow:hover { filter: brightness(1.08); background: var(--human); }
-.btn--deny:hover { border-color: var(--blocked); color: var(--blocked); }
+/* Allow is consent, and §4 reserves the white-filled action-primary pill for exactly that (Take
+   control, Allow, Resolve, Send). It inverts to dark ink on light ground in the light register. */
+.btn--allow { background: var(--action-primary-bg); border-color: var(--action-primary-bg); color: var(--action-primary-text); }
+.btn--allow:hover { filter: brightness(1.08); background: var(--action-primary-bg); }
+.btn--deny:hover { border-color: var(--attention-edge); color: var(--attention-text); }
 
 /* ── P2 marking: rail tab switcher + Marks pane ── */
 .rail__tabs { display: flex; gap: 2px; }
@@ -296,7 +288,7 @@ button { font-family: inherit; }
   all: unset; cursor: pointer; text-align: center; font-family: var(--chrome-font); font-size: 13px; font-weight: 600;
   color: var(--agent); background: var(--agent-dim); border-radius: var(--r-md); padding: 8px 10px;
 }
-.marks-arm:hover { background: rgba(139, 124, 246, 0.24); }
+.marks-arm:hover { background: var(--agent-tint-strong); }
 
 .mark-card {
   background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r-md); padding: 10px 12px;
@@ -304,16 +296,18 @@ button { font-family: inherit; }
 }
 .mark-card__head { display: flex; align-items: center; gap: 8px; }
 .mark-chip {
-  font-size: 11px; font-weight: 700; color: #fff; background: var(--agent);
+  font-size: 11px; font-weight: 700; color: var(--on-accent-text); background: var(--agent);
   border-radius: var(--r-pill); padding: 2px 9px; white-space: nowrap;
 }
 .mark-card__name { flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mark-card__label { color: var(--text); }
 .mark-conf { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.mark-conf--high { background: var(--human); box-shadow: 0 0 6px var(--human); }
-.mark-conf--medium { background: var(--working); box-shadow: 0 0 6px var(--working); }
-.mark-conf--low { background: var(--working); }
-.mark-conf--none { background: var(--blocked); }
+/* A confidently-resolved mark needs nobody, so it must not be amber — attention is reserved for the
+   rungs that do want a person. The number stays the real signal; §6 says state the confidence. */
+.mark-conf--high { background: var(--text-label); }
+.mark-conf--medium { background: var(--attention); }
+.mark-conf--low { background: var(--attention); }
+.mark-conf--none { background: var(--attention); }
 
 .mark-comment {
   font-size: 12px; color: var(--text-dim); background: var(--surface-2);
@@ -328,7 +322,7 @@ button { font-family: inherit; }
 .mark-comment__input:focus { outline: none; border-color: var(--agent); }
 .mark-card__grab { all: unset; cursor: pointer; color: var(--text-faint); padding: 4px 7px; border-radius: var(--r-sm); }
 .mark-card__grab:hover { color: var(--agent); background: var(--agent-dim); }
-.mark-preview { font-size: 11px; color: var(--working); }
+.mark-preview { font-size: 11px; color: var(--attention-text); }
 
 /* ── P3 Captures pane ── */
 .caps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -341,7 +335,8 @@ button { font-family: inherit; }
   color: var(--agent); background: var(--agent-dim); border-radius: var(--r-pill); padding: 1px 7px;
 }
 .caps__item--extraction { border-left: 2px solid var(--agent); }
-.caps__item--extraction .caps__type { color: var(--ok, #6ee7b7); background: color-mix(in srgb, var(--ok, #6ee7b7) 16%, transparent); }
+/* An extraction is agent-caused, so it reads agent rather than a third "success" colour. */
+.caps__item--extraction .caps__type { color: var(--agent-text); background: var(--agent-tint-strong); }
 .caps__title { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .caps__url {
   grid-column: 2; color: var(--text-faint); font-size: 11px; text-decoration: none;
@@ -353,9 +348,9 @@ button { font-family: inherit; }
 .caps__synth-btn {
   all: unset; cursor: pointer; box-sizing: border-box; width: 100%; text-align: center;
   font: 12px var(--chrome-font); color: var(--agent); background: var(--agent-dim);
-  border: 1px solid color-mix(in srgb, var(--agent) 30%, transparent); border-radius: var(--r-sm); padding: 7px 10px;
+  border: 1px solid var(--agent-edge); border-radius: var(--r-sm); padding: 7px 10px;
 }
-.caps__synth-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--agent) 24%, transparent); }
+.caps__synth-btn:hover:not(:disabled) { background: var(--agent-tint-strong); }
 .caps__synth-btn:disabled { opacity: .5; cursor: default; }
 .brief { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .brief__topics { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -373,24 +368,24 @@ button { font-family: inherit; }
 /* ── P6 F4 timeline rail ── */
 .tl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .tl__item { background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-sm); }
-.tl__item--refused { border-left: 2px solid var(--danger, #f87171); }
+.tl__item--refused { border-left: 2px solid var(--danger); }
 .tl__row {
   all: unset; cursor: pointer; box-sizing: border-box; width: 100%;
   display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 6px; padding: 7px 10px;
 }
-.tl__row:hover { background: var(--surface-3, var(--surface-2)); }
+.tl__row:hover { background: var(--surface-3); }
 .tl__glyph { color: var(--agent); font: 13px var(--chrome-font); width: 14px; text-align: center; }
 .tl__summary { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl__risk {
   font: 10px var(--chrome-font); text-transform: uppercase; letter-spacing: .04em;
-  border-radius: var(--r-pill); padding: 1px 6px; color: var(--text-dim); background: var(--surface-3, var(--surface-2));
+  border-radius: var(--r-pill); padding: 1px 6px; color: var(--text-dim); background: var(--surface-3);
 }
-.tl__risk--money { color: #fbbf24; background: color-mix(in srgb, #fbbf24 16%, transparent); }
-.tl__risk--credential { color: var(--agent); background: var(--agent-dim); }
-.tl__risk--destructive { color: var(--danger, #f87171); background: color-mix(in srgb, var(--danger, #f87171) 16%, transparent); }
+.tl__risk--money { color: var(--attention-text); background: var(--attention-tint-strong); }
+.tl__risk--credential { color: var(--agent-text); background: var(--agent-tint-strong); }
+.tl__risk--destructive { color: var(--attention-text); background: var(--attention-tint-strong); }
 .tl__outcome { font: 10px var(--chrome-font); }
-.tl__outcome.is-ok { color: var(--ok, #6ee7b7); }
-.tl__outcome.is-refused { color: var(--danger, #f87171); }
+.tl__outcome.is-ok { color: var(--ok); }
+.tl__outcome.is-refused { color: var(--danger); }
 .tl__detail { padding: 0 10px 8px 30px; display: flex; flex-direction: column; gap: 2px; }
 .tl__meta { color: var(--text-faint); font-size: 11px; }
 .tl__meta--ts { color: var(--text-dim); }
