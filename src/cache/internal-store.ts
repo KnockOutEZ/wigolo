@@ -31,13 +31,18 @@ export function cacheIndexedDocument(doc: IndexedDocumentWrite): CacheIndexedOut
     }
 
     const now = new Date();
-    const mtime = statSync(doc.sourcePath).mtime;
+    let mtimeIso: string | undefined;
+    try {
+      mtimeIso = statSync(doc.sourcePath).mtime.toISOString();
+    } catch {
+      // File may disappear between scan/read and write — still persist content.
+    }
     const metadata = {
       ...doc.metadata,
       source_path: doc.sourcePath,
       source_root: doc.sourceRoot,
       indexed_at: toIsoSeconds(now),
-      mtime: mtime.toISOString(),
+      ...(mtimeIso ? { mtime: mtimeIso } : {}),
     };
 
     const stmt = db.prepare(`

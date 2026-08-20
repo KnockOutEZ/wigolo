@@ -47,12 +47,19 @@ describe('startIndexWatcher', () => {
       ingestOpts: opts,
     });
 
+    // Let the watcher attach before mutating (parallel suites can delay fs.watch).
+    await new Promise((r) => setTimeout(r, 50));
     writeFileSync(path, '# Live\n\nversion two updated');
-    await new Promise((r) => setTimeout(r, 450));
+
+    const deadline = Date.now() + 3000;
+    let cached = getCachedContent('internal://docs/live.md');
+    while (Date.now() < deadline && !cached?.markdown.includes('version two updated')) {
+      await new Promise((r) => setTimeout(r, 50));
+      cached = getCachedContent('internal://docs/live.md');
+    }
 
     watcher.stop();
 
-    const cached = getCachedContent('internal://docs/live.md');
     expect(cached?.markdown).toMatch(/version two updated/);
   });
 });

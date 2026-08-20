@@ -24,11 +24,11 @@ function summariseForEmbed(title: string, markdown: string): string {
  * Enqueue a locally indexed document for background embedding.
  * Mirrors `crawl/index-to-vec.ts` semantics.
  */
-export function enqueueIndexEmbed(url: string, title: string, markdown: string): Promise<void> {
+export function enqueueIndexEmbed(url: string, title: string, markdown: string): Promise<boolean> {
   const text = summariseForEmbed(title, markdown);
-  if (text.length < MIN_TEXT_LEN) return Promise.resolve();
+  if (text.length < MIN_TEXT_LEN) return Promise.resolve(false);
   const contentHash = hashMarkdown(markdown);
-  return getBackgroundIndexQueue().enqueue({ url, text, contentHash });
+  return getBackgroundIndexQueue().enqueue({ url, text, contentHash }).then(() => true);
 }
 
 /** Read a local file into markdown. Text formats are sync; PDF is async. */
@@ -42,9 +42,16 @@ export async function readLocalFile(absolutePath: string, relativePath: string):
     try {
       const mod = await import('pdf-parse');
       const parser = new mod.PDFParse({ data: buffer });
-      const parsed = await parser.getText({});
-      text = typeof parsed?.text === 'string' ? parsed.text.trim() : '';
-      await parser.destroy();
+      try {
+        const parsed = await parser.getText({});
+        text = typeof parsed?.text === 'string' ? parsed.text.trim() : '';
+      } finally {
+        if (typeof parser.destroy === 'function') {
+          await parser.destroy();
+        } else if (typeof (parser as { close?: () => Promise<void> }).close === 'function') {
+          await (parser as { close: () => Promise<void> }).close();
+        }
+      }
     } catch (err) {
       throw new Error(
         `pdf parse failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -73,13 +80,14 @@ export async function enqueueIndexEmbedSafe(
   url: string,
   title: string,
   markdown: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await enqueueIndexEmbed(url, title, markdown);
+    return await enqueueIndexEmbed(url, title, markdown);
   } catch (err) {
     log.warn('embed enqueue failed after index write', {
       url,
       error: err instanceof Error ? err.message : String(err),
     });
+    return false;
   }
 }

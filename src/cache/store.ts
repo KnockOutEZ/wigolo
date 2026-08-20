@@ -563,17 +563,30 @@ export function searchCacheFiltered(options: {
  * better in sqlite ordering), so we flip the sign to surface a "higher is
  * better" score for consumers (e.g. RRF input).
  */
-export function ftsSearchRanked(query: string, limit: number): Array<{ url: string; score: number }> {
+export function ftsSearchRanked(
+  query: string,
+  limit: number,
+  filters?: { source?: 'web' | 'internal'; namespace?: string },
+): Array<{ url: string; score: number }> {
   if (!query.trim() || limit <= 0) return [];
   const db = getDatabase();
+  const conditions: string[] = ['url_cache_fts MATCH ?'];
+  const params: unknown[] = [sanitizeFtsQuery(query)];
+  applySourceNamespaceFilters(
+    conditions,
+    params,
+    filters ?? {},
+    'url_cache.normalized_url',
+    'url_cache.namespace',
+  );
   const rows = db.prepare(`
     SELECT url_cache.normalized_url AS url, url_cache_fts.rank AS rank
     FROM url_cache
     JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid
-    WHERE url_cache_fts MATCH ?
+    WHERE ${conditions.join(' AND ')}
     ORDER BY url_cache_fts.rank
     LIMIT ?
-  `).all(sanitizeFtsQuery(query), limit) as Array<{ url: string; rank: number }>;
+  `).all(...params, limit) as Array<{ url: string; rank: number }>;
   return rows.map(r => ({ url: r.url, score: -r.rank }));
 }
 
@@ -651,8 +664,8 @@ export function getCacheStats(): CacheStats {
       COALESCE(SUM(LENGTH(markdown) + LENGTH(COALESCE(raw_html, ''))), 0) as total_bytes,
       MIN(fetched_at) as oldest,
       MAX(fetched_at) as newest,
-      SUM(CASE WHEN normalized_url GLOB 'internal://*' THEN 1 ELSE 0 END) as internal_urls,
-      SUM(CASE WHEN normalized_url NOT GLOB 'internal://*' THEN 1 ELSE 0 END) as web_urls
+      COALESCE(SUM(CASE WHEN normalized_url GLOB 'internal://*' THEN 1 ELSE 0 END), 0) as internal_urls,
+      COALESCE(SUM(CASE WHEN normalized_url NOT GLOB 'internal://*' THEN 1 ELSE 0 END), 0) as web_urls
     FROM url_cache
   `).get() as {
     total_urls: number;

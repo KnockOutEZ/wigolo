@@ -11,7 +11,7 @@ import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
 import { applyAggregateMarkdownBudget } from '../search/evidence.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
-import { getVectorStore } from '../providers/vector-store.js';
+import { getVectorStore, type VectorStore, type VectorSearchResult } from '../providers/vector-store.js';
 import { createLogger } from '../logger.js';
 import type { CacheInput, CacheOutput, CacheResultItem, ChangeReport } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -190,6 +190,10 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
   const query = input.query ?? '';
   const limit = Math.max(1, input.limit ?? DEFAULT_HYBRID_LIMIT);
   const candidateLimit = Math.max(HYBRID_CANDIDATE_FLOOR, limit * HYBRID_CANDIDATE_FACTOR);
+  const filters =
+    input.source || input.namespace
+      ? { source: input.source, namespace: input.namespace }
+      : undefined;
 
   let embedProvider;
   let store;
@@ -221,8 +225,8 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
   if (!queryVector || queryVector.length === 0) return null;
 
   const [ftsHits, vecHits] = await Promise.all([
-    Promise.resolve(ftsSearchRanked(query, candidateLimit)),
-    store.search(queryVector, candidateLimit),
+    Promise.resolve(ftsSearchRanked(query, candidateLimit, filters)),
+    vectorSearchFiltered(store, queryVector, candidateLimit, filters),
   ]);
 
   const ftsRankMap = buildRankMap(ftsHits.map(h => h.url));
@@ -257,4 +261,62 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
   }
 
   return results;
+}
+
+type HybridSourceFilter = { source?: 'web' | 'internal'; namespace?: string };
+
+function cacheRowMatchesHybridFilter(
+  cached: { url: string; normalizedUrl: string; namespace?: string | null },
+  filters?: HybridSourceFilter,
+): boolean {
+  if (!filters?.source && !filters?.namespace) return true;
+  if (
+    filters.source === 'internal' &&
+    !isInternalCacheUrl(cached.url) &&
+    !isInternalCacheUrl(cached.normalizedUrl)
+  ) {
+    return false;
+  }
+  if (
+    filters.source === 'web' &&
+    (isInternalCacheUrl(cached.url) || isInternalCacheUrl(cached.normalizedUrl))
+  ) {
+    return false;
+  }
+  if (filters.namespace) {
+    const ns = (cached.namespace ?? 'web').toLowerCase();
+    if (ns !== filters.namespace.trim().toLowerCase()) return false;
+  }
+  return true;
+}
+
+/** Over-fetch vector KNN hits when source/namespace filters would truncate the pool. */
+async function vectorSearchFiltered(
+  store: VectorStore,
+  queryVector: Float32Array,
+  limit: number,
+  filters?: HybridSourceFilter,
+): Promise<VectorSearchResult[]> {
+  if (!filters?.source && !filters?.namespace) {
+    return store.search(queryVector, limit);
+  }
+
+  let knnLimit = Math.max(HYBRID_CANDIDATE_FLOOR, limit * HYBRID_CANDIDATE_FACTOR);
+  const maxKnn = knnLimit * 10;
+  const filtered: VectorSearchResult[] = [];
+
+  while (knnLimit <= maxKnn) {
+    const hits = await store.search(queryVector, knnLimit);
+    filtered.length = 0;
+    for (const hit of hits) {
+      const cached = getCachedContentByNormalizedUrl(hit.metadata.url);
+      if (!cached || !cacheRowMatchesHybridFilter(cached, filters)) continue;
+      filtered.push(hit);
+      if (filtered.length >= limit) return filtered;
+    }
+    if (hits.length < knnLimit) break;
+    knnLimit = Math.min(knnLimit * 2, maxKnn);
+  }
+
+  return filtered;
 }

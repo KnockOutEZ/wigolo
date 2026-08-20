@@ -29,6 +29,8 @@ export interface IndexFileResult {
   url: string;
   status: IndexFileStatus;
   error?: string;
+  /** Internal: whether embedding was actually enqueued (not serialized to MCP). */
+  embedEnqueued?: boolean;
 }
 
 export interface IngestOptions {

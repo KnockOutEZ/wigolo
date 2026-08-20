@@ -279,22 +279,26 @@ Tip: webhook destinations are SSRF-guarded — a job cannot be pointed at intern
 
 ### index
 
-Ingest local markdown/text files into the knowledge cache as `internal://` documents. Never expire by default. Query them with `cache({ query, source: "internal" })`.
+Ingest local markdown, text, or PDF files into the knowledge cache as `internal://` documents. Never expire by default. Query them with `cache({ query, source: "internal" })`.
 
 Parameters:
 - `source` (string, required): local file or directory path
-- `glob`: basename glob (default `*.md`)
+- `glob`: basename glob (default `*.md`; use `*` for all allowed text/PDF extensions)
 - `namespace`: URL prefix (default `docs`)
 - `recursive`: walk subdirectories (default true)
 - `ttl`: seconds; `0` never expires
 - `tags`: categorization strings
+- `dry_run`: scan only; do not write
+- `max_files`: positive integer cap (default 10000)
+- `wait_for_embed`: block until embedding queue drains
+- `watch`: CLI-only — re-index on file changes (not available over REST/MCP)
 
 Example:
 ```json
 { "source": "./docs", "namespace": "docs", "glob": "*.md" }
 ```
 
-Tip: re-running index on unchanged files is a no-op (content hash skip).
+Tip: re-running index on unchanged files is a no-op (content hash skip). PDFs are text-extracted when present.
 
 ## Workflow Patterns
 

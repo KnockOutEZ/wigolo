@@ -3,7 +3,8 @@ import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { ingestFiles, buildInternalUrl } from '../indexing/ingester.js';
 import { resolveLocalSource, scanLocalFiles, MAX_INDEX_FILES } from '../indexing/scanner.js';
 import { startIndexWatcher, waitForWatchStop } from '../indexing/watcher.js';
-import type { IndexInput, IndexOutput } from '../types.js';
+import { INVALID_NAMESPACE } from '../indexing/url-builder.js';
+import type { IndexInput, IndexOutput, IndexFileResult } from '../types.js';
 
 const log = createLogger('indexing');
 
@@ -30,16 +31,32 @@ function collectErrors(
   return errors.length > 0 ? errors : undefined;
 }
 
+function toPublicFiles(
+  files: Array<{ path: string; url: string; status: IndexFileResult['status']; error?: string }>,
+): IndexFileResult[] {
+  return files.map(({ path, url, status, error }) => ({
+    path,
+    url,
+    status,
+    ...(error ? { error } : {}),
+  }));
+}
+
 /**
  * Ingest local markdown/text/PDF files into url_cache under `internal://` URLs.
  * Does not touch the network and does not go through SSRF guards.
  */
 export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
-  const namespace = (input.namespace?.trim() || 'docs').toLowerCase();
+  const namespaceRaw = input.namespace?.trim() || 'docs';
+  const namespace = namespaceRaw.toLowerCase();
   const empty = emptyOutput(namespace);
 
   if (!input.source || !input.source.trim()) {
     return { ...empty, error: 'source is required' };
+  }
+
+  if (INVALID_NAMESPACE.test(namespace) || !namespace) {
+    return { ...empty, error: `invalid namespace: ${JSON.stringify(input.namespace)}` };
   }
 
   const resolved = resolveLocalSource(input.source);
@@ -56,11 +73,12 @@ export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
   }
 
   const maxFilesRaw = input.max_files;
-  const maxFiles =
-    maxFilesRaw === undefined || maxFilesRaw === null
-      ? MAX_INDEX_FILES
-      : Number(maxFilesRaw);
-  if (!Number.isFinite(maxFiles) || maxFiles < 1) {
+  let maxFiles: number;
+  if (maxFilesRaw === undefined || maxFilesRaw === null) {
+    maxFiles = MAX_INDEX_FILES;
+  } else if (typeof maxFilesRaw === 'number' && Number.isInteger(maxFilesRaw) && maxFilesRaw >= 1) {
+    maxFiles = maxFilesRaw;
+  } else {
     return { ...empty, error: 'max_files must be a positive integer' };
   }
 
@@ -132,6 +150,8 @@ export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
     };
   }
 
+  const publicFiles = toPublicFiles(batch.files);
+
   if (input.wait_for_embed === true) {
     try {
       await getBackgroundIndexQueue().drain();
@@ -142,9 +162,9 @@ export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
         indexed: batch.indexed,
         skipped: batch.skipped,
         failed: batch.failed,
-        files: batch.files,
+        files: publicFiles,
         sample_urls,
-        errors: collectErrors(batch.files),
+        errors: collectErrors(publicFiles),
         error: `embed unavailable: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
@@ -156,9 +176,9 @@ export async function handleIndex(input: IndexInput): Promise<IndexOutput> {
     skipped: batch.skipped,
     failed: batch.failed,
     namespace,
-    files: batch.files,
+    files: publicFiles,
     sample_urls,
-    errors: collectErrors(batch.files),
+    errors: collectErrors(publicFiles),
     embed: batch.embed,
   };
 

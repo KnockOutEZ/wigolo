@@ -550,6 +550,22 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'index') {
       const input = (args ?? {}) as unknown as IndexInput;
+      if (input.watch === true) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'index watch mode is not available over MCP; use the CLI (`wigolo index --watch`)',
+              indexed: 0,
+              skipped: 0,
+              failed: 0,
+              namespace: input.namespace?.trim()?.toLowerCase() || 'docs',
+              files: [],
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
       const result = await handleIndex(input);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],

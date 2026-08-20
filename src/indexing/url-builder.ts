@@ -1,4 +1,4 @@
-const INVALID_NAMESPACE = /[/\\]|\.\./;
+export const INVALID_NAMESPACE = /[/\\]|\.\./;
 
 /**
  * Build an `internal://{namespace}/{posix-relative}` URL.

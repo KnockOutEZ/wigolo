@@ -31,8 +31,10 @@ export function matchSimpleGlob(name: string, pattern: string): boolean {
 function isAllowedExtension(name: string, glob: string): boolean {
   if (!matchSimpleGlob(name, glob)) return false;
   const ext = extname(name).toLowerCase();
+  if (!ext) return false;
+  if (glob === '*') return DEFAULT_ALLOWED_EXTENSIONS.has(ext);
   if (glob.startsWith('*.')) return true;
-  return DEFAULT_ALLOWED_EXTENSIONS.has(ext) || ext === '' || ext === '.pdf';
+  return DEFAULT_ALLOWED_EXTENSIONS.has(ext);
 }
 
 function shouldSkipDir(name: string): boolean {
@@ -122,8 +124,19 @@ export function scanLocalFiles(
     return { root, files, warnings };
   }
 
+  const visitedDirs = new Set<string>();
+
   const visit = (dir: string): void => {
     if (files.length >= maxFiles) return;
+    let realDir: string;
+    try {
+      realDir = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visitedDirs.has(realDir)) return;
+    visitedDirs.add(realDir);
+
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });

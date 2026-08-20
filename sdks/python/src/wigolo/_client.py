@@ -684,6 +684,10 @@ class Client:
         recursive: Optional[bool] = None,
         ttl: Optional[int] = None,
         tags: Optional[list[str]] = None,
+        dry_run: Optional[bool] = None,
+        max_files: Optional[int] = None,
+        wait_for_embed: Optional[bool] = None,
+        watch: Optional[bool] = None,
         timeout: Optional[float] = None,
     ) -> Any:
         """Ingest local files into the knowledge cache."""
@@ -696,6 +700,10 @@ class Client:
                 "recursive": recursive,
                 "ttl": ttl,
                 "tags": tags,
+                "dry_run": dry_run,
+                "max_files": max_files,
+                "wait_for_embed": wait_for_embed,
+                "watch": watch,
             },
             timeout,
         )

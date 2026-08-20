@@ -1,5 +1,5 @@
-import { watch, type FSWatcher } from 'node:fs';
-import { basename, join } from 'node:path';
+import { watch, type FSWatcher, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { createLogger } from '../logger.js';
 import { ingestFile } from './ingester.js';
 import { matchSimpleGlob } from './scanner.js';
@@ -25,10 +25,25 @@ export interface IndexWatcherOptions {
 /**
  * Debounced fs.watch over `root`. Re-ingests changed files that still match
  * the glob. Does not persist jobs — process-lifetime only (MCP stdio model).
+ *
+ * When `root` is a single file, watches the parent directory and filters to
+ * that basename (Node's fs.watch on a file is unreliable across platforms).
  */
 export function startIndexWatcher(options: IndexWatcherOptions): IndexWatcherHandle {
   const timers = new Map<string, NodeJS.Timeout>();
   let closed = false;
+
+  let watchTarget = options.root;
+  let singleFileName: string | null = null;
+  try {
+    const st = statSync(options.root);
+    if (st.isFile()) {
+      singleFileName = basename(options.root);
+      watchTarget = dirname(options.root);
+    }
+  } catch {
+    // Fall through — fs.watch will surface the error.
+  }
 
   const flush = (absPath: string): void => {
     const existing = timers.get(absPath);
@@ -44,6 +59,7 @@ export function startIndexWatcher(options: IndexWatcherOptions): IndexWatcherHan
   };
 
   const reingest = async (absPath: string): Promise<void> => {
+    if (singleFileName && basename(absPath) !== singleFileName) return;
     const name = basename(absPath);
     if (!matchSimpleGlob(name, options.glob)) return;
     const relativePath =
@@ -70,11 +86,11 @@ export function startIndexWatcher(options: IndexWatcherOptions): IndexWatcherHan
   let watcher: FSWatcher;
   try {
     watcher = watch(
-      options.root,
-      { recursive: options.recursive },
+      watchTarget,
+      { recursive: singleFileName ? false : options.recursive },
       (_event, filename) => {
         if (!filename || closed) return;
-        flush(join(options.root, filename));
+        flush(join(watchTarget, filename));
       },
     );
   } catch (err) {

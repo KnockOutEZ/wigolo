@@ -221,9 +221,22 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
 }
 
 async function dispatchIndex(input: IndexInput, _ctx: DispatchContext): Promise<DispatchResult> {
+  if (input.watch === true) {
+    return {
+      status: 400,
+      body: errorEnvelope(
+        'watch_unsupported',
+        'index watch mode is not available over REST; use the CLI (`wigolo index --watch`) or MCP stdio',
+        { stage: 'validate', hint: 'omit watch or use CLI/MCP' },
+      ),
+    };
+  }
   const result = await handleIndex(input);
   if (result.error) {
-    return { status: 400, body: result };
+    return {
+      status: 400,
+      body: errorEnvelope('index_failed', result.error, { stage: 'index' }),
+    };
   }
   return { status: 200, body: result };
 }

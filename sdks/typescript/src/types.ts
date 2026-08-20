@@ -327,14 +327,24 @@ export interface IndexRequest {
   recursive?: boolean;
   ttl?: number;
   tags?: string[];
+  dry_run?: boolean;
+  max_files?: number;
+  wait_for_embed?: boolean;
+  /** Not supported over REST — use CLI or MCP stdio. */
+  watch?: boolean;
 }
 
 export type IndexResponse = WithExtras<{
+  scanned?: number;
   indexed?: number;
   skipped?: number;
   failed?: number;
   namespace?: string;
   files?: unknown[];
+  errors?: unknown[];
+  sample_urls?: string[];
+  watching?: boolean;
+  embed?: unknown;
   error?: string;
 }>;
 

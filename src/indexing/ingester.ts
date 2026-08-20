@@ -76,12 +76,18 @@ export async function ingestFile(
     };
   }
 
+  let embedEnqueued = false;
   if (opts.embed !== false) {
-    await enqueueIndexEmbedSafe(url, read.title, read.markdown);
+    embedEnqueued = await enqueueIndexEmbedSafe(url, read.title, read.markdown);
   }
 
   log.debug('indexed file', { path: file.relativePath, url });
-  return { path: file.relativePath, url, status: 'indexed' };
+  return {
+    path: file.relativePath,
+    url,
+    status: 'indexed',
+    ...(embedEnqueued ? { embedEnqueued: true } : {}),
+  };
 }
 
 export async function ingestFiles(
@@ -93,13 +99,21 @@ export async function ingestFiles(
   let indexed = 0;
   let skipped = 0;
   let failed = 0;
+  let embedEnqueued = 0;
+  let embedSkipped = 0;
 
   for (const file of files) {
     const r = await ingestFile(file, opts, sourceRoot);
     results.push(r);
-    if (r.status === 'indexed') indexed++;
-    else if (r.status === 'skipped') skipped++;
-    else failed++;
+    if (r.status === 'indexed') {
+      indexed++;
+      if (r.embedEnqueued) embedEnqueued++;
+      else embedSkipped++;
+    } else if (r.status === 'skipped') {
+      skipped++;
+    } else {
+      failed++;
+    }
   }
 
   return {
@@ -108,8 +122,8 @@ export async function ingestFiles(
     failed,
     files: results,
     embed: {
-      enqueued: indexed,
-      skipped_embed: skipped,
+      enqueued: embedEnqueued,
+      skipped_embed: embedSkipped,
     },
   };
 }
