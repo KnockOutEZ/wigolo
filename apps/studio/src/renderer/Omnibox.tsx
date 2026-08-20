@@ -15,7 +15,7 @@ export function Toolbar(props: {
   onReload: () => void;
   railOpen: boolean;
   onToggleRail: () => void;
-  /** Arm region-clip on the focused session tab (✂ — same as ⌘⇧X). */
+  /** Arm region-clip on the focused session tab (the clip control, same as ⌘⇧X). */
   onClip: () => void;
   /** ⇥ hands the typed text to the agent as intent (reuses the P4 chat channel). Absent ⇒ Tab does nothing. */
   onIntent?: (text: string) => void;

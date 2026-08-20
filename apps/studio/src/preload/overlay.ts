@@ -5,13 +5,18 @@
  * wiring around the pure `overlay-core` helpers.
  *
  * Self-containment: a SANDBOXED preload cannot load sibling build chunks, so this entry imports only
- * `electron` (a runtime builtin the sandbox provides) + `./overlay-core` (overlay-only → inlined by the
- * bundler). It deliberately does NOT import the shared `../shared/ipc` runtime `IPC` const (shared with
+ * `electron` (a runtime builtin the sandbox provides) + `./overlay-core` and `../renderer/tokens`, both
+ * of which only this entry references and so are inlined by the bundler. It deliberately does NOT
+ * import the shared `../shared/ipc` runtime `IPC` const (shared with
  * the chrome preload → would hoist a chunk); the four channel strings are duplicated as local consts
  * (kept in sync with shared/ipc.ts's IPC.overlay* entries — the e2e exercises the real wire).
  */
 import { ipcRenderer } from 'electron';
 import { elementPath, serializePayload, whiskerLabel, ancestorWalk, serializeQuote, rectFromPoints, ghostCursorPlacement, type MarkPayload } from './overlay-core';
+// The token layer, for the shadow root below. `tokens.ts` imports nothing, so pulling it in keeps this
+// entry self-contained — no other preload entry references it, so the bundler inlines it rather than
+// hoisting a chunk a sandboxed preload could not load.
+import { shadowTokenCss } from '../renderer/tokens';
 
 // Channel strings — MUST equal shared/ipc.ts IPC.overlay* (not imported to keep this bundle self-contained).
 const CH = {
@@ -47,44 +52,77 @@ function installOverlay(): void {
   host.setAttribute('aria-hidden', 'true');
   host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
   const root = host.attachShadow({ mode: 'closed' });
+  // Everything the overlay draws resolves against the token layer, which `shadowTokenCss` declares on
+  // this root: the overlay lands on a page we do not own, so it cannot inherit the chrome's register
+  // attribute, but it must still be one component in two registers rather than two components.
+  //
+  // Two accent families and nothing else: a mark and a highlight are the agent's address space, so
+  // they are the agent hue; attention stays reserved for the rungs that want a person. No glow and no
+  // 2px edge — §3 allows three shadows and every border is exactly 1px, and the old violet bloom was
+  // the only thing distinguishing hover from marked apart from hue, which the tint now carries.
   root.innerHTML = `
     <style>
       :host { all: initial; }
-      .outline { position: fixed; pointer-events: none; border: 2px solid #a06bff; border-radius: 6px;
-        box-shadow: 0 0 0 2px rgba(160,107,255,.28), 0 0 18px rgba(160,107,255,.35); transition: all .06s ease; display: none; }
-      .outline.marked { border-color: #a06bff; box-shadow: 0 0 0 2px rgba(160,107,255,.5); }
-      .whisker { position: fixed; pointer-events: none; font: 11px ui-monospace, monospace; color: #f4f0ff;
-        background: #1b1526; border: 1px solid #3a2f52; border-radius: 5px; padding: 2px 7px; white-space: nowrap; display: none; }
-      .chip { position: fixed; pointer-events: none; font: 11px ui-sans-serif, system-ui; color: #f4f0ff;
-        background: #6f4ad1; border-radius: 999px; padding: 2px 8px; transform: translateY(-50%); }
-      .cliprect { position: fixed; pointer-events: none; border: 1.5px dashed #a06bff; border-radius: 4px;
-        background: rgba(160,107,255,.12); display: none; }
+      ${shadowTokenCss()}
+      /* §4 \`highlight\` — the element the agent (or the marking human) is acting on. */
+      .outline { position: fixed; pointer-events: none;
+        border: var(--hair-width) solid var(--agent); border-radius: var(--radius-inner);
+        background: var(--agent-tint); transition: all .06s ease; display: none; }
+      .outline.marked { background: var(--agent-tint-strong); }
+      /* The hover label names the element — a machine fact, so mono, on a plate that sits on whichever
+         ground it annotates (§11: black plate in dark, white plate in light). */
+      .whisker { position: fixed; pointer-events: none;
+        font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
+        color: var(--agent-text); background: var(--mark-bg);
+        border: var(--hair-width) solid var(--agent-edge); border-radius: var(--radius-segment);
+        padding: 2px 7px; white-space: nowrap; display: none; }
+      /* §4 \`mark\` — the same number appears here, in the rail, in the terminal and in the replay. */
+      .chip { position: fixed; pointer-events: none;
+        font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
+        color: var(--agent-text); background: var(--mark-bg);
+        border: var(--hair-width) solid var(--agent); border-radius: var(--radius-segment);
+        min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center;
+        transform: translateY(-50%); white-space: nowrap; }
+      .cliprect { position: fixed; pointer-events: none;
+        border: var(--hair-width) dashed var(--agent-edge); border-radius: var(--radius-segment);
+        background: var(--agent-tint); display: none; }
       .cliphint { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); pointer-events: none;
-        font: 12px ui-sans-serif, system-ui; color: #f4f0ff; background: #1b1526; border: 1px solid #3a2f52;
-        border-radius: 6px; padding: 4px 10px; display: none; }
-      .bar { position: fixed; pointer-events: auto; display: none; gap: 4px; background: #171320; border: 1px solid #34294c;
-        border-radius: 8px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
-      .bar button { all: unset; cursor: pointer; font: 13px ui-sans-serif, system-ui; color: #e9e3f7; padding: 3px 7px; border-radius: 5px; }
-      .bar button:hover { background: #2a2140; }
+        font: var(--type-body-sm); letter-spacing: var(--tracking-body-sm);
+        color: var(--text-body); background: var(--mark-bg);
+        border: var(--hair-width) solid var(--hair); border-radius: var(--radius-segment);
+        padding: 4px 10px; display: none; }
+      /* A popover over rendered web content — §3's third shadow is the only one allowed here. */
+      .bar { position: fixed; pointer-events: auto; display: none; gap: var(--space-chip-dense);
+        background: var(--mark-bg); border: var(--hair-width) solid var(--hair);
+        border-radius: var(--radius-card); padding: var(--space-chip-dense);
+        box-shadow: var(--shadow-popover-page); }
+      .bar button { all: unset; cursor: pointer;
+        font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
+        color: var(--text-body); padding: 3px 7px; border-radius: var(--radius-segment); }
+      .bar button:hover { background: var(--agent-tint-strong); color: var(--agent-text); }
       .bar button[disabled] { opacity: .4; cursor: default; }
+      /* §4 \`ghost-cursor\` — the agent's pointer. currentColor so one glyph serves both registers. */
       .ghost { position: fixed; pointer-events: none; width: 18px; height: 18px; margin: -2px 0 0 -2px;
+        color: var(--agent);
         transition: left .18s cubic-bezier(.2,.8,.2,1), top .18s cubic-bezier(.2,.8,.2,1); display: none; z-index: 3; }
-      .ghost svg { filter: drop-shadow(0 0 6px rgba(160,107,255,.7)); }
-      .ghostcap { position: fixed; pointer-events: none; font: 12px ui-sans-serif, system-ui; color: #f4f0ff;
-        background: rgba(111,74,209,.92); border-radius: 6px; padding: 3px 9px; white-space: nowrap; display: none; z-index: 3; }
+      .ghostcap { position: fixed; pointer-events: none;
+        font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
+        color: var(--on-accent-text); background: var(--agent);
+        border-radius: var(--radius-segment); padding: 3px 9px;
+        white-space: nowrap; display: none; z-index: 3; }
     </style>
     <div class="outline"></div>
     <div class="whisker"></div>
     <div class="cliprect"></div>
     <div class="cliphint">Drag to clip a region · Esc to cancel</div>
-    <div class="ghost"><svg viewBox="0 0 18 18" width="18" height="18"><path d="M2 2l14 6-6 2-2 6z" fill="#a06bff"/></svg></div>
+    <div class="ghost"><svg viewBox="0 0 18 18" width="18" height="18"><path d="M2 2l14 6-6 2-2 6z" fill="currentColor"/></svg></div>
     <div class="ghostcap"></div>
     <div class="chips"></div>
     <div class="bar">
-      <button data-act="comment" title="Comment (type in the Marks panel →)">💬</button>
-      <button data-act="grab">⧉</button>
-      <button data-act="watch" disabled title="Watch — arrives later (P7)">👁</button>
-      <button data-act="send" disabled title="Send to agent — arrives later (P4)">➤</button>
+      <button data-act="comment" title="Comment (type in the Marks panel →)">note</button>
+      <button data-act="grab" title="Preview the repeating set">⧉</button>
+      <button data-act="watch" disabled title="Watch — arrives later">watch</button>
+      <button data-act="send" disabled title="Send to agent — arrives later">send</button>
     </div>`;
   const outline = root.querySelector('.outline') as HTMLElement;
   const whisker = root.querySelector('.whisker') as HTMLElement;
@@ -117,9 +155,11 @@ function installOverlay(): void {
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
     outline.classList.remove('marked');
-    outline.style.borderRadius = cs.borderRadius && cs.borderRadius !== '0px' ? cs.borderRadius : '6px';
-    outline.style.left = `${r.left - 2}px`;
-    outline.style.top = `${r.top - 2}px`;
+    // Follow the target's own corner when it has one; otherwise the highlight radius from the layer.
+    outline.style.borderRadius = cs.borderRadius && cs.borderRadius !== '0px' ? cs.borderRadius : '';
+    // The highlight is a 1px edge drawn just outside the target, so the offset is the border width.
+    outline.style.left = `${r.left - 1}px`;
+    outline.style.top = `${r.top - 1}px`;
     outline.style.width = `${r.width}px`;
     outline.style.height = `${r.height}px`;
     whisker.textContent = whiskerLabel(el);
@@ -246,8 +286,8 @@ function installOverlay(): void {
   document.addEventListener('click', commit, true);
 
   // P4 ghost cursor: the agent's act broadcasts its resolved target point + narration caption here. Renders
-  // the violet cursor + caption in this isolated-world overlay (renderer chrome DOM sits behind the page),
-  // and fades after the act settles. Caption is agent-authored narration — never page-derived content.
+  // the agent-hue cursor + caption in this isolated-world overlay (renderer chrome DOM sits behind the
+  // page), and fades after the act settles. Caption is agent-authored narration — never page-derived.
   ipcRenderer.on(CH.cursor, (_e, m: { x: number; y: number; caption: string }) => {
     const p = ghostCursorPlacement(m, { w: window.innerWidth, h: window.innerHeight });
     ghost.style.left = `${p.cursor.left}px`; ghost.style.top = `${p.cursor.top}px`; ghost.style.display = 'block';
@@ -258,7 +298,7 @@ function installOverlay(): void {
   });
 
   ipcRenderer.on(CH.arm, () => arm());
-  // P4 toolbar ✂ → arm region clip (same as the ⌘⇧X keyboard arm; the next drag draws the rectangle).
+  // The toolbar's clip control → arm region clip (same as the ⌘⇧X keyboard arm; the next drag draws it).
   ipcRenderer.on(CH.clipArm, () => setClip(true));
   ipcRenderer.on(CH.assigned, (_e, data: { nonce: string; markId: string; number: number }) => {
     const chip = pendingChips.get(data.nonce);

@@ -3,20 +3,33 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   DEFAULT_REGISTER,
-  LEGACY_ALIASES,
   REGISTERS,
+  RETIRED_PROPERTIES,
   TOKENS,
   registerDeclarations,
+  shadowTokenCss,
   tokenCss,
   tokenValue,
 } from '../../src/renderer/tokens';
 
 const REPO_ROOT = join(import.meta.dirname, '../../../..');
 const DESIGN_SYSTEM = readFileSync(join(REPO_ROOT, 'DESIGN_SYSTEM.md'), 'utf8');
-const STUDIO_CSS = readFileSync(
-  join(import.meta.dirname, '../../src/renderer/studio.css'),
-  'utf8',
-);
+const SRC = join(import.meta.dirname, '../../src');
+const read = (rel: string): string => readFileSync(join(SRC, rel), 'utf8');
+const STUDIO_CSS = read('renderer/studio.css');
+const OVERLAY = read('preload/overlay.ts');
+/**
+ * Every file that styles something, which is what the restyle had to cover: the chrome stylesheet, the
+ * per-tab overlay that draws over live web content, and the components themselves — a component that
+ * reintroduced an inline colour would be invisible to a stylesheet-only assertion.
+ */
+const STYLING_SOURCES: readonly { readonly path: string; readonly text: string }[] = [
+  { path: 'renderer/studio.css', text: STUDIO_CSS },
+  { path: 'preload/overlay.ts', text: OVERLAY },
+  ...['App', 'ApprovalCard', 'BriefPanel', 'CapturesPanel', 'ChatPanel', 'DriveBanner', 'GrantCard',
+    'KnowledgeRail', 'LoginCard', 'MarksPanel', 'Omnibox', 'TabStrip', 'TimelinePanel', 'icons']
+    .map((name) => ({ path: `renderer/${name}.tsx`, text: read(`renderer/${name}.tsx`) })),
+];
 
 const names = new Set(TOKENS.map((t) => t.name));
 const declaredNames = (register: 'dark' | 'light'): string[] =>
@@ -125,33 +138,66 @@ describe('both registers come from one definition', () => {
   });
 });
 
-describe('the legacy alias bridge', () => {
-  it('resolves every alias to a token that exists', () => {
-    // An alias pointing at a token that was renamed resolves to nothing and the component silently
-    // loses its colour — a class of bug no typecheck can see, because CSS custom properties fail soft.
-    for (const [alias, value] of Object.entries(LEGACY_ALIASES)) {
-      const target = /^var\((--[a-z0-9-]+)\)$/.exec(value.trim());
-      expect(target, `${alias} must be a single var() reference, got ${value}`).not.toBeNull();
-      expect(names.has(target![1]), `${alias} → ${target![1]} is not a token`).toBe(true);
-    }
+describe('the retired alias bridge is gone, not merely unused', () => {
+  it('declares none of the retired names anywhere in the emitted layer', () => {
+    // The bridge is deleted, so these resolve to nothing. Emitting one again would let a component
+    // reference it and quietly work, which is how the five-colour palette would grow back.
+    const css = `${tokenCss()}\n${shadowTokenCss()}`;
+    const declared = RETIRED_PROPERTIES.filter((name) =>
+      new RegExp(`^\\s*${name}\\s*:`, 'm').test(css),
+    );
+    expect(declared).toEqual([]);
   });
 
-  it('never aliases a name to a token that is itself an alias', () => {
-    for (const value of Object.values(LEGACY_ALIASES)) {
-      const target = /^var\((--[a-z0-9-]+)\)$/.exec(value.trim())![1];
-      expect(LEGACY_ALIASES[target]).toBeUndefined();
+  it('is referenced by nothing that styles anything', () => {
+    // The teeth of the restyle. A CSS custom property fails SOFT: `var(--text-dim)` with no
+    // `--text-dim` declared paints nothing and the element inherits, so a survivor is invisible to
+    // the typecheck, to the suite, and to a screenshot of the one register it happens to look right
+    // in. Only a grep catches it — so the grep lives here and runs on every commit.
+    //
+    // `\b` on the closing side matters: `--text` must not match `--text-primary`, and `--border`
+    // must not match `--border-soft`. The control below proves the pattern can still find a hit.
+    const survivors: string[] = [];
+    for (const { path, text } of STYLING_SOURCES) {
+      for (const name of RETIRED_PROPERTIES) {
+        if (new RegExp(`var\\(\\s*${name}\\s*[,)]`).test(text)) survivors.push(`${path} → ${name}`);
+      }
     }
+    expect(survivors).toEqual([]);
   });
 
-  it('keeps attention meaning only "needs you"', () => {
-    // §3: attention is ONLY needs-you / blocked / risky. Provenance ("a human did this") and a
-    // settled outcome want nobody, so routing them to amber would make the accent mean nothing —
-    // which is exactly what the old five-colour palette did.
-    const attention = ['--working', '--blocked', '--danger'];
-    for (const name of attention) expect(LEGACY_ALIASES[name]).toBe('var(--attention)');
-    for (const name of ['--human', '--ok']) {
-      expect(LEGACY_ALIASES[name]).not.toContain('attention');
+  it('would find a retired name if one came back', () => {
+    // The control run for the assertion above. A grep that finds nothing is only evidence once you
+    // have shown it CAN find something — otherwise a typo in the pattern reads as a clean sweep.
+    const reintroduced = '.tab { color: var(--text-dim); background: var(--surface-2); }';
+    const found = RETIRED_PROPERTIES.filter((name) =>
+      new RegExp(`var\\(\\s*${name}\\s*[,)]`).test(reintroduced),
+    );
+    expect([...found].sort()).toEqual(['--surface-2', '--text-dim']);
+    // …and the boundary it must NOT trip on: the live tokens whose names contain a retired one.
+    const live = '.tab { color: var(--text-primary); border-color: var(--border-radius-not-a-token); }';
+    expect(RETIRED_PROPERTIES.filter((n) => new RegExp(`var\\(\\s*${n}\\s*[,)]`).test(live))).toEqual([]);
+  });
+
+  it('keeps attention meaning only "needs you" now that the states resolve directly', () => {
+    // §3: attention is ONLY needs-you / blocked / risky. Provenance ("a human drove this tab") and a
+    // settled outcome ("ok") want nobody, so painting them amber would make the accent mean nothing —
+    // which is exactly what the old five-colour palette did. These four rules are where that lives
+    // after the restyle, so they are asserted by rule rather than through a bridge.
+    const rule = (selector: string): string => {
+      const found = new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`).exec(STUDIO_CSS);
+      expect(found, `${selector} must exist in the chrome stylesheet`).not.toBeNull();
+      return found![1];
+    };
+    expect(rule('.tab__dot--human')).toContain('var(--text-label)');
+    expect(rule('.tl__outcome.is-ok')).toContain('var(--text-label)');
+    expect(rule('.mark-conf--high')).toContain('var(--text-label)');
+    for (const selector of ['.tab__dot--human', '.tl__outcome.is-ok', '.mark-conf--high']) {
+      expect(rule(selector)).not.toContain('attention');
     }
+    // …and the states that DO want a person keep it.
+    expect(rule('.tab__dot--working')).toContain('var(--attention)');
+    expect(rule('.tl__outcome.is-refused')).toContain('var(--attention-text)');
   });
 });
 
@@ -167,23 +213,96 @@ describe('rule zero — no invented values reachable', () => {
       '#0c0c10', '#15151b', '#1c1c24', '#24242e', '#26262f', '#1e1e26', // old greys
       '#e8e8ef', '#9c9caa', '#63636f', '#12101f', // old inks
     ];
-    const surface = `${tokenCss()}\n${STUDIO_CSS}`;
+    // The overlay is in this surface deliberately: it was the last home of the violet palette, and
+    // it draws over live web content where a wrong hue is most visible.
+    const surface = `${tokenCss()}\n${STUDIO_CSS}\n${OVERLAY}`;
     expect(retired.filter((value) => surface.includes(value))).toEqual([]);
   });
 
-  it('leaves no colour declared outside the token layer', () => {
-    // The teeth of "never invent a token": the chrome stylesheet may reference colours but must not
-    // define them, because a literal in here exists in one register only by construction.
-    const literals = STUDIO_CSS.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(|color-mix\(/g);
-    expect(literals ?? []).toEqual([]);
+  it('leaves no colour declared outside the token layer, in any styling source', () => {
+    // The teeth of "never invent a token": a stylesheet or a component may REFERENCE a colour but must
+    // not DEFINE one, because a literal exists in one register only by construction. The overlay's
+    // `currentColor` is the exception that proves it — an icon that takes its container's token is one
+    // component in two registers, which is the whole point.
+    const offenders: string[] = [];
+    for (const { path, text } of STYLING_SOURCES) {
+      const literals = text.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(|color-mix\(/g);
+      for (const literal of literals ?? []) offenders.push(`${path} → ${literal}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('would flag a colour literal in a component if one were added back', () => {
+    // Control for the sweep above: the pattern has to catch an inline style, not just a stylesheet
+    // declaration, because a component is where the next one would land.
+    const inline = `<span style={{ background: 'rgba(255,255,255,.05)' }} />`;
+    expect(inline.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(|color-mix\(/g)).toEqual(['rgba(']);
   });
 
   it('declares no shadow or glow the design system does not list', () => {
-    // §3 allows three shadows and says "no glows". The dot glows this file used to carry were an
-    // invented blur radius doing the work a hue was already doing.
-    const shadows = [...STUDIO_CSS.matchAll(/box-shadow:\s*([^;]+);/g)].map((m) => m[1].trim());
-    for (const shadow of shadows) {
-      expect(shadow).toMatch(/^var\(--(shadow-|shadow-rail)/);
+    // §3 allows three shadows and says "no glows". The dot glows this file used to carry, and the
+    // overlay's violet bloom, were an invented blur radius doing the work a hue was already doing.
+    const shadows = [...`${STUDIO_CSS}\n${OVERLAY}`.matchAll(/box-shadow:\s*([^;]+);/g)]
+      .map((m) => m[1].trim());
+    expect(shadows.length).toBeGreaterThan(0); // else the assertion below is vacuous
+    for (const shadow of shadows) expect(shadow).toMatch(/^var\(--shadow-/);
+    // `filter: drop-shadow(...)` is a glow by another spelling — it is how the ghost cursor had one.
+    expect(`${STUDIO_CSS}\n${OVERLAY}`).not.toMatch(/drop-shadow\(/);
+  });
+
+  it('invents no font size and no radius outside the type scale and the radii', () => {
+    // §9: "Inventing a font size or spacing value not in §3." Sizes and radii are token sets, so a
+    // literal `font-size: 14.5px` or `border-radius: 9px` is a value that exists in neither register's
+    // definition — it is the old aesthetic's editorial serif and soft corners coming back by hand.
+    const offenders: string[] = [];
+    for (const { path, text } of STYLING_SOURCES) {
+      for (const m of text.matchAll(/(?:^|[;{\s])(font-size|font|border-radius)\s*:\s*([^;}]+)/g)) {
+        const [, property, value] = m;
+        if (property === 'font' && /^\s*(family|inherit)/.test(value)) continue;
+        if (/^\s*(inherit|unset|initial|var\(--(type|radius|tracking)-)/.test(value)) continue;
+        // A radius that mirrors the target element's own corner is data, not a design value.
+        if (/^\s*''\s*$/.test(value) || /cs\.borderRadius/.test(value)) continue;
+        offenders.push(`${path} → ${property}: ${value.trim()}`);
+      }
     }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps serif out of the chrome and emoji out of every surface', () => {
+    // §3: serif is ONLY for rendered web content, and the chrome is not that — the editorial-serif
+    // assistant voice was the single loudest piece of the retired look. §9 forbids emoji outright.
+    expect(STUDIO_CSS).not.toMatch(/var\(--serif\)/);
+    const emoji = /[\u{1F300}-\u{1FAFF}\u{1F000}-\u{1F2FF}\u{2600}-\u{27BF}\u{FE0F}]/u;
+    for (const { path, text } of STYLING_SOURCES) {
+      expect(emoji.test(text), `${path} carries an emoji`).toBe(false);
+    }
+    // Control: the glyphs that were there are exactly what this pattern catches.
+    expect(emoji.test('🔑')).toBe(true);
+    expect(emoji.test('➤')).toBe(true);
+    // …and the studio's dingbat vocabulary is NOT emoji, so the rule does not ban the mark glyph.
+    expect(emoji.test('◈ 12')).toBe(false);
+  });
+});
+
+describe('the overlay is one component in two registers', () => {
+  it('carries both registers, from the same array, on its shadow root', () => {
+    // The overlay lands in a page that has no `[data-register]` of ours, so a register block keyed on
+    // that attribute would never match and the overlay would be dark-only over a light page.
+    const css = shadowTokenCss();
+    expect(css).toContain(':host {');
+    expect(css).toContain('@media (prefers-color-scheme: light)');
+    expect(css).toContain(`--agent: ${tokenValue('--agent', 'dark')};`);
+    expect(css).toContain(`--agent: ${tokenValue('--agent', 'light')};`);
+    // Same names in both, for the same reason `tokenCss` emits them from one array.
+    const block = (source: string): string[] =>
+      [...source.matchAll(/^\s*(--[a-z0-9-]+):/gm)].map((m) => m[1]);
+    const [darkBlock, lightBlock] = css.split('@media');
+    expect(block(lightBlock)).toEqual(block(darkBlock));
+  });
+
+  it('installs the layer on the shadow root rather than resolving values into the rules', () => {
+    // Inlining resolved values would fork the overlay per register — the failure the token layer
+    // exists to prevent, and one a screenshot in a single register cannot show.
+    expect(OVERLAY).toMatch(/\$\{shadowTokenCss\(\)\}/);
   });
 });

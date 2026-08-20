@@ -200,44 +200,27 @@ export const TOKENS: readonly TokenDef[] = [
 ];
 
 /**
- * The bridge from the names the shipped 13-component renderer already references to the token layer.
+ * The names the pre-restyle renderer used, kept only so they can be asserted GONE.
  *
- * These are aliases, not tokens: one value each, resolving to a token in whichever register is
- * active, so the components inherit both registers without any of them being rewritten. Killing
- * violet/green/red happens HERE — `--human`, `--working`, `--blocked`, `--ok` and `--danger` were
- * five colours standing for four states, and §3 allows exactly two accent families.
+ * These were the alias bridge that carried the shipped components onto the layer without rewriting
+ * them: `--human`, `--working`, `--blocked`, `--ok` and `--danger` were five colours standing for four
+ * states, where §3 allows exactly two accent families. The restyle rebuilt every component against
+ * the §4 inventory, so the bridge is deleted and each name now resolves to nothing — which is the
+ * failure mode this list exists to catch. A CSS custom property fails soft: a component that still
+ * referenced `--text-dim` would silently lose its colour, with a green typecheck and a passing suite,
+ * so the only thing that can catch it is a grep the test suite runs. That is `tokens.test.ts`.
  *
- * The collapse is not "all five become amber". §3 says attention means ONLY "needs you", so a state
- * that needs nobody must not be amber or the accent stops carrying information: `--working`,
- * `--blocked` and `--danger` are the ones that want a person, and they become `--attention`, while
- * `--human` (provenance — a person did this) and `--ok` (a settled outcome) take the §4 neutral
- * studio role. Agent-caused state resolves to `--agent`.
- *
- * This map is scaffolding for the restyle that follows, which rebuilds the components against the
- * §4 inventory and deletes it. Nothing new should be added to it.
+ * Nothing may be added here. A name in this list is a name no stylesheet may reference again.
  */
-export const LEGACY_ALIASES: Readonly<Record<string, string>> = {
-  '--surface': 'var(--surface-panel)',
-  '--surface-2': 'var(--surface-tile)',
-  '--surface-3': 'var(--surface-tile)',
-  '--surface-hover': 'var(--surface-tile)',
-  '--border': 'var(--hair)',
-  '--border-soft': 'var(--hair-soft)',
-  '--text': 'var(--text-primary)',
-  '--text-dim': 'var(--text-secondary)',
-  '--text-faint': 'var(--text-hint)',
-  '--agent-dim': 'var(--agent-tint-strong)',
-  '--human': 'var(--text-label)',
-  '--working': 'var(--attention)',
-  '--blocked': 'var(--attention)',
-  '--ok': 'var(--text-label)',
-  '--danger': 'var(--attention)',
-  '--chrome-font': 'var(--sans)',
-  '--r-pill': 'var(--radius-pill)',
-  '--r-lg': 'var(--radius-large)',
-  '--r-md': 'var(--radius-inner)',
-  '--r-sm': 'var(--radius-segment)',
-};
+export const RETIRED_PROPERTIES: readonly string[] = [
+  '--surface', '--surface-2', '--surface-3', '--surface-hover',
+  '--border', '--border-soft',
+  '--text', '--text-dim', '--text-faint',
+  '--agent-dim',
+  '--human', '--working', '--blocked', '--ok', '--danger',
+  '--chrome-font',
+  '--r-pill', '--r-lg', '--r-md', '--r-sm',
+];
 
 /** The attribute on `<html>` that selects the active register. */
 export const REGISTER_ATTR = 'data-register';
@@ -267,19 +250,34 @@ export function registerDeclarations(register: Register): string {
  * The whole layer as one stylesheet.
  *
  * Both registers are emitted from the same array, which is what makes the switch a single attribute
- * write rather than a swap of two files. The alias block is register-agnostic on purpose: it resolves
- * through `var()` at use time, so it follows whichever register the attribute selects.
+ * write rather than a swap of two files.
  */
 export function tokenCss(): string {
-  const aliases = Object.entries(LEGACY_ALIASES)
-    .map(([name, value]) => `  ${name}: ${value};`)
-    .join('\n');
-  // `:root` holds the default register plus the aliases; the attributed blocks are more specific and
-  // win once a register is selected. The aliases sit here because they resolve through `var()` at use
-  // time and so must NOT be pinned to a register.
-  const base = `:root {\n${registerDeclarations(DEFAULT_REGISTER)}\n\n${aliases}\n}`;
+  // `:root` holds the default register; the attributed blocks are more specific and win once a
+  // register is selected, so a document that reaches paint before the attribute is written renders
+  // dark rather than unstyled.
+  const base = `:root {\n${registerDeclarations(DEFAULT_REGISTER)}\n}`;
   const registers = REGISTERS.map(
     (r) => `:root[${REGISTER_ATTR}="${r}"] {\n${registerDeclarations(r)}\n}`,
   ).join('\n\n');
   return `${base}\n\n${registers}\n`;
+}
+
+/**
+ * The layer for a surface that has no `<html>` of ours to carry the register attribute.
+ *
+ * The per-tab overlay draws inside a closed shadow root on a page we do not own, so it cannot inherit
+ * the chrome's `[data-register]` — and it must not, because a mark drawn over live web content has to
+ * be legible whichever ground it lands on. `prefers-color-scheme` is the register both sides already
+ * resolve against (the chrome follows it, and the main process resolves the window ground from the
+ * same OS signal), so a media query keeps the overlay in step with the chrome without any plumbing
+ * between them: no IPC, no listener, and nothing to go stale while a run is driving a tab.
+ *
+ * Both registers still come from the one `TOKENS` array — this is a second selector, not a second
+ * definition.
+ */
+export function shadowTokenCss(selector = ':host'): string {
+  const dark = `${selector} {\n${registerDeclarations('dark')}\n}`;
+  const light = `@media (prefers-color-scheme: light) {\n${selector} {\n${registerDeclarations('light')}\n}\n}`;
+  return `${dark}\n\n${light}\n`;
 }
