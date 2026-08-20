@@ -265,7 +265,7 @@ describe('the retired alias bridge is gone, not merely unused', () => {
   it('declares none of the retired names anywhere in the emitted layer', () => {
     // The bridge is deleted, so these resolve to nothing. Emitting one again would let a component
     // reference it and quietly work, which is how the five-colour palette would grow back.
-    const css = `${tokenCss()}\n${shadowTokenCss()}`;
+    const css = `${tokenCss()}\n${shadowTokenCss('.layer')}`;
     const declared = RETIRED_PROPERTIES.filter((name) =>
       new RegExp(`^\\s*${name}\\s*:`, 'm').test(css),
     );
@@ -481,8 +481,8 @@ describe('the overlay is one component in two registers', () => {
   it('carries both registers, from the same array, on its shadow root', () => {
     // The overlay lands in a page that has no `[data-register]` of ours, so a register block keyed on
     // that attribute would never match and the overlay would be dark-only over a light page.
-    const css = shadowTokenCss();
-    expect(css).toContain(':host {');
+    const css = shadowTokenCss('.layer');
+    expect(css).toContain('.layer {');
     expect(css).toContain('@media (prefers-color-scheme: light)');
     expect(css).toContain(`--agent: ${tokenValue('--agent', 'dark')};`);
     expect(css).toContain(`--agent: ${tokenValue('--agent', 'light')};`);
@@ -496,6 +496,34 @@ describe('the overlay is one component in two registers', () => {
   it('installs the layer on the shadow root rather than resolving values into the rules', () => {
     // Inlining resolved values would fork the overlay per register — the failure the token layer
     // exists to prevent, and one a screenshot in a single register cannot show.
-    expect(OVERLAY).toMatch(/\$\{shadowTokenCss\(\)\}/);
+    expect(OVERLAY).toMatch(/\$\{shadowTokenCss\('\.layer'\)\}/);
+  });
+
+  it('declares the layer INSIDE the shadow tree, never on the host', () => {
+    // The host is a plain `[data-wigolo-overlay]` div in the page's own tree, so page CSS can select
+    // it — and a normal outer-tree declaration on the host beats a `:host` rule in the inner tree.
+    // Custom properties inherit across the shadow boundary, `all: initial` does not reset them, and
+    // `mode: 'closed'` isolates JS rather than CSS, so tokens declared on `:host` are page-writable:
+    // `[data-wigolo-overlay] { --agent: transparent; --hair-width: 0px }` blanks the highlight, the
+    // mark chip and the ghost cursor. Nothing else in the overlay's CSS reveals that, because a
+    // custom property fails soft — the elements stay in place and paint nothing.
+    //
+    // The fix has two halves and both are asserted, because either alone is undone by a one-line
+    // edit: the declarations target `.layer`, and `.layer` really wraps the drawn elements.
+    expect(shadowTokenCss('.layer')).not.toContain(':host');
+    expect(OVERLAY).not.toMatch(/\$\{shadowTokenCss\(\)\}/);
+    const open = OVERLAY.indexOf('<div class="layer">');
+    const end = OVERLAY.indexOf('</div>`;', open); // the innerHTML template's own terminator
+    expect(open, '.layer wrapper must exist').toBeGreaterThan(-1);
+    expect(end, 'the shadow markup template must close').toBeGreaterThan(open);
+    const inside = OVERLAY.slice(open, end);
+    const outside = OVERLAY.slice(0, open) + OVERLAY.slice(end);
+    for (const drawn of ['outline', 'whisker', 'chips', 'bar', 'ghost', 'ghostcap', 'cliprect', 'cliphint']) {
+      expect(inside, `.${drawn} must live inside .layer`).toContain(`class="${drawn}"`);
+      expect(outside, `.${drawn} must not be declared outside .layer`).not.toContain(`<div class="${drawn}"`);
+    }
+    // Control: the pattern the first assertion uses can still find a `:host` rule when one is there,
+    // so "no `:host`" means the selector moved and not that the check went blind.
+    expect(shadowTokenCss(':host')).toContain(':host');
   });
 });

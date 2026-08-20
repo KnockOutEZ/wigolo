@@ -275,8 +275,17 @@ export function tokenCss(): string {
  *
  * Both registers still come from the one `TOKENS` array — this is a second selector, not a second
  * definition.
+ *
+ * `selector` is REQUIRED and must name an element INSIDE the shadow tree — never `:host`. Custom
+ * properties are inherited, and inheritance crosses the shadow boundary that `mode: 'closed'` and
+ * `all: initial` both leave open: a normal declaration on the host element written by the OUTER tree
+ * beats a `:host` rule written by the inner one, so a page that can select the host can blank every
+ * token the surface draws with. On a page we do not own that is a hostile page hiding the browser's
+ * own supervision UI. Page CSS cannot match anything inside a shadow tree, so one selector deeper is
+ * out of reach — declaring on `.layer` and letting the drawn elements inherit from it costs one
+ * wrapper and closes the hole. There is no default for that reason.
  */
-export function shadowTokenCss(selector = ':host'): string {
+export function shadowTokenCss(selector: string): string {
   const dark = `${selector} {\n${registerDeclarations('dark')}\n}`;
   const light = `@media (prefers-color-scheme: light) {\n${selector} {\n${registerDeclarations('light')}\n}\n}`;
   return `${dark}\n\n${light}\n`;
