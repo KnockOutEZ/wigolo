@@ -136,14 +136,44 @@ describe('the token layer covers the design system', () => {
    * token added THERE and not here fails this test rather than being discovered when a screen is
    * built against a property that resolves to nothing.
    */
+  // The doc's own value table: a name in the first column, then whitespace to the value column.
+  const fromTable = new Set(
+    // `--[a-z]` and not `--[a-z0-9-]`: a markdown `---` rule otherwise reads as a token name.
+    [...DESIGN_SYSTEM.matchAll(/^\s*(--[a-z][a-z0-9-]*)\s{2,}/gim)].map((m) => m[1]),
+  );
+
   it('defines every `--`-named token the design system writes out', () => {
-    const fromDoc = new Set(
-      // `--[a-z]` and not `--[a-z0-9-]`: a markdown `---` rule otherwise reads as a token name.
-      [...DESIGN_SYSTEM.matchAll(/^\s*(--[a-z][a-z0-9-]*)\s{2,}/gim)].map((m) => m[1]),
-    );
     // Sanity: if the extraction stops matching, the assertion below becomes vacuously true.
-    expect(fromDoc.size).toBeGreaterThan(15);
-    expect([...fromDoc].filter((n) => !names.has(n))).toEqual([]);
+    expect(fromTable.size).toBeGreaterThan(15);
+    expect([...fromTable].filter((n) => !names.has(n))).toEqual([]);
+  });
+
+  it('defines the tokens the design system names in prose too, not only the ones in a table', () => {
+    // The table pass requires two spaces after the name, so it only ever sees a token that has a value
+    // column. A token introduced in a sentence or as a backticked inline reference is written out by
+    // the authority and matched by NOTHING — and the `>15` floor above cannot notice, because it proves
+    // the extraction is alive rather than complete. This pass is looser: every `--name` the document
+    // mentions anywhere. The two must agree, which is the property that makes the doc the authority.
+    const mentioned = new Set(
+      [...DESIGN_SYSTEM.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*)/g)].map((m) => m[1]),
+    );
+    const backticked = new Set([...DESIGN_SYSTEM.matchAll(/`(--[a-z][a-z0-9-]*)`/g)].map((m) => m[1]));
+    // The loose pass must be a superset of both narrower ones, or it is reading less than they are.
+    expect([...fromTable].filter((n) => !mentioned.has(n))).toEqual([]);
+    expect([...backticked].filter((n) => !mentioned.has(n))).toEqual([]);
+    expect(backticked.size).toBeGreaterThan(0);
+    // …and the agreement itself: nothing the document names is missing from this layer.
+    expect([...mentioned].filter((n) => !names.has(n))).toEqual([]);
+  });
+
+  it('would catch a token the design system introduces without a value column', () => {
+    // Must-fire for the pass above, on the shape it exists for: a prose mention with no table row.
+    const prose = 'Cards on the settings sheet take `--surface-settings` and never a literal.\n';
+    const mentioned = [...prose.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    expect(mentioned).toEqual(['--surface-settings']);
+    expect(mentioned.filter((n) => !names.has(n))).toEqual(['--surface-settings']);
+    // …and the boundary the table pass had to guard: a markdown rule is not a token.
+    expect([...'\n---\n'.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*)/g)]).toEqual([]);
   });
 
   it('names the tokens the design system describes by role rather than by property', () => {
