@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 
 /**
  * The overlay preload must be self-contained, and until now that was a comment.
@@ -23,11 +23,20 @@ const SRC = join(import.meta.dirname, '../../src');
 
 const ENTRIES = { index: 'preload/index.ts', overlay: 'preload/overlay.ts' } as const;
 
-/** Resolve a relative specifier the way the bundler does — extensionless, `.ts`/`.tsx`, or a folder. */
+/**
+ * Resolve a relative specifier the way the bundler does — extensionless, `.ts`/`.tsx`, or a folder.
+ *
+ * Returned with POSIX separators. `relative()` gives `preload\overlay-core.ts` on win32, and this
+ * module identity is compared against literals in the assertions below — the two graphs would still
+ * intersect correctly, but every named module would stop matching, which is how a platform-specific
+ * false green gets in. Caught by the control on windows-latest, not by reasoning.
+ */
 function resolveModule(fromFile: string, specifier: string): string | null {
   const base = join(dirname(join(SRC, fromFile)), specifier);
   for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
-    if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return relative(SRC, candidate);
+    if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) {
+      return relative(SRC, candidate).split(sep).join('/');
+    }
   }
   return null;
 }
