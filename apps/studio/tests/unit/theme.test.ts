@@ -14,20 +14,38 @@ import {
  * actually repaints the app is a real-browser claim and is asserted in tests/e2e/register.spec.ts.
  */
 
-/** A `matchMedia` whose media state can be changed, which jsdom's own implementation cannot. */
+/** The one query the studio is allowed to ask: §11 is entered by the system asking for light. */
+const LIGHT_QUERY = '(prefers-color-scheme: light)';
+
+/**
+ * A `matchMedia` whose media state can be changed, which jsdom's own implementation cannot.
+ *
+ * It also HONOURS THE QUERY, which is not a detail. The earlier fake ignored its argument and answered
+ * every query with the same object, so `followSystemRegister` subscribed to `(prefers-color-scheme:
+ * dark)` — the exact inversion a contributor writes by hand — kept every test in this file green while
+ * shipping an app that goes light when the OS goes dark. Here an unexpected query gets the inverted
+ * answer (which fails the behavioural tests) and the queries asked for are recorded (which fails the
+ * pin below), so the mistake cannot be green twice.
+ */
 function fakeMatchMedia(initiallyLight: boolean) {
   const listeners = new Set<(e: { matches: boolean }) => void>();
+  const asked: string[] = [];
   const query = {
     matches: initiallyLight,
     addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => listeners.add(fn),
     removeEventListener: (_: string, fn: (e: { matches: boolean }) => void) => listeners.delete(fn),
   };
-  const view = { matchMedia: () => query } as unknown as Window;
+  const view = {
+    matchMedia: (media: string) => {
+      asked.push(media);
+      return media === LIGHT_QUERY ? query : { ...query, matches: !query.matches };
+    },
+  } as unknown as Window;
   const emit = (matches: boolean): void => {
     query.matches = matches;
     for (const fn of listeners) fn({ matches });
   };
-  return { view, emit, listenerCount: () => listeners.size };
+  return { view, emit, asked, listenerCount: () => listeners.size };
 }
 
 beforeEach(() => {
@@ -88,6 +106,19 @@ describe('following the system appearance', () => {
   it('reports the register the OS is asking for', () => {
     expect(systemRegister(fakeMatchMedia(true).view)).toBe('light');
     expect(systemRegister(fakeMatchMedia(false).view)).toBe('dark');
+  });
+
+  it('asks the OS the one question whose answer maps to a register, in both entry points', () => {
+    // The pin. Both functions read `prefers-color-scheme: light` and treat a match as §11 — asking the
+    // inverted question is a one-word edit that inverts the whole app, and every behavioural assertion
+    // here is written against a fake, so the fake is where that has to be caught.
+    const direct = fakeMatchMedia(true);
+    systemRegister(direct.view);
+    expect(direct.asked).toEqual([LIGHT_QUERY]);
+
+    const followed = fakeMatchMedia(true);
+    followSystemRegister(followed.view, document)();
+    expect(followed.asked).toEqual([LIGHT_QUERY]);
   });
 
   it('adopts the system register immediately and then tracks changes to it', () => {
