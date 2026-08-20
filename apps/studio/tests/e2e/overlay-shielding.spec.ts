@@ -58,7 +58,7 @@ describe.skipIf(!RUN)('the per-tab overlay resists a page that tries to blank it
    * what makes the closed root visible at all, and a cached node id would answer from before whatever
    * the test just changed.
    */
-  const computedIn = (scope: 'shadow' | 'page', cls: string): Promise<Record<string, string>> =>
+  const computedIn = (scope: 'shadow' | 'page' | 'host', cls: string): Promise<Record<string, string>> =>
     app.evaluate(async ({ webContents }, arg) => {
       const wc = webContents.getAllWebContents().find((w) => {
         const u = w.getURL();
@@ -85,14 +85,18 @@ describe.skipIf(!RUN)('the per-tab overlay resists a page that tries to blank it
         return null;
       };
       let from = root;
-      if (arg.scope === 'shadow') {
+      let el: N | null = null;
+      if (arg.scope !== 'page') {
         const host = walk(root, (n) => 'data-wigolo-overlay' in attrs(n));
         if (!host) throw new Error('the overlay host is not in the page at all');
-        const shadow = host.shadowRoots?.[0];
-        if (!shadow) throw new Error('the overlay host has no shadow root the protocol can see');
-        from = shadow;
+        if (arg.scope === 'host') el = host;
+        else {
+          const shadow = host.shadowRoots?.[0];
+          if (!shadow) throw new Error('the overlay host has no shadow root the protocol can see');
+          from = shadow;
+        }
       }
-      const el = walk(from, (n) => (attrs(n).class ?? '').split(/\s+/).includes(arg.cls));
+      if (!el) el = walk(from, (n) => (attrs(n).class ?? '').split(/\s+/).includes(arg.cls));
       if (!el) throw new Error(`.${arg.cls} is not in the ${arg.scope}`);
       const { computedStyle } = (await wc.debugger.sendCommand('CSS.getComputedStyleForNode', {
         nodeId: el.nodeId,
@@ -245,6 +249,31 @@ describe.skipIf(!RUN)('the per-tab overlay resists a page that tries to blank it
   afterAll(async () => {
     await app?.close();
     try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('keeps the box it draws in, though the page tried to remove it outright', async () => {
+    // The token layer is only half the surface a page can reach. The host is an ordinary element in
+    // the page's tree, so `display: none !important` deletes the whole supervision surface at once —
+    // a cheaper attack than blanking each token, and one this fixture also mounts. Enumerating the
+    // properties that could do it is a losing game (`visibility`, `opacity`, `transform`, `clip-path`,
+    // `content-visibility`, and whatever ships next), so the host resets ALL of them from its style
+    // attribute at important priority, which no page rule can outrank. This asserts the outcome of
+    // that one mechanism rather than the list.
+    const host = await computedIn('host', '');
+    expect(host.display).toBe('block');
+    expect(host.visibility).toBe('visible');
+    expect(host.opacity).toBe('1');
+    expect(host.position).toBe('fixed');
+    expect(host['z-index']).toBe('2147483647');
+    expect(host.transform).toBe('none');
+    expect(host['clip-path']).toBe('none');
+    expect(host['content-visibility']).toBe('visible');
+    // Not merely visible — the full viewport, which is what `inset: 0` is for.
+    expect(parseFloat(host.width)).toBeGreaterThan(0);
+    expect(parseFloat(host.height)).toBeGreaterThan(0);
+    // The one the page wants set the OTHER way: a full-viewport overlay that accepts clicks stops
+    // being a passive annotation and starts swallowing the human's own input.
+    expect(host['pointer-events']).toBe('none');
   });
 
   it('draws the highlight at its token values though the page redeclared every one of them', async () => {

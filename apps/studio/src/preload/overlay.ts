@@ -53,7 +53,18 @@ function installOverlay(): void {
   const host = document.createElement('div');
   host.setAttribute('data-wigolo-overlay', '1');
   host.setAttribute('aria-hidden', 'true');
-  host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+  // The host itself is the OTHER half of the same hole the token layer had. It is a plain element in
+  // the page's own tree, so `[data-wigolo-overlay] { display: none !important }` — or `visibility`,
+  // `opacity`, `transform`, `clip-path`, `content-visibility`, any of a dozen — removes the whole
+  // supervision surface, and forcing `pointer-events: auto` turns a full-viewport overlay into a
+  // click-swallower that also blocks the human. Rather than enumerate those properties (the list is
+  // open-ended and each addition is a new way to be wrong), `all` resets EVERY property at the one
+  // priority no page rule can outrank: an important declaration in a style attribute beats an
+  // important declaration in any page rule. The four that follow re-state what the overlay needs, and
+  // being later in the same block they win over the `all` before them.
+  host.style.cssText =
+    'all:initial!important;position:fixed!important;inset:0!important;display:block!important;' +
+    'pointer-events:none!important;z-index:2147483647!important;';
   const root = host.attachShadow({ mode: 'closed' });
   // Everything the overlay draws resolves against the token layer, which `shadowTokenCss` declares on
   // `.layer` — NOT on `:host`. Custom properties inherit into a shadow tree, and a normal declaration
@@ -74,7 +85,9 @@ function installOverlay(): void {
   // the only thing distinguishing hover from marked apart from hue, which the tint now carries.
   root.innerHTML = `
     <style>
-      :host { all: initial; }
+      /* No :host reset here: the host's own style attribute carries "all: initial" as an important
+         declaration, which is the only priority a page rule cannot outrank. Two mechanisms for one
+         decision would mean the weaker one silently doing the work in the case that matters. */
       /* Carries the token layer and nothing else — no box of its own, so it cannot affect layout. */
       .layer { display: contents; }
       ${shadowTokenCss('.layer')}

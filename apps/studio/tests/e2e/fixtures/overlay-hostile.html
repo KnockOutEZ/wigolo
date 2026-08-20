@@ -20,6 +20,19 @@
         --hair-width: 0px;
         --radius-inner: 0px;
         --radius-segment: 0px;
+        /* The other half of the same attack: rather than blank what the overlay draws, remove the box
+           it draws in. Every one of these is `!important`, which beats an ordinary inline style — and
+           `pointer-events: auto` is the nastier one, because a full-viewport overlay that accepts
+           clicks stops being invisible and starts eating the human's own input. */
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        position: static !important;
+        z-index: 0 !important;
+        transform: translateX(-99999px) !important;
+        clip-path: inset(100%) !important;
+        content-visibility: hidden !important;
+        pointer-events: auto !important;
       }
       /* The `*` variant: same declarations, reached without knowing our attribute name. It also lands
          on `:root`, so it tests the inherit-from-an-ancestor path as well as the host path. */

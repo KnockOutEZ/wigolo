@@ -526,4 +526,27 @@ describe('the overlay is one component in two registers', () => {
     // so "no `:host`" means the selector moved and not that the check went blind.
     expect(shadowTokenCss(':host')).toContain(':host');
   });
+
+  it('resets its own host box from the style attribute, at important priority', () => {
+    // The other half of the same reach. Blanking the tokens hides what the overlay draws; a page rule
+    // on the host deletes the box it draws in, which is cheaper and total —
+    // `[data-wigolo-overlay] { display: none !important }` takes the whole supervision surface, and
+    // `pointer-events: auto !important` turns a full-viewport overlay into a click-swallower that
+    // blocks the human as well. An ordinary inline style loses to an important page rule; an
+    // important inline declaration is the one thing a page cannot outrank.
+    //
+    // Asserted here rather than only in the gated e2e because this runs on every push, and the
+    // property is a one-word edit away from being lost.
+    const decl = OVERLAY.slice(OVERLAY.indexOf('host.style.cssText'), OVERLAY.indexOf('attachShadow'));
+    for (const pinned of ['all:initial', 'position:fixed', 'inset:0', 'display:block', 'pointer-events:none', 'z-index:2147483647']) {
+      expect(decl, `${pinned} must be important`).toContain(`${pinned}!important`);
+    }
+    // `all` must come FIRST: later in the block it would wipe the four declarations that follow it,
+    // which is the same wrong-looking-right the whole test exists to catch.
+    expect(decl.indexOf('all:initial')).toBeLessThan(decl.indexOf('position:fixed'));
+    // And exactly one mechanism: a `:host { all: initial }` rule in the shadow stylesheet does the
+    // same job at a priority page CSS beats, so its presence would mean the weaker of the two is
+    // silently carrying the case that matters.
+    expect(OVERLAY).not.toMatch(/:host\s*\{\s*all:\s*initial/);
+  });
 });
