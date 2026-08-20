@@ -37,9 +37,13 @@ const WORKFLOW = join(ROOT, '.github', 'workflows', 'ci.yml');
 // "no workflow invokes it", and only a literal check can tell that state from this one.
 const CI_INVOCATION = 'npm run lint -w apps/studio';
 
-// tsconfig paths are always `/`-separated; `path.relative` yields `\` on win32. Compare in POSIX
-// form on both sides or the guard flags EVERY file as missing on Windows.
+// tsconfig paths are always `/`-separated; `path.join` yields `\` on win32. Compare in POSIX form on
+// both sides or the guard flags EVERY file as missing on Windows — the exact way
+// `check-typecheck-gate.mjs` broke (it named all 58 gated files missing from a config that listed
+// them). Casing is folded on the platforms TypeScript itself treats as case-insensitive, so a win32
+// drive letter (`C:/` vs `c:/`) cannot reproduce that failure in a second costume.
 const posix = (p) => p.split(sep).join('/');
+const key = (p) => (ts.sys.useCaseSensitiveFileNames ? posix(p) : posix(p).toLowerCase());
 const isChecked = (name) => name.endsWith('.ts') || name.endsWith('.tsx');
 
 function walk(dir) {
@@ -64,7 +68,7 @@ const parsed = raw.error
   ? { fileNames: [], options: {} }
   : ts.parseJsonConfigFileContent(raw.config, ts.sys, APP);
 
-const covered = new Set(parsed.fileNames.map(posix));
+const covered = new Set(parsed.fileNames.map(key));
 
 // Everything the app actually ships plus its own build/test wiring. The root `*.config.ts` files
 // (electron.vite, electron-builder, vitest, vitest.e2e) are here because they were the residual
@@ -80,7 +84,7 @@ const expected = [
     : []),
 ];
 
-const uncovered = expected.map(posix).filter((p) => !covered.has(p));
+const uncovered = expected.filter((p) => !covered.has(key(p)));
 if (uncovered.length) {
   failures.push(
     `apps/studio/tsconfig.json does not cover ${uncovered.length} file(s) that exist on disk — they are type-checked by nothing:\n` +
