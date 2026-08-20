@@ -81,14 +81,21 @@ jobs:
   # `check:no-electron` holds the src/ electron quarantine (the core consumes no desktop shell, so a
   # Studio repo split stays a substitution rather than a rewrite), `typecheck:studio` type-checks the
   # safety-critical test files, `check:typecheck-gate` proves none of them silently dropped out of
-  # that project, and `typecheck:debt` ratchets the remaining untyped-test debt. Until this job
-  # existed those gated NOTHING on a PR — a safety test could sit outside the type gate and CI
-  # stayed green.
+  # that project, `check:studio-typecheck` proves the Electron app's own type-check still covers the
+  # app (known issue P7 — see below), and `typecheck:debt` ratchets the remaining untyped-test debt.
+  # Until this job existed those gated NOTHING on a PR — a safety test could sit outside the type
+  # gate and CI stayed green.
+  #
+  # `check:studio-typecheck` is here rather than in `studio-unit` for the same reason as its
+  # siblings: it is a path/AST walk needing no build, and this job deliberately has no build step.
+  # It does NOT type-check the app (that is `studio-unit`'s `npm run lint -w apps/studio`); it
+  # asserts that arrangement is still intact — `apps/studio/tsconfig.json` covers every app
+  # src/test/config file, is strict, and is invoked by this workflow.
   #
   # Runs on all three desktop OS. Every check in `gate:studio` other than `lint` is a tsconfig
   # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a
   # node script that walks the tree by path — `check-typecheck-gate.mjs`,
-  # `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
+  # `check-studio-typecheck-coverage.mjs`, `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
   # globs and hand-rolled path walks resolve differently per platform, so an ubuntu-only
   # gate was checking the one platform least likely to break them.
   #
@@ -123,7 +130,7 @@ jobs:
 
       # No build step: every check here is `tsc --noEmit`-class over source, and adding a build
       # would hide a type error behind a build failure.
-      - name: gate:studio (electron quarantine + lint + typecheck:studio + typecheck-gate + debt ratchet)
+      - name: gate:studio (electron quarantine + lint + typecheck:studio + typecheck-gate + studio typecheck coverage + debt ratchet)
         shell: bash
         run: npm run gate:studio
 
@@ -243,6 +250,11 @@ jobs:
         shell: bash
         run: npm run build
 
+      # THE type-check for the Electron app — the only gate that covers `apps/studio/src/**` and
+      # `apps/studio/tests/**` (known issue P7). The root `lint`/`typecheck:studio` projects both
+      # exclude the app, so a type error here is invisible to every other job. Removing this step
+      # reopens P7; `gate:studio`'s `check:studio-typecheck` fails if anyone does, which is why the
+      # invocation below is asserted as a literal string.
       - name: Lint studio (tsc --noEmit)
         shell: bash
         run: npm run lint -w apps/studio
