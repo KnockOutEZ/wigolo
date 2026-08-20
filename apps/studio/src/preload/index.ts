@@ -60,7 +60,7 @@ const studio = {
   },
   /** Human hit Pause / take-over on the drive banner → preempt the agent on this tab (explicit human signal). */
   reclaimDrive: (tabId: string): Promise<void> => ipcRenderer.invoke(IPC.driveReclaim, tabId),
-  /** Toolbar ✂ → arm region-clip on the focused session tab (same gesture as ⌘⇧X). */
+  /** The toolbar's clip control → arm region-clip on the focused session tab (same gesture as ⌘⇧X). */
   armClip: (): void => { ipcRenderer.send(IPC.armClip); },
   /** Tell main the drive banner is shown/hidden so it insets the WebContentsView stage (like the rail). */
   setBannerOpen: (open: boolean): Promise<void> => ipcRenderer.invoke(IPC.setBannerOpen, open),

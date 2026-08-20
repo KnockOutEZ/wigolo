@@ -19,7 +19,13 @@ export interface ControlStore {
   applyAct(tabId: string, action: string, narration: string | undefined, now: number): void;
   holder(tabId: string): ControlParty | null;
   step(tabId: string): string;
-  /** Dot color for the tab strip (spec §4): human=green, agent-foreground=violet, agent-bg-working=amber. */
+  /**
+   * Provenance role for the tab strip's dot. The mapping is A211's, not the retired five-colour one:
+   * an agent-driven tab reads as agent identity, a human-driven tab is NEUTRAL — provenance wants
+   * nobody, so painting it an accent would make the accent mean nothing — and only "working" takes
+   * attention, which means "needs you" and nothing else. The colours live in the token layer; this
+   * returns the role and `studio.css` resolves it.
+   */
   provenance(tabId: string, isActive: boolean, now: number): Provenance;
   subscribe(cb: () => void): () => void;
   drop(tabId: string): void;
