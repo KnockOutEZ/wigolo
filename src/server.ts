@@ -565,7 +565,13 @@ export async function startServer(): Promise<void> {
     log.warn('search engine bootstrap failed', { error: String(err) });
   });
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // If subsystem teardown hangs (e.g. a wedged browser), force-exit rather
+    // than linger as an orphan.
+    setTimeout(() => process.exit(1), 10_000).unref();
     await subs.shutdown();
     await server.close();
     process.exit(0);
@@ -573,4 +579,10 @@ export async function startServer(): Promise<void> {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // StdioServerTransport never watches stdin for EOF, so when the MCP client
+  // exits without signalling us the server (and its headless browsers) would
+  // outlive it forever. Treat a closed stdin pipe as a shutdown request.
+  process.stdin.on('end', () => void shutdown());
+  process.stdin.on('close', () => void shutdown());
 }
