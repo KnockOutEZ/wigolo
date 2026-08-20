@@ -3,13 +3,14 @@ import type { KeyStoreOpts } from '../../../security/key-store.js';
 import { readPersistedConfig, defaultConfigPath } from '../../../persisted-config.js';
 import { resolveCustomBackend } from './custom-backend.js';
 
-const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
+const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq', 'openai-compatible'];
 
 const PROVIDER_ENV: Record<LLMProvider, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   gemini: 'GEMINI_API_KEY',
   groq: 'GROQ_API_KEY',
+  'openai-compatible': 'WIGOLO_LLM_API_KEY',
 };
 
 // Extra env var names accepted for a provider's key, beyond the canonical one
@@ -18,6 +19,15 @@ const PROVIDER_ENV: Record<LLMProvider, string> = {
 const PROVIDER_ENV_ALIASES: Partial<Record<LLMProvider, readonly string[]>> = {
   gemini: ['GOOGLE_API_KEY'],
 };
+
+// Providers that have NO provider-specific key var — their key is the generic
+// WIGOLO_LLM_API_KEY. Because that var is ambiguous without an explicit provider
+// (see issue #102), these providers are NEVER auto-detected; they are only
+// selected when WIGOLO_LLM_PROVIDER names them explicitly. `openai-compatible`
+// is the only such provider today.
+const EXPLICIT_ONLY_PROVIDERS: ReadonlySet<LLMProvider> = new Set<LLMProvider>([
+  'openai-compatible',
+]);
 
 /** Read a provider's API key from env, accepting the canonical var or an alias. */
 export function providerKeyFromEnv(
@@ -43,8 +53,11 @@ export function selectProvider(
     if (providerKeyFromEnv(p, env) || env.WIGOLO_LLM_API_KEY) return p;
   }
   // Auto-detect: WIGOLO_LLM_API_KEY is ambiguous without an explicit provider,
-  // so it is intentionally NOT consulted in this loop.
+  // so it is intentionally NOT consulted in this loop. Explicit-only providers
+  // (e.g. openai-compatible, whose key IS WIGOLO_LLM_API_KEY) are skipped so a
+  // bare generic key never auto-selects them.
   for (const p of PROVIDER_ORDER) {
+    if (EXPLICIT_ONLY_PROVIDERS.has(p)) continue;
     if (providerKeyFromEnv(p, env)) return p;
   }
   return null;
@@ -89,8 +102,10 @@ export async function selectProviderWithKeyStore(
     // Explicit provider specified but key not found — fall through to auto-detect
   }
 
-  // Auto-detect: first provider with any key (keychain → file → env)
+  // Auto-detect: first provider with any key (keychain → file → env).
+  // Explicit-only providers are skipped (see EXPLICIT_ONLY_PROVIDERS above).
   for (const p of PROVIDER_ORDER) {
+    if (EXPLICIT_ONLY_PROVIDERS.has(p)) continue;
     const key = await resolveProviderKey(p, opts);
     if (key) return { provider: p, key };
   }

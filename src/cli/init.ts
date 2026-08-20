@@ -24,7 +24,7 @@ export async function maybePrintOllamaHint(print: (line: string) => void): Promi
   }
 }
 
-const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
+const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq', 'openai-compatible'];
 
 /**
  * One-line hint printed on a `--no-warmup` init: nothing was pre-downloaded, so
@@ -59,7 +59,7 @@ const INIT_USAGE = [
   '  --agents=<csv>          Comma-separated agent ids to auto-wire (optional; omit to set up the engine only and point any MCP client at wigolo yourself)',
   '  --skip-verify           Skip the post-install verify step',
   '  --plain                 Force plain (non-TUI) output',
-  '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini|ollama',
+  '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini|groq|ollama|openai-compatible',
   '  --search=<backend>      Search backend: core|searxng|hybrid',
   '  --help, -h              Show this message',
   '',
