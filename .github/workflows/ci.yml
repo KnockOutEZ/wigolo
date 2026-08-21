@@ -261,6 +261,12 @@ jobs:
       # exclude the app, so a type error here is invisible to every other job. Removing this step
       # reopens P7; `gate:studio`'s `check:studio-typecheck` fails if anyone does, which is why the
       # invocation below is asserted as a parsed `run:` step rather than a line of text.
+      #
+      # Weakening it also reopens P7, and the guard fails on that too: the invocation must sit in
+      # command position (not commented out, quoted or substituted), must keep its exit code (no
+      # `|| …`, no pipe, no `&`, no preceding `set +e`), and neither this step nor this job may carry
+      # `continue-on-error`. The workflow's own `on:` triggers are asserted for the same reason — a
+      # step that is present, enabled and correct still enforces nothing if the run never starts.
       - name: Lint studio (tsc --noEmit)
         shell: bash
         run: npm run lint -w apps/studio
