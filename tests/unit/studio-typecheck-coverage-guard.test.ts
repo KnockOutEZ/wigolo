@@ -39,6 +39,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 const GUARD = fileURLToPath(new URL('../../scripts/check-studio-typecheck-coverage.mjs', import.meta.url));
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -233,11 +234,11 @@ function buildFixture(f: Fixture = {}): void {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture-root', private: true, workspaces: ['apps/*'] }, null, 2));
 }
 
-function runGuard(): { status: number; output: string } {
+function runGuard(...flags: readonly string[]): { status: number; output: string } {
   // A guard that hangs must fail this suite, not stall it: without a timeout a spin in the tree walk
   // blocks vitest until the job's 30-minute ceiling, which reads as infrastructure, not as a bug.
   // The budget covers two real type-checks now, which on a fixture this size are still sub-second.
-  const r = spawnSync(process.execPath, [GUARD, root], { encoding: 'utf8', timeout: 180_000 });
+  const r = spawnSync(process.execPath, [GUARD, root, ...flags], { encoding: 'utf8', timeout: 180_000 });
   return { status: r.status ?? -1, output: `${r.stdout ?? ''}${r.stderr ?? ''}${r.signal ? `\nkilled by ${r.signal}` : ''}` };
 }
 
@@ -512,6 +513,67 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     const { status, output } = runGuard();
     expect(status).toBe(1);
     expect(output).toContain('accepts a planted file');
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // The two-mode split. The behavioural half needs a built `dist/` (the app imports `wigolo/studio`
+  // through the root package's exports), and the `gate` CI job has no build step on purpose, so the
+  // halves run from two places. That split is only safe if `--shape-only` is what it claims: a
+  // narrower check that still fires on everything the shape-checks own, and the DEFAULT is the full
+  // one — an inverted or no-op flag would silently retire the planted-error check everywhere.
+  // ---------------------------------------------------------------------------------------------
+  it('`--shape-only` skips the planted-error check, and the default does not', () => {
+    buildFixture({ options: STRICT_MEMBERS_OFF });
+    const shape = runGuard('--shape-only');
+    expect(shape.output).toContain('OK (shape only)');
+    expect(shape.output).toContain('planted-error check was NOT run');
+    expect(shape.status).toBe(0);
+
+    const full = runGuard();
+    expect(full.status).toBe(1);
+    expect(full.output).toContain('strictNullChecks');
+  });
+
+  it('`--shape-only` still fires on everything the shape-checks own', () => {
+    // Otherwise the mode that rides three OS on every push would be a no-op wearing a name.
+    buildFixture({ include: ['src'], workflow: WORKFLOW_STEP_IF_FALSE, lintScript: 'true', strict: false });
+    const { status, output } = runGuard('--shape-only');
+    expect(status).toBe(1);
+    expect(output).toContain('tests/unit/boot.test.ts');
+    expect(output).toContain('a non-strict project sees every file');
+    expect(output).toContain('so this script IS the app');
+    expect(output).toContain('cannot be relied on to run');
+  });
+
+  it('is gated, not documented: both halves of the guard are invoked by something', () => {
+    // The `--shape-only` half is chained into gate:studio; the planted-error half is a ci.yml step in
+    // the job that builds core, because it cannot resolve `wigolo/studio` without that build. Losing
+    // either invocation leaves the corresponding half a local command nobody runs — P7 one level up,
+    // and now with two places to lose it from.
+    const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+    expect(pkg.scripts['check:studio-typecheck']).toContain('--shape-only');
+    expect(pkg.scripts['check:studio-typecheck-runs']).toContain('scripts/check-studio-typecheck-coverage.mjs');
+    expect(pkg.scripts['check:studio-typecheck-runs']).not.toContain('--shape-only');
+
+    const ci = parseYaml(readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8')) as {
+      jobs: Record<string, { if?: unknown; steps?: { if?: unknown; run?: unknown }[] }>;
+    };
+    const hosts = Object.entries(ci.jobs).filter(([, job]) =>
+      (job.steps ?? []).some((s) => typeof s.run === 'string' && s.run.includes('check:studio-typecheck-runs'))
+    );
+    expect(hosts).toHaveLength(1);
+    const [name, job] = hosts[0]!;
+    expect(job.if).toBeUndefined();
+    const steps = job.steps ?? [];
+    const planted = steps.findIndex((s) => typeof s.run === 'string' && s.run.includes('check:studio-typecheck-runs'));
+    expect(steps[planted]!.if).toBeUndefined();
+    // It must run AFTER the build, in the same job: without `dist/` the app cannot resolve
+    // `wigolo/studio`, so the clean run fails and the guard reports an environment problem rather
+    // than a P7 regression. `name` is asserted so a rename of the host job is a visible decision.
+    const build = steps.findIndex((s) => typeof s.run === 'string' && s.run.includes('npm run build'));
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(planted).toBeGreaterThan(build);
+    expect(name).toBe('studio-unit');
   });
 
   // Bypass 7 — nothing asserted that anything invokes the guard.

@@ -86,13 +86,17 @@ jobs:
   # Until this job existed those gated NOTHING on a PR — a safety test could sit outside the type
   # gate and CI stayed green.
   #
-  # `check:studio-typecheck` is here rather than in `studio-unit` for the same reason as its
-  # siblings: it is a path/AST walk needing no build, and this job deliberately has no build step.
-  # It does NOT type-check the app (that is `studio-unit`'s `npm run lint -w apps/studio`); it
+  # `check:studio-typecheck` runs here in its `--shape-only` mode for the same reason as its
+  # siblings: that half is a path/AST walk needing no build, and this job deliberately has no build
+  # step. It does NOT type-check the app (that is `studio-unit`'s `npm run lint -w apps/studio`); it
   # asserts that arrangement is still intact — `apps/studio/tsconfig.json` covers every TypeScript
   # file under the app, is strict, the app's `lint` script actually runs `tsc --noEmit`, and an
-  # uncommented `run:` step in this workflow invokes it. Comments are stripped before that last
-  # check, so this very paragraph cannot stand in for the step it describes.
+  # enabled `run:` step in this workflow invokes it. That last check parses this file as YAML and
+  # requires a real step, so neither this paragraph nor a disabled step can stand in for it.
+  #
+  # The guard's other half plants a type error and requires the app lint to report it. That needs the
+  # built `dist/` the app resolves `wigolo/studio` through, so it rides `studio-unit`'s
+  # `check:studio-typecheck-runs` step instead of forcing a build into this job.
   #
   # Runs on all three desktop OS. Every check in `gate:studio` other than `lint` is a tsconfig
   # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a
@@ -256,10 +260,20 @@ jobs:
       # `apps/studio/tests/**` (known issue P7). The root `lint`/`typecheck:studio` projects both
       # exclude the app, so a type error here is invisible to every other job. Removing this step
       # reopens P7; `gate:studio`'s `check:studio-typecheck` fails if anyone does, which is why the
-      # invocation below is asserted as a literal string.
+      # invocation below is asserted as a parsed `run:` step rather than a line of text.
       - name: Lint studio (tsc --noEmit)
         shell: bash
         run: npm run lint -w apps/studio
+
+      # The half of the P7 guard that proves the step above actually catches a type error, rather
+      # than describing a check that runs. It plants one error per strict flag into a mirror of the
+      # app and requires the command above to report every one of them, so a decoy project or a
+      # switched-off strict member fails here. It lives in THIS job because it runs the app lint,
+      # which needs the `dist/` the build step above produces; the `gate` job runs the same guard
+      # with `--shape-only` on three OS, having no build step on purpose.
+      - name: Studio type-check actually runs (P7 planted-error check)
+        shell: bash
+        run: npm run check:studio-typecheck-runs
 
       - name: Unit tests (studio)
         shell: bash

@@ -39,7 +39,16 @@
  * the project is checked by nothing, and a planted error inside the project cannot notice its
  * absence.
  *
- * Pass a root directory as argv[2] to point it at a fixture tree (used by its own tests).
+ * The behavioural half needs a built `dist/`, because the app imports `wigolo/studio` and that
+ * specifier resolves through the root package's exports. The `gate` CI job deliberately has no build
+ * step (A216: a build failure there would hide the type errors the job exists to find), so the two
+ * halves are invoked from two places: `gate:studio` runs `--shape-only` on three OS, and the
+ * `studio-unit` job — which already builds core in order to run the app lint at all — runs the full
+ * guard. Nothing asserts that wiring from inside this file; its tests do, the same way they assert
+ * that anything invokes the guard at all.
+ *
+ * Pass a root directory as the first positional argument to point it at a fixture tree (used by its
+ * own tests), and `--shape-only` to skip the behavioural half.
  */
 import ts from 'typescript';
 import { parse as parseYaml } from 'yaml';
@@ -61,7 +70,10 @@ import { fileURLToPath } from 'node:url';
 // checks at a fixture tree, but the behavioural run always needs a real `node_modules` to resolve
 // `tsc` and the app's own dependencies from, and that only ever exists here.
 const OWN_REPO = fileURLToPath(new URL('..', import.meta.url));
-const ROOT = process.argv[2] ? resolve(process.argv[2]) : OWN_REPO;
+const ARGS = process.argv.slice(2);
+const SHAPE_ONLY = ARGS.includes('--shape-only');
+const TARGET = ARGS.find((a) => !a.startsWith('--'));
+const ROOT = TARGET ? resolve(TARGET) : OWN_REPO;
 const APP = join(ROOT, 'apps', 'studio');
 const CONFIG = join(APP, 'tsconfig.json');
 const PACKAGE = join(APP, 'package.json');
@@ -438,9 +450,10 @@ function checkBehaviour() {
   }
 }
 
-// Skipped only when a pre-filter already failed: the behavioural run costs two type-checks, and its
-// message cannot be clearer than the specific one already queued.
-if (!failures.length) failures.push(...checkBehaviour());
+// Skipped when a pre-filter already failed — the behavioural run costs two type-checks, and its
+// message cannot be clearer than the specific one already queued — and in `--shape-only` mode, which
+// exists for the one CI job that has no build and therefore cannot resolve `wigolo/studio`.
+if (!SHAPE_ONLY && !failures.length) failures.push(...checkBehaviour());
 
 if (failures.length) {
   console.error('FAIL: the apps/studio type-check gap (P7) is open again.');
@@ -449,6 +462,8 @@ if (failures.length) {
 }
 
 console.log(
-  `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step.` +
-    (UNPROBED_FLAGS.length ? ` (Strict flags without a probe, asserted only by \`strict: true\`: ${UNPROBED_FLAGS.join(', ')}.)` : '')
+  SHAPE_ONLY
+    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
+    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step.` +
+        (UNPROBED_FLAGS.length ? ` (Strict flags without a probe, asserted only by \`strict: true\`: ${UNPROBED_FLAGS.join(', ')}.)` : '')
 );
