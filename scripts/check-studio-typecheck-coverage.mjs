@@ -217,9 +217,10 @@ const PROBES = [
  * passes) scoped to a single compiler option. Pinned in both directions on purpose — a flag ADDED is
  * a check with no probe, and a flag REMOVED means the probe below proves nothing and should go.
  *
- * `P7_EXTRA_STRICT_FLAGS` exists so this detector has a fixture: the list otherwise comes from the
- * installed TypeScript and cannot be moved from a test. It can only ADD names, so it can only make
- * the guard redder — there is no spelling of it that switches a check off.
+ * `P7_EXTRA_STRICT_FLAGS` and `P7_HIDE_STRICT_FLAGS` exist so both directions have a fixture: the
+ * list otherwise comes from the installed TypeScript and cannot be moved from a test. Neither can
+ * switch a check off — adding a name leaves it unprobed, and hiding one leaves it undeclared, so
+ * every setting of either makes this guard redder than not setting it.
  */
 const EXPECTED_STRICT_FLAGS = [
   'noImplicitAny',
@@ -231,10 +232,12 @@ const EXPECTED_STRICT_FLAGS = [
   'strictPropertyInitialization',
   'useUnknownInCatchVariables',
 ];
+const envFlags = (name) => (process.env[name] ?? '').split(',').map((f) => f.trim()).filter(Boolean);
+const hidden = new Set(envFlags('P7_HIDE_STRICT_FLAGS'));
 const STRICT_FLAGS = [
   ...ts.optionDeclarations.filter((o) => o.strictFlag).map((o) => o.name),
-  ...(process.env.P7_EXTRA_STRICT_FLAGS ?? '').split(',').map((f) => f.trim()).filter(Boolean),
-];
+  ...envFlags('P7_EXTRA_STRICT_FLAGS'),
+].filter((f) => !hidden.has(f));
 const UNPROBED_FLAGS = STRICT_FLAGS.filter((f) => !PROBES.some((p) => p.flag === f));
 const UNDECLARED_FLAGS = EXPECTED_STRICT_FLAGS.filter((f) => !STRICT_FLAGS.includes(f));
 

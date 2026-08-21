@@ -786,6 +786,17 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     expect(output).toContain('no probe');
   });
 
+  it('fails when a probe outlives the strict check it plants an error for', () => {
+    // The other direction of the same pin. A probe for a flag the compiler no longer declares proves
+    // nothing about the app, and its planted error would go unreported — caught by the behavioural
+    // run, but with a message about a missing diagnostic rather than about a retired option.
+    buildFixture();
+    const { status, output } = runGuardWithEnv({ P7_HIDE_STRICT_FLAGS: 'strictNullChecks' });
+    expect(status).toBe(1);
+    expect(output).toContain('no longer declares');
+    expect(output).toContain('strictNullChecks');
+  });
+
   it('reports the probed strict-check count on success, so the pin is legible in a green run', () => {
     // Must-not-fire companion: the pin must hold on the compiler that is actually installed, or the
     // test above proves only that the guard can fail for some reason.
