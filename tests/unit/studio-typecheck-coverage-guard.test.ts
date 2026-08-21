@@ -278,7 +278,10 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     buildFixture({ strict: false });
     const { status, output } = runGuard();
     expect(status).toBe(1);
-    expect(output).toContain('strict: true');
+    // The pre-filter's own wording. `strict: true` alone would not do: the behavioural failure names
+    // that string too, so this fixture is caught twice and asserting the shared substring would be
+    // satisfied by either mechanism — leaving the pre-filter free to be deleted unnoticed.
+    expect(output).toContain('a non-strict project sees every file');
   });
 
   it('fails when ci.yml stops invoking the app type-check — the literal P7 state', () => {

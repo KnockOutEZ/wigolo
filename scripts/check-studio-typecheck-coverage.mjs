@@ -115,7 +115,10 @@ function walk(dir) {
  *
  * `expect` is the diagnostic code, not merely "some error in this file". A probe that errored for an
  * unrelated reason (a `lib` too old for `Array.prototype.values`, say) would otherwise read as
- * "this check is in effect" when it is not.
+ * "this check is in effect" when it is not. That tightening is deliberately unproven: no fixture
+ * found so far makes a probe file report a DIFFERENT code while its own flag is off, so loosening
+ * this to "any error in the probe file" survives the guard's tests. It is kept because it can only
+ * reject, never admit — but do not read the mutation battery as covering it.
  */
 const PROBES = [
   {
