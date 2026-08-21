@@ -62,6 +62,14 @@ function installOverlay(): void {
   // priority no page rule can outrank: an important declaration in a style attribute beats an
   // important declaration in any page rule. The four that follow re-state what the overlay needs, and
   // being later in the same block they win over the `all` before them.
+  //
+  // Scope, so this does not read as a complete defence: page CSS is what this closes, and only that.
+  // Two classes stay open and are neither claimed nor fixed here. (1) OCCLUSION — `z-index` has a
+  // maximum, so a page element sitting at the same 2147483647 and later in paint order covers the
+  // overlay without touching the host at all. (2) HOST REMOVAL — page JS can detach this node;
+  // `mode: 'closed'` isolates what is INSIDE the shadow tree, not the host's presence in the page's
+  // own tree. Neither has a CSS answer from inside the page, which is why both are deferred to
+  // drawing the supervision surface in a view ABOVE the page rather than in it (known-issues).
   host.style.cssText =
     'all:initial!important;position:fixed!important;inset:0!important;display:block!important;' +
     'pointer-events:none!important;z-index:2147483647!important;';

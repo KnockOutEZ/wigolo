@@ -324,6 +324,55 @@ describe('the retired alias bridge is gone, not merely unused', () => {
   });
 });
 
+/**
+ * The inverse of the retired sweep above, and the invariant `shadowTokenCss('.layer')` silently rests on.
+ *
+ * Declaring the layer on `.layer` rather than `:host` is what puts it out of the page's reach — page
+ * CSS can match the host element (it lives in the page's own tree) but nothing inside the closed
+ * shadow tree. That only holds property by property. A `var(--x)` the layer does NOT declare resolves
+ * by INHERITANCE, and the nearest ancestor that can declare it is the host — which the page can style.
+ * So one unentered custom property hands that property back to the page, on the very surface that
+ * tells the human an agent is driving this tab.
+ *
+ * And it fails soft, twice over: the page-set value only appears on a page that sets it, and with no
+ * page rule at all the element simply paints nothing. No typecheck, no exception, and a screenshot of
+ * the healthy case looks correct. The retired sweep asks "is a dead name still referenced?"; this asks
+ * the other direction — "is every live reference actually declared?" — and the two are not the same
+ * question, because a brand-new name was never retired.
+ */
+describe('the overlay references no custom property the token layer leaves undeclared', () => {
+  const DECLARED = new Set(TOKENS.map((t) => t.name));
+
+  /** Every `--name` the CSS reads through `var()`, fallback form included. */
+  const referencedIn = (css: string): string[] =>
+    [...new Set([...css.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)/g)].map((m) => m[1]!))].sort();
+
+  it('declares an entry for every property the overlay reads', () => {
+    const undeclared = referencedIn(OVERLAY).filter((name) => !DECLARED.has(name));
+    expect(
+      undeclared,
+      'these inherit through the host, so page CSS can set them — declare them in TOKENS',
+    ).toEqual([]);
+  });
+
+  it('would find a property the layer does not declare', () => {
+    // The control. An empty result is only evidence once the extraction has been shown to produce a
+    // non-empty one — otherwise a regex that matches nothing reads as a clean sweep.
+    const planted = '.chip { color: var(--wg-nonexistent); border-color: var( --agent , red); }';
+    expect(referencedIn(planted).filter((name) => !DECLARED.has(name))).toEqual(['--wg-nonexistent']);
+    expect(referencedIn(planted), 'the whitespace and fallback forms must parse too').toContain('--agent');
+  });
+
+  it('reads real references off the overlay, or the sweep above agrees with nothing', () => {
+    // The floor. `referencedIn` returning `[]` satisfies the assertion above vacuously, which is the
+    // failure a filter-and-compare cannot distinguish from success on its own.
+    const found = referencedIn(OVERLAY);
+    expect(found.length).toBeGreaterThan(10);
+    expect(found).toContain('--agent');
+    expect(found).toContain('--hair-width');
+  });
+});
+
 describe('the sweeps see every file that could style something', () => {
   const paths = STYLING_SOURCES.map((s) => s.path);
 
