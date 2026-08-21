@@ -187,6 +187,18 @@ const WORKFLOW_ECHOED = wf(`jobs:
         run: echo "npm run lint -w apps/studio"
 `);
 
+/**
+ * The same, unquoted — and the fixture that pins the invocation to the HEAD of a command rather than
+ * to somewhere inside one. Both `echo` forms are inert, but only this one survives a match loosened
+ * from "the command starts with it" to "the command contains it".
+ */
+const WORKFLOW_ECHOED_BARE = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: echo npm run lint -w apps/studio
+`);
+
 /** Exit-code swallowing, the shortest form. */
 const WORKFLOW_OR_TRUE = wf(`jobs:
   studio-unit:
@@ -247,6 +259,32 @@ const WORKFLOW_MULTILINE_BENIGN = wf(`jobs:
           echo "::group::studio type-check"
           npm run lint -w apps/studio
           echo "::endgroup::"
+`);
+
+/**
+ * Must-not-fire, and the only fixture the quote-tracking half of the scan owns: a metacharacter
+ * inside an argument is a character, not an operator. Without quote tracking the `||` here splits the
+ * command and the guard reports a correctly wired step as swallowing its own exit code — a false FAIL
+ * on a healthy tree, which is how a guard gets deleted rather than obeyed.
+ */
+const WORKFLOW_QUOTED_ARGUMENT = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio --loglevel "warn || error"
+`);
+
+/**
+ * Must-not-fire, and the only fixture the comment-stripping half owns. A YAML plain scalar loses its
+ * trailing `#` comment to the parser, so the shape only exists inside a block scalar — where the
+ * likeliest comment to write is one naming the very operator that would break the step.
+ */
+const WORKFLOW_COMMENT_NAMING_AN_OPERATOR = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          npm run lint -w apps/studio # never weaken this to || true — see known issue P7
 `);
 
 /** Must-not-fire: `continue-on-error: false` is the explicit spelling of the default. */
@@ -671,6 +709,33 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     const { status, output } = runGuard();
     expect(status).toBe(1);
     expect(output).toContain('not as a command it runs');
+  });
+
+  it('fails when the invocation is only an argument to another command', () => {
+    // Mutant: match anywhere in the command instead of at its head. Blast radius: this case goes
+    // green while the step echoes the command it is supposed to run.
+    buildFixture({ workflow: WORKFLOW_ECHOED_BARE });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('not as a command it runs');
+  });
+
+  it('accepts an argument that merely contains a shell operator', () => {
+    // Must-not-fire. Mutant: stop tracking quotes. Blast radius: this case fails on a correctly
+    // wired step, reporting a quoted `||` inside an argument as an exit-code swallow.
+    buildFixture({ workflow: WORKFLOW_QUOTED_ARGUMENT });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('accepts a trailing comment that names an operator', () => {
+    // Must-not-fire. Mutant: stop stripping comments. Blast radius: this case fails because the `||`
+    // inside the warning comment is read as the thing the comment warns against.
+    buildFixture({ workflow: WORKFLOW_COMMENT_NAMING_AN_OPERATOR });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
   });
 
   it('fails when the invocation is suffixed with `|| true`', () => {
