@@ -409,7 +409,7 @@ function checkBehaviour() {
     if (clean.error) return [`\`${CI_INVOCATION}\` could not be launched: ${clean.error}`];
     if (clean.status !== 0) {
       return [
-        `\`${CI_INVOCATION}\` does not currently pass, so this guard cannot tell a working type-check from a broken one. Fix the app's type errors first:\n` +
+        `\`${CI_INVOCATION}\` does not currently pass${clean.signal ? ` (killed by ${clean.signal} — it did not finish, so this is not a type error)` : ''}, so this guard cannot tell a working type-check from a broken one. Fix the app's type errors first:\n` +
           clean.output
             .split('\n')
             .filter((l) => l.trim())
