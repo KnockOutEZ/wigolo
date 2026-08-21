@@ -46,7 +46,17 @@
  *     review each enumerated the edits their author could imagine — five, four, six and then seven
  *     more pass-direction bypasses — because the guard re-implemented bash and GitHub Actions
  *     semantics as a blacklist, and a blacklist's silence is indistinguishable from approval. So
- *     the trigger reader and the `run:` reader now accept ONLY the shapes they model completely:
+ *     the trigger reader, the KEY reader and the `run:` reader now accept ONLY the shapes they model
+ *     completely:
+ *
+ *       - a step's and a job's KEYS are an allowlist (`MODELED_STEP_KEYS`, `MODELED_JOB_KEYS`), and
+ *         anything else FAILs naming the key. Round 7 found this layer still a blacklist after the
+ *         body grammar had been fixed: `shell:` was never read — so the whole `;`-is-safe argument
+ *         was made about a shell nobody had checked, and `shell: bash --noprofile --norc {0}` drops
+ *         `-e` while reading like the default — and `needs:`, `container:`, `services:`,
+ *         `working-directory:`, `uses:` and a workflow- or job-level `defaults:` were all silently
+ *         ignored. `shell:` itself is modeled by VALUE: `bash`, or absent on a runner that cannot be
+ *         Windows (where the default is pwsh and there is no errexit at all).
  *
  *       - `on.push` / `on.pull_request` may carry `branches` or `branches-ignore` and nothing else,
  *         as a list of patterns built from `[A-Za-z0-9._/-]` and `*`. `paths`, `paths-ignore`,
@@ -60,7 +70,11 @@
  *         parse — each is a FAIL rather than a construct to guess at.
  *       - the invocation must HEAD its `&&`/`||` list (nothing may short-circuit whether it runs)
  *         and no `||` may appear anywhere later in that list (bash's list is left-associative, so
- *         `A && echo done || true` exits 0 when A fails).
+ *         `A && echo done || true` exits 0 when A fails) — including past a pipe further along,
+ *         which the scan used to stop at.
+ *       - the matched command is the ENTIRE list element, byte for byte. A prefix match let
+ *         `npm run lint -w apps/studio -- --help` through while the behavioural half ran the bare
+ *         constant, so the command measured and the command CI runs were different commands.
  *
  *     A shape this guard does not understand is a red, never a green. The cost is that a future
  *     legitimate edit — a `paths:` filter, a loop in the step — fails until someone either simplifies
@@ -320,6 +334,23 @@ const UNMODELED_WORDS = new Set([
 ]);
 
 /*
+ * Words that rewrite the block's OWN control flow rather than doing work inside it. A228 settled
+ * that an opaque neighbour command (`eval …`, `bash -c …`) is not denied — if the invocation hides
+ * inside one it is already `absent` — but these four are a different class: none of them is a
+ * neighbour, each of them decides whether the commands around it run or whether their failure
+ * reaches the step.
+ *
+ *   trap 'exit 0' ERR   the errexit abort is caught and turned into a success
+ *   exit 0              everything below it never runs, and the step exits 0
+ *   return 0            the same, inside a sourced body
+ *   exec …              the shell is replaced, so nothing after it exists
+ *
+ * All four were green with the guard printing "errexit armed", and `trap`/`exit` were bash-verified
+ * to exit 0 over a failing type-check.
+ */
+const CONTROL_FLOW_WORDS = new Set(['trap', 'exit', 'return', 'exec']);
+
+/*
  * `set` as bash reads it: a run of `-`/`+` clusters, where an `o` inside a cluster consumes the next
  * word as a long option name. Only the errexit bit matters here, but the whole thing is PARSED
  * rather than pattern-matched, because every spelling-based detector missed a spelling — the regex
@@ -353,12 +384,30 @@ function readSet(words) {
 
 /** Tokenise a `run:` body, or report the first construct outside the modeled grammar. */
 function readRun(runText) {
+  // Scanned on the RAW body, before anything below blanks a quoted region. The runner substitutes a
+  // workflow expression before the shell sees this text, and QUOTING DOES NOT STOP IT: with
+  // `matrix.suffix: ["x' || true #"]`, the body `… '${{ matrix.suffix }}'` reaches bash as
+  // `… 'x' || true #'`. The unquoted spelling was denied while the quoted one `continue`d past the
+  // check inside the loop, so adding two quotes flipped the verdict on the identical bypass.
+  if (runText.includes('${{')) {
+    return {
+      unmodeled:
+        'a `${{ … }}` workflow expression — the runner rewrites the body before the shell sees it, so what runs is not the text in the file (quoting it changes nothing: the substitution happens first)',
+    };
+  }
   const commands = [];
   let buf = '';
   let before = null;
   let quote = null;
   let subst = 0;
   let unmodeled = null;
+  // Whether the NEXT raw character begins a word, tracked on the raw text rather than inferred from
+  // `buf`. Quoted regions blank to spaces so that `-w "apps/studio"` still reads as the invocation,
+  // and that blanking used to manufacture a word boundary bash does not have: `… apps/studio ""#`
+  // became `… apps/studio   #`, so the guard saw a comment swallowing the `|| true` after it while
+  // bash — for which `#` mid-word is an ordinary character — ran the rescue. Bash-verified:
+  // `false ""# || echo RESCUED` prints RESCUED and exits 0.
+  let atWordStart = true;
   const deny = (why) => {
     if (!unmodeled) unmodeled = why;
   };
@@ -379,25 +428,20 @@ function readRun(runText) {
     const c = runText[i];
     const two = runText.slice(i, i + 2);
     if (quote) {
-      if (c === '\\' && quote !== "'") { buf += '  '; i++; continue; }
+      if (c === '\\' && quote !== "'") { buf += '  '; i++; atWordStart = false; continue; }
       if (c === quote) quote = null;
       buf += ' ';
+      atWordStart = false;
       continue;
     }
     if (subst > 0) {
-      if (two === '$(') { subst++; buf += '  '; i++; continue; }
+      if (two === '$(') { subst++; buf += '  '; i++; atWordStart = false; continue; }
       if (c === ')') subst--;
       buf += ' ';
+      atWordStart = false;
       continue;
     }
-    if (two === '$(') { subst = 1; buf += '  '; i++; continue; }
-    // A workflow expression is substituted by the runner BEFORE the shell sees this text, so the
-    // command that runs is not the command in the file: `npm run lint -w apps/studio ${{ … }}` can
-    // expand to the same line with `|| true` glued on.
-    if (runText.startsWith('${{', i)) {
-      deny('a `${{ … }}` workflow expression — the runner rewrites the body before the shell sees it, so what runs is not the text in the file');
-      break;
-    }
+    if (two === '$(') { subst = 1; buf += '  '; i++; atWordStart = false; continue; }
     // A heredoc redirects the lines that follow into a command's stdin. Round 6 put the invocation
     // inside a `cat <<EOF` body: every line there was scanned as a command in command position
     // while `cat` swallowed the lot.
@@ -408,39 +452,42 @@ function readRun(runText) {
     if (c === '\\') {
       // A line continuation joins two lines into one command; any other escape is opaque, and in
       // particular `\;` and `\&` are characters rather than command separators.
-      if (two === '\\\n') { i++; continue; }
+      if (two === '\\\n') { i++; atWordStart = true; continue; }
       buf += '  ';
       i++;
+      atWordStart = false;
       continue;
     }
-    if (c === "'" || c === '"' || c === '`') { quote = c; buf += ' '; continue; }
-    if (c === '#' && (buf === '' || /\s$/.test(buf))) {
+    if (c === "'" || c === '"' || c === '`') { quote = c; buf += ' '; atWordStart = false; continue; }
+    if (c === '#' && atWordStart) {
       while (i < runText.length && runText[i] !== '\n') i++;
       finish('\n');
+      atWordStart = true;
       continue;
     }
     if (c === '(' || c === ')') {
       deny('a subshell or grouping construct (`(` … `)`) — this guard does not model what runs inside one');
       break;
     }
-    if (two === '&&' || two === '||') { finish(two); i++; continue; }
+    if (two === '&&' || two === '||') { finish(two); i++; atWordStart = true; continue; }
     if (two === '|&') {
       deny('`|&` — a pipeline of both output streams, which this guard does not model');
       break;
     }
-    if (c === '|') { finish('|'); continue; }
+    if (c === '|') { finish('|'); atWordStart = true; continue; }
     // `2>&1` and `>& log` are redirections, and so is `&> log` — splitting at any of them would
     // report a redirected invocation as backgrounded, a false FAIL on an ordinary way to write the
     // step. The backwards test alone missed `&>`, which is the same operator written the other way
     // round.
-    if (c === '&' && !/>\s*$/.test(buf) && runText[i + 1] !== '>') { finish('&'); continue; }
+    if (c === '&' && !/>\s*$/.test(buf) && runText[i + 1] !== '>') { finish('&'); atWordStart = true; continue; }
     if (two === ';;') {
       deny('`;;` — a `case` clause terminator, which this guard does not model');
       break;
     }
-    if (c === ';') { finish(';'); continue; }
-    if (c === '\n') { finish('\n'); continue; }
+    if (c === ';') { finish(';'); atWordStart = true; continue; }
+    if (c === '\n') { finish('\n'); atWordStart = true; continue; }
     buf += c;
+    atWordStart = /\s/.test(c);
   }
   finish(null);
   if (unmodeled) return { unmodeled };
@@ -450,6 +497,11 @@ function readRun(runText) {
     const head = words[0];
     if (head !== undefined && UNMODELED_WORDS.has(head)) {
       return { unmodeled: `the shell keyword \`${head}\` — a compound command or condition context, where a failure need not abort the block at all` };
+    }
+    if (head !== undefined && CONTROL_FLOW_WORDS.has(head)) {
+      return {
+        unmodeled: `the control-flow builtin \`${head}\` — it rewrites which commands run and whether their failure reaches the step (\`trap '…' ERR\` catches the errexit abort, \`exit\`/\`return\` end the body early, \`exec\` replaces the shell), and this guard does not model that`,
+      };
     }
     if (words.includes('{') || words.includes('}')) {
       return { unmodeled: 'a `{ … }` brace group — this guard does not model what runs inside one' };
@@ -479,16 +531,34 @@ const DISCARDS_EXIT_CODE = {
 // to the step.
 const LIST_HEAD = new Set([null, '\n', ';']);
 
+/*
+ * Redirections attached to a command, which move its streams and leave its exit code alone. They
+ * are stripped before the invocation is compared so that `npm run lint -w apps/studio > lint.log
+ * 2>&1` still reads as the invocation — a correctly wired step written the ordinary way, and a
+ * false FAIL is how a guard gets deleted rather than obeyed. Every OTHER trailing word is an
+ * argument, and arguments are not stripped: see `appended` below.
+ */
+const REDIRECTION = /(?:^|\s)(?:\d*(?:>>?|<)&?\s*\S*|&>>?\s*\S*)/g;
+const bareCommand = (text) => text.replace(/^!\s*/, '').replace(REDIRECTION, ' ').replace(/\s+/g, ' ').trim();
+
 /** Where the invocation sits in a `run:` block, and whether its failure can still fail the step. */
 function invocationSemantics(runText) {
   const read = readRun(runText);
   if (read.unmodeled) return { kind: 'unmodeled', why: read.unmodeled };
   const commands = read.commands;
-  const index = commands.findIndex(({ text }) => {
-    const bare = text.replace(/^!\s*/, '');
-    return bare === CI_INVOCATION || bare.startsWith(`${CI_INVOCATION} `);
-  });
-  if (index === -1) return { kind: 'absent' };
+  // The match is the ENTIRE list element, exactly. A prefix match accepted anything beginning with
+  // the invocation plus a space while the behavioural half below ran the bare `CI_INVOCATION`
+  // constant — so the command this guard measures and the command CI runs were different commands.
+  // `npm run lint -w apps/studio -- --help` makes CI run `tsc --noEmit --help`, which prints help,
+  // checks nothing and exits 0, while the guard reported every planted error found.
+  const index = commands.findIndex(({ text }) => bareCommand(text) === CI_INVOCATION);
+  if (index === -1) {
+    const appended = commands.find(({ text }) => bareCommand(text).startsWith(`${CI_INVOCATION} `));
+    if (appended) {
+      return { kind: 'appended', extra: bareCommand(appended.text).slice(CI_INVOCATION.length).trim() };
+    }
+    return { kind: 'absent' };
+  }
   const command = commands[index];
   if (/^!\s*/.test(command.text)) {
     return { kind: 'discarded', why: '`!` inverts it, so the step passes exactly when the type-check fails' };
@@ -507,8 +577,12 @@ function invocationSemantics(runText) {
     const after = commands[j].after;
     if (after === null || after === '\n' || after === ';') break;
     // `A && (B | C)` binds the pipe tighter than the list, so a pipe further along cannot touch the
-    // invocation's own status. Only a pipe on the invocation itself does.
-    if (after === '|' && j > index) break;
+    // invocation's own status. Only a pipe on the invocation itself does. But the SCAN must go on:
+    // this used to `break`, which abandoned the rest of the list, so
+    // `npm run lint -w apps/studio && echo done | cat || true` never reached its `||` — and bash
+    // reads that as `A && (echo done|cat) || true`, which rescues A's failure and exits 0
+    // (bash-verified; the same line without the `|| true` correctly exits 1).
+    if (after === '|' && j > index) continue;
     // `&&` is the one operator that carries a failure onward, so it is the one with no entry here.
     // Every verdict below is read OUT of the table rather than decided beside it, which is what
     // makes deleting a row from the table a behaviour change that a fixture can catch.
@@ -614,9 +688,24 @@ if (!existsSync(PACKAGE)) {
  */
 const ENFORCED_BRANCH = 'studio-handoff';
 
-/** A GitHub branch filter — `main`, `studio-*`, `**` — as a matcher. */
+/**
+ * A GitHub branch filter — `main`, `studio-*`, `**` — as a matcher.
+ *
+ * Runs of `*` collapse to one BEFORE compiling. `MODELED_PATTERN` admits any number of them, and
+ * each became a `.*`, so `'*'.repeat(24) + 'zzz'` compiled to 24 chained `.*` in front of a literal
+ * that cannot match: the engine then walks every way of splitting the branch name between them and
+ * the guard runs past 60 seconds, i.e. a workflow file can hang its own gate. Collapsing is
+ * behaviour-preserving — `.*.*` matches exactly what `.*` matches — and was checked across `main`,
+ * `*`, `**`, `studio-*`, `releases/**` and `feat/**\/x`.
+ */
 const branchFilter = (pattern) =>
-  new RegExp(`^${String(pattern).split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+  new RegExp(
+    `^${String(pattern)
+      .replace(/\*+/g, '*')
+      .split('*')
+      .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*')}$`
+  );
 
 // The only two per-event keys this guard models. Everything else changes WHETHER a run starts in a
 // way it cannot evaluate from the file alone, so everything else is a FAIL:
@@ -712,8 +801,15 @@ function strategyRuns(job) {
   if ('exclude' in matrix) {
     return 'its `strategy.matrix` carries `exclude`, which can remove every remaining combination — this guard cannot compute the surviving leg count';
   }
-  const entries = Object.entries(matrix);
+  // `include` is not a dimension: it only ADDS legs (or adds keys to legs the dimensions already
+  // produced), so it can never take the count to zero. Treating it as one made
+  // `os: [ubuntu-latest]` + `include: []` a FAIL on a job that provably runs once — a false
+  // accusation on a healthy tree, the same class the `exclude` special-case above already handles
+  // from the other direction.
+  const entries = Object.entries(matrix).filter(([name]) => name !== 'include');
   if (!entries.length) {
+    // With no dimensions left, `include` alone decides the count — one leg per entry.
+    if (Array.isArray(matrix.include) && matrix.include.length > 0) return true;
     return 'its `strategy.matrix` declares no dimensions, so it produces no legs and the job runs the step zero times';
   }
   for (const [name, values] of entries) {
@@ -722,6 +818,101 @@ function strategyRuns(job) {
     }
   }
   return true;
+}
+
+/*
+ * THE KEY LAYER — one layer out from the `run:` grammar, and the layer round 7 found still open.
+ *
+ * Rounds 3–6 made the `run:` BODY default-deny. But the step and job KEYS that decide what that body
+ * MEANS stayed a blacklist: the reader looked at `if`, `continue-on-error`, `strategy` and `run`, and
+ * every other key was invisible. `shell:` was never read at all, so the entire `;`/newline safety
+ * argument below — which rests on GitHub running the body under a shell with errexit — was asserted
+ * about a shell nobody had checked; `needs:` was never read, so a `needs:` on a job that is skipped
+ * takes this job with it and a skipped job rolls up as SUCCESS; and `container:`, `services:`,
+ * `working-directory:`, `defaults:` and `uses:` were all silently ignored while each of them changes
+ * where or whether the command runs.
+ *
+ * So the keys are an ALLOWLIST, exactly like the `run:` grammar. A key not named here is a FAIL that
+ * names the key. The three tolerated keys that do NOT change whether the step runs are in the list on
+ * purpose, because the real `ci.yml` carries them and a guard that fires on the tree it guards gets
+ * deleted rather than obeyed:
+ *
+ *   - `env` — an environment mapping. It CAN in principle redirect a command (an `npm_config_*`), and
+ *     that is the same class as `bash -c "$(printf …)"`: out of threat model here, as A228 settled.
+ *   - `timeout-minutes` — a cap. It can only turn a slow step RED, never green.
+ *   - `runs-on` / `name` / `id` — the label and the machine, neither of which is execution semantics.
+ *
+ * Everything else — including keys nobody has thought of yet — is denied by DEFAULT rather than by
+ * enumeration, which is the whole point of A227.
+ */
+const MODELED_JOB_KEYS = new Set([
+  'name', 'runs-on', 'steps', 'strategy', 'if', 'continue-on-error', 'env', 'timeout-minutes',
+]);
+const MODELED_STEP_KEYS = new Set([
+  'name', 'id', 'run', 'shell', 'if', 'continue-on-error', 'env', 'timeout-minutes',
+]);
+
+const unmodeledKeys = (value, modeled) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).filter((k) => !modeled.has(k))
+    : [];
+
+/*
+ * `shell:` — the key every verdict about `;` and newlines silently assumed.
+ *
+ * GitHub invokes an explicit `shell: bash` as `bash --noprofile --norc -eo pipefail {0}`, and an
+ * absent `shell:` as `bash -e {0}` on Linux and macOS. Both arm errexit, which is what makes
+ * `A; B` and a multi-line body safe: A's failure aborts the block and becomes the step's status.
+ *
+ * A TEMPLATE value does not. `shell: bash --noprofile --norc {0}` is still bash, still reads like
+ * the default, and has no `-e` at all: `npm run lint -w apps/studio; echo done` then exits 0 over a
+ * failing type-check while this guard printed "errexit armed". So only the two spellings above are
+ * accepted, and every other value FAILs naming the key rather than being assumed to be a shell.
+ */
+const MODELED_SHELLS = new Set(['bash']);
+
+/**
+ * Can this job land on a Windows runner? Positive evidence only — a literal `runs-on`, or a
+ * `runs-on: ${{ matrix.X }}` resolved through a literal `matrix.X` list. It matters because an
+ * ABSENT `shell:` is only `bash -e` on Linux and macOS; on Windows the default is pwsh, which has
+ * no errexit, so deleting the explicit `shell: bash` from the real 3-OS `studio-unit` job would
+ * quietly move one leg to a shell none of the reasoning above applies to.
+ */
+function runsOnWindows(job) {
+  const target = job['runs-on'];
+  const candidates = [];
+  const collect = (v) => {
+    if (typeof v === 'string') candidates.push(v);
+    else if (Array.isArray(v)) v.forEach(collect);
+  };
+  collect(target);
+  const viaMatrix = typeof target === 'string' && /^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$/.exec(target.trim());
+  if (viaMatrix) collect(job.strategy?.matrix?.[viaMatrix[1]]);
+  return candidates.some((c) => /windows/i.test(c));
+}
+
+/** The shell the step's body runs under, or why this guard cannot name it. */
+function shellSemantics(job, step) {
+  const shell = step.shell;
+  if (shell === undefined || shell === null) {
+    return runsOnWindows(job)
+      ? 'has no `shell:` key while its job can run on a Windows runner — the default there is pwsh, which has no errexit, so a failing command does not abort the body and every `;`/newline verdict this guard makes about the body is false. Spell the shell out as `shell: bash`'
+      : null;
+  }
+  if (typeof shell === 'string' && MODELED_SHELLS.has(shell.trim())) return null;
+  return `carries \`shell: ${String(shell).trim()}\`, which this guard does not model — only \`shell: bash\` (which GitHub invokes as \`bash --noprofile --norc -eo pipefail {0}\`) and an absent \`shell:\` on a non-Windows runner arm the errexit that every \`;\`/newline verdict below depends on. A template form such as \`bash --noprofile --norc {0}\` looks like the default and drops \`-e\``;
+}
+
+/**
+ * Workflow-level `defaults:` sets the shell and working directory for EVERY step in the file,
+ * including this one, from a place the step-level reader never looks. The job-level spelling is
+ * denied by `MODELED_JOB_KEYS`; this is the same key one level up.
+ */
+function checkWorkflowDefaults(doc) {
+  if (doc.defaults === undefined || doc.defaults === null) return [];
+  return [
+    '.github/workflows/ci.yml sets a workflow-level `defaults:`, which this guard does not model — it can set `run.shell` and `run.working-directory` for every step in the file, so the shell the app type-check runs under is decided somewhere the step does not say. Move the setting onto the step, or extend the guard.',
+  ];
 }
 
 /**
@@ -770,10 +961,10 @@ function checkWorkflow() {
   if (!doc || typeof doc !== 'object') {
     return ['.github/workflows/ci.yml is empty — nothing in it can invoke the app type-check.'];
   }
-  const triggerFailures = checkTriggers(doc);
+  const workflowFailures = [...checkTriggers(doc), ...checkWorkflowDefaults(doc)];
   const jobs = doc.jobs;
   if (!jobs || typeof jobs !== 'object') {
-    return [...triggerFailures, '.github/workflows/ci.yml declares no `jobs:` — nothing in it can invoke the app type-check.'];
+    return [...workflowFailures, '.github/workflows/ci.yml declares no `jobs:` — nothing in it can invoke the app type-check.'];
   }
   const rejected = [];
   for (const [jobName, job] of Object.entries(jobs)) {
@@ -784,6 +975,27 @@ function checkWorkflow() {
       // Named on every rejection: "somewhere in ci.yml" is not actionable in a file with 20 steps,
       // and the shape this issue reproduced live left the step's NAME correct while gutting its body.
       const where = `job \`${jobName}\` step \`${typeof step.name === 'string' ? step.name : '(unnamed)'}\``;
+      const unmodeledJobKeys = unmodeledKeys(job, MODELED_JOB_KEYS);
+      if (unmodeledJobKeys.length) {
+        rejected.push(
+          `job \`${jobName}\` carries the unmodelled key(s) ${unmodeledJobKeys.map((k) => `\`${k}\``).join(', ')} — each of them can change whether the step runs, where it runs, or whether its result is believed, and this guard reads none of them. ` +
+            '(`needs:` ties this job to another that may be skipped, and a skipped job rolls up as SUCCESS; `container:`/`services:` move the whole job elsewhere; `defaults:` sets the shell from outside the step.) Remove the key, or extend the guard to model it'
+        );
+        continue;
+      }
+      const unmodeledStepKeys = unmodeledKeys(step, MODELED_STEP_KEYS);
+      if (unmodeledStepKeys.length) {
+        rejected.push(
+          `${where} carries the unmodelled key(s) ${unmodeledStepKeys.map((k) => `\`${k}\``).join(', ')} — each of them can change what the step actually executes, and this guard reads none of them. ` +
+            '(`working-directory:` resolves `-w apps/studio` against a different tree, so the command can type-check a decoy; `uses:` replaces the body entirely.) Remove the key, or extend the guard to model it'
+        );
+        continue;
+      }
+      const shellWhy = shellSemantics(job, step);
+      if (shellWhy) {
+        rejected.push(`${where} ${shellWhy}`);
+        continue;
+      }
       if (!enabled(job.if)) {
         rejected.push(`job \`${jobName}\` is conditional on \`if: ${String(job.if).trim()}\``);
         continue;
@@ -822,6 +1034,12 @@ function checkWorkflow() {
         );
         continue;
       }
+      if (semantics.kind === 'appended') {
+        rejected.push(
+          `${where} runs \`${CI_INVOCATION}\` with \`${semantics.extra}\` APPENDED, so CI does not run the command this guard measures — npm forwards everything after \`--\` to the script, and \`-- --help\` makes it \`tsc --noEmit --help\`, which prints help, checks nothing and exits 0, while \`-- -p tsconfig.decoy.json\` re-points the project at a decoy. The behavioural half below runs \`${CI_INVOCATION}\` bare, so an appended argument makes the measured command and the CI command two different commands. The invocation must be the ENTIRE command, exactly`
+        );
+        continue;
+      }
       if (semantics.kind === 'absent') {
         rejected.push(
           `${where} mentions \`${CI_INVOCATION}\` but not as a command it runs — it is inside a shell comment, a quoted string, a command substitution or a construct this guard does not read as a command. Text the shell does not execute enforces nothing`
@@ -840,19 +1058,19 @@ function checkWorkflow() {
         );
         continue;
       }
-      return triggerFailures;
+      return workflowFailures;
     }
   }
   if (rejected.length) {
     return [
-      ...triggerFailures,
+      ...workflowFailures,
       `.github/workflows/ci.yml invokes \`${CI_INVOCATION}\` only from a step that cannot be relied on to run and enforce it:\n` +
         rejected.map((d) => `    - ${d}`).join('\n') +
-        '\n    A step that never executes, or whose failure reaches nothing, enforces nothing — which is exactly known issue P7. This reader is DEFAULT-DENY: conditions other than `true`/`always()`/`success()`, any `continue-on-error` other than a literal `false`, a matrix whose leg count is not a non-empty literal, and any shell construct outside `simple commands joined by && || | & ; newline` are all reported as unproven rather than assumed benign.',
+        '\n    A step that never executes, or whose failure reaches nothing, enforces nothing — which is exactly known issue P7. This reader is DEFAULT-DENY at both layers: any step or job key outside the modeled set, any `shell:` other than `bash`, conditions other than `true`/`always()`/`success()`, any `continue-on-error` other than a literal `false`, a matrix whose leg count is not a non-empty literal, and any shell construct outside `simple commands joined by && || | & ; newline` are all reported as unproven rather than assumed benign.',
     ];
   }
   return [
-    ...triggerFailures,
+    ...workflowFailures,
     `.github/workflows/ci.yml has no enabled \`run:\` step invoking \`${CI_INVOCATION}\` — the app type-check is a local command nobody runs, which is exactly known issue P7. (A comment, or the text appearing anywhere other than a step's \`run:\`, does not count.)`,
   ];
 }
@@ -878,17 +1096,31 @@ function mirror(src, dst) {
   }
 }
 
+/*
+ * Fault injection for this guard's own tests: `P7_FORCE_SIGNAL_ON_RUN=<n>` makes the nth
+ * `runAppLint` report a signal kill, which is the shape a spawn killed under load produces and the
+ * only way to reach the signal clauses deterministically. Hoping for the real thing is not a pin —
+ * the planted run's missing clause was hit once for real, in 1 of 79 runs.
+ *
+ * Like `P7_EXTRA_STRICT_FLAGS`, it can only make the guard REDDER: every signal path below is a
+ * FAIL, so no setting of it switches a check off.
+ */
+let appLintRuns = 0;
+const FORCED_SIGNAL_RUN = Number(process.env.P7_FORCE_SIGNAL_ON_RUN ?? '');
+
 function runAppLint(cwd) {
+  appLintRuns++;
   // `shell: true` with a constant command so the same string works on win32, where `npm` is a shim
   // rather than an executable. Judged by `status`, never by a pipeline's exit code.
   const r = spawnSync(CI_INVOCATION, { cwd, shell: true, encoding: 'utf8', timeout: 600_000 });
+  const forced = FORCED_SIGNAL_RUN === appLintRuns;
   return {
     // `spawnSync` reports a failure to launch on `error`; a `throw` never happens, so a missing npm
     // would otherwise read as `status: null` and be indistinguishable from a crash.
     error: r.error ? (r.error instanceof Error ? r.error.message : String(r.error)) : null,
-    status: r.status,
-    signal: r.signal,
-    output: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+    status: forced ? null : r.status,
+    signal: forced ? 'SIGKILL' : r.signal,
+    output: forced ? '' : `${r.stdout ?? ''}${r.stderr ?? ''}`,
   };
 }
 
@@ -968,6 +1200,16 @@ function checkBehaviour() {
 
     const dirty = runAppLint(work);
     if (dirty.error) return [`\`${CI_INVOCATION}\` could not be launched: ${dirty.error}`];
+    // The clean run has guarded `signal` since it was written; the planted run guarded only `error`,
+    // so a signal-killed planted run arrived here with `status: null` and no output, fell through to
+    // the missed-probe branch, and accused the tree of reopening P7 because a spawn was killed. Same
+    // clause, same reason: a command that did not finish reported nothing, and reporting nothing is
+    // not evidence that it checks nothing.
+    if (dirty.signal) {
+      return [
+        `\`${CI_INVOCATION}\` was killed by ${dirty.signal} over the planted tree, so it never finished — this guard cannot tell a type-check that found nothing from one that never ran. Re-run it; this is a probe that did not complete, not a P7 finding.`,
+      ];
+    }
     if (dirty.status === 0) {
       return [
         `\`${CI_INVOCATION}\` exited 0 over a tree carrying ${PROBES.length} planted type errors — whatever that command is, it is not type-checking this project's files. This is known issue P7 with every other assertion in this guard still true.`,
@@ -1007,6 +1249,6 @@ if (failures.length) {
 
 console.log(
   SHAPE_ONLY
-    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
-    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed.`
+    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a step and a job carrying only keys this guard models, under a shell it models, as the ENTIRE command of a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
+    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a step and a job carrying only keys this guard models, under a shell it models, as the ENTIRE command of a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed.`
 );

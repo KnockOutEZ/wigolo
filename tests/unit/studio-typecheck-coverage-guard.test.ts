@@ -283,12 +283,19 @@ const WORKFLOW_MULTILINE_BENIGN = wf(`jobs:
  * inside an argument is a character, not an operator. Without quote tracking the `||` here splits the
  * command and the guard reports a correctly wired step as swallowing its own exit code — a false FAIL
  * on a healthy tree, which is how a guard gets deleted rather than obeyed.
+ *
+ * The quoted argument sits on the NEIGHBOUR rather than on the invocation, because round 7 made the
+ * invocation an exact match: any appended argument — even one npm consumes itself, like
+ * `--loglevel warn` — is now a FAIL, since nothing here can tell npm's own flags from a forwarded
+ * `-- --help`. That spelling moved to `WORKFLOW_APPENDED_NPM_FLAG` as a must-FIRE case.
  */
 const WORKFLOW_QUOTED_ARGUMENT = wf(`jobs:
   studio-unit:
     steps:
       - name: Lint studio (tsc --noEmit)
-        run: npm run lint -w apps/studio --loglevel "warn || error"
+        run: |
+          echo "warn || error"
+          npm run lint -w apps/studio
 `);
 
 /**
