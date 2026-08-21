@@ -984,6 +984,223 @@ const WORKFLOW_MATRIX_ONLY_EMPTY_INCLUDE = wf(`jobs:
         run: npm run lint -w apps/studio
 `);
 
+// -----------------------------------------------------------------------------------------------
+// Round 8. Two of these were opened by the round-7 diff itself, and both are the same class: a
+// change that made the guard read MORE of the file handed a neighbouring reader a shape it did not
+// model. The rest are the shrinking `run:`-grammar tail plus two test gaps.
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * D1, the regression. Before the `include` exemption above, an `include`-only Windows leg never
+ * reached the shell check at all — `strategyRuns` rejected the matrix first. The exemption made this
+ * job "provably runs" and handed it to a Windows reader that read DIMENSIONS only, so the `os` the
+ * exemption had just started trusting was invisible to it. Same runners as the 3-OS dimension
+ * spelling, opposite verdict; the only delta is `include:`.
+ */
+const WORKFLOW_INCLUDE_WINDOWS_NO_SHELL = wf(`jobs:
+  studio-unit:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include: [{ os: windows-latest }]
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** D1's must-not-fire: the identical matrix with the shell named is a correctly wired step. */
+const WORKFLOW_INCLUDE_WINDOWS_SHELL_BASH = wf(`jobs:
+  studio-unit:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include: [{ os: windows-latest }]
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        shell: bash
+        run: npm run lint -w apps/studio
+`);
+
+/**
+ * D1's other must-not-fire, and the one that stops the fix degenerating into "deny any matrix that
+ * carries `include`": an `include` leg that provably is not Windows still needs no explicit shell.
+ */
+const WORKFLOW_INCLUDE_UBUNTU_NO_SHELL = wf(`jobs:
+  studio-unit:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include: [{ os: macos-latest }]
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** D1, second spelling: a repository variable resolves outside this file entirely. */
+const WORKFLOW_RUNS_ON_VARS = wf(`jobs:
+  studio-unit:
+    runs-on: \${{ vars.RUNNER_LABEL }}
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** D1, third spelling: the reference is to `matrix.os` and the dimension is called something else. */
+const WORKFLOW_RUNS_ON_MISSING_DIMENSION = wf(`jobs:
+  studio-unit:
+    runs-on: \${{ matrix.os }}
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/**
+ * D2, the other regression. Bash REMOVES backslash-newline before tokenising, so this joins to
+ * `npm run lint -w apps/studio && echo ok# || true` — `#` is an ordinary character mid-word and the
+ * `|| true` is live, rescuing a failing type-check to exit 0. Round 7 set `atWordStart` on the
+ * continuation, so the guard read a comment where bash reads none.
+ */
+const WORKFLOW_CONTINUATION_FAKE_COMMENT = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          npm run lint -w apps/studio && echo ok\\
+          # || true
+`);
+
+/** D2's must-not-fire: a continuation with nothing hidden behind it still joins two lines into one. */
+const WORKFLOW_CONTINUATION_PLAIN = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          npm run lint -w apps/studio \\
+            && echo done
+`);
+
+/**
+ * D3. The blanked text is the bare invocation, so it matched exactly; in CI the substitution expands
+ * to `-- --help`, npm forwards it, and `tsc --noEmit --help` prints help and exits 0.
+ */
+const WORKFLOW_COMMAND_SUBSTITUTION = wfRun("npm run lint -w apps/studio $(printf -- '-- --help')");
+
+/** D3's backtick spelling — the same expansion, and previously read as a quoted region. */
+const WORKFLOW_BACKTICK_SUBSTITUTION = wfRun('npm run lint -w apps/studio `printf -- \'-- --help\'`');
+
+/** D3's must-not-fire: `${HOME}` is a parameter expansion the runner never touches, not `$( … )`. */
+const WORKFLOW_BRACED_SHELL_VARIABLE = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          echo "building in \${HOME}"
+          npm run lint -w apps/studio
+`);
+
+/** D4. One word in front of the exact string the guard already denies, and it disarms identically. */
+const WORKFLOW_BUILTIN_SET_PLUS_E = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          builtin set +e
+          npm run lint -w apps/studio
+`);
+
+/** D4, second introducer. `command` prefixes a builtin exactly as `builtin` does. */
+const WORKFLOW_COMMAND_SET_PLUS_E = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          command set +e
+          npm run lint -w apps/studio
+`);
+
+/** D4. `eval` runs a string this guard cannot read, and the string here is a `set +e`. */
+const WORKFLOW_EVAL_SET_PLUS_E = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          eval "set +e"
+          npm run lint -w apps/studio
+`);
+
+/**
+ * D4. `source` runs another file in THIS shell, so whatever that file does to errexit applies here.
+ * The disarming file is committed alongside, which is what makes this a live bypass rather than a
+ * hypothetical one: nothing about the workflow text says errexit was switched off.
+ */
+const WORKFLOW_SOURCE_DISARMING_FILE = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          source ./apps/studio/ci/disarm.sh
+          npm run lint -w apps/studio
+`);
+
+/** D4, `source`'s POSIX spelling — one character, same effect. */
+const WORKFLOW_DOT_DISARMING_FILE = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          . ./apps/studio/ci/disarm.sh
+          npm run lint -w apps/studio
+`);
+
+/** D4's must-not-fire: `builtin` in front of something that is not `set` acts like that something. */
+const WORKFLOW_BUILTIN_ECHO = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          builtin echo starting
+          npm run lint -w apps/studio
+`);
+
+/** D5. A correctly wired step, quoted the ordinary way — and reported `absent` before round 8. */
+const WORKFLOW_QUOTED_WORKSPACE = wfRun('npm run lint -w "apps/studio"');
+
+/** D5, single quotes. */
+const WORKFLOW_SQUOTED_WORKSPACE = wfRun("npm run lint -w 'apps/studio'");
+
+/**
+ * D5's must-fire companion. Reading quoted CONTENT must not degenerate into "any quoted word is the
+ * workspace": this step type-checks a different workspace, and the app's type-check is still absent.
+ */
+const WORKFLOW_QUOTED_OTHER_WORKSPACE = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          npm run lint -w "apps/other" # npm run lint -w apps/studio
+`);
+
+/** D6. `return` was the one `CONTROL_FLOW_WORDS` member with no fixture — a deny nothing proved live. */
+const WORKFLOW_BARE_RETURN = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          return 0
+          npm run lint -w apps/studio
+`);
+
+/** D7. The three `REDIRECTION` branches no fixture exercised: `>>`, `<` and `&>>`. */
+const WORKFLOW_REDIRECT_APPEND = wfRun('npm run lint -w apps/studio >> lint.log');
+const WORKFLOW_REDIRECT_STDIN = wfRun('npm run lint -w apps/studio < /dev/null');
+const WORKFLOW_REDIRECT_AMP_APPEND = wfRun('npm run lint -w apps/studio &>> lint.log');
+
 /**
  * The compiler options a fixture needs for the probe set to be meaningful: a modern lib (the
  * builtin-iterator probe needs `Array.prototype.values`) and no ambient `@types` sweep.
@@ -1950,9 +2167,14 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     // The cost of exactness, pinned rather than left implicit: `--loglevel warn` is harmless in fact
     // and denied in principle. Guessing which trailing words are harmless is the guess that fails
     // silently, and A227's reversal condition covers this if it ever becomes brittle in practice.
+    //
+    // The reported argument is the whole of it, quotes removed — which is what bash passes. While
+    // quoted regions blanked to spaces this read `--loglevel` alone, so the guard named an argument
+    // shorter than the one CI forwards; the same blanking made `-w "apps/studio"` read as
+    // `npm run lint -w` and reds a correctly wired step (round 8's D5).
     buildFixture({ workflow: WORKFLOW_APPENDED_NPM_FLAG });
     const { status, output } = runGuard();
-    expect(output).toContain('with `--loglevel` APPENDED');
+    expect(output).toContain('with `--loglevel warn || error` APPENDED');
     expect(status).toBe(1);
   });
 
@@ -2192,6 +2414,199 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     const { status, output } = runGuard();
     expect(output).toContain('declares no dimensions, so it produces no legs');
     expect(status).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Round 8. D1 and D2 are regressions the round-7 diff introduced; D3-D5 are the `run:`-grammar
+  // tail; D6 and D7 are gaps where a live deny-rule had no fixture proving it live.
+  // -------------------------------------------------------------------------------------------
+
+  it('fails when a Windows leg is declared through `matrix.include` and no `shell:` is named', () => {
+    // D1. The include exemption made this job "provably runs" and handed it to a Windows reader that
+    // read dimensions only — so the key the exemption started trusting was invisible to the check
+    // that consumes it. Mutant: read dimensions only again, and this greens while the identical job
+    // written with a 3-OS dimension reds. On the Windows leg the body runs under pwsh, which has no
+    // errexit, and a failing type-check ships.
+    buildFixture({ workflow: WORKFLOW_INCLUDE_WINDOWS_NO_SHELL });
+    const { status, output } = runGuard();
+    expect(output).toContain('has no `shell:` key while its job can run on a Windows runner');
+    expect(status).toBe(1);
+  });
+
+  it('accepts the same `include` Windows leg once `shell: bash` is named', () => {
+    // D1's must-not-fire. Without it the fix degenerates to "deny any matrix carrying `include`",
+    // which reds a job that provably runs — and a guard that fires on a healthy tree gets deleted.
+    buildFixture({ workflow: WORKFLOW_INCLUDE_WINDOWS_SHELL_BASH });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it('accepts an `include` leg that provably is not Windows with no `shell:` at all', () => {
+    // D1's second must-not-fire: the rule is about the LABELS, not about the presence of `include`.
+    buildFixture({ workflow: WORKFLOW_INCLUDE_UBUNTU_NO_SHELL });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it('fails when `runs-on` is a repository variable and no `shell:` is named', () => {
+    // D1, and the reason the reader is INVERTED rather than taught one more key: a reader that only
+    // ever adds Windows evidence answers "not Windows" for every spelling it cannot read. Its own
+    // wording, distinct from the `can run on a Windows runner` clause above, so a fix to one is not
+    // mistaken for a fix to both.
+    buildFixture({ workflow: WORKFLOW_RUNS_ON_VARS });
+    const { status, output } = runGuard();
+    expect(output).toContain('`${{ vars.RUNNER_LABEL }}`');
+    expect(output).toContain('cannot resolve that to literal runner labels');
+    expect(status).toBe(1);
+  });
+
+  it('fails when `runs-on` names a matrix key no dimension and no `include` entry supplies', () => {
+    // D1, third spelling. `${{ matrix.os }}` beside a dimension called `runner` resolves to nothing
+    // at all, and "nothing" was read as "no Windows".
+    buildFixture({ workflow: WORKFLOW_RUNS_ON_MISSING_DIMENSION });
+    const { status, output } = runGuard();
+    expect(output).toContain('which no `strategy.matrix.os` dimension and no `include` entry supplies a value for');
+    expect(status).toBe(1);
+  });
+
+  it('fails when a line continuation is used to fake a comment boundary in front of a `|| true`', () => {
+    // D2. Bash removes backslash-newline BEFORE tokenising, so it creates no word boundary:
+    // `echo ok\` + `# || true` joins to `echo ok# || true`, where `#` is an ordinary character and
+    // the rescue runs. Round 7 set `atWordStart` on the continuation while fixing the identical
+    // mechanism on the quote branch. Mutant: set `atWordStart = true` there again and this greens.
+    buildFixture({ workflow: WORKFLOW_CONTINUATION_FAKE_COMMENT });
+    const { status, output } = runGuard();
+    expect(output).toContain('a `||` further along the same left-associative list rescues the whole chain');
+    expect(status).toBe(1);
+  });
+
+  it('accepts a plain line continuation, which joins two lines into one command', () => {
+    // D2's must-not-fire: the continuation is transparent, not a separator. Mutant: treat `\`+newline
+    // as a command boundary and this correctly wired step reds. The genuine trailing `# comment` with
+    // no continuation is covered by the trailing-comment case near the top of this file.
+    buildFixture({ workflow: WORKFLOW_CONTINUATION_PLAIN });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it.each([
+    ['`$(…)`', WORKFLOW_COMMAND_SUBSTITUTION],
+    ['a backtick', WORKFLOW_BACKTICK_SUBSTITUTION],
+  ])('fails when %s smuggles arguments past the exact match', (_name, workflow) => {
+    // D3. The region blanked to spaces, so the guard matched a bare invocation while bash builds
+    // `npm run lint -w apps/studio -- --help` and CI runs `tsc --noEmit --help` — help printed,
+    // nothing checked, exit 0. Its own wording: the APPENDED clause below rejects the literal
+    // spelling of the same attack and must not be what catches this one.
+    buildFixture({ workflow });
+    const { status, output } = runGuard();
+    expect(output).toContain('a command substitution');
+    expect(output).toContain('its OUTPUT becomes arguments');
+    expect(status).toBe(1);
+  });
+
+  it('rejects the literal `-- --help` suffix by the APPENDED clause, not the substitution one', () => {
+    // D3's separation control. Two rules deny the same end state by different mechanisms, and each
+    // must own its wording — the copy-pinning class that shipped in #60 and #64.
+    buildFixture({ workflow: WORKFLOW_APPENDED_HELP });
+    const { status, output } = runGuard();
+    expect(output).toContain('with `-- --help` APPENDED');
+    expect(output).not.toContain('a command substitution');
+    expect(status).toBe(1);
+  });
+
+  it('accepts a braced parameter expansion — `${HOME}` is expanded by the shell, not substituted', () => {
+    // D3's must-not-fire. Mutant: deny on `$` or on `${` and this healthy step reds.
+    buildFixture({ workflow: WORKFLOW_BRACED_SHELL_VARIABLE });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it.each([
+    ['builtin', WORKFLOW_BUILTIN_SET_PLUS_E],
+    ['command', WORKFLOW_COMMAND_SET_PLUS_E],
+  ])('fails when `%s` introduces the `set +e` the guard already denies', (word, workflow) => {
+    // D4, and the sharpest spelling round 8 found: one word in front of the exact string the FAIL
+    // message claims to catch "in ANY of its spellings", and it was green. The message now quotes the
+    // offending command, so a dead prefix-stripper cannot hide behind the old wording.
+    buildFixture({ workflow });
+    const { status, output } = runGuard();
+    expect(output).toContain(`switches errexit off with \`${word} set +e\``);
+    expect(status).toBe(1);
+  });
+
+  it.each([
+    ['eval', WORKFLOW_EVAL_SET_PLUS_E, {}],
+    ['source', WORKFLOW_SOURCE_DISARMING_FILE, { 'ci/disarm.sh': 'set +e\n' }],
+    ['.', WORKFLOW_DOT_DISARMING_FILE, { 'ci/disarm.sh': 'set +e\n' }],
+  ])('fails when `%s` runs errexit-disarming text from outside the workflow file', (word, workflow, extraApp) => {
+    // D4's other half. `eval`/`source`/`.` are the same class as `trap`/`exit`/`return`/`exec`: none
+    // is an opaque NEIGHBOUR (A228's carve-out), each decides whether the commands around it run or
+    // whether their failure reaches the step. The sourced file is committed here so the bypass is
+    // the real one — nothing in the workflow text says errexit was switched off.
+    buildFixture({ workflow, extraApp: extraApp as Record<string, string> });
+    const { status, output } = runGuard();
+    expect(output).toContain(`the control-flow builtin \`${word}\``);
+    expect(status).toBe(1);
+  });
+
+  it('accepts `builtin` in front of a command that is not `set`', () => {
+    // D4's must-not-fire: the introducer is stripped, not denied. Mutant: deny `builtin` as a head
+    // and this reds; mutant: strip it but keep reading the ORIGINAL head and the two cases above
+    // green. Together with the `set +x` and `set -euo pipefail` controls above, this pins that only
+    // an errexit-disarming `set` is denied.
+    buildFixture({ workflow: WORKFLOW_BUILTIN_ECHO });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it.each([
+    ['"apps/studio"', WORKFLOW_QUOTED_WORKSPACE],
+    ["'apps/studio'", WORKFLOW_SQUOTED_WORKSPACE],
+  ])('accepts `-w %s` — quoting the workspace does not stop it being the invocation', (_name, workflow) => {
+    // D5, a false FAIL on a correctly wired step: blanking the quoted region to spaces reduced this
+    // to `npm run lint -w` and reported the app type-check `absent`, under a comment claiming this
+    // spelling "still reads as the invocation". A guard that reds a healthy tree gets deleted.
+    buildFixture({ workflow });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
+  });
+
+  it('still reports a genuinely absent invocation when another workspace is quoted', () => {
+    // D5's must-fire control: reading quoted CONTENT must not become "any quoted word matches".
+    buildFixture({ workflow: WORKFLOW_QUOTED_OTHER_WORKSPACE });
+    const { status, output } = runGuard();
+    expect(output).toContain('but not as a command it runs');
+    expect(status).toBe(1);
+  });
+
+  it('fails when a `return` ends the body before the invocation', () => {
+    // D6. `trap`, `exit` and `exec` each had a must-fire fixture; `return` had none, so dropping it
+    // from CONTROL_FLOW_WORDS was a mutation the whole suite survived — a deny-set member no test
+    // proved live.
+    buildFixture({ workflow: WORKFLOW_BARE_RETURN });
+    const { status, output } = runGuard();
+    expect(output).toContain('the control-flow builtin `return`');
+    expect(status).toBe(1);
+  });
+
+  it.each([
+    ['>> lint.log', WORKFLOW_REDIRECT_APPEND],
+    ['< /dev/null', WORKFLOW_REDIRECT_STDIN],
+    ['&>> lint.log', WORKFLOW_REDIRECT_AMP_APPEND],
+  ])('accepts the redirection `%s`, the spellings no fixture exercised', (_name, workflow) => {
+    // D7, red direction. `REDIRECTION` models `>>`, `<` and `&>>`, and the three existing fixtures
+    // exercise only `>`, `>&` and `&>` — so dropping the `<` or the second `>` from the pattern
+    // survived the suite while turning an ordinary redirected step into a false FAIL.
+    buildFixture({ workflow });
+    const { status, output } = runGuardShape();
+    expect(output).toContain('OK (shape only)');
+    expect(status).toBe(0);
   });
 
   it('reports a signal-killed PLANTED run as a probe that did not finish, not as a reopened P7', () => {
