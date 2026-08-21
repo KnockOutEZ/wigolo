@@ -52,11 +52,14 @@ function liveWindow() {
  * A window that is ALIVE while its webContents is destroyed — the lifetime pair the fakes above
  * cannot express, because each of them moves the two together.
  *
- * The two objects are destroyed independently. `webContents.close()`, a renderer that tore itself
- * down, or a crashed render process all leave `win.isDestroyed()` returning false with the contents
- * already gone, and `send` on a dead webContents throws the SAME `Object has been destroyed` — from
- * the call this time rather than the property access, but uncaught in the main process either way,
- * so it produces the identical modal crash dialog and the identical hang.
+ * The two objects are destroyed independently. `webContents.close()` and a renderer that tore itself
+ * down both leave `win.isDestroyed()` returning false with the contents already gone, and `send` on a
+ * dead webContents throws the SAME `Object has been destroyed` — from the call this time rather than
+ * the property access, but uncaught in the main process either way, so it produces the identical
+ * modal crash dialog and the identical hang. Both halves of that are measured against the real engine
+ * in `tests/e2e/crash-push.spec.ts`; this fixture is the cheap restatement, not the evidence.
+ *
+ * A CRASHED render process is NOT this shape — see `windowAliveContentsCrashed` below.
  *
  * Coupling the two lifetimes in every fixture is how a suite bakes in the blind spot it was written
  * to close: a guard that reads only the window passes every one of them.
@@ -77,6 +80,26 @@ function windowAliveContentsDestroyed(): {
     },
   };
   return { win: win as unknown as Parameters<typeof stateBroadcaster>[0], send: () => sent };
+}
+
+/**
+ * The CRASH shape, which the guard deliberately does not catch: window alive, contents alive but
+ * crashed. Electron keeps a crashed webContents around for reload — that is why `isCrashed()` and
+ * `render-process-gone` exist as a separate API — so `isDestroyed()` is false and neither clause of
+ * the guard fires. Measured against the real engine in `tests/e2e/crash-push.spec.ts`, along with the
+ * fact that the resulting send is benign: it posts into a dead channel and returns.
+ *
+ * `send` here therefore does NOT throw, unlike the destroyed fixture above. Making it throw would be
+ * writing the engine's behaviour to match the comment instead of the other way round, which is the
+ * error this issue exists to undo.
+ */
+function windowAliveContentsCrashed() {
+  const send = vi.fn();
+  const win = {
+    isDestroyed: () => false,
+    webContents: { isDestroyed: () => false, isCrashed: () => true, send },
+  };
+  return { win: win as unknown as Parameters<typeof stateBroadcaster>[0], send };
 }
 
 describe('stateBroadcaster', () => {
@@ -116,6 +139,17 @@ describe('stateBroadcaster', () => {
     const { win, send } = windowAliveContentsDestroyed();
     stateBroadcaster(win, state)();
     expect(send(), 'the destroyed webContents was sent through — the guard reads the window only').toBe(false);
+  });
+
+  it('still pushes through a crashed-but-not-destroyed contents, because that send is benign', () => {
+    // Pins the claim the file comment makes. A guard grown a `|| win.webContents.isCrashed()` clause
+    // reds here — and should, until an engine measurement says the crash-path send throws.
+    const { win, send } = windowAliveContentsCrashed();
+    expect(() => stateBroadcaster(win, state)()).not.toThrow();
+    expect(send, 'the crash path was skipped — the guard now claims coverage the comment denies').toHaveBeenCalledWith(
+      IPC.stateChanged,
+      { sessionName: 's', tabs: [] },
+    );
   });
 });
 

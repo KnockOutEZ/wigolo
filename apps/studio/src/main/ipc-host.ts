@@ -22,10 +22,19 @@ type BroadcastWindow = Pick<BrowserWindow, 'isDestroyed' | 'webContents'>;
  * has to be short-circuited past rather than evaluated alongside. The `||` is what makes that safe —
  * the right-hand side is only reached once the window is known to be alive.
  *
- * The two objects have SEPARATE lifetimes, so the window's alone is not enough. `webContents.close()`,
- * a renderer that tore itself down, and a crashed render process all leave the window alive with its
- * contents already destroyed, and `send` then throws the same `Object has been destroyed` — same
- * uncaught main-process exception, same modal dialog, same hang.
+ * The two objects have SEPARATE lifetimes, so the window's alone is not enough. `webContents.close()`
+ * and a renderer that tore itself down leave the window alive with its contents already destroyed,
+ * and `send` then throws the same `Object has been destroyed` — same uncaught main-process exception,
+ * same modal dialog, same hang. That is the whole of what the second clause covers.
+ *
+ * A CRASHED render process is NOT one of them, and this guard does not skip that case. Electron keeps
+ * a crashed webContents alive for reload — which is why `isCrashed()` and `render-process-gone` exist
+ * as a separate API — so `isDestroyed()` stays false and the send goes ahead. Measured against the
+ * engine: that send is benign, posting into a dead channel and returning without throwing, so no
+ * crash condition is needed here. The state update is simply dropped, and the reloaded renderer picks
+ * the state back up through `getState`. The measurement is a gate, not a one-off — the crash, close
+ * and window-destroy lifetimes are all pinned in `tests/e2e/crash-push.spec.ts`, so if a future engine
+ * version makes the crash-path send throw, that spec reds before this comment goes stale again.
  */
 export function stateBroadcaster(win: BroadcastWindow, state: () => StudioState): () => void {
   return () => {
@@ -40,6 +49,9 @@ export function registerIpc(win: BrowserWindow, tabs: TabManager, sessions: Sess
     tabs: tabs.listTabs(),
   });
   const broadcast = stateBroadcaster(win, state);
+  // Pre-existing, deliberately not reworked here: this subscription is never unsubscribed. The
+  // callback is inert once the window is gone (the guard above), but it keeps `win` and `sessions`
+  // reachable through its closure for the lifetime of the TabManager.
   tabs.onChange(broadcast);
 
   ipcMain.handle(IPC.getState, () => state());
