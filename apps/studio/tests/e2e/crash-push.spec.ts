@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import electronPath from 'electron';
+import { linuxSpawnArgs } from '../helpers/parity-expectations';
 
 /**
  * THE DESTROYED-GUARD'S LIFETIME PREMISES, measured against the real browser engine (issue #67).
@@ -68,7 +69,10 @@ describe.skipIf(!RUN)('destroyed-guard lifetimes — what the browser engine act
   beforeAll(async () => {
     // Unattended runner: the app profile goes under $TMPDIR, never inside the working tree.
     profile = mkdtempSync(join(tmpdir(), 'wigolo-crash-probe-'));
-    const { stdout } = await promisify(execFile)(electronPath as unknown as string, [PROBE_MAIN], {
+    // `linuxSpawnArgs` is not cosmetic on CI: without `--no-sandbox` a directly-spawned Electron dies
+    // on the SUID sandbox helper under the runners' xvfb display, which reads as "the probe crashed"
+    // rather than as a missing switch.
+    const { stdout } = await promisify(execFile)(electronPath as unknown as string, [PROBE_MAIN, ...linuxSpawnArgs()], {
       env: { ...process.env, WIGOLO_PROBE_USER_DATA: profile },
       timeout: 90_000,
       maxBuffer: 1024 * 1024,
@@ -82,7 +86,9 @@ describe.skipIf(!RUN)('destroyed-guard lifetimes — what the browser engine act
 
   it('kills the renderer for real — a probe that never crashed anything measures nothing', () => {
     expect(probe.arms.crash!.gone, 'render-process-gone never fired; the crash arm proves nothing').toBeDefined();
-    expect(probe.arms.crash!.gone!.reason).toBe('killed');
+    // WHICH abnormal reason the engine reports is platform detail — macOS says `killed` — so the
+    // assertion is that it was not an orderly one. `isCrashed()` below is what pins the crash state.
+    expect(probe.arms.crash!.gone!.reason, 'the renderer exited cleanly, so nothing was crashed').not.toBe('clean-exit');
   });
 
   it('a crashed webContents is alive and not destroyed, so the guard cannot see the crash', () => {
