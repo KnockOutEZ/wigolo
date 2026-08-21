@@ -31,6 +31,22 @@
  *     but unparsed text was satisfied by a `run:`-looking line inside an unrelated block scalar, and
  *     was blind to `if: false` on the step it was checking — while simultaneously rejecting the
  *     inline `- run: …` form that four other steps in the same file use.
+ *
+ *     Proving the invocation SITS in an enabled step is still not proving the shell RUNS it, or that
+ *     its failure reaches the job's conclusion, and the gap between those two was a live bypass: with
+ *     the `Lint studio` step's body replaced by `# npm run lint -w apps/studio` plus an `echo`, this
+ *     guard printed "invoked by an enabled ci.yml step" and exited 0. So the wiring check now also
+ *     asks about EXECUTION SEMANTICS — the invocation must be in command position (not a comment, a
+ *     quoted string or a substitution), its exit code must not be discarded (`|| …`, a pipeline, `&`,
+ *     `!`, a preceding `set +e`), neither the step nor its job may be `continue-on-error`, and the
+ *     workflow's `on:` must actually fire for this branch on `pull_request` and `push`.
+ *
+ *     What that deliberately does NOT do is parse arbitrary shell. It closes the shapes an ordinary
+ *     "let me silence CI for a minute" edit produces and fails towards rejection on anything else: a
+ *     subshell, a `for` loop, a function definition or an `eval` around the invocation leaves it
+ *     unmatched and the step rejected with a message saying exactly that. An author who WANTS the
+ *     step to lie can still write one (`bash -c "$(printf …)"`), and that is out of threat model —
+ *     the same stance the rest of this guard takes.
  *   - **Does anything invoke this guard?** Deleting `check:studio-typecheck` from `gate:studio`
  *     makes it a local command nobody runs. Nothing here can see that, so it is asserted from the
  *     guard's tests instead, following `tests/unit/electron-quarantine.test.ts`.
@@ -192,8 +208,38 @@ const PROBES = [
   },
 ];
 
-const STRICT_FLAGS = ts.optionDeclarations.filter((o) => o.strictFlag).map((o) => o.name);
+/*
+ * The strict family, as the INSTALLED compiler declares it, pinned against what this file probes.
+ *
+ * The previous version computed the unprobed set and printed it in the OK line. Prose on stdout is
+ * not a gate: a strict check added by a compiler upgrade would arrive as a sentence in a passing run,
+ * which is P7's own failure class (a check nothing performs, reported the same as a check that
+ * passes) scoped to a single compiler option. Pinned in both directions on purpose — a flag ADDED is
+ * a check with no probe, and a flag REMOVED means the probe below proves nothing and should go.
+ *
+ * `P7_EXTRA_STRICT_FLAGS` and `P7_HIDE_STRICT_FLAGS` exist so both directions have a fixture: the
+ * list otherwise comes from the installed TypeScript and cannot be moved from a test. Neither can
+ * switch a check off — adding a name leaves it unprobed, and hiding one leaves it undeclared, so
+ * every setting of either makes this guard redder than not setting it.
+ */
+const EXPECTED_STRICT_FLAGS = [
+  'noImplicitAny',
+  'noImplicitThis',
+  'strictBindCallApply',
+  'strictBuiltinIteratorReturn',
+  'strictFunctionTypes',
+  'strictNullChecks',
+  'strictPropertyInitialization',
+  'useUnknownInCatchVariables',
+];
+const envFlags = (name) => (process.env[name] ?? '').split(',').map((f) => f.trim()).filter(Boolean);
+const hidden = new Set(envFlags('P7_HIDE_STRICT_FLAGS'));
+const STRICT_FLAGS = [
+  ...ts.optionDeclarations.filter((o) => o.strictFlag).map((o) => o.name),
+  ...envFlags('P7_EXTRA_STRICT_FLAGS'),
+].filter((f) => !hidden.has(f));
 const UNPROBED_FLAGS = STRICT_FLAGS.filter((f) => !PROBES.some((p) => p.flag === f));
+const UNDECLARED_FLAGS = EXPECTED_STRICT_FLAGS.filter((f) => !STRICT_FLAGS.includes(f));
 
 // A GitHub Actions `if:` cannot be evaluated locally, so the guard treats every condition it does
 // not recognise as always-true as capable of disabling the step. That direction is deliberate: it can
@@ -209,6 +255,115 @@ const enabled = (condition) => {
     .toLowerCase();
   return ALWAYS_TRUE.has(normalised);
 };
+
+// `continue-on-error` runs the step and then throws its result away: the type-check goes red in the
+// step list and the job — and therefore the required check on the pull request — still concludes
+// SUCCESS. Read in the same conservative direction as `enabled()`: only an explicit `false` (or the
+// absence of the key) enforces, because an expression cannot be evaluated here and guessing it is
+// false is the guess that fails silently.
+const enforcing = (value) => value === undefined || value === null || String(value).trim().toLowerCase() === 'false';
+
+/*
+ * The commands a `run:` block actually executes, in order — not the text it contains.
+ *
+ * Every check above this line asks whether the invocation is PRESENT. None of them asks whether the
+ * shell runs it: `# npm run lint -w apps/studio` is present and inert, and so is
+ * `echo "npm run lint -w apps/studio"`. Both were live bypasses, the first reproduced on the real
+ * tree with the step still named `Lint studio` and the guard still printing OK.
+ *
+ * This is deliberately NOT a shell parser. It blanks out the regions a command can hide in without
+ * being one — quoted strings, command substitutions, comments — and splits what remains on the
+ * operators that separate commands, recording the operator on each side. That is enough to decide
+ * the two questions asked of it (is the invocation in command position, and is its exit code kept)
+ * and it fails towards rejection: anything it does not understand, such as a subshell, leaves the
+ * invocation unmatched and the step rejected with a message saying so. An adversarial workflow
+ * author is outside this guard's threat model — see the preamble; this closes the shapes an ordinary
+ * "let me silence CI for a minute" edit produces.
+ */
+function commandPositions(runText) {
+  const commands = [];
+  let buf = '';
+  let before = null;
+  let quote = null;
+  let subst = 0;
+  const finish = (after) => {
+    commands.push({ text: buf.replace(/\s+/g, ' ').trim(), before, after });
+    buf = '';
+    before = after;
+  };
+  for (let i = 0; i < runText.length; i++) {
+    const c = runText[i];
+    const two = runText.slice(i, i + 2);
+    if (quote) {
+      if (c === '\\' && quote !== "'") { buf += '  '; i++; continue; }
+      if (c === quote) quote = null;
+      buf += ' ';
+      continue;
+    }
+    if (subst > 0) {
+      if (two === '$(') { subst++; buf += '  '; i++; continue; }
+      if (c === ')') subst--;
+      buf += ' ';
+      continue;
+    }
+    if (two === '$(') { subst = 1; buf += '  '; i++; continue; }
+    if (c === '\\') {
+      // A line continuation joins two lines into one command; any other escape is opaque, and in
+      // particular `\;` and `\&` are characters rather than command separators.
+      if (two === '\\\n') { i++; continue; }
+      buf += '  ';
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { quote = c; buf += ' '; continue; }
+    if (c === '#' && (buf === '' || /\s$/.test(buf))) {
+      while (i < runText.length && runText[i] !== '\n') i++;
+      finish('\n');
+      continue;
+    }
+    if (two === '&&' || two === '||') { finish(two); i++; continue; }
+    if (c === '|') { finish('|'); continue; }
+    // `2>&1` is a redirection, not a background operator; splitting there would report a redirected
+    // invocation as backgrounded, which is a false FAIL on an ordinary way to write the step.
+    if (c === '&' && !/>\s*$/.test(buf)) { finish('&'); continue; }
+    if (c === ';') { finish(';'); continue; }
+    if (c === '\n') { finish('\n'); continue; }
+    buf += c;
+  }
+  finish(null);
+  return commands;
+}
+
+// Operators that throw away the exit code of the command to their left. `;` and a newline are NOT
+// among them: GitHub runs `run:` blocks under `bash -e` (`shell: bash` adds `-o pipefail` on top), so
+// a failing command aborts the block and its status becomes the step's. That is why a multi-line
+// block grouping output around the invocation stays legal — rejecting it would forbid the one
+// multi-line form CI actually uses, and a guard that forbids correct code gets switched off.
+const DISCARDS_EXIT_CODE = {
+  '||': 'the command to its right runs instead and the step reports that one',
+  '|': 'the pipeline reports its LAST stage, so a failing type-check is masked by whatever consumes it',
+  '&': 'a backgrounded command is never waited for, so its exit code reaches nothing',
+};
+
+/** Where the invocation sits in a `run:` block, and whether its failure can still fail the step. */
+function invocationSemantics(runText) {
+  const commands = commandPositions(runText);
+  const index = commands.findIndex(({ text }) => {
+    const bare = text.replace(/^!\s*/, '');
+    return bare === CI_INVOCATION || bare.startsWith(`${CI_INVOCATION} `);
+  });
+  if (index === -1) return { kind: 'absent' };
+  const command = commands[index];
+  if (/^!\s*/.test(command.text)) {
+    return { kind: 'discarded', why: '`!` inverts it, so the step passes exactly when the type-check fails' };
+  }
+  if (command.after && DISCARDS_EXIT_CODE[command.after]) {
+    return { kind: 'discarded', operator: command.after, why: DISCARDS_EXIT_CODE[command.after] };
+  }
+  const disarmed = commands.slice(0, index).some(({ text }) => /^set\s+\+[a-zA-Z]*e\b/.test(text));
+  if (disarmed) return { kind: 'disarmed' };
+  return { kind: 'enforced' };
+}
 
 const failures = [];
 
@@ -248,6 +403,20 @@ if (!raw.error && parsed.options.strict !== true) {
   failures.push('apps/studio/tsconfig.json must set `strict: true` — a non-strict project sees every file and finds almost nothing.');
 }
 
+if (UNPROBED_FLAGS.length) {
+  failures.push(
+    `the installed TypeScript (${ts.version}) declares ${UNPROBED_FLAGS.length} strict check(s) with no probe in this guard: ${UNPROBED_FLAGS.join(', ')}. ` +
+      'A strict check nothing plants an error for is asserted only by `strict: true`, which stays true while the check is individually switched off — the bypass this guard already closed once. Add a probe to PROBES, or state why it cannot have one.'
+  );
+}
+
+if (UNDECLARED_FLAGS.length) {
+  failures.push(
+    `this guard probes ${UNDECLARED_FLAGS.length} strict check(s) the installed TypeScript (${ts.version}) no longer declares: ${UNDECLARED_FLAGS.join(', ')}. ` +
+      'Their probes now prove nothing about the app; remove them from PROBES and from EXPECTED_STRICT_FLAGS together.'
+  );
+}
+
 if (!existsSync(PACKAGE)) {
   failures.push('apps/studio/package.json is missing — nothing defines what `npm run lint -w apps/studio` runs.');
 } else {
@@ -271,49 +440,162 @@ if (!existsSync(PACKAGE)) {
 // 3. Is the command wired into CI, in a step that can actually execute?
 // ---------------------------------------------------------------------------------------------
 
+/*
+ * The branch this program's pull requests target. A workflow whose triggers exclude it is a file
+ * full of correct, unconditional, dead steps — a state this repo has already been in once: until
+ * `e29d14d7`, `pull_request` was `main`-only, so the 3-OS matrix and the type gate ran on PUSH, i.e.
+ * after merge, and every slice merged with the gate having blocked nothing.
+ *
+ * Reversal condition: when the Studio program merges to `main` and this branch retires, this becomes
+ * `main` (or both). Recorded in DECISIONS-AUTO as A224.
+ */
+const ENFORCED_BRANCH = 'studio-handoff';
+
+/** A GitHub branch filter — `main`, `studio-*`, `**` — as a matcher. */
+const branchFilter = (pattern) =>
+  new RegExp(`^${String(pattern).split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+
+/**
+ * Does `event` fire for `ENFORCED_BRANCH`? `null`/absent config means no filter at all, which fires
+ * for every branch — the most permissive wiring there is, and one this must not reject.
+ */
+function firesForBranch(config, event) {
+  if (config === null || config === undefined) return true;
+  if (typeof config !== 'object') return true;
+  const ignore = config['branches-ignore'];
+  if (Array.isArray(ignore) && ignore.some((p) => branchFilter(p).test(ENFORCED_BRANCH))) {
+    return `\`on.${event}.branches-ignore\` excludes \`${ENFORCED_BRANCH}\``;
+  }
+  const branches = config.branches;
+  if (Array.isArray(branches)) {
+    return branches.some((p) => branchFilter(p).test(ENFORCED_BRANCH))
+      ? true
+      : `\`on.${event}.branches\` is [${branches.join(', ')}] — it never fires for \`${ENFORCED_BRANCH}\``;
+  }
+  if (event === 'push' && (Array.isArray(config.tags) || Array.isArray(config['tags-ignore']))) {
+    // A `push` filtered to tags only does not fire for a branch push at all.
+    return `\`on.push\` is filtered to tags only, so it never fires for a push to \`${ENFORCED_BRANCH}\``;
+  }
+  return true;
+}
+
+/**
+ * `on:` — the layer above every other check here. A step can be present, enabled, unconditional,
+ * correctly written and never executed, because nothing ever starts the run that would execute it.
+ */
+function checkTriggers(doc) {
+  // YAML 1.1 parsers read a bare `on` as the boolean `true`; this one (YAML 1.2 core schema) keeps
+  // it a string. Accept both rather than depend on which schema the parser was built with.
+  const raw = doc.on ?? doc[true] ?? doc['true'];
+  if (raw === undefined || raw === null) {
+    return ['.github/workflows/ci.yml declares no `on:` — a workflow with no triggers never runs, so every step in it enforces nothing.'];
+  }
+  let events;
+  if (typeof raw === 'string') events = { [raw]: null };
+  else if (Array.isArray(raw)) events = Object.fromEntries(raw.map((e) => [String(e), null]));
+  else if (typeof raw === 'object') events = raw;
+  else return [`.github/workflows/ci.yml has an unreadable \`on:\` (${typeof raw}).`];
+
+  const out = [];
+  for (const event of ['pull_request', 'push']) {
+    if (!(event in events)) {
+      out.push(
+        `.github/workflows/ci.yml never runs on \`${event}\` — the app type-check is wired into a workflow that this branch's ${event === 'pull_request' ? 'pull requests' : 'pushes'} never start, so the step is present, enabled and dead. A type gate that does not run on \`pull_request\` blocks nothing.`
+      );
+      continue;
+    }
+    const fires = firesForBranch(events[event], event);
+    if (fires !== true) {
+      out.push(`.github/workflows/ci.yml does not run for \`${ENFORCED_BRANCH}\`: ${fires}. The step is present and enabled, and never executes on this branch.`);
+    }
+  }
+  return out;
+}
+
 function checkWorkflow() {
   if (!existsSync(WORKFLOW)) {
-    return '.github/workflows/ci.yml is missing — the app type-check cannot be CI-enforced.';
+    return ['.github/workflows/ci.yml is missing — the app type-check cannot be CI-enforced.'];
   }
   let doc;
   try {
     doc = parseYaml(readFileSync(WORKFLOW, 'utf8'));
   } catch (err) {
-    return `.github/workflows/ci.yml is not parseable YAML: ${err instanceof Error ? err.message : String(err)}`;
+    return [`.github/workflows/ci.yml is not parseable YAML: ${err instanceof Error ? err.message : String(err)}`];
   }
-  const jobs = doc && typeof doc === 'object' ? doc.jobs : null;
+  if (!doc || typeof doc !== 'object') {
+    return ['.github/workflows/ci.yml is empty — nothing in it can invoke the app type-check.'];
+  }
+  const triggerFailures = checkTriggers(doc);
+  const jobs = doc.jobs;
   if (!jobs || typeof jobs !== 'object') {
-    return '.github/workflows/ci.yml declares no `jobs:` — nothing in it can invoke the app type-check.';
+    return [...triggerFailures, '.github/workflows/ci.yml declares no `jobs:` — nothing in it can invoke the app type-check.'];
   }
-  const disabled = [];
+  const rejected = [];
   for (const [jobName, job] of Object.entries(jobs)) {
     if (!job || typeof job !== 'object' || !Array.isArray(job.steps)) continue;
     for (const step of job.steps) {
       if (!step || typeof step !== 'object' || typeof step.run !== 'string') continue;
       if (!step.run.includes(CI_INVOCATION)) continue;
+      // Named on every rejection: "somewhere in ci.yml" is not actionable in a file with 20 steps,
+      // and the shape this issue reproduced live left the step's NAME correct while gutting its body.
+      const where = `job \`${jobName}\` step \`${typeof step.name === 'string' ? step.name : '(unnamed)'}\``;
       if (!enabled(job.if)) {
-        disabled.push(`job \`${jobName}\` is conditional on \`if: ${String(job.if).trim()}\``);
+        rejected.push(`job \`${jobName}\` is conditional on \`if: ${String(job.if).trim()}\``);
         continue;
       }
       if (!enabled(step.if)) {
-        disabled.push(`the step in job \`${jobName}\` is conditional on \`if: ${String(step.if).trim()}\``);
+        rejected.push(`the step in job \`${jobName}\` is conditional on \`if: ${String(step.if).trim()}\``);
         continue;
       }
-      return null;
+      if (!enforcing(job['continue-on-error'])) {
+        rejected.push(
+          `job \`${jobName}\` is marked \`continue-on-error: ${String(job['continue-on-error']).trim()}\` — it runs the type-check and reports SUCCESS however it went`
+        );
+        continue;
+      }
+      if (!enforcing(step['continue-on-error'])) {
+        rejected.push(
+          `${where} is marked \`continue-on-error: ${String(step['continue-on-error']).trim()}\` — the type-check runs, fails red in the step list, and the job still concludes SUCCESS`
+        );
+        continue;
+      }
+      const semantics = invocationSemantics(step.run);
+      if (semantics.kind === 'absent') {
+        rejected.push(
+          `${where} mentions \`${CI_INVOCATION}\` but not as a command it runs — it is inside a shell comment, a quoted string, a command substitution or a construct this guard does not read as a command. Text the shell does not execute enforces nothing`
+        );
+        continue;
+      }
+      if (semantics.kind === 'discarded') {
+        rejected.push(
+          `${where} runs \`${CI_INVOCATION}\`${semantics.operator ? ` followed by \`${semantics.operator}\`` : ''}, which discards its exit code — ${semantics.why}. The type-check runs, prints its errors, and the step passes`
+        );
+        continue;
+      }
+      if (semantics.kind === 'disarmed') {
+        rejected.push(
+          `${where} runs \`set +e\` before \`${CI_INVOCATION}\`, which disarms the abort the step's exit code depends on — a failing type-check no longer fails the step`
+        );
+        continue;
+      }
+      return triggerFailures;
     }
   }
-  if (disabled.length) {
-    return (
-      `.github/workflows/ci.yml invokes \`${CI_INVOCATION}\` only from a step that cannot be relied on to run:\n` +
-      disabled.map((d) => `    - ${d}`).join('\n') +
-      '\n    A step that never executes enforces nothing, which is exactly known issue P7. (Conditions other than `true`/`always()`/`success()` cannot be evaluated here and are treated as disabling.)'
-    );
+  if (rejected.length) {
+    return [
+      ...triggerFailures,
+      `.github/workflows/ci.yml invokes \`${CI_INVOCATION}\` only from a step that cannot be relied on to run and enforce it:\n` +
+        rejected.map((d) => `    - ${d}`).join('\n') +
+        '\n    A step that never executes, or whose failure reaches nothing, enforces nothing — which is exactly known issue P7. (Conditions other than `true`/`always()`/`success()`, and any `continue-on-error` other than a literal `false`, cannot be evaluated here and are treated as disabling.)',
+    ];
   }
-  return `.github/workflows/ci.yml has no enabled \`run:\` step invoking \`${CI_INVOCATION}\` — the app type-check is a local command nobody runs, which is exactly known issue P7. (A comment, or the text appearing anywhere other than a step's \`run:\`, does not count.)`;
+  return [
+    ...triggerFailures,
+    `.github/workflows/ci.yml has no enabled \`run:\` step invoking \`${CI_INVOCATION}\` — the app type-check is a local command nobody runs, which is exactly known issue P7. (A comment, or the text appearing anywhere other than a step's \`run:\`, does not count.)`,
+  ];
 }
 
-const workflowFailure = checkWorkflow();
-if (workflowFailure) failures.push(workflowFailure);
+failures.push(...checkWorkflow());
 
 // ---------------------------------------------------------------------------------------------
 // 4. The behavioural assertion. Everything above describes the check; this one runs it.
@@ -463,7 +745,6 @@ if (failures.length) {
 
 console.log(
   SHAPE_ONLY
-    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
-    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step.` +
-        (UNPROBED_FLAGS.length ? ` (Strict flags without a probe, asserted only by \`strict: true\`: ${UNPROBED_FLAGS.join(', ')}.)` : '')
+    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step whose failure fails the job, in a workflow that fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
+    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step whose failure fails the job. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed.`
 );
