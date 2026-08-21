@@ -335,20 +335,35 @@ const UNMODELED_WORDS = new Set([
 
 /*
  * Words that rewrite the block's OWN control flow rather than doing work inside it. A228 settled
- * that an opaque neighbour command (`eval …`, `bash -c …`) is not denied — if the invocation hides
- * inside one it is already `absent` — but these four are a different class: none of them is a
- * neighbour, each of them decides whether the commands around it run or whether their failure
- * reaches the step.
+ * that an opaque neighbour command (`bash -c …`) is not denied — if the invocation hides inside one
+ * it is already `absent` — but these are a different class: none of them is a neighbour, each of
+ * them decides whether the commands around it run or whether their failure reaches the step.
  *
  *   trap 'exit 0' ERR   the errexit abort is caught and turned into a success
  *   exit 0              everything below it never runs, and the step exits 0
  *   return 0            the same, inside a sourced body
  *   exec …              the shell is replaced, so nothing after it exists
+ *   eval "set +e"       runs a string this guard cannot read, IN THIS SHELL
+ *   source ./x.sh       runs a whole FILE in this shell, and the file is not the workflow
+ *   . ./x.sh            source's POSIX spelling — one character, same effect
  *
- * All four were green with the guard printing "errexit armed", and `trap`/`exit` were bash-verified
- * to exit 0 over a failing type-check.
+ * The first four were green with the guard printing "errexit armed", and `trap`/`exit` were
+ * bash-verified to exit 0 over a failing type-check. Round 8 added the last three: `eval`, `source`
+ * and `.` were reproduced green while a committed `x.sh` holding a `set +e` disarmed the very abort
+ * the step's exit code depends on. `eval` moves here from A228's tolerated-neighbour side precisely
+ * because it does NOT run in a child — what it does to errexit applies to the body around it.
  */
-const CONTROL_FLOW_WORDS = new Set(['trap', 'exit', 'return', 'exec']);
+const CONTROL_FLOW_WORDS = new Set(['trap', 'exit', 'return', 'exec', 'eval', 'source', '.']);
+
+/*
+ * `builtin` and `command` prefix a builtin without changing what it does. Round 8 found the sharpest
+ * spelling of the whole `run:` tail here: `builtin set +e` is one word in front of the exact string
+ * this guard already denies, disarms errexit identically, and was GREEN while the FAIL message beside
+ * it claimed to catch "a `set +e` in ANY of its spellings". `command set +e` is the same trick. They
+ * are stripped before the head is read, so the head is the command that acts rather than the word
+ * that introduces it — and `builtin echo hi`, which acts like `echo`, stays as benign as `echo`.
+ */
+const BUILTIN_PREFIXES = new Set(['builtin', 'command']);
 
 /*
  * `set` as bash reads it: a run of `-`/`+` clusters, where an `o` inside a cluster consumes the next
@@ -399,14 +414,17 @@ function readRun(runText) {
   let buf = '';
   let before = null;
   let quote = null;
-  let subst = 0;
   let unmodeled = null;
   // Whether the NEXT raw character begins a word, tracked on the raw text rather than inferred from
-  // `buf`. Quoted regions blank to spaces so that `-w "apps/studio"` still reads as the invocation,
-  // and that blanking used to manufacture a word boundary bash does not have: `… apps/studio ""#`
-  // became `… apps/studio   #`, so the guard saw a comment swallowing the `|| true` after it while
-  // bash — for which `#` mid-word is an ordinary character — ran the rescue. Bash-verified:
-  // `false ""# || echo RESCUED` prints RESCUED and exits 0.
+  // `buf`. It exists because `#` starts a comment only at a word start; mid-word it is an ordinary
+  // character, and `false ""# || echo RESCUED` prints RESCUED (bash-verified).
+  //
+  // Round 7 blanked quoted regions to spaces to keep `-w "apps/studio"` reading as the invocation,
+  // and that manufactured both a word boundary bash does not have AND a missing argument: round 8
+  // reproduced `-w "apps/studio"` — a correctly wired step — reading as `npm run lint -w` and being
+  // reported `absent`. So a quoted region now contributes its CONTENT with the quotes removed, which
+  // is what bash builds, and the operators inside it are still never read as operators because the
+  // quote branch never reaches the operator switch.
   let atWordStart = true;
   const deny = (why) => {
     if (!unmodeled) unmodeled = why;
@@ -428,20 +446,24 @@ function readRun(runText) {
     const c = runText[i];
     const two = runText.slice(i, i + 2);
     if (quote) {
-      if (c === '\\' && quote !== "'") { buf += '  '; i++; atWordStart = false; continue; }
-      if (c === quote) quote = null;
-      buf += ' ';
+      // Inside double quotes a backslash escapes the next character and is itself removed; inside
+      // single quotes there is no escaping at all and the backslash is literal.
+      if (c === '\\' && quote !== "'") { buf += runText[i + 1] ?? ''; i++; atWordStart = false; continue; }
+      if (c === quote) { quote = null; atWordStart = false; continue; }
+      buf += c;
       atWordStart = false;
       continue;
     }
-    if (subst > 0) {
-      if (two === '$(') { subst++; buf += '  '; i++; atWordStart = false; continue; }
-      if (c === ')') subst--;
-      buf += ' ';
-      atWordStart = false;
-      continue;
+    // A command substitution's OUTPUT becomes arguments to the command around it, so blanking the
+    // region to spaces made the guard measure a command line the shell never builds:
+    // `npm run lint -w apps/studio $(printf -- '-- --help')` blanked to the bare invocation, matched
+    // exactly, and ran `tsc --noEmit --help` in CI — help printed, nothing checked, exit 0. The text
+    // inside is not readable from here (it is another shell), so it is denied rather than guessed at,
+    // the same way `${{ … }}` is.
+    if (two === '$(' || c === '`') {
+      deny('a command substitution (`$(…)` or a backtick) — its OUTPUT becomes arguments to the command around it, so what bash runs is not the text this guard can match: `npm run lint -w apps/studio $(printf -- \'-- --help\')` reads here as the bare invocation and runs `tsc --noEmit --help` there, which prints help, checks nothing and exits 0');
+      break;
     }
-    if (two === '$(') { subst = 1; buf += '  '; i++; atWordStart = false; continue; }
     // A heredoc redirects the lines that follow into a command's stdin. Round 6 put the invocation
     // inside a `cat <<EOF` body: every line there was scanned as a command in command position
     // while `cat` swallowed the lot.
@@ -450,15 +472,22 @@ function readRun(runText) {
       break;
     }
     if (c === '\\') {
-      // A line continuation joins two lines into one command; any other escape is opaque, and in
-      // particular `\;` and `\&` are characters rather than command separators.
-      if (two === '\\\n') { i++; atWordStart = true; continue; }
-      buf += '  ';
+      // Bash REMOVES a backslash-newline before it tokenises anything: the two lines become one line
+      // with NO separator between them, not a word boundary. Round 7 set `atWordStart` here, and
+      // round 8 reproduced the hole that opened: `… && echo ok\` + `# || true` joins to
+      // `… && echo ok# || true`, where `#` is an ordinary character mid-word and `|| true` rescues a
+      // failing type-check — while the guard read the `#` as a comment swallowing the rescue. So the
+      // continuation is transparent, and whatever the previous character said about word position
+      // still holds.
+      if (two === '\\\n') { i++; continue; }
+      // Any other escape yields the literal next character: `\;` and `\&` are characters rather than
+      // command separators, and `a\;b` is one word.
+      buf += runText[i + 1] ?? '';
       i++;
       atWordStart = false;
       continue;
     }
-    if (c === "'" || c === '"' || c === '`') { quote = c; buf += ' '; atWordStart = false; continue; }
+    if (c === "'" || c === '"') { quote = c; atWordStart = false; continue; }
     if (c === '#' && atWordStart) {
       while (i < runText.length && runText[i] !== '\n') i++;
       finish('\n');
@@ -494,20 +523,23 @@ function readRun(runText) {
 
   for (const command of commands) {
     const words = command.text.replace(/^!\s+/, '').split(' ').filter(Boolean);
-    const head = words[0];
+    // The command that ACTS, with any `builtin`/`command` introducer stripped off the front.
+    let acting = words;
+    while (BUILTIN_PREFIXES.has(acting[0])) acting = acting.slice(1);
+    const head = acting[0];
     if (head !== undefined && UNMODELED_WORDS.has(head)) {
       return { unmodeled: `the shell keyword \`${head}\` — a compound command or condition context, where a failure need not abort the block at all` };
     }
     if (head !== undefined && CONTROL_FLOW_WORDS.has(head)) {
       return {
-        unmodeled: `the control-flow builtin \`${head}\` — it rewrites which commands run and whether their failure reaches the step (\`trap '…' ERR\` catches the errexit abort, \`exit\`/\`return\` end the body early, \`exec\` replaces the shell), and this guard does not model that`,
+        unmodeled: `the control-flow builtin \`${head}\` — it rewrites which commands run and whether their failure reaches the step (\`trap '…' ERR\` catches the errexit abort, \`exit\`/\`return\` end the body early, \`exec\` replaces the shell, and \`eval\`/\`source\`/\`.\` run text that is not in this file — a sourced script or an evalled string can hold the \`set +e\` this guard denies when it is spelled out), and this guard does not model that`,
       };
     }
     if (words.includes('{') || words.includes('}')) {
       return { unmodeled: 'a `{ … }` brace group — this guard does not model what runs inside one' };
     }
     if (head === 'set') {
-      const effect = readSet(words.slice(1));
+      const effect = readSet(acting.slice(1));
       if (effect.unmodeled) return { unmodeled: effect.unmodeled };
       command.disablesErrexit = effect.disablesErrexit;
     }
@@ -597,8 +629,11 @@ function invocationSemantics(runText) {
           : why,
     };
   }
-  const disarmed = commands.slice(0, index).some((c) => c.disablesErrexit);
-  if (disarmed) return { kind: 'disarmed' };
+  // Reported with the offending command's own TEXT, because `builtin set +e` and `set +e` reach this
+  // verdict by different readings and a message that named neither could not tell a live
+  // prefix-stripper from a dead one.
+  const disarming = commands.slice(0, index).find((c) => c.disablesErrexit);
+  if (disarming) return { kind: 'disarmed', how: disarming.text };
   return { kind: 'enforced' };
 }
 
@@ -871,33 +906,115 @@ const unmodeledKeys = (value, modeled) =>
  */
 const MODELED_SHELLS = new Set(['bash']);
 
+const MATRIX_REFERENCE = /^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$/;
+
 /**
- * Can this job land on a Windows runner? Positive evidence only — a literal `runs-on`, or a
- * `runs-on: ${{ matrix.X }}` resolved through a literal `matrix.X` list. It matters because an
- * ABSENT `shell:` is only `bash -e` on Linux and macOS; on Windows the default is pwsh, which has
- * no errexit, so deleting the explicit `shell: bash` from the real 3-OS `studio-unit` job would
- * quietly move one leg to a shell none of the reasoning above applies to.
+ * Is there positive evidence this job can NEVER land on a Windows runner? `null` means yes — every
+ * label it can carry is a literal with no `windows` in it — and anything else is a reason.
+ *
+ * It matters because an ABSENT `shell:` is only `bash -e` on Linux and macOS; on Windows the default
+ * is pwsh, which has no errexit at all, so every `;`/newline verdict this guard makes about a body is
+ * false there.
+ *
+ * Round 7 asked the OPPOSITE question — "is there positive evidence of Windows?" — and a reader that
+ * only ever ADDS evidence answers "no Windows here" for every spelling it cannot read. Round 8
+ * reproduced three: `runs-on: ${{ vars.RUNNER_LABEL }}`, `runs-on: ${{ matrix.os }}` with the
+ * dimension named anything but `os`, and — the sharpest, because THIS PR opened it — a Windows leg
+ * declared through `matrix.include`. `strategyRuns` had just started accepting `include` as proof a
+ * job runs; this reader modelled dimensions only, so an `include`-declared Windows leg was invisible
+ * to the very check the new exemption fed. Two changes, each defensible alone: an exemption handed a
+ * downstream reader a key it never modelled.
+ *
+ * An absent `runs-on` is the one silence read as proof rather than as risk: GitHub rejects a job
+ * without one before any step runs, so it declares no Windows leg — and whether the workflow parses
+ * at all is not something this guard asserts.
  */
-function runsOnWindows(job) {
+function windowsShellRisk(job) {
   const target = job['runs-on'];
-  const candidates = [];
-  const collect = (v) => {
-    if (typeof v === 'string') candidates.push(v);
-    else if (Array.isArray(v)) v.forEach(collect);
+  if (target === undefined || target === null) return null;
+
+  const labels = [];
+  let unreadable = null;
+
+  const literal = (v) => {
+    if (unreadable) return;
+    if (typeof v === 'string' && !v.includes('${{')) {
+      labels.push(v);
+      return;
+    }
+    unreadable = typeof v === 'string' ? `\`${v.trim()}\`` : `a ${v === null ? 'null' : Array.isArray(v) ? 'nested list' : typeof v} runner label`;
   };
-  collect(target);
-  const viaMatrix = typeof target === 'string' && /^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$/.exec(target.trim());
-  if (viaMatrix) collect(job.strategy?.matrix?.[viaMatrix[1]]);
-  return candidates.some((c) => /windows/i.test(c));
+
+  // `${{ matrix.X }}` resolves through the dimension X *and* through every `include` entry that
+  // carries the key X — an include entry adds a leg, and a leg's `runs-on` is whatever that entry
+  // says it is.
+  const fromMatrix = (name) => {
+    const matrix = job.strategy?.matrix;
+    if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)) {
+      unreadable = `\`\${{ matrix.${name} }}\` with no literal \`strategy.matrix\` behind it`;
+      return;
+    }
+    let supplied = false;
+    if (matrix[name] !== undefined) {
+      supplied = true;
+      (Array.isArray(matrix[name]) ? matrix[name] : [matrix[name]]).forEach(literal);
+    }
+    const include = matrix.include;
+    if (include !== undefined && include !== null) {
+      if (!Array.isArray(include)) {
+        unreadable = '`strategy.matrix.include`, which is not a list, so the legs it adds cannot be read';
+        return;
+      }
+      for (const entry of include) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          unreadable = '`strategy.matrix.include`, which carries an entry that is not a mapping of literal values';
+          return;
+        }
+        if (name in entry) {
+          supplied = true;
+          literal(entry[name]);
+        }
+      }
+    }
+    if (!supplied && !unreadable) {
+      unreadable = `\`\${{ matrix.${name} }}\`, which no \`strategy.matrix.${name}\` dimension and no \`include\` entry supplies a value for`;
+    }
+  };
+
+  const read = (v) => {
+    if (unreadable) return;
+    if (Array.isArray(v)) {
+      // A label ARRAY (`[self-hosted, linux]`) selects one runner by all of its labels.
+      v.forEach((entry) => (typeof entry === 'string' && MATRIX_REFERENCE.test(entry.trim()) ? read(entry) : literal(entry)));
+      return;
+    }
+    if (typeof v !== 'string') {
+      unreadable = `a ${v === null ? 'null' : typeof v} \`runs-on\`, which this guard does not model (the \`group\`/\`labels\` mapping form names a runner pool from outside this file)`;
+      return;
+    }
+    const viaMatrix = MATRIX_REFERENCE.exec(v.trim());
+    if (viaMatrix) {
+      fromMatrix(viaMatrix[1]);
+      return;
+    }
+    literal(v);
+  };
+  read(target);
+
+  if (unreadable) return { unreadable };
+  if (labels.some((c) => /windows/i.test(c))) return { windows: true };
+  return null;
 }
 
 /** The shell the step's body runs under, or why this guard cannot name it. */
 function shellSemantics(job, step) {
   const shell = step.shell;
   if (shell === undefined || shell === null) {
-    return runsOnWindows(job)
+    const risk = windowsShellRisk(job);
+    if (risk === null) return null;
+    return risk.windows
       ? 'has no `shell:` key while its job can run on a Windows runner — the default there is pwsh, which has no errexit, so a failing command does not abort the body and every `;`/newline verdict this guard makes about the body is false. Spell the shell out as `shell: bash`'
-      : null;
+      : `has no \`shell:\` key while its job's \`runs-on\` reads ${risk.unreadable} — this guard cannot resolve that to literal runner labels, so it cannot prove no leg lands on Windows, where the default is pwsh and there is no errexit at all. Spell the shell out as \`shell: bash\``;
   }
   if (typeof shell === 'string' && MODELED_SHELLS.has(shell.trim())) return null;
   return `carries \`shell: ${String(shell).trim()}\`, which this guard does not model — only \`shell: bash\` (which GitHub invokes as \`bash --noprofile --norc -eo pipefail {0}\`) and an absent \`shell:\` on a non-Windows runner arm the errexit that every \`;\`/newline verdict below depends on. A template form such as \`bash --noprofile --norc {0}\` looks like the default and drops \`-e\``;
@@ -971,7 +1088,12 @@ function checkWorkflow() {
     if (!job || typeof job !== 'object' || !Array.isArray(job.steps)) continue;
     for (const step of job.steps) {
       if (!step || typeof step !== 'object' || typeof step.run !== 'string') continue;
-      if (!step.run.includes(CI_INVOCATION)) continue;
+      // Which steps are worth READING. Quote characters are dropped first because they are not part
+      // of the command bash builds: `npm run lint -w "apps/studio"` is the invocation, and a raw
+      // substring test skipped that step entirely — so a correctly wired workflow reported "no
+      // enabled `run:` step invoking it at all", which is the loudest false FAIL this guard has.
+      // Selecting a step is not approving it: every candidate still goes through the analysis below.
+      if (!step.run.replace(/['"]/g, '').includes(CI_INVOCATION)) continue;
       // Named on every rejection: "somewhere in ci.yml" is not actionable in a file with 20 steps,
       // and the shape this issue reproduced live left the step's NAME correct while gutting its body.
       const where = `job \`${jobName}\` step \`${typeof step.name === 'string' ? step.name : '(unnamed)'}\``;
@@ -1054,7 +1176,7 @@ function checkWorkflow() {
       }
       if (semantics.kind === 'disarmed') {
         rejected.push(
-          `${where} switches errexit off (a \`set +e\` in any of its spellings — \`+e\`, \`+ex\`, \`+euo pipefail\`, \`+o errexit\`) before \`${CI_INVOCATION}\`, which disarms the abort the step's exit code depends on — a failing type-check no longer fails the step`
+          `${where} switches errexit off with \`${semantics.how}\` before \`${CI_INVOCATION}\` (a \`set +e\` in any of its spellings — \`+e\`, \`+ex\`, \`+euo pipefail\`, \`+o errexit\`, and behind a \`builtin\`/\`command\` introducer that changes nothing about what it does), which disarms the abort the step's exit code depends on — a failing type-check no longer fails the step`
         );
         continue;
       }
