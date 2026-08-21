@@ -5,12 +5,35 @@ import type { SessionRegistry } from './session-registry';
 import type { StudioHost } from './studio-host';
 import type { StudioHostHandlers } from 'wigolo/studio';
 
+/** The window surface the state push needs — narrowed so a test can drive it with a fake. */
+type BroadcastWindow = Pick<BrowserWindow, 'isDestroyed' | 'webContents'>;
+
+/**
+ * main → chrome renderer state push, as a no-op once the window is gone.
+ *
+ * Tab teardown outlives the window: closing the app destroys the window while a tab's webContents
+ * still emits, so `tabs.onChange` fires one more time with nothing left to send to. Reaching through
+ * a destroyed window throws `Object has been destroyed` from the property access itself — and in the
+ * main process that is an UNCAUGHT exception, which Electron shows as a modal crash dialog. Anything
+ * driving the app then hangs against a dead window rather than failing, which is how one autonomous
+ * screenshot probe sat frozen until its runner declared the session finished.
+ *
+ * `win.isDestroyed()` is checked FIRST and on its own: `win.webContents` is exactly the access that
+ * throws, so it cannot be part of the same condition.
+ */
+export function stateBroadcaster(win: BroadcastWindow, state: () => StudioState): () => void {
+  return () => {
+    if (win.isDestroyed()) return;
+    win.webContents.send(IPC.stateChanged, state());
+  };
+}
+
 export function registerIpc(win: BrowserWindow, tabs: TabManager, sessions: SessionRegistry): void {
   const state = (): StudioState => ({
     sessionName: sessions.current().name,
     tabs: tabs.listTabs(),
   });
-  const broadcast = () => win.webContents.send(IPC.stateChanged, state());
+  const broadcast = stateBroadcaster(win, state);
   tabs.onChange(broadcast);
 
   ipcMain.handle(IPC.getState, () => state());
