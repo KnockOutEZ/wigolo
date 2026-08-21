@@ -38,6 +38,23 @@
  * unpacked app's own files back as uncovered, a `run: |` block may legitimately group output around
  * the invocation, and `on: [push, pull_request]` is the most permissive wiring there is.
  *
+ * A sixth pass found seven MORE, and that is the number that changed the design. Rounds 3, 4, 5 and
+ * 6 closed five, four, six and seven bypasses respectively, each by enumerating the edits its author
+ * could imagine, and each time the next round found more — because the trigger and step analysis
+ * were blacklists, and a blacklist's silence is indistinguishable from approval. So the readers are
+ * now DEFAULT-DENY: `on.push`/`on.pull_request` may carry only `branches`/`branches-ignore` built
+ * from patterns the guard compiles, a `run:` body must tokenise into simple commands joined by
+ * `&& || | & ; <newline>`, and anything else is reported as "cannot prove this runs". The round-6
+ * fixtures below are therefore evidence that the MECHANISM changed, not seven more blacklist rows;
+ * the assertion that the class is closed is that unmodelled constructs nobody enumerated — a
+ * subshell, an `if` condition, a `${{ }}` expression — fail too, while the must-not-fire controls
+ * beside them still pass.
+ *
+ * The test side had its own instance of the same bug: `commandChain` split on `&&` and trusted the
+ * pieces, so `npm run check:studio-typecheck && anything || true` produced an exact first link and
+ * satisfied the very assertions that claim a swallow cannot hide inside an exact match. It encoded
+ * bug 5 rather than catching it, and now reads default-deny like the guard it mirrors.
+ *
  * Cases run against a synthetic repo root rather than the real one: the guard's whole job is to
  * notice a broken arrangement, and the real tree is (by construction) never broken. The exceptions are
  * the last two — "is this guard wired to anything" is a fact about THIS repo, so they read this repo.
@@ -345,6 +362,272 @@ jobs:
         run: npm run lint -w apps/studio
 `;
 
+// -----------------------------------------------------------------------------------------------
+// Round 6 — the default-deny rework. Seven more pass-direction bypasses, after rounds 3, 4 and 5
+// closed five, four and six. Every round enumerated the edits its author could imagine and the next
+// round found more, because the trigger and step analysis were BLACKLISTS: a construct they did not
+// recognise fell off the end of the switch and left the step approved. The shapes below are the
+// seven; each one is here as evidence that the mechanism changed, not that seven more entries were
+// added to a list. The real assertion that the class is closed is that the readers now reject by
+// default and the must-not-fire controls beside them still pass.
+// -----------------------------------------------------------------------------------------------
+
+/** The job every trigger fixture below carries: present, enabled, correct, and reached by nothing. */
+const STUDIO_JOB = `jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`;
+const wfTriggers = (triggers: string): string => `name: CI\n${triggers}${STUDIO_JOB}`;
+const wfRun = (run: string): string => wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: ${run}
+`);
+
+/**
+ * Shape 1. GitHub reads a leading `!` as an EXCLUSION, so this fires for every branch EXCEPT the one
+ * the program merges into. The old matcher compiled the entry to a literal branch named
+ * `!studio-handoff`, which matches nothing and is therefore harmless — so the list read as `['**']`,
+ * the most permissive filter there is, and the guard printed OK.
+ */
+const WORKFLOW_NEGATED_BRANCH = wfTriggers(`on:
+  push:
+    branches: ['**', '!studio-handoff']
+  pull_request:
+    branches: ['**', '!studio-handoff']
+`);
+
+/**
+ * Shape 2. A path filter decides by the DIFF, so an edit touching only `apps/**` — the exact edit
+ * this gate exists to catch — starts no run at all. Nothing about `branches` changes, which is why a
+ * reader that only inspected `branches`/`branches-ignore` approved it.
+ */
+const WORKFLOW_PATHS_IGNORE = wfTriggers(`on:
+  push:
+    branches: [main, studio-handoff]
+    paths-ignore: ['apps/**']
+  pull_request:
+    branches: [main, studio-handoff]
+    paths-ignore: ['apps/**']
+`);
+
+/** Shape 2, the allowlist direction: a `paths:` filter that never names the app. */
+const WORKFLOW_PATHS_FILTER = wfTriggers(`on:
+  push:
+    branches: [main, studio-handoff]
+    paths: ['docs/**']
+  pull_request:
+    branches: [main, studio-handoff]
+    paths: ['docs/**']
+`);
+
+/**
+ * Shape 2, same family. `types: [labeled]` narrows a `pull_request` to activity a code push never
+ * raises, so pushing a commit to an open PR runs nothing. It is only mitigated while a clean `push`
+ * trigger survives, and nothing in the file guarantees that pair stays intact.
+ */
+const WORKFLOW_PR_TYPES = wfTriggers(`on:
+  push:
+    branches: [main, studio-handoff]
+  pull_request:
+    branches: [main, studio-handoff]
+    types: [labeled]
+`);
+
+/** A `branches` written as a scalar rather than a list — the old reader's `Array.isArray` fell through to "fires". */
+const WORKFLOW_SCALAR_BRANCHES = wfTriggers(`on:
+  push:
+    branches: main
+  pull_request:
+    branches: main
+`);
+
+/** Must-not-fire: a glob built only from `*` is a pattern the guard models, and it fires for this branch. */
+const WORKFLOW_BRANCH_GLOB = wfTriggers(`on:
+  push:
+    branches: ['main', 'studio-*']
+  pull_request:
+    branches: ['main', 'studio-*']
+`);
+
+/** Must-not-fire: extra top-level events can only ADD runs, so they are not the guard's business. */
+const WORKFLOW_EXTRA_EVENTS = wfTriggers(`on:
+  push:
+    branches: [main, studio-handoff]
+  pull_request:
+    branches: [main, studio-handoff]
+  workflow_call:
+  workflow_dispatch:
+`);
+
+/**
+ * Shape 4. `commandPositions` recorded a `before` operator on every command and `invocationSemantics`
+ * never read it: with `git diff --quiet` succeeding — i.e. on every run where the app was not touched
+ * — the `||` short-circuits and the type-check does not execute, and the step exits 0.
+ */
+const WORKFLOW_OR_PREDECESSOR = wfRun('git diff --quiet apps/studio || npm run lint -w apps/studio');
+
+/**
+ * Shape 5. Only the invocation's IMMEDIATE `after` operator was inspected, and bash's `&&`/`||` list
+ * is left-associative: a failure walks right past every `&&` to the first `||` and the list exits
+ * with that command's status. `false && echo done || true` exits 0.
+ */
+const WORKFLOW_LATER_OR = wfRun('npm run lint -w apps/studio && echo done || true');
+
+/**
+ * Shape 6. The scanner had no notion of heredocs, so every line of the body was matched as a command
+ * in command position while `cat` swallowed the lot.
+ */
+const WORKFLOW_HEREDOC = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          cat <<EOF
+          npm run lint -w apps/studio
+          EOF
+`);
+
+/** Shape 7. `set +ex` — errexit off, in a spelling the `/^set\\s+\\+[a-zA-Z]*e\\b/` detector missed. */
+const WORKFLOW_SET_PLUS_EX = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          set +ex
+          npm run lint -w apps/studio
+`);
+
+/** Shape 7, the spelling that looks most like the correct one. `+euo pipefail` still clears errexit. */
+const WORKFLOW_SET_PLUS_EUO = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          set +euo pipefail
+          npm run lint -w apps/studio
+`);
+
+/** Shape 7, the long-option spelling. */
+const WORKFLOW_SET_PLUS_O_ERREXIT = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          set +o errexit
+          npm run lint -w apps/studio
+`);
+
+/**
+ * Shape 7's tail. A matrix dimension that evaluates empty produces no legs; a job with no legs is
+ * SKIPPED, and a skipped job reports Success to the required-checks list. The step is present,
+ * enabled, correctly written and executed zero times.
+ */
+const WORKFLOW_EMPTY_MATRIX = wf(`jobs:
+  studio-unit:
+    strategy:
+      matrix:
+        os: []
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** The same, with the leg count hidden behind an expression this guard cannot evaluate. */
+const WORKFLOW_EXPRESSION_MATRIX = wf(`jobs:
+  studio-unit:
+    strategy:
+      matrix:
+        os: \${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** Must-not-fire: the 3-OS matrix the real `studio-unit` job carries. Three literal legs, provably ≥1. */
+const WORKFLOW_MATRIX_THREE_OS = wf(`jobs:
+  studio-unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: npm run lint -w apps/studio
+`);
+
+/** Mutation gap: the `&` entry in DISCARDS_EXIT_CODE. A backgrounded command is never waited for. */
+const WORKFLOW_BACKGROUNDED = wfRun('npm run lint -w apps/studio &');
+
+/**
+ * Mutation gap: the `!` block. The step passes exactly when the type-check fails.
+ *
+ * Quoted because a bare leading `!` is a YAML tag, not a character: `run: ! npm run lint …` parses
+ * to the scalar with the `!` stripped, i.e. to a correctly wired step. The shell shape only survives
+ * a round-trip through the parser in quotes.
+ */
+const WORKFLOW_NEGATED_INVOCATION = wfRun("'! npm run lint -w apps/studio'");
+
+/**
+ * Mutation gap: the redirection exemption. `2>&1` is a redirection, not a background operator, and
+ * dropping the exemption reports this correctly wired step as backgrounded — a false FAIL on a
+ * healthy tree, which is how a guard gets deleted rather than obeyed.
+ */
+const WORKFLOW_REDIRECT_STDERR = wfRun('npm run lint -w apps/studio > lint.log 2>&1');
+
+/** Must-not-fire: the same redirection written the other way round. */
+const WORKFLOW_REDIRECT_AMP_GT = wfRun('npm run lint -w apps/studio >& lint.log');
+
+/**
+ * The one RED-direction defect of round 6: the operator test looked backwards for a `>` but not
+ * forwards, so `&>` — the same redirection, third spelling — was reported as a backgrounded command.
+ * A false FAIL on a correctly wired step.
+ */
+const WORKFLOW_REDIRECT_AMP = wfRun('npm run lint -w apps/studio &> lint.log');
+
+/** Must-not-fire: `set +x` switches TRACING off and leaves errexit alone. A parsed `set` knows that. */
+const WORKFLOW_SET_PLUS_X = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          set +x
+          npm run lint -w apps/studio
+`);
+
+/** Must-not-fire: the armed spelling, which is what a careful step actually writes. */
+const WORKFLOW_SET_MINUS_EUO = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          set -euo pipefail
+          npm run lint -w apps/studio
+`);
+
+/** Default-deny, not a blacklist entry: a condition context, where a failure aborts nothing. */
+const WORKFLOW_IF_BLOCK = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        run: |
+          if npm run lint -w apps/studio; then
+            echo ok
+          fi
+`);
+
+/** Default-deny: a subshell. Whatever happens inside one, this guard does not model it. */
+const WORKFLOW_SUBSHELL = wfRun('(npm run lint -w apps/studio)');
+
+/**
+ * Default-deny: the runner substitutes a workflow expression before the shell ever sees the body, so
+ * the command that runs is not the command in the file — `\${{ matrix.suffix }}` can be `|| true`.
+ */
+const WORKFLOW_GHA_EXPRESSION = wfRun('npm run lint -w apps/studio \${{ matrix.suffix }}');
+
 /**
  * The compiler options a fixture needs for the probe set to be meaningful: a modern lib (the
  * builtin-iterator probe needs `Array.prototype.values`) and no ambient `@types` sweep.
@@ -451,13 +734,29 @@ function runGuardWithEnv(env: Readonly<Record<string, string>>, ...flags: readon
 }
 
 /**
- * The `&&` links of a command chain, and nothing else. Anything a link is decorated with — `|| true`,
- * a pipe, a `;` continuation — stays glued to that link, so an exact-match assertion against the
- * result cannot be satisfied by a decorated invocation. This is the package-script analogue of the
+ * The links of a command chain whose every link's failure reaches the chain's exit code — which is
+ * to say, a chain joined by `&&` and nothing else.
+ *
+ * The first version split on `&&` and trusted the pieces, and that encoded the very bug it was
+ * written to catch: `npm run check:studio-typecheck && anything || true` splits into
+ * `['npm run check:studio-typecheck', 'anything || true']`, so `toContain` found an exact first link
+ * and passed — while the chain exits 0 with the guard having failed. Bash's `&&`/`||` list is
+ * left-associative: a failure walks right past every `&&` to the first `||` and the list exits with
+ * THAT command's status, so no link of a chain containing a `||` is enforced, not merely the one it
+ * is glued to. A pipe, a `;` and a `&` break the same property for their own reasons.
+ *
+ * So this reads default-deny, like the guard it mirrors: any operator other than `&&` means the
+ * chain cannot be proven to carry a failure out, and it yields NO links at all rather than a list an
+ * exact-match assertion can still find something in. This is the package-script analogue of the
  * guard's own command-position rule, kept here rather than shared because npm scripts are a far
  * smaller language than a `run:` block and a shared tokeniser would be the more complex one.
  */
-const commandChain = (script: string): string[] => script.split('&&').map((s) => s.trim());
+const commandChain = (script: string): string[] => {
+  const parts = script.split(/(\|\||&&|;|\||&)/);
+  const links = parts.filter((_, i) => i % 2 === 0).map((s) => s.trim());
+  const operators = parts.filter((_, i) => i % 2 === 1).map((s) => s.trim());
+  return operators.every((op) => op === '&&') ? links : [];
+};
 
 /** GitHub's `continue-on-error`, read the way the guard reads it: only an explicit false enforces. */
 const enforcing = (value: unknown): boolean =>
@@ -864,6 +1163,229 @@ describe('apps/studio type-check coverage guard (P7)', () => {
   });
 
   // ---------------------------------------------------------------------------------------------
+  // Round 6 — DEFAULT-DENY. The seven shapes reproduced live on c7375e73 (guard exits 0 and prints
+  // its OK claim; the claim is false in each), plus the one false FAIL, plus their must-not-fire
+  // controls.
+  //
+  // The mutant for this whole section is not "delete one detector" — it is "restore the blacklist",
+  // i.e. make `firesForBranch` return `true` for a config key it does not recognise, or make
+  // `readRun` fall off the end of its switch instead of setting `unmodeled`. Blast radius: every
+  // case below goes green, and so does the next shape nobody has thought of yet, which is precisely
+  // why four rounds of enumeration each found more.
+  // ---------------------------------------------------------------------------------------------
+
+  it('fails when a branch filter EXCLUDES this branch with `!`', () => {
+    buildFixture({ workflow: WORKFLOW_NEGATED_BRANCH });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    // The reason, not just the branch name: `studio-handoff` appears in the OK line too, so a
+    // substring assertion on the name alone would be satisfied by a guard that never fired.
+    expect(output).toContain('!studio-handoff');
+    expect(output).toContain('EXCLUSION');
+  });
+
+  it('fails when a path filter can stop an app-only edit starting any run', () => {
+    // The gate exists to catch an edit under `apps/**`; `paths-ignore: [apps/**]` means exactly that
+    // edit starts nothing. `branches` is untouched, which is why the previous reader approved it.
+    buildFixture({ workflow: WORKFLOW_PATHS_IGNORE });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('`paths-ignore`');
+    expect(output).toContain('does not model');
+  });
+
+  it('fails when a `paths:` allowlist never names the app', () => {
+    buildFixture({ workflow: WORKFLOW_PATHS_FILTER });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('`paths`');
+    expect(output).toContain('does not model');
+  });
+
+  it('fails when `pull_request` is narrowed to activity types a code push never raises', () => {
+    buildFixture({ workflow: WORKFLOW_PR_TYPES });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('`types`');
+    expect(output).toContain('pull_request');
+  });
+
+  it('fails when `branches` is a scalar rather than a list', () => {
+    // The old reader tested `Array.isArray(branches)` and fell through to "fires" when it was false,
+    // so the one spelling that names a single branch — and excludes this one — was the spelling it
+    // could not see.
+    buildFixture({ workflow: WORKFLOW_SCALAR_BRANCHES });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('not a list of patterns');
+  });
+
+  it('accepts a `*` glob that covers this branch', () => {
+    // Must-not-fire. `studio-*` is a pattern the guard models and it matches, so default-deny must
+    // not collapse into "any filter at all is a FAIL" — that reading would fire on healthy wiring.
+    buildFixture({ workflow: WORKFLOW_BRANCH_GLOB });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('accepts extra top-level events beside push and pull_request', () => {
+    // Must-not-fire, and the boundary of the default-deny: an extra EVENT can only add runs, so it
+    // is out of scope, while an extra FILTER under push/pull_request can remove them and is not.
+    // The real ci.yml carries `workflow_call`, so getting this wrong reds the tree it guards.
+    buildFixture({ workflow: WORKFLOW_EXTRA_EVENTS });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('fails when a `||` predecessor decides whether the invocation runs at all', () => {
+    // `git diff --quiet apps/studio || npm run lint …`: on every run where the app was untouched the
+    // predecessor succeeds, the `||` short-circuits, and the step exits 0 having checked nothing.
+    buildFixture({ workflow: WORKFLOW_OR_PREDECESSOR });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('in FRONT of it');
+  });
+
+  it('fails when a later `||` rescues the whole `&&` chain', () => {
+    // `A && echo done || true` exits 0 when A fails. Reading only the invocation's immediate `after`
+    // operator saw a clean `&&` and approved.
+    buildFixture({ workflow: WORKFLOW_LATER_OR });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('discards its exit code');
+    expect(output).toContain('left-associative');
+  });
+
+  it('fails when the invocation lives inside a heredoc body', () => {
+    buildFixture({ workflow: WORKFLOW_HEREDOC });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('heredoc');
+    expect(output).toContain('Cannot prove this runs');
+  });
+
+  it.each([
+    ['set +ex', WORKFLOW_SET_PLUS_EX],
+    ['set +euo pipefail', WORKFLOW_SET_PLUS_EUO],
+    ['set +o errexit', WORKFLOW_SET_PLUS_O_ERREXIT],
+  ])('fails when errexit is switched off by `%s`', (_name, workflow) => {
+    // Three spellings of one edit. The detector was a regex written for `set +e` and matched none of
+    // them — which is the whole argument for parsing `set` rather than pattern-matching it.
+    buildFixture({ workflow });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('switches errexit off');
+  });
+
+  it('accepts `set +x`, which switches tracing off and leaves errexit alone', () => {
+    // Must-not-fire, and the case that keeps the `set` rule from collapsing into "any `set +…` is
+    // disarming". A parser can tell these apart; a regex over the whole cluster cannot.
+    buildFixture({ workflow: WORKFLOW_SET_PLUS_X });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('accepts `set -euo pipefail`, the armed spelling', () => {
+    buildFixture({ workflow: WORKFLOW_SET_MINUS_EUO });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('fails when the job carrying the step has a matrix that can evaluate to zero legs', () => {
+    // A job with no legs is SKIPPED, and skipped rolls up to the run's conclusion as Success. The
+    // step is present, enabled, unconditional, correctly written, and executed zero times.
+    buildFixture({ workflow: WORKFLOW_EMPTY_MATRIX });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('zero legs');
+  });
+
+  it('fails when the matrix leg count hides behind an expression', () => {
+    buildFixture({ workflow: WORKFLOW_EXPRESSION_MATRIX });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('cannot be proven to run');
+  });
+
+  it('accepts the 3-OS matrix the real studio-unit job carries', () => {
+    // Must-not-fire: three literal legs are provably at least one. Getting this wrong reds the tree.
+    buildFixture({ workflow: WORKFLOW_MATRIX_THREE_OS });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it('fails when the invocation is backgrounded with `&`', () => {
+    // Mutation gap: deleting the `&` entry from DISCARDS_EXIT_CODE leaves this case green with the
+    // step never waiting for the type-check at all.
+    buildFixture({ workflow: WORKFLOW_BACKGROUNDED });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('discards its exit code');
+    expect(output).toContain('`&`');
+  });
+
+  it('fails when the invocation is inverted with `!`', () => {
+    // Mutation gap: deleting the `!` block leaves this green with the step passing EXACTLY when the
+    // type-check fails — the inverted gate, which is worse than no gate.
+    buildFixture({ workflow: WORKFLOW_NEGATED_INVOCATION });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('`!` inverts it');
+  });
+
+  it.each([
+    ['> lint.log 2>&1', WORKFLOW_REDIRECT_STDERR],
+    ['>& lint.log', WORKFLOW_REDIRECT_AMP_GT],
+    ['&> lint.log', WORKFLOW_REDIRECT_AMP],
+  ])('accepts the redirection `%s` rather than reading its `&` as backgrounding', (_name, workflow) => {
+    // Must-not-fire ×3, one per spelling of the same redirection. Deleting the redirection exemption
+    // reds the first two; the third is the RED-direction defect round 6 found, where the operator
+    // test looked backwards for a `>` but not forwards and reported a correctly wired step as
+    // backgrounded. A guard that fires on a healthy tree gets deleted rather than obeyed.
+    buildFixture({ workflow });
+    const { status, output } = runGuard();
+    expect(output).toContain('OK:');
+    expect(status).toBe(0);
+  });
+
+  it.each([
+    ['a condition context', WORKFLOW_IF_BLOCK, 'if'],
+    ['a subshell', WORKFLOW_SUBSHELL, 'subshell'],
+    ['a workflow expression', WORKFLOW_GHA_EXPRESSION, '${{'],
+  ])('fails on %s rather than guessing what it runs', (_name, workflow, needle) => {
+    // Not blacklist entries — evidence that the DEFAULT is deny. None of these was on anyone's list;
+    // each falls out of the recogniser's grammar and is reported as unproven. `if npm run lint …;
+    // then` is the sharpest of the three: bash suspends errexit inside a condition, so the type-check
+    // can fail there and abort nothing at all.
+    buildFixture({ workflow });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain(needle);
+    expect(output).toContain('Cannot prove this runs');
+  });
+
+  it('fails when EXTRA and HIDE name the same unknown strict flag', () => {
+    // The hide-set was applied to the COMBINED list while the undeclared pin was computed against the
+    // expected list alone, so adding an unprobed flag and hiding it again cancelled out — green,
+    // under a comment claiming every setting of either hook makes the guard redder. Filtering the
+    // hide-set through EXPECTED_STRICT_FLAGS makes hiding anything else a no-op, so the EXTRA flag
+    // survives to the unprobed alarm.
+    buildFixture();
+    const { status, output } = runGuardWithEnv({
+      P7_EXTRA_STRICT_FLAGS: 'strictImaginaryFutureCheck',
+      P7_HIDE_STRICT_FLAGS: 'strictImaginaryFutureCheck',
+    });
+    expect(status).toBe(1);
+    expect(output).toContain('strictImaginaryFutureCheck');
+    expect(output).toContain('no probe');
+  });
+
+  // ---------------------------------------------------------------------------------------------
   // Bypass 14 — a strict check with no probe. The unprobed set was computed and PRINTED, in the OK
   // line of a passing run: prose on stdout is not a gate, so a strict check added by a compiler
   // upgrade would arrive as a sentence nobody reads, with nothing planting an error for it and
@@ -1057,11 +1579,35 @@ describe('apps/studio type-check coverage guard (P7)', () => {
   // class this whole file exists to catch, one level further in.
   // ---------------------------------------------------------------------------------------------
 
-  it('commandChain splits on `&&` only, so a swallowed link is not a link', () => {
+  it('commandChain yields links only for a chain joined by `&&` alone', () => {
     expect(commandChain('a && b && c')).toEqual(['a', 'b', 'c']);
     expect(commandChain('a && b || true && c')).not.toContain('b');
     expect(commandChain('a && b | tee log')).not.toContain('b');
     expect(commandChain('a && b ; c')).not.toContain('b');
+    expect(commandChain('a && b &')).not.toContain('b');
+  });
+
+  it('commandChain does not let a rescued FIRST link pass as an exact match', () => {
+    // The bug this helper used to have, and the reason it is tested at all: splitting on `&&` and
+    // trusting the pieces makes `A && anything || true` yield `A` as an exact first link, so both
+    // wiring assertions below passed on a chain that exits 0 with the guard having failed. The
+    // helper encoded the very bug the workflow half of this issue closes, one layer down.
+    //
+    // Asserted at BOTH call sites' shapes, because they read different strings: the `gate:studio`
+    // package script and the ci.yml step's `run:`. A fix to one reading would otherwise look like a
+    // fix to both.
+    const gate = 'npm run check:no-electron && npm run check:studio-typecheck || true';
+    expect(commandChain(gate)).not.toContain('npm run check:studio-typecheck');
+
+    const ciStep = 'npm run check:studio-typecheck-runs && echo done || true';
+    expect(commandChain(ciStep)).not.toContain('npm run check:studio-typecheck-runs');
+
+    // Must-not-fire companion: the real shapes still resolve, or the assertions above would be
+    // satisfied by a helper that returns nothing for everything.
+    expect(commandChain('npm run check:no-electron && npm run check:studio-typecheck')).toContain(
+      'npm run check:studio-typecheck'
+    );
+    expect(commandChain('npm run check:studio-typecheck-runs')).toContain('npm run check:studio-typecheck-runs');
   });
 
   // This one pins the reading used by the ci.yml assertions in THIS file, which is a local mirror of

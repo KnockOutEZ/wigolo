@@ -506,25 +506,22 @@ function invocationSemantics(runText) {
   for (let j = index; j < commands.length; j++) {
     const after = commands[j].after;
     if (after === null || after === '\n' || after === ';') break;
-    if (after === '&') {
-      return { kind: 'discarded', operator: '&', why: DISCARDS_EXIT_CODE['&'] };
-    }
-    if (after === '|') {
-      // `A && (B | C)` binds the pipe tighter than the list, so a pipe further along cannot touch
-      // the invocation's own status. Only a pipe on the invocation itself does.
-      if (j === index) return { kind: 'discarded', operator: '|', why: DISCARDS_EXIT_CODE['|'] };
-      break;
-    }
-    if (after === '||') {
-      return {
-        kind: 'discarded',
-        operator: '||',
-        why:
-          j === index
-            ? DISCARDS_EXIT_CODE['||']
-            : 'a `||` further along the same left-associative list rescues the whole chain — a failure walks right past every `&&` to the first `||` and the list exits with THAT command\'s status',
-      };
-    }
+    // `A && (B | C)` binds the pipe tighter than the list, so a pipe further along cannot touch the
+    // invocation's own status. Only a pipe on the invocation itself does.
+    if (after === '|' && j > index) break;
+    // `&&` is the one operator that carries a failure onward, so it is the one with no entry here.
+    // Every verdict below is read OUT of the table rather than decided beside it, which is what
+    // makes deleting a row from the table a behaviour change that a fixture can catch.
+    const why = DISCARDS_EXIT_CODE[after];
+    if (!why) continue;
+    return {
+      kind: 'discarded',
+      operator: after,
+      why:
+        after === '||' && j > index
+          ? "a `||` further along the same left-associative list rescues the whole chain — a failure walks right past every `&&` to the first `||` and the list exits with THAT command's status"
+          : why,
+    };
   }
   const disarmed = commands.slice(0, index).some((c) => c.disablesErrexit);
   if (disarmed) return { kind: 'disarmed' };
