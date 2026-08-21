@@ -287,6 +287,18 @@ const WORKFLOW_COMMENT_NAMING_AN_OPERATOR = wf(`jobs:
           npm run lint -w apps/studio # never weaken this to || true — see known issue P7
 `);
 
+/**
+ * `continue-on-error` as an expression — the form ci.yml already uses on another job. It cannot be
+ * evaluated here, so it is read as disabling: guessing it is false is the guess that fails silently.
+ */
+const WORKFLOW_CONTINUE_ON_ERROR_EXPRESSION = wf(`jobs:
+  studio-unit:
+    steps:
+      - name: Lint studio (tsc --noEmit)
+        continue-on-error: \${{ matrix.os == 'windows-latest' }}
+        run: npm run lint -w apps/studio
+`);
+
 /** Must-not-fire: `continue-on-error: false` is the explicit spelling of the default. */
 const WORKFLOW_CONTINUE_ON_ERROR_FALSE = wf(`jobs:
   studio-unit:
@@ -608,8 +620,13 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     buildFixture({ options: STRICT_MEMBERS_OFF });
     const { status, output } = runGuard();
     expect(status).toBe(1);
-    // Named individually, because a count would pass a guard that noticed only one of them.
+    // Named individually, because a count would pass a guard that noticed only one of them — and by
+    // the message of the mechanism that must catch them. The unprobed-flag pin also names every flag
+    // it knows about, so asserting the names alone is satisfied by a guard whose probes were deleted:
+    // a battery mutant that emptied PROBES left this test green while the property it names was
+    // violated, which is how a collateral red reads as coverage.
     for (const flag of Object.keys(STRICT_MEMBERS_OFF)) expect(output).toContain(flag);
+    expect(output).toContain('are disabled in apps/studio/tsconfig.json');
     // The baseline probe is a plain assignment mismatch, which no strict flag governs: it must still
     // be reported, or this fixture would be indistinguishable from a type-check that does not run.
     expect(output).not.toContain('- baseline');
@@ -623,6 +640,9 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     expect(status).toBe(1);
     expect(output).toContain('strictNullChecks');
     expect(output).not.toContain('noImplicitThis');
+    // The behavioural mechanism's own wording, for the same reason as the case above. (Switching one
+    // member off drops four probes, not one: three of them need null checks to error at all.)
+    expect(output).toContain('disabled in apps/studio/tsconfig.json');
   });
 
   // ---------------------------------------------------------------------------------------------
@@ -792,6 +812,17 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     const { status, output } = runGuard();
     expect(output).toContain('OK:');
     expect(status).toBe(0);
+  });
+
+  it('fails when `continue-on-error` is an expression it cannot evaluate', () => {
+    // Mutant: read `continue-on-error` as "anything but the boolean true enforces". Blast radius:
+    // this case goes green, and so does the string `'true'` — and the only direction that can fail
+    // silently is the one that assumes an unevaluable condition is false.
+    buildFixture({ workflow: WORKFLOW_CONTINUE_ON_ERROR_EXPRESSION });
+    const { status, output } = runGuard();
+    expect(status).toBe(1);
+    expect(output).toContain('continue-on-error');
+    expect(output).toContain('Lint studio (tsc --noEmit)');
   });
 
   it('accepts `continue-on-error: false`, the explicit spelling of the default', () => {
@@ -1033,7 +1064,10 @@ describe('apps/studio type-check coverage guard (P7)', () => {
     expect(commandChain('a && b ; c')).not.toContain('b');
   });
 
-  it('enforcing() treats every unevaluable `continue-on-error` as disabling', () => {
+  // This one pins the reading used by the ci.yml assertions in THIS file, which is a local mirror of
+  // the guard's — a mutation battery confirmed that mutating the guard leaves it green, so it is not
+  // evidence about the guard. The guard's own reading is pinned by the fixtures above.
+  it('enforcing() — the wiring assertions\' local mirror — treats every unevaluable value as disabling', () => {
     expect(enforcing(undefined)).toBe(true);
     expect(enforcing(false)).toBe(true);
     expect(enforcing('false')).toBe(true);
