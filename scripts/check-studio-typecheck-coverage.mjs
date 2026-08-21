@@ -38,13 +38,33 @@
  *     guard printed "invoked by an enabled ci.yml step" and exited 0. So the wiring check now also
  *     asks about EXECUTION SEMANTICS — the invocation must be in command position (not a comment, a
  *     quoted string or a substitution), its exit code must not be discarded (`|| …`, a pipeline, `&`,
- *     `!`, a preceding `set +e`), neither the step nor its job may be `continue-on-error`, and the
- *     workflow's `on:` must actually fire for this branch on `pull_request` and `push`.
+ *     `!`, a `set` that disarms errexit), neither the step nor its job may be `continue-on-error`,
+ *     the job's `strategy` must be provably worth at least one leg, and the workflow's `on:` must
+ *     actually fire for this branch on `pull_request` and `push`.
  *
- *     What that deliberately does NOT do is parse arbitrary shell. It closes the shapes an ordinary
- *     "let me silence CI for a minute" edit produces and fails towards rejection on anything else: a
- *     subshell, a `for` loop, a function definition or an `eval` around the invocation leaves it
- *     unmatched and the step rejected with a message saying exactly that. An author who WANTS the
+ *     **That analysis is DEFAULT-DENY, and that is the whole mechanism.** Rounds 3, 4, 5 and 6 of
+ *     review each enumerated the edits their author could imagine — five, four, six and then seven
+ *     more pass-direction bypasses — because the guard re-implemented bash and GitHub Actions
+ *     semantics as a blacklist, and a blacklist's silence is indistinguishable from approval. So
+ *     the trigger reader and the `run:` reader now accept ONLY the shapes they model completely:
+ *
+ *       - `on.push` / `on.pull_request` may carry `branches` or `branches-ignore` and nothing else,
+ *         as a list of patterns built from `[A-Za-z0-9._/-]` and `*`. `paths`, `paths-ignore`,
+ *         `types`, `tags`, a scalar `branches`, a negated `!branch` entry, a `?`/`+`/`[…]` glob —
+ *         every one of them FAILS, with a message saying the guard cannot prove the run starts.
+ *         (Other top-level events — `workflow_dispatch`, `workflow_call` — are ignored on purpose:
+ *         an extra event can only ADD runs, never remove the two this asserts.)
+ *       - a `run:` body must tokenise into simple commands joined by `&& || | & ; <newline>` and
+ *         nothing else. A heredoc, a subshell, a brace group, `if`/`for`/`while`/`case`, a `${{ }}`
+ *         expression the runner rewrites before the shell sees it, a `set` spelling this cannot
+ *         parse — each is a FAIL rather than a construct to guess at.
+ *       - the invocation must HEAD its `&&`/`||` list (nothing may short-circuit whether it runs)
+ *         and no `||` may appear anywhere later in that list (bash's list is left-associative, so
+ *         `A && echo done || true` exits 0 when A fails).
+ *
+ *     A shape this guard does not understand is a red, never a green. The cost is that a future
+ *     legitimate edit — a `paths:` filter, a loop in the step — fails until someone either simplifies
+ *     it or teaches the guard the construct, which is the loud direction. An author who WANTS the
  *     step to lie can still write one (`bash -c "$(printf …)"`), and that is out of threat model —
  *     the same stance the rest of this guard takes.
  *   - **Does anything invoke this guard?** Deleting `check:studio-typecheck` from `gate:studio`
@@ -221,6 +241,14 @@ const PROBES = [
  * list otherwise comes from the installed TypeScript and cannot be moved from a test. Neither can
  * switch a check off — adding a name leaves it unprobed, and hiding one leaves it undeclared, so
  * every setting of either makes this guard redder than not setting it.
+ *
+ * That licence held only because the two hooks were independent, and round 6 found they were not:
+ * the hide-set was applied to the COMBINED list while `UNDECLARED_FLAGS` was computed against the
+ * expected list alone, so `P7_EXTRA_STRICT_FLAGS=x P7_HIDE_STRICT_FLAGS=x` added an unprobed flag
+ * and then deleted it before anything looked — green, with the sentence above still in the file
+ * claiming it could not be. The hide-set is therefore filtered through `EXPECTED_STRICT_FLAGS`
+ * first: hiding a flag this guard expects removes it and reds the undeclared pin, and hiding
+ * anything else is a no-op, so neither hook can cancel the other.
  */
 const EXPECTED_STRICT_FLAGS = [
   'noImplicitAny',
@@ -233,7 +261,7 @@ const EXPECTED_STRICT_FLAGS = [
   'useUnknownInCatchVariables',
 ];
 const envFlags = (name) => (process.env[name] ?? '').split(',').map((f) => f.trim()).filter(Boolean);
-const hidden = new Set(envFlags('P7_HIDE_STRICT_FLAGS'));
+const hidden = new Set(envFlags('P7_HIDE_STRICT_FLAGS').filter((f) => EXPECTED_STRICT_FLAGS.includes(f)));
 const STRICT_FLAGS = [
   ...ts.optionDeclarations.filter((o) => o.strictFlag).map((o) => o.name),
   ...envFlags('P7_EXTRA_STRICT_FLAGS'),
@@ -271,22 +299,78 @@ const enforcing = (value) => value === undefined || value === null || String(val
  * `echo "npm run lint -w apps/studio"`. Both were live bypasses, the first reproduced on the real
  * tree with the step still named `Lint studio` and the guard still printing OK.
  *
- * This is deliberately NOT a shell parser. It blanks out the regions a command can hide in without
- * being one — quoted strings, command substitutions, comments — and splits what remains on the
- * operators that separate commands, recording the operator on each side. That is enough to decide
- * the two questions asked of it (is the invocation in command position, and is its exit code kept)
- * and it fails towards rejection: anything it does not understand, such as a subshell, leaves the
- * invocation unmatched and the step rejected with a message saying so. An adversarial workflow
- * author is outside this guard's threat model — see the preamble; this closes the shapes an ordinary
- * "let me silence CI for a minute" edit produces.
+ * This is not a shell parser and does not try to become one. It is a RECOGNISER for one small
+ * language — simple commands joined by `&& || | & ; <newline>` — and everything outside that
+ * language is rejected by name. It blanks out the regions a command can hide in without being one
+ * (quoted strings, command substitutions, comments), splits what remains on the operators that
+ * separate commands, and records the operator on each side.
+ *
+ * The rejection half is what earlier rounds lacked. `commandPositions` used to fall off the end of
+ * its own switch: a heredoc body was scanned as if it were commands, `set +ex` matched no `set +e`
+ * pattern, and an unrecognised construct simply left the invocation matched and the step approved.
+ * Every one of those was a green bypass. So a construct this cannot model now sets `unmodeled` and
+ * the caller reports that the step CANNOT BE PROVEN to run, which is the only honest verdict a
+ * recogniser can give about a sentence outside its grammar.
  */
-function commandPositions(runText) {
+const UNMODELED_WORDS = new Set([
+  'if', 'then', 'elif', 'else', 'fi',
+  'for', 'while', 'until', 'do', 'done',
+  'case', 'esac', 'select', 'function', 'coproc', 'time',
+  '{', '}',
+]);
+
+/*
+ * `set` as bash reads it: a run of `-`/`+` clusters, where an `o` inside a cluster consumes the next
+ * word as a long option name. Only the errexit bit matters here, but the whole thing is PARSED
+ * rather than pattern-matched, because every spelling-based detector missed a spelling — the regex
+ * `/^set\s+\+[a-zA-Z]*e\b/` was written for `set +e` and matched none of `set +ex`,
+ * `set +euo pipefail` or `set +o errexit`, each of which switches errexit off and each of which was
+ * a live green bypass. A `set` this cannot parse is unmodeled, never benign.
+ */
+function readSet(words) {
+  let disablesErrexit = false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const sign = word[0];
+    if ((sign !== '-' && sign !== '+') || !/^[a-zA-Z]+$/.test(word.slice(1))) {
+      return { unmodeled: `\`set ${words.join(' ')}\` — this guard reads only \`-\`/\`+\` option clusters` };
+    }
+    for (const letter of word.slice(1)) {
+      if (letter === 'o') {
+        const name = words[i + 1];
+        if (name === undefined) {
+          return { unmodeled: `\`set ${words.join(' ')}\` — \`${sign}o\` with no option name` };
+        }
+        i++;
+        if (name === 'errexit' && sign === '+') disablesErrexit = true;
+        continue;
+      }
+      if (letter === 'e' && sign === '+') disablesErrexit = true;
+    }
+  }
+  return { disablesErrexit };
+}
+
+/** Tokenise a `run:` body, or report the first construct outside the modeled grammar. */
+function readRun(runText) {
   const commands = [];
   let buf = '';
   let before = null;
   let quote = null;
   let subst = 0;
+  let unmodeled = null;
+  const deny = (why) => {
+    if (!unmodeled) unmodeled = why;
+  };
   const finish = (after) => {
+    if (buf.trim() === '') {
+      // A blank line, a comment-only line, or the newline bash treats as a continuation after a
+      // trailing `&&`. None of them is a command, and swallowing them keeps `a &&\nb` reading as one
+      // list rather than as two — which is what bash does.
+      buf = '';
+      if (after !== null && after !== '\n' && after !== ';') deny(`an empty command in front of \`${after}\``);
+      return;
+    }
     commands.push({ text: buf.replace(/\s+/g, ' ').trim(), before, after });
     buf = '';
     before = after;
@@ -307,6 +391,20 @@ function commandPositions(runText) {
       continue;
     }
     if (two === '$(') { subst = 1; buf += '  '; i++; continue; }
+    // A workflow expression is substituted by the runner BEFORE the shell sees this text, so the
+    // command that runs is not the command in the file: `npm run lint -w apps/studio ${{ … }}` can
+    // expand to the same line with `|| true` glued on.
+    if (runText.startsWith('${{', i)) {
+      deny('a `${{ … }}` workflow expression — the runner rewrites the body before the shell sees it, so what runs is not the text in the file');
+      break;
+    }
+    // A heredoc redirects the lines that follow into a command's stdin. Round 6 put the invocation
+    // inside a `cat <<EOF` body: every line there was scanned as a command in command position
+    // while `cat` swallowed the lot.
+    if (two === '<<') {
+      deny('a heredoc (`<<`) — its body is data for another command, not commands, and this guard cannot tell where it ends');
+      break;
+    }
     if (c === '\\') {
       // A line continuation joins two lines into one command; any other escape is opaque, and in
       // particular `\;` and `\&` are characters rather than command separators.
@@ -321,17 +419,48 @@ function commandPositions(runText) {
       finish('\n');
       continue;
     }
+    if (c === '(' || c === ')') {
+      deny('a subshell or grouping construct (`(` … `)`) — this guard does not model what runs inside one');
+      break;
+    }
     if (two === '&&' || two === '||') { finish(two); i++; continue; }
+    if (two === '|&') {
+      deny('`|&` — a pipeline of both output streams, which this guard does not model');
+      break;
+    }
     if (c === '|') { finish('|'); continue; }
-    // `2>&1` is a redirection, not a background operator; splitting there would report a redirected
-    // invocation as backgrounded, which is a false FAIL on an ordinary way to write the step.
-    if (c === '&' && !/>\s*$/.test(buf)) { finish('&'); continue; }
+    // `2>&1` and `>& log` are redirections, and so is `&> log` — splitting at any of them would
+    // report a redirected invocation as backgrounded, a false FAIL on an ordinary way to write the
+    // step. The backwards test alone missed `&>`, which is the same operator written the other way
+    // round.
+    if (c === '&' && !/>\s*$/.test(buf) && runText[i + 1] !== '>') { finish('&'); continue; }
+    if (two === ';;') {
+      deny('`;;` — a `case` clause terminator, which this guard does not model');
+      break;
+    }
     if (c === ';') { finish(';'); continue; }
     if (c === '\n') { finish('\n'); continue; }
     buf += c;
   }
   finish(null);
-  return commands;
+  if (unmodeled) return { unmodeled };
+
+  for (const command of commands) {
+    const words = command.text.replace(/^!\s+/, '').split(' ').filter(Boolean);
+    const head = words[0];
+    if (head !== undefined && UNMODELED_WORDS.has(head)) {
+      return { unmodeled: `the shell keyword \`${head}\` — a compound command or condition context, where a failure need not abort the block at all` };
+    }
+    if (words.includes('{') || words.includes('}')) {
+      return { unmodeled: 'a `{ … }` brace group — this guard does not model what runs inside one' };
+    }
+    if (head === 'set') {
+      const effect = readSet(words.slice(1));
+      if (effect.unmodeled) return { unmodeled: effect.unmodeled };
+      command.disablesErrexit = effect.disablesErrexit;
+    }
+  }
+  return { commands };
 }
 
 // Operators that throw away the exit code of the command to their left. `;` and a newline are NOT
@@ -345,9 +474,16 @@ const DISCARDS_EXIT_CODE = {
   '&': 'a backgrounded command is never waited for, so its exit code reaches nothing',
 };
 
+// The operators that START a new `&&`/`||` list rather than continuing one. A command introduced by
+// any of them heads its own list, which is the only position where errexit can carry its failure out
+// to the step.
+const LIST_HEAD = new Set([null, '\n', ';']);
+
 /** Where the invocation sits in a `run:` block, and whether its failure can still fail the step. */
 function invocationSemantics(runText) {
-  const commands = commandPositions(runText);
+  const read = readRun(runText);
+  if (read.unmodeled) return { kind: 'unmodeled', why: read.unmodeled };
+  const commands = read.commands;
   const index = commands.findIndex(({ text }) => {
     const bare = text.replace(/^!\s*/, '');
     return bare === CI_INVOCATION || bare.startsWith(`${CI_INVOCATION} `);
@@ -357,10 +493,40 @@ function invocationSemantics(runText) {
   if (/^!\s*/.test(command.text)) {
     return { kind: 'discarded', why: '`!` inverts it, so the step passes exactly when the type-check fails' };
   }
-  if (command.after && DISCARDS_EXIT_CODE[command.after]) {
-    return { kind: 'discarded', operator: command.after, why: DISCARDS_EXIT_CODE[command.after] };
+  // `git diff --quiet apps/studio || npm run lint -w apps/studio` runs the type-check only on the
+  // runs where the predecessor failed; on every other run the list exits 0 having checked nothing.
+  // `&&` in front is the same class one notch quieter. Neither is a shape a correct step needs, so
+  // the invocation is required to HEAD its list.
+  if (!LIST_HEAD.has(command.before)) {
+    return { kind: 'conditional', operator: command.before };
   }
-  const disarmed = commands.slice(0, index).some(({ text }) => /^set\s+\+[a-zA-Z]*e\b/.test(text));
+  // Bash's `&&`/`||` list is left-associative and a failure walks RIGHT along it looking for a `||`
+  // to hand control to: `A && echo done || true` exits 0 when A fails. Reading only the invocation's
+  // immediate `after` operator therefore proved nothing — the whole list to the end has to be clean.
+  for (let j = index; j < commands.length; j++) {
+    const after = commands[j].after;
+    if (after === null || after === '\n' || after === ';') break;
+    if (after === '&') {
+      return { kind: 'discarded', operator: '&', why: DISCARDS_EXIT_CODE['&'] };
+    }
+    if (after === '|') {
+      // `A && (B | C)` binds the pipe tighter than the list, so a pipe further along cannot touch
+      // the invocation's own status. Only a pipe on the invocation itself does.
+      if (j === index) return { kind: 'discarded', operator: '|', why: DISCARDS_EXIT_CODE['|'] };
+      break;
+    }
+    if (after === '||') {
+      return {
+        kind: 'discarded',
+        operator: '||',
+        why:
+          j === index
+            ? DISCARDS_EXIT_CODE['||']
+            : 'a `||` further along the same left-associative list rescues the whole chain — a failure walks right past every `&&` to the first `||` and the list exits with THAT command\'s status',
+      };
+    }
+  }
+  const disarmed = commands.slice(0, index).some((c) => c.disablesErrexit);
   if (disarmed) return { kind: 'disarmed' };
   return { kind: 'enforced' };
 }
@@ -455,13 +621,62 @@ const ENFORCED_BRANCH = 'studio-handoff';
 const branchFilter = (pattern) =>
   new RegExp(`^${String(pattern).split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
 
+// The only two per-event keys this guard models. Everything else changes WHETHER a run starts in a
+// way it cannot evaluate from the file alone, so everything else is a FAIL:
+//   - `paths` / `paths-ignore` decide by the diff. `paths-ignore: [apps/**]` means an edit touching
+//     only the studio app starts no run at all — the step is present, enabled, correct and never
+//     reached, which is P7 moved one layer up.
+//   - `types` narrows a `pull_request` to activity types. `types: [labeled]` never fires for a code
+//     push to the PR branch.
+//   - `tags` / `tags-ignore` on `push` never fire for a branch push.
+// Round 6 reproduced all of these green, because the previous reader inspected `branches` and
+// `branches-ignore` and returned `true` for a config carrying anything else.
+const MODELED_EVENT_KEYS = new Set(['branches', 'branches-ignore']);
+
+// A GitHub filter pattern this guard can compile. `*` and `**` are handled by `branchFilter`;
+// `!`, `?`, `+` and character classes are not, and `!` is the dangerous one — it is an EXCLUSION, so
+// `['**', '!studio-handoff']` reads to `branchFilter` as a literal branch named `!studio-handoff`
+// (matching nothing, hence harmless) while GitHub reads it as "every branch EXCEPT this one".
+const MODELED_PATTERN = /^[A-Za-z0-9._/*-]+$/;
+
 /**
  * Does `event` fire for `ENFORCED_BRANCH`? `null`/absent config means no filter at all, which fires
- * for every branch — the most permissive wiring there is, and one this must not reject.
+ * for every branch — the most permissive wiring there is, and one this must not reject. Anything
+ * else must be a mapping built only from keys and patterns this guard models; if it is not, the
+ * answer is "cannot prove it does", which is a FAIL.
  */
 function firesForBranch(config, event) {
   if (config === null || config === undefined) return true;
-  if (typeof config !== 'object') return true;
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    return `\`on.${event}\` is ${Array.isArray(config) ? 'a list' : `a ${typeof config}`}, not a filter mapping — this guard cannot prove the workflow runs for \`${ENFORCED_BRANCH}\`. Simplify the trigger, or extend the guard`;
+  }
+  const unknown = Object.keys(config).filter((k) => !MODELED_EVENT_KEYS.has(k));
+  if (unknown.length) {
+    return (
+      `\`on.${event}\` carries ${unknown.map((k) => `\`${k}\``).join(', ')}, which this guard does not model — ` +
+      `it cannot prove a run starts for \`${ENFORCED_BRANCH}\`, and a filter that stops the run makes every step below it dead. ` +
+      `(\`paths\`/\`paths-ignore\` decide by the diff, so an app-only edit can start nothing; \`types\` can narrow a pull_request to activity a code push never raises; a tag filter never fires for a branch push.) ` +
+      'Reduce the trigger to `branches`/`branches-ignore`, or extend the guard'
+    );
+  }
+  if ('branches' in config && 'branches-ignore' in config) {
+    return `\`on.${event}\` sets both \`branches\` and \`branches-ignore\`, which GitHub rejects — this guard will not guess which one wins`;
+  }
+  for (const listKey of ['branches', 'branches-ignore']) {
+    if (!(listKey in config)) continue;
+    const list = config[listKey];
+    if (!Array.isArray(list)) {
+      return `\`on.${event}.${listKey}\` is ${list === null ? 'empty' : `a ${typeof list}`}, not a list of patterns — this guard models only a list, so it cannot prove the workflow runs for \`${ENFORCED_BRANCH}\``;
+    }
+    const unreadable = list.filter((p) => typeof p !== 'string' || !MODELED_PATTERN.test(p));
+    if (unreadable.length) {
+      return (
+        `\`on.${event}.${listKey}\` contains ${unreadable.map((p) => `\`${String(p)}\``).join(', ')}, a pattern this guard does not model — ` +
+        `a leading \`!\` is an EXCLUSION, so \`['**', '!${ENFORCED_BRANCH}']\` never fires for this branch while reading like the most permissive filter there is. ` +
+        '`?`, `+` and character classes are unmodelled for the same reason. Cannot prove this runs'
+      );
+    }
+  }
   const ignore = config['branches-ignore'];
   if (Array.isArray(ignore) && ignore.some((p) => branchFilter(p).test(ENFORCED_BRANCH))) {
     return `\`on.${event}.branches-ignore\` excludes \`${ENFORCED_BRANCH}\``;
@@ -472,9 +687,42 @@ function firesForBranch(config, event) {
       ? true
       : `\`on.${event}.branches\` is [${branches.join(', ')}] — it never fires for \`${ENFORCED_BRANCH}\``;
   }
-  if (event === 'push' && (Array.isArray(config.tags) || Array.isArray(config['tags-ignore']))) {
-    // A `push` filtered to tags only does not fire for a branch push at all.
-    return `\`on.push\` is filtered to tags only, so it never fires for a push to \`${ENFORCED_BRANCH}\``;
+  return true;
+}
+
+// `strategy` decides how many times a job runs, and ZERO is a legal answer: a matrix whose only
+// dimension evaluates to an empty list produces no legs, and a job with no legs is reported as
+// skipped — which rolls up to the run's conclusion as SUCCESS. The step is present, enabled,
+// correctly written and executed zero times. Read default-deny like everything else here: a
+// `strategy` whose leg count this cannot compute from literals in the file is a FAIL.
+const MODELED_STRATEGY_KEYS = new Set(['matrix', 'fail-fast', 'max-parallel']);
+
+function strategyRuns(job) {
+  const strategy = job.strategy;
+  if (strategy === undefined || strategy === null) return true;
+  if (typeof strategy !== 'object' || Array.isArray(strategy)) {
+    return 'its `strategy` is not a mapping, so this guard cannot prove the job runs at all';
+  }
+  const unknown = Object.keys(strategy).filter((k) => !MODELED_STRATEGY_KEYS.has(k));
+  if (unknown.length) {
+    return `its \`strategy\` carries ${unknown.map((k) => `\`${k}\``).join(', ')}, which this guard does not model`;
+  }
+  if (!('matrix' in strategy)) return true;
+  const matrix = strategy.matrix;
+  if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)) {
+    return `its \`strategy.matrix\` is ${matrix === null || matrix === undefined ? 'empty' : `a ${typeof matrix}`} rather than a mapping of literal lists — a matrix that evaluates to zero legs runs the step zero times and reports SUCCESS`;
+  }
+  if ('exclude' in matrix) {
+    return 'its `strategy.matrix` carries `exclude`, which can remove every remaining combination — this guard cannot compute the surviving leg count';
+  }
+  const entries = Object.entries(matrix);
+  if (!entries.length) {
+    return 'its `strategy.matrix` declares no dimensions, so it produces no legs and the job runs the step zero times';
+  }
+  for (const [name, values] of entries) {
+    if (!Array.isArray(values) || values.length === 0) {
+      return `its \`strategy.matrix.${name}\` is ${Array.isArray(values) ? 'an empty list' : `a ${typeof values}`} rather than a non-empty literal list — this guard cannot prove the job produces even one leg, and a job with zero legs is skipped, which reports SUCCESS`;
+    }
   }
   return true;
 }
@@ -547,6 +795,11 @@ function checkWorkflow() {
         rejected.push(`the step in job \`${jobName}\` is conditional on \`if: ${String(step.if).trim()}\``);
         continue;
       }
+      const legs = strategyRuns(job);
+      if (legs !== true) {
+        rejected.push(`job \`${jobName}\` cannot be proven to run: ${legs}`);
+        continue;
+      }
       if (!enforcing(job['continue-on-error'])) {
         rejected.push(
           `job \`${jobName}\` is marked \`continue-on-error: ${String(job['continue-on-error']).trim()}\` — it runs the type-check and reports SUCCESS however it went`
@@ -560,6 +813,18 @@ function checkWorkflow() {
         continue;
       }
       const semantics = invocationSemantics(step.run);
+      if (semantics.kind === 'unmodeled') {
+        rejected.push(
+          `${where} carries \`${CI_INVOCATION}\` in a \`run:\` body this guard cannot fully read — it contains ${semantics.why}. Cannot prove this runs, so it will not report that it does: simplify the step, or extend the guard to model the construct`
+        );
+        continue;
+      }
+      if (semantics.kind === 'conditional') {
+        rejected.push(
+          `${where} runs \`${CI_INVOCATION}\` with \`${semantics.operator}\` in FRONT of it, so a predecessor decides whether it runs at all — with \`||\` the type-check is skipped on every run where the predecessor succeeded, and the step passes having checked nothing`
+        );
+        continue;
+      }
       if (semantics.kind === 'absent') {
         rejected.push(
           `${where} mentions \`${CI_INVOCATION}\` but not as a command it runs — it is inside a shell comment, a quoted string, a command substitution or a construct this guard does not read as a command. Text the shell does not execute enforces nothing`
@@ -574,7 +839,7 @@ function checkWorkflow() {
       }
       if (semantics.kind === 'disarmed') {
         rejected.push(
-          `${where} runs \`set +e\` before \`${CI_INVOCATION}\`, which disarms the abort the step's exit code depends on — a failing type-check no longer fails the step`
+          `${where} switches errexit off (a \`set +e\` in any of its spellings — \`+e\`, \`+ex\`, \`+euo pipefail\`, \`+o errexit\`) before \`${CI_INVOCATION}\`, which disarms the abort the step's exit code depends on — a failing type-check no longer fails the step`
         );
         continue;
       }
@@ -586,7 +851,7 @@ function checkWorkflow() {
       ...triggerFailures,
       `.github/workflows/ci.yml invokes \`${CI_INVOCATION}\` only from a step that cannot be relied on to run and enforce it:\n` +
         rejected.map((d) => `    - ${d}`).join('\n') +
-        '\n    A step that never executes, or whose failure reaches nothing, enforces nothing — which is exactly known issue P7. (Conditions other than `true`/`always()`/`success()`, and any `continue-on-error` other than a literal `false`, cannot be evaluated here and are treated as disabling.)',
+        '\n    A step that never executes, or whose failure reaches nothing, enforces nothing — which is exactly known issue P7. This reader is DEFAULT-DENY: conditions other than `true`/`always()`/`success()`, any `continue-on-error` other than a literal `false`, a matrix whose leg count is not a non-empty literal, and any shell construct outside `simple commands joined by && || | & ; newline` are all reported as unproven rather than assumed benign.',
     ];
   }
   return [
@@ -745,6 +1010,6 @@ if (failures.length) {
 
 console.log(
   SHAPE_ONLY
-    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step whose failure fails the job, in a workflow that fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
-    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step whose failure fails the job. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed.`
+    ? `OK (shape only): apps/studio type-check covers all ${expected.length} TypeScript files under the app, is strict, runs \`tsc --noEmit\`, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed. The planted-error check was NOT run — it needs a built \`dist/\` and rides the \`studio-unit\` job.`
+    : `OK: apps/studio type-check covers all ${expected.length} TypeScript files under the app, reports every one of ${PROBES.length} planted type errors when \`${CI_INVOCATION}\` is run, and is invoked by an enabled ci.yml step — in a job with at least one proven matrix leg, from a \`run:\` body fully modeled by this guard, heading its own command list with no later \`||\` and with errexit armed — in a workflow whose \`on:\` carries only filters this guard models and fires for \`${ENFORCED_BRANCH}\`. All ${STRICT_FLAGS.length} strict checks TypeScript ${ts.version} declares are probed.`
 );
