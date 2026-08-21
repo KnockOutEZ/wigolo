@@ -18,12 +18,18 @@ type BroadcastWindow = Pick<BrowserWindow, 'isDestroyed' | 'webContents'>;
  * driving the app then hangs against a dead window rather than failing, which is how one autonomous
  * screenshot probe sat frozen until its runner declared the session finished.
  *
- * `win.isDestroyed()` is checked FIRST and on its own: `win.webContents` is exactly the access that
- * throws, so it cannot be part of the same condition.
+ * `win.isDestroyed()` is checked FIRST: `win.webContents` is exactly the access that throws, so it
+ * has to be short-circuited past rather than evaluated alongside. The `||` is what makes that safe —
+ * the right-hand side is only reached once the window is known to be alive.
+ *
+ * The two objects have SEPARATE lifetimes, so the window's alone is not enough. `webContents.close()`,
+ * a renderer that tore itself down, and a crashed render process all leave the window alive with its
+ * contents already destroyed, and `send` then throws the same `Object has been destroyed` — same
+ * uncaught main-process exception, same modal dialog, same hang.
  */
 export function stateBroadcaster(win: BroadcastWindow, state: () => StudioState): () => void {
   return () => {
-    if (win.isDestroyed()) return;
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return;
     win.webContents.send(IPC.stateChanged, state());
   };
 }
