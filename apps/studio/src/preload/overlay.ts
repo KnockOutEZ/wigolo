@@ -1,8 +1,11 @@
 /**
  * Per-tab marking overlay — runs in the WebContentsView's ISOLATED world (contextIsolation), so page
  * JS cannot read its variables; its UI lives in a CLOSED shadow root on an `[data-wigolo-overlay]`
- * host, so page CSS cannot style it and the host-side snapshot filters it out (DR-4). Thin DOM/IPC
- * wiring around the pure `overlay-core` helpers.
+ * host, so page CSS cannot select what it draws and the host-side snapshot filters it out (DR-4).
+ * The shadow boundary is not by itself enough — inherited properties, custom properties above all,
+ * cross it — which is why the token layer is declared on `.layer` INSIDE the tree rather than on the
+ * host (see the comment at the shadow root below). Thin DOM/IPC wiring around the pure
+ * `overlay-core` helpers.
  *
  * Self-containment: a SANDBOXED preload cannot load sibling build chunks, so this entry imports only
  * `electron` (a runtime builtin the sandbox provides) + `./overlay-core` and `../renderer/tokens`, both
@@ -50,11 +53,31 @@ function installOverlay(): void {
   const host = document.createElement('div');
   host.setAttribute('data-wigolo-overlay', '1');
   host.setAttribute('aria-hidden', 'true');
-  host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+  // The host itself is the OTHER half of the same hole the token layer had. It is a plain element in
+  // the page's own tree, so `[data-wigolo-overlay] { display: none !important }` — or `visibility`,
+  // `opacity`, `transform`, `clip-path`, `content-visibility`, any of a dozen — removes the whole
+  // supervision surface, and forcing `pointer-events: auto` turns a full-viewport overlay into a
+  // click-swallower that also blocks the human. Rather than enumerate those properties (the list is
+  // open-ended and each addition is a new way to be wrong), `all` resets EVERY property at the one
+  // priority no page rule can outrank: an important declaration in a style attribute beats an
+  // important declaration in any page rule. The four that follow re-state what the overlay needs, and
+  // being later in the same block they win over the `all` before them.
+  host.style.cssText =
+    'all:initial!important;position:fixed!important;inset:0!important;display:block!important;' +
+    'pointer-events:none!important;z-index:2147483647!important;';
   const root = host.attachShadow({ mode: 'closed' });
   // Everything the overlay draws resolves against the token layer, which `shadowTokenCss` declares on
-  // this root: the overlay lands on a page we do not own, so it cannot inherit the chrome's register
-  // attribute, but it must still be one component in two registers rather than two components.
+  // `.layer` — NOT on `:host`. Custom properties inherit into a shadow tree, and a normal declaration
+  // on the host from the OUTER tree beats a `:host` rule in the inner one, so a page shipping
+  // `[data-wigolo-overlay] { --agent: transparent; --hair-width: 0px }` would blank the highlight, the
+  // mark chip and the ghost cursor — hiding the very surface that tells the human an agent is driving
+  // this tab. `all: initial` does not reset custom properties and `mode: 'closed'` isolates JS, not
+  // CSS. Page CSS cannot match anything INSIDE the shadow tree, so declaring one selector deep puts
+  // the layer out of reach: `.layer` wins over anything inherited through the host, and every drawn
+  // element inherits from `.layer`. This is why `shadowTokenCss` takes a selector.
+  //
+  // The overlay still cannot inherit the chrome's register attribute (it lands on a page we do not
+  // own), but it must be one component in two registers rather than two components.
   //
   // Two accent families and nothing else: a mark and a highlight are the agent's address space, so
   // they are the agent hue; attention stays reserved for the rungs that want a person. No glow and no
@@ -62,8 +85,12 @@ function installOverlay(): void {
   // the only thing distinguishing hover from marked apart from hue, which the tint now carries.
   root.innerHTML = `
     <style>
-      :host { all: initial; }
-      ${shadowTokenCss()}
+      /* No :host reset here: the host's own style attribute carries "all: initial" as an important
+         declaration, which is the only priority a page rule cannot outrank. Two mechanisms for one
+         decision would mean the weaker one silently doing the work in the case that matters. */
+      /* Carries the token layer and nothing else — no box of its own, so it cannot affect layout. */
+      .layer { display: contents; }
+      ${shadowTokenCss('.layer')}
       /* §4 \`highlight\` — the element the agent (or the marking human) is acting on. */
       .outline { position: fixed; pointer-events: none;
         border: var(--hair-width) solid var(--agent); border-radius: var(--radius-inner);
@@ -111,18 +138,20 @@ function installOverlay(): void {
         border-radius: var(--radius-segment); padding: 3px 9px;
         white-space: nowrap; display: none; z-index: 3; }
     </style>
-    <div class="outline"></div>
-    <div class="whisker"></div>
-    <div class="cliprect"></div>
-    <div class="cliphint">Drag to clip a region · Esc to cancel</div>
-    <div class="ghost"><svg viewBox="0 0 18 18" width="18" height="18"><path d="M2 2l14 6-6 2-2 6z" fill="currentColor"/></svg></div>
-    <div class="ghostcap"></div>
-    <div class="chips"></div>
-    <div class="bar">
-      <button data-act="comment" title="Comment (type in the Marks panel →)">note</button>
-      <button data-act="grab" title="Preview the repeating set">⧉</button>
-      <button data-act="watch" disabled title="Watch — arrives later">watch</button>
-      <button data-act="send" disabled title="Send to agent — arrives later">send</button>
+    <div class="layer">
+      <div class="outline"></div>
+      <div class="whisker"></div>
+      <div class="cliprect"></div>
+      <div class="cliphint">Drag to clip a region · Esc to cancel</div>
+      <div class="ghost"><svg viewBox="0 0 18 18" width="18" height="18"><path d="M2 2l14 6-6 2-2 6z" fill="currentColor"/></svg></div>
+      <div class="ghostcap"></div>
+      <div class="chips"></div>
+      <div class="bar">
+        <button data-act="comment" title="Comment (type in the Marks panel →)">note</button>
+        <button data-act="grab" title="Preview the repeating set">⧉</button>
+        <button data-act="watch" disabled title="Watch — arrives later">watch</button>
+        <button data-act="send" disabled title="Send to agent — arrives later">send</button>
+      </div>
     </div>`;
   const outline = root.querySelector('.outline') as HTMLElement;
   const whisker = root.querySelector('.whisker') as HTMLElement;
