@@ -22,8 +22,11 @@ import Database from 'better-sqlite3';
  *   crash is given up, and no test asserts that.
  * - `synchronous = OFF` drops the fsync on commit. Same trade: durability only.
  * - It is NOT `journal_mode = OFF`. That one deletes the rollback journal
- *   altogether and leaves ROLLBACK undefined, which WOULD change the transaction
- *   semantics these suites exist to test.
+ *   altogether and SQLite documents ROLLBACK as undefined under it. Measured
+ *   honestly: "undefined" includes "happens to work", and the rollback tests in
+ *   `migration-test-db.test.ts` still pass when the mode is switched to OFF. What
+ *   actually stops the substitution landing is the pragma assertion in that file,
+ *   which reds on it — so the pin is the reported mode, not an observed rollback.
  * - It does NOT batch, wrap or otherwise touch how `applyMigrations` commits.
  *   In these suites `applyMigrations` is the subject — idempotency on re-run,
  *   read-only fail-soft, merge-union convergence — and an outer transaction would

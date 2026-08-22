@@ -17,6 +17,12 @@ import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
  * the same directory. Without the control, "no sidecar was found" is satisfied by
  * looking in the wrong place, or by a SQLite version that stopped writing one, and
  * the assertion would pass while the helper did nothing at all.
+ *
+ * Read the limit of (2) correctly: these rollback tests pin that rollback WORKS
+ * under the shipped pragmas. They do NOT discriminate `journal_mode=MEMORY` from
+ * `journal_mode=OFF` — measured, both were rolled back here, which is consistent
+ * with SQLite documenting OFF's rollback as *undefined* rather than as broken. The
+ * assertion that stops OFF being substituted is the reported-pragma one below.
  */
 describe('openMigrationTestDb', () => {
   let dir: string;
