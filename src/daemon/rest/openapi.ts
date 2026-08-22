@@ -18,6 +18,7 @@ import {
 } from '../../server/tool-schemas.js';
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
+import { MAX_TASK_CHARS, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '../../studio/run-store.js';
 import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -343,6 +344,210 @@ function buildPaths(): Record<string, object> {
               },
             },
           },
+        },
+        ...errorResponses(),
+      },
+    },
+  };
+
+  Object.assign(paths, runPaths());
+
+  return paths;
+}
+
+/**
+ * The run surface. A run is the unit of everything and outlives every UI, so it is described here
+ * as a first-class resource family rather than folded into the tool index — `buildToolsIndex` lists
+ * tools, and a run is not one.
+ */
+function driverSchema(): object {
+  return {
+    type: 'object',
+    description: 'Who is driving the run. One driver at a time; the vocabulary is fixed.',
+    properties: {
+      kind: { type: 'string', enum: ['cli', 'sdk', 'api', 'studio', 'human'], default: 'api' },
+      client: {
+        type: 'object',
+        properties: { name: { type: 'string' }, version: { type: 'string' } },
+        required: ['name', 'version'],
+      },
+    },
+    required: ['kind'],
+  };
+}
+
+function runSchema(): object {
+  return {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Short run id — lowercase, case-insensitive on input.' },
+      task: { type: 'string' },
+      spaceId: { type: 'string' },
+      createdAt: { type: 'string', format: 'date-time' },
+      status: { type: 'string', enum: ['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled'] },
+      driver: driverSchema(),
+      tabIds: { type: 'array', items: { type: 'string' } },
+      pendingDecisions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      cost: {
+        type: 'object',
+        properties: {
+          browserActions: { type: 'number' },
+          tokensIn: { type: 'number' },
+          tokensOut: { type: 'number' },
+          spendUsd: { type: 'number' },
+        },
+      },
+      visibility: { type: 'string', enum: ['hidden', 'visible'] },
+      lastSeq: { type: 'integer' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+    required: ['id', 'task', 'spaceId', 'createdAt', 'status', 'driver', 'lastSeq'],
+  };
+}
+
+function runPaths(): Record<string, object> {
+  const paths: Record<string, object> = {};
+
+  paths['/v1/runs'] = {
+    post: {
+      operationId: 'createRun',
+      summary: 'Create a run.',
+      description:
+        'Creates a durable run and writes its first event. The run exists whether or not anything ' +
+        'is watching it, and is immediately visible to GET /v1/runs.',
+      security: [{}, { bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                task: { type: 'string', minLength: 1, maxLength: MAX_TASK_CHARS },
+                spaceId: { type: 'string', default: 'default' },
+                driver: driverSchema(),
+              },
+              required: ['task'],
+            },
+          },
+        },
+      },
+      responses: {
+        '201': {
+          description: 'The created run.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' }, run: runSchema() },
+                required: ['ok', 'run'],
+              },
+            },
+          },
+        },
+        ...errorResponses(),
+      },
+    },
+    get: {
+      operationId: 'listRuns',
+      summary: 'List runs, newest first.',
+      description: 'Keyset pagination — pass the returned next_cursor to continue. Cursors are opaque.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [
+        {
+          name: 'status',
+          in: 'query',
+          required: false,
+          description: 'Comma-separated run statuses to include.',
+          schema: { type: 'string' },
+        },
+        { name: 'spaceId', in: 'query', required: false, schema: { type: 'string' } },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: MAX_LIST_LIMIT, default: DEFAULT_LIST_LIMIT },
+        },
+        { name: 'cursor', in: 'query', required: false, schema: { type: 'string' } },
+      ],
+      responses: {
+        '200': {
+          description: 'A page of runs.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  runs: { type: 'array', items: runSchema() },
+                  next_cursor: { type: 'string' },
+                },
+                required: ['ok', 'runs'],
+              },
+            },
+          },
+        },
+        ...errorResponses(),
+      },
+    },
+  };
+
+  paths['/v1/runs/{id}'] = {
+    get: {
+      operationId: 'getRun',
+      summary: 'Fetch one run.',
+      description: 'Every field except id, task, spaceId and createdAt is projected from the event log.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': {
+          description: 'The run.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' }, run: runSchema() },
+                required: ['ok', 'run'],
+              },
+            },
+          },
+        },
+        ...errorResponses(),
+      },
+    },
+  };
+
+  paths['/v1/runs/{id}/events'] = {
+    get: {
+      operationId: 'streamRunEvents',
+      summary: 'Stream a run\'s event log: full replay, then live tail.',
+      description:
+        'A server-sent event stream. Each message carries the event sequence number as its SSE id, ' +
+        'so a client that reconnects with Last-Event-ID (or ?since=) resumes with no gaps and no ' +
+        'duplicates. The server does not close the stream, including after the run ends; the client ' +
+        'closes when it is done. Idle streams receive a comment heartbeat.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'since',
+          in: 'query',
+          required: false,
+          description: 'Resume point: send events strictly after this sequence number. Last-Event-ID wins over this.',
+          schema: { type: 'integer', minimum: 0, default: 0 },
+        },
+        {
+          name: 'Last-Event-ID',
+          in: 'header',
+          required: false,
+          description: 'Standard SSE resume header; takes precedence over ?since=.',
+          schema: { type: 'string' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'The event stream.',
+          content: { 'text/event-stream': { schema: { type: 'string' } } },
         },
         ...errorResponses(),
       },
