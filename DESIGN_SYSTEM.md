@@ -185,6 +185,14 @@ shadow. Children: `titlebar` → optional `tabstrip` → optional `urlbar` → b
 `400 11 sans`. Active: border `.3` + background `rgba(255,255,255,.05)`. Inactive: border
 `.1`, text `.55-.6`.
 
+**`tab-group`** — the strip is grouped by owning run, and each group is labelled with that run's
+short id: a `pill-mono` chip, `1px` hairline, radius 999, padding `2px 6px`, `white-space:nowrap`,
+at the head of its group. The id is the same string REST, the event stream, the replay and the
+audit log carry — one shared address space, so it renders verbatim: no truncation, no case change,
+no accent. The focused run's chip takes the primary text role; the others stay at the mono-muted
+one. The chip never shrinks — a crowded strip eats tab titles first. The human's own tabs are one
+group by absence and carry **no** chip: there is no run to name.
+
 **`urlbar`** — pill input `1px rgba(255,255,255,.14)`, radius 999, padding `7px 15px`,
 `pill-mono` text at `.62`, background `rgba(255,255,255,.03)`. Nav glyphs are 24-28px
 `icon-button`s. Right side: mono chips, then at most one white action.
