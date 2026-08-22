@@ -1121,8 +1121,19 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       deps.closeTab(ctx.tab.tabId);
       // The run is the unit, so its end is a recorded fact rather than a deleted map entry: `endRun`
       // releases every tab it still owns and then writes the terminal event.
+      //
+      // Best-effort, unlike `open`'s: the tab is already destroyed by the line above, so throwing here
+      // would leave the session half-closed — its context and any parked approval below never reclaimed
+      // — and refuse a close the human already got. An unwritten terminal event leaves the run showing
+      // as running, which is visible and recoverable; a leaked half-closed session is neither.
       const runId = deps.runs.runForSession(id);
-      if (runId) await deps.runs.endRun(runId, 'completed');
+      if (runId) {
+        try {
+          await deps.runs.endRun(runId, 'completed');
+        } catch (err) {
+          process.stderr.write(`[studio] could not record the end of run ${runId}: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+      }
       actChains.delete(id);
       // Reclaim every map keyed on this session — else a long-lived host leaks a full SessionContext
       // (+ its snapshotter/queue/closures) and any never-resolved parked approval, per open/close cycle.

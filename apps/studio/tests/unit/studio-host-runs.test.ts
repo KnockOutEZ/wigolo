@@ -5,7 +5,7 @@ import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import { makeFakeBroker } from '../helpers/fake-broker';
 import { RunViewModel } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
-import type { StudioListOutput, StudioToolError } from 'wigolo/studio';
+import type { StudioCloseOutput, StudioListOutput, StudioToolError } from 'wigolo/studio';
 
 /**
  * SD1 law 4, at the host seam.
@@ -144,6 +144,19 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(runs.ownerOf('t1'), 'the closed session still owns its tab — the old registry’s exact leak').toBeUndefined();
     expect(store.appends.map((a) => a.type)).toEqual(['tab.attached', 'tab.detached', 'run.completed']);
     expect(runs.tabsOf(runId)).toEqual([]);
+  });
+
+  // The tab is already destroyed by the time the terminal event is written, so a store that refuses it
+  // must not take the rest of the teardown with it — the human already got their close.
+  it('still finishes closing a session when the terminal event cannot be written', async () => {
+    const { host, store } = makeHost();
+    const { session_id } = await host.handlers.spawn({}) as { session_id: string };
+    store.appendEvent = async () => { throw new Error('studio background service unavailable'); };
+
+    const out = await host.handlers.close({ session_id }) as StudioCloseOutput;
+    expect(out.closed).toBe(true);
+    expect(host.sessions.getSessionDrive(session_id), 'the session survived its own close').toBeUndefined();
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
   });
 });
 
