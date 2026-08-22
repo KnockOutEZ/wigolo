@@ -213,4 +213,36 @@ describe('registerIpc', () => {
     listeners[0]!();
     expect(send).toHaveBeenCalledWith(IPC.stateChanged, { runs: [], focusedRunId: null, tabs: [] });
   });
+
+  /**
+   * The one place law 4's two groups actually meet: `TabManager` holds every tab the window has, agent
+   * and human alike, and this is where ownership gets stamped onto them. A push that labelled the whole
+   * universe with the focused run would put the human's own tabs inside an agent's group on screen.
+   */
+  it('stamps the owning run onto agent tabs and leaves the human’s unmarked', async () => {
+    const listeners: Array<() => void> = [];
+    const universe = [
+      { id: 'agent-tab', url: 'https://example.com/', title: 'Example', active: true },
+      { id: 'human-inbox', url: 'https://mail.example/', title: 'Inbox', active: false },
+    ];
+    const tabs = { onChange: (fn: () => void) => listeners.push(fn), listTabs: () => universe };
+    const runs = new RunViewModel(new FakeRunStore());
+    const run = await runs.createRun({ task: 'check the order' });
+    await runs.attachTab(run.id, 'agent-tab');
+
+    const { win, send } = liveWindow();
+    registerIpc(
+      win as unknown as Parameters<typeof registerIpc>[0],
+      tabs as unknown as Parameters<typeof registerIpc>[1],
+      runs as unknown as Parameters<typeof registerIpc>[2],
+    );
+    listeners[0]!();
+
+    const [, state] = send.mock.calls.at(-1) as [string, StudioState];
+    expect(state.tabs.find((t) => t.id === 'agent-tab')?.runId).toBe(run.id);
+    expect(state.tabs.find((t) => t.id === 'human-inbox'), 'the human’s own tab was filed under a run').toEqual({
+      id: 'human-inbox', url: 'https://mail.example/', title: 'Inbox', active: false,
+    });
+    expect(state.runs).toEqual([{ id: run.id, task: 'check the order', status: 'running', tabIds: ['agent-tab'] }]);
+  });
 });

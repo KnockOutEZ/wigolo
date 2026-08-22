@@ -144,6 +144,7 @@ async function createWindow(): Promise<void> {
 
   const studioHost = createStudioHost({
     broker,
+    runs,
     // The host writes region-clip media under the SAME data dir the broker uses (both honor WIGOLO_DATA_DIR).
     config: process.env.WIGOLO_DATA_DIR ? { dataDir: process.env.WIGOLO_DATA_DIR } : undefined,
     // P5: the encrypted origin-scoped profile store (keychain-KEK'd AES-256-GCM; defaults dataDir to getConfig()).

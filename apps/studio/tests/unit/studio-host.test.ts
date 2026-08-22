@@ -4,6 +4,8 @@ import { createDriveEngine } from '../../src/main/drive-engine';
 import { createStudioHost, stageForActResult, type HostTab, type ParkedApprovalNotice } from '../../src/main/studio-host';
 import { makeFakeBroker } from '../helpers/fake-broker';
 import type { StudioActOutput, StudioToolError, StudioMarksOutput, StudioGeneralizeOutput, MarkPayload } from 'wigolo/studio';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 
 /** A fake webContents.debugger answering the CDP calls observe/act/nav make on an empty page. */
 function fakeDebugger(): DebuggerLike {
@@ -102,8 +104,12 @@ function makeHost(
   const sessionChanges: Array<string | null> = [];
   const tabs = new Map<string, { navigate: ReturnType<typeof vi.fn>; closed: boolean; url: string }>();
   let n = 0;
+  // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
+  // so a host change that stopped recording it reds these tests rather than passing against a stub.
+  const runs = new RunViewModel(new FakeRunStore());
   const host = createStudioHost({
     config,
+    runs,
     broker,
     onParked: (notice) => parked.push(notice),
     onSay: (m) => said.push(m),

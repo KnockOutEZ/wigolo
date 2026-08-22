@@ -8,6 +8,8 @@ import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import type { DebuggerLike } from '../../src/main/cdp-transport';
 import { isCredentialContext } from 'wigolo/studio';
 import type { StudioCaptureInput, StudioToolError, FieldSemantics } from 'wigolo/studio';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 
 /**
  * P3 T2 — the studio_capture host wiring. The host computes the security-gate inputs (session id,
@@ -61,8 +63,12 @@ interface HostOpts {
 function makeHost(broker: { call: ReturnType<typeof vi.fn> }, opts: HostOpts = {}) {
   const engine = createDriveEngine();
   let n = 0;
+  // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
+  // so a host change that stopped recording it reds these tests rather than passing against a stub.
+  const runs = new RunViewModel(new FakeRunStore());
   const host = createStudioHost({
     broker: broker as never,
+    runs,
     capturePage: opts.capturePage,
     config: opts.dataDir ? { dataDir: opts.dataDir } : undefined,
     onParked: () => { /* no card in this test */ },
