@@ -20,6 +20,8 @@ import {
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
   isValidListCursor,
+  MAX_EVENT_PAYLOAD_CHARS,
+  runDir,
   runEventsFile,
   type RunEvent,
   type Run,
@@ -493,6 +495,62 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
   it('caps the page size so one call cannot ask for the whole store', () => {
     for (let i = 0; i < 3; i++) createRun(db, { task: `t${i}` }, opts());
     expect(listRuns(db, { limit: 10_000 }).runs.length).toBeLessThanOrEqual(200);
+  });
+});
+
+/**
+ * WHY: a run id is `join()`ed into a filesystem path by `runDir`, and the store's own bound on what
+ * it will persist is the only thing standing between an event log and a disk-fill. Neither is
+ * reachable from outside today — the callers all pass minted ids, and REST caps its own fields —
+ * but both preconditions live in OTHER files, which is precisely the kind that a later caller
+ * deletes without noticing.
+ */
+describe('run-store — an id is an id and a payload is bounded (structural guards)', () => {
+  it('refuses anything outside the mint alphabet as a run id', () => {
+    for (const bad of ['../../etc/passwd', '..', 'a/b/c', 'run-1', 'nope', 'aa', 'a'.repeat(9), '', '  ']) {
+      expect(() => normalizeRunId(bad), bad).toThrow(/invalid run id/i);
+      expect(() => runDir(bad, dir), bad).toThrow(/invalid run id/i);
+      expect(() => runEventsFile(bad, dir), bad).toThrow(/invalid run id/i);
+    }
+    // The normalizer's real job still works: trimmed, lowercased, resolvable.
+    expect(normalizeRunId(' 7FQ2 ')).toBe('7fq2');
+    expect(runDir('7FQ2', dir)).toBe(runDir('7fq2', dir));
+  });
+
+  it('never lets a traversal id reach mkdirSync, even from a poisoned row', () => {
+    // The row is written behind the store's back, which is the only way this id can exist at all.
+    const at = new Date().toISOString();
+    db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)')
+      .run('../../escaped', 'poisoned', 'default', at, 'running', at);
+
+    expect(() => appendEvent(db, '../../escaped', { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 't1' } }, opts()))
+      .toThrow(/invalid run id/i);
+    // Nothing was written anywhere: not the escape, not a directory under the state dir.
+    expect(existsSync(join(dir, 'studio', 'runs'))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 0 });
+  });
+
+  it('reads an unmintable id as a miss, not an error — a typed URL is a 404', () => {
+    // `getRun` and friends are the READ side. A person typing a run id from a result footer must
+    // get "no such run", never a stack trace out of a 500.
+    expect(getRun(db, 'not an id')).toBeUndefined();
+    expect(runExists(db, '../../escaped')).toBe(false);
+    expect(eventsSince(db, 'run-1')).toEqual([]);
+  });
+
+  it('refuses an event payload past the cap — the log is persisted twice', () => {
+    const run = createRun(db, { task: 'bounded' }, opts());
+    const oversize = { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_CHARS) };
+    expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'note.added', payload: oversize }, opts()))
+      .toThrow(/payload/i);
+    // Refused at the door: no row, no seq burned, no line appended to the on-disk projection.
+    expect(eventsSince(db, run.id).map((e) => e.type)).toEqual(['run.created']);
+    expect(getRun(db, run.id)!.lastSeq).toBe(1);
+    expect(readFileSync(runEventsFile(run.id, dir), 'utf8').trimEnd().split('\n')).toHaveLength(1);
+
+    // Just under still appends — the cap has to be a bound, not a ban on real payloads.
+    const fits = { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_CHARS - 100) };
+    expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'note.added', payload: fits }, opts())).not.toThrow();
   });
 });
 

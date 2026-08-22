@@ -136,6 +136,12 @@ export interface ListRunsResult {
 export const RUN_ID_ALPHABET = '23456789abcdefghjkmnpqrstvwxyz';
 export const RUN_ID_MIN_LENGTH = 4;
 export const MAX_TASK_CHARS = 4000;
+/**
+ * The bound on one event's serialized payload. Generous — a decision prompt, a page title and a
+ * handful of URLs fit many times over — but finite, because the log is append-only and written to
+ * two places, so "no bound" means "a disk-fill primitive".
+ */
+export const MAX_EVENT_PAYLOAD_CHARS = 64_000;
 export const DEFAULT_SPACE_ID = 'default';
 /** Pin 3 — a pending decision auto-denies after two minutes. */
 export const AUTO_DENY_MS = 120_000;
@@ -278,11 +284,20 @@ function assertType(type: string): string {
 function serializePayload(payload: Record<string, unknown> | undefined): string {
   if (payload === undefined) return '{}';
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('payload must be a JSON object');
+  let serialized: string;
   try {
-    return JSON.stringify(payload);
+    serialized = JSON.stringify(payload);
   } catch {
     throw new Error('payload must be JSON-serializable');
   }
+  // Every event is persisted TWICE — the row and the on-disk projection — and the log is
+  // append-only, so an unbounded payload is a disk-fill primitive with no compacting path out of
+  // it. REST already caps `task`, `spaceId` and the client fields on exactly this reasoning; the
+  // append path is the same surface reached by a different door.
+  if (serialized.length > MAX_EVENT_PAYLOAD_CHARS) {
+    throw new Error(`payload exceeds ${MAX_EVENT_PAYLOAD_CHARS} characters`);
+  }
+  return serialized;
 }
 
 function rowToEvent(r: EventRow): RunEvent {
