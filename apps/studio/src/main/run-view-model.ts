@@ -1,0 +1,198 @@
+import { projectRun, type CreateRunInput, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
+import type { BrokerClient } from './broker-client';
+
+/**
+ * SD1 spine 1 — the run store is authoritative and this is a projection of it.
+ *
+ * `SessionRegistry` used to keep session identity, a `tabIds` array and a "current" pointer in Electron
+ * main, which made the app a second source of truth for facts that outlive it. The inversion: the daemon
+ * store owns run identity and tab membership as an append-only log, and everything here is either a
+ * replay of that log or ephemeral UI state (the focused run) that is deliberately never written back.
+ *
+ * The one rule the log cannot express by itself is law 4's "a tab belongs to exactly one run" — an append
+ * is unconditional, so the refusal has to happen before it. That check lives here, at the single seam
+ * every caller goes through, and it is a refusal rather than a reassignment: a silent steal would hand
+ * one agent another agent's page.
+ */
+
+/** The store, as this process reaches it. Broker-backed in the app; the port exists so tests can bind. */
+export interface RunStoreClient {
+  createRun(input: CreateRunInput): Promise<Run>;
+  appendEvent(runId: string, event: RunEventInput): Promise<RunEvent>;
+  getRun(runId: string): Promise<Run | undefined>;
+  listRuns(): Promise<ListRunsResult>;
+  eventsSince(runId: string, since?: number): Promise<RunEvent[]>;
+  onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
+}
+
+export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient {
+  return {
+    createRun: (input) => broker.call<Run>('runCreate', { input }),
+    appendEvent: (runId, event) => broker.call<RunEvent>('runAppend', { runId, event }),
+    getRun: (runId) => broker.call<Run | undefined>('runGet', { runId }),
+    listRuns: () => broker.call<ListRunsResult>('runList', {}),
+    eventsSince: (runId, since = 0) => broker.call<RunEvent[]>('runEventsSince', { runId, since }),
+    onRunEvent: (handler) => broker.onRunEvent(handler),
+  };
+}
+
+export class TabOwnedError extends Error {
+  constructor(readonly tabId: string, readonly ownerRunId: string) {
+    super(`tab ${tabId} already belongs to run ${ownerRunId}`);
+    this.name = 'TabOwnedError';
+  }
+}
+
+export type TabDetachReason = 'closed' | 'run_ended';
+export type RunTerminal = 'completed' | 'failed' | 'cancelled';
+
+/** What a surface needs to name a run. Everything on it is projected; nothing is stored here. */
+export interface RunSummary {
+  id: string;
+  task: string;
+  status: Run['status'];
+  tabIds: string[];
+}
+
+interface RunLog {
+  facts: StoredRunFacts;
+  events: RunEvent[];
+}
+
+export class RunViewModel {
+  /** A verbatim replica of the log, refillable at any time from the store. Not a second source of truth. */
+  private readonly logs = new Map<string, RunLog>();
+  /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
+  private readonly projected = new Map<string, Run>();
+  /** Ephemeral UI state: which run the human is looking at. Never an event, never restored. */
+  private focused: string | null = null;
+
+  constructor(private readonly store: RunStoreClient) {
+    this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
+  }
+
+  /** Replay every run from the store. Safe to call repeatedly — it discards what it holds first. */
+  async hydrate(): Promise<void> {
+    const { runs } = await this.store.listRuns();
+    this.logs.clear();
+    this.projected.clear();
+    for (const run of runs) {
+      const events = await this.store.eventsSince(run.id, 0);
+      this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
+    }
+  }
+
+  /**
+   * Fold one envelope in. Idempotent by `seq`, because the broker notifies us about our own appends and a
+   * reconnecting tail replays — applying an envelope twice would double-count a `tab.attached`.
+   */
+  applyEvent(runId: string, event: RunEvent): void {
+    const log = this.logs.get(runId);
+    if (!log) return; // a run we have never replayed; the next hydrate picks it up whole
+    if (event.seq <= (log.events.at(-1)?.seq ?? 0)) return;
+    log.events.push(event);
+    this.projected.delete(runId);
+  }
+
+  async createRun(input: CreateRunInput): Promise<Run> {
+    const run = await this.store.createRun(input);
+    const events = await this.store.eventsSince(run.id, 0);
+    this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
+    this.projected.delete(run.id);
+    if (this.focused === null) this.focused = run.id;
+    return run;
+  }
+
+  /**
+   * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
+   * owner is a no-op rather than a duplicate fact.
+   */
+  async attachTab(runId: string, tabId: string, url?: string): Promise<void> {
+    const owner = this.ownerOf(tabId);
+    if (owner === runId) return;
+    if (owner !== undefined) throw new TabOwnedError(tabId, owner);
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: 'agent', driver: 'studio' },
+      type: 'tab.attached',
+      payload: { tabId, ...(url ? { url } : {}) },
+    });
+    this.applyEvent(runId, event);
+  }
+
+  /** A tab nobody owns is the human's, and closing it is not a run fact. */
+  async detachTab(tabId: string, reason: TabDetachReason): Promise<void> {
+    const runId = this.ownerOf(tabId);
+    if (runId === undefined) return;
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: 'agent', driver: 'studio' },
+      type: 'tab.detached',
+      payload: { tabId, reason },
+    });
+    this.applyEvent(runId, event);
+  }
+
+  /** Terminal transition: release the run's tabs first, so the log never ends owning a dead tab. */
+  async endRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
+    for (const tabId of this.tabsOf(runId)) await this.detachTab(tabId, 'run_ended');
+    const payload: Record<string, unknown> =
+      terminal === 'failed' ? { error: detail ?? 'the run ended unexpectedly' }
+        : terminal === 'cancelled' ? { by: 'system' }
+          : { ...(detail ? { outcome: detail } : {}) };
+    const event = await this.store.appendEvent(runId, { actor: { kind: 'system' }, type: `run.${terminal}`, payload });
+    this.applyEvent(runId, event);
+    if (this.focused === runId) this.focused = null;
+  }
+
+  ownerOf(tabId: string): string | undefined {
+    for (const runId of this.logs.keys()) if (this.snapshot(runId)!.tabIds.includes(tabId)) return runId;
+    return undefined;
+  }
+
+  isUserTab(tabId: string): boolean {
+    return this.ownerOf(tabId) === undefined;
+  }
+
+  tabsOf(runId: string): string[] {
+    return this.snapshot(runId)?.tabIds ?? [];
+  }
+
+  /**
+   * The agent-visible tab enumeration. Built from what the run owns and then narrowed to what still
+   * exists — never from the tab universe filtered down, so a tab the human opened has no path into it.
+   */
+  agentVisibleTabs(runId: string, universe?: readonly string[]): string[] {
+    const owned = this.tabsOf(runId);
+    return universe ? owned.filter((t) => universe.includes(t)) : owned;
+  }
+
+  /** The human's own group: everything in the universe that no run has ever attached. */
+  userTabs(universe: readonly string[]): string[] {
+    return universe.filter((t) => this.isUserTab(t));
+  }
+
+  get focusedRunId(): string | null {
+    return this.focused;
+  }
+
+  focusRun(runId: string | null): void {
+    this.focused = runId !== null && this.logs.has(runId) ? runId : null;
+  }
+
+  list(): RunSummary[] {
+    return [...this.logs.keys()].map((id) => {
+      const run = this.snapshot(id)!;
+      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds };
+    });
+  }
+
+  snapshot(runId: string): Run | undefined {
+    const log = this.logs.get(runId);
+    if (!log) return undefined;
+    let run = this.projected.get(runId);
+    if (!run) {
+      run = projectRun(log.facts, log.events);
+      this.projected.set(runId, run);
+    }
+    return run;
+  }
+}
