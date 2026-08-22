@@ -71,6 +71,7 @@ export class NpmRegistryEngine implements SearchEngine {
   }
 
   private parseObjects(objects: NpmSearchObject[], maxResults: number): RawSearchResult[] {
+    if (maxResults <= 0) return [];
     const results: RawSearchResult[] = [];
     const total = objects.length;
 
