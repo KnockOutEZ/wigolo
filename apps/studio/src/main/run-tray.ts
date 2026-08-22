@@ -51,6 +51,8 @@ export interface RunTrayDeps {
 export interface RunTrayHandle {
   refresh(): void;
   destroy(): void;
+  /** The menu as last built — the same items, with the same handlers, the OS is showing. */
+  menu(): TrayMenuItem[];
 }
 
 /** Long enough to recognise the task, short enough that the menu never runs off the screen edge. */
@@ -109,18 +111,18 @@ export function buildTrayMenu(
 }
 
 export function createRunTray(deps: RunTrayDeps): RunTrayHandle {
+  let current: TrayMenuItem[] = [];
   const refresh = (): void => {
     const runs = deps.runs.list();
     deps.tray.setLabel(trayLabel(runs));
     deps.tray.setToolTip(trayTooltip(runs));
-    deps.tray.setMenu(
-      buildTrayMenu(runs, (runId, next) => {
-        // A rejected transition (the window is gone, the run just ended) must surface as a logged
-        // error, never as an unhandled rejection out of a menu click — this is the only affordance a
-        // withheld run has, and taking the main process down with it is not a failure mode.
-        void deps.setVisibility(runId, next).catch(deps.onError);
-      }),
-    );
+    current = buildTrayMenu(runs, (runId, next) => {
+      // A rejected transition (the window is gone, the run just ended) must surface as a logged
+      // error, never as an unhandled rejection out of a menu click — this is the only affordance a
+      // withheld run has, and taking the main process down with it is not a failure mode.
+      void deps.setVisibility(runId, next).catch(deps.onError);
+    });
+    deps.tray.setMenu(current);
     // Attention, and only attention: the badge counts runs that need a human, and is cleared the
     // moment none do. Nothing else is ever allowed to light it up.
     deps.dock?.setBadge(needsYouCount(runs) > 0 ? String(needsYouCount(runs)) : '');
@@ -129,7 +131,7 @@ export function createRunTray(deps: RunTrayDeps): RunTrayHandle {
   deps.runs.onChange(refresh);
   refresh();
 
-  return { refresh, destroy: () => deps.tray.destroy() };
+  return { refresh, destroy: () => deps.tray.destroy(), menu: () => current };
 }
 
 /**

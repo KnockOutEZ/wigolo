@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { RunPresentationController } from './run-presentation';
-import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle } from './run-tray';
+import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle, type TrayPort } from './run-tray';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
@@ -80,38 +80,64 @@ function windowRegister(): Register {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
+/** The dev-only read of the menu-bar menu (see `mountRunTray`). */
+interface RunMenuProbe {
+  labels(): string[];
+  checked(): boolean[];
+  click(index: number): void;
+}
+
 /**
  * Pin 5's menu-bar item. Kept out of `createWindow` because the OS item is the ONE surface that has to
  * exist while no window is presented, and because a status area that refuses to accept an item must not
  * be able to stop the app from booting — a headless run does not need a menu bar to run, only to be found.
  */
-function mountRunTray(runs: RunViewModel, presentation: RunPresentationController): RunTrayHandle | null {
+function osTrayPort(): TrayPort {
   try {
     const icon = nativeImage.createFromBuffer(TRAY_ICON_1X, { scaleFactor: 1 });
     icon.addRepresentation({ scaleFactor: 2, buffer: TRAY_ICON_2X });
     // Monochrome, tinted by the OS — one asset for both registers, the same rule the token layer follows.
     icon.setTemplateImage(true);
     const item = new Tray(icon);
-    return createRunTray({
-      tray: {
-        setLabel: (text) => item.setTitle(text),
-        setToolTip: (text) => item.setToolTip(text),
-        setMenu: (items) => item.setContextMenu(Menu.buildFromTemplate(items)),
-        destroy: () => item.destroy(),
-      },
-      // Absent off macOS; the count in the menu bar is the fallback there.
-      dock: app.dock ? { setBadge: (text) => app.dock?.setBadge(text) } : undefined,
-      runs,
-      setVisibility: (runId, next) =>
-        next === 'visible'
-          ? presentation.promote(runId, 'human', 'tray')
-          : presentation.demote(runId, 'human'),
-      onError: (err) => process.stderr.write(`[studio] could not change what is on screen: ${err instanceof Error ? err.message : String(err)}\n`),
-    });
+    return {
+      setLabel: (text) => item.setTitle(text),
+      setToolTip: (text) => item.setToolTip(text),
+      setMenu: (items) => item.setContextMenu(Menu.buildFromTemplate(items)),
+      destroy: () => item.destroy(),
+    };
   } catch (err) {
+    // No status area on this system (a bare X11 session, a locked-down desktop). The item is a
+    // discovery surface, not a dependency: the dock badge and every other surface still work, and a
+    // headless run must not fail to start because there is nowhere to draw an icon.
     process.stderr.write(`[studio] no menu-bar item is available on this system: ${err instanceof Error ? err.message : String(err)}\n`);
-    return null;
+    return { setLabel: () => {}, setToolTip: () => {}, setMenu: () => {}, destroy: () => {} };
   }
+}
+
+function mountRunTray(runs: RunViewModel, presentation: RunPresentationController): RunTrayHandle {
+  const handle = createRunTray({
+    tray: osTrayPort(),
+    // Absent off macOS; the count in the menu bar is what carries there.
+    dock: app.dock ? { setBadge: (text) => app.dock?.setBadge(text) } : undefined,
+    runs,
+    setVisibility: (runId, next) =>
+      next === 'visible'
+        ? presentation.promote(runId, 'human', 'tray')
+        : presentation.demote(runId, 'human'),
+    onError: (err) => process.stderr.write(`[studio] could not change what is on screen: ${err instanceof Error ? err.message : String(err)}\n`),
+  });
+
+  // The menu is drawn by the OS, so no driver can click it and the promote path would otherwise be
+  // the one affordance no test can reach. This exposes the menu ALREADY BUILT — same items, same
+  // handlers, nothing the human cannot do — to the main process, in dev builds only.
+  if (!app.isPackaged) {
+    (globalThis as typeof globalThis & { __wigoloRunMenu?: RunMenuProbe }).__wigoloRunMenu = {
+      labels: () => handle.menu().map((i) => i.label ?? ''),
+      checked: () => handle.menu().map((i) => i.checked === true),
+      click: (index: number) => handle.menu()[index]?.click?.(),
+    };
+  }
+  return handle;
 }
 
 async function createWindow(): Promise<void> {
@@ -187,6 +213,12 @@ async function createWindow(): Promise<void> {
     .catch((err: unknown) => {
       process.stderr.write(`[studio] could not replay the run log: ${err instanceof Error ? err.message : String(err)}\n`);
     });
+
+  // Applied here as well as at the end of boot, and only in the withheld direction: a window that is
+  // being withheld must be MAPPED as early as possible, because one that never acquired a compositor
+  // surface starves its tabs of frames — and there is nothing to flash, since it is transparent. A
+  // window the human asked for is shown at the end of boot instead, once the shell has painted.
+  if (hidden) presentation.apply();
 
   const runTray = mountRunTray(runs, presentation);
 

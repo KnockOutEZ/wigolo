@@ -145,10 +145,12 @@ describe('the app boots headless and can be promoted out of it', () => {
 
   it('mounts the menu-bar item, and survives a system that will not give it one', () => {
     expect(MAIN).toContain('mountRunTray(runs, presentation)');
-    const fn = MAIN.slice(MAIN.indexOf('function mountRunTray'), MAIN.indexOf('async function createWindow'));
-    expect(fn).toContain('setTemplateImage(true)'); // one asset, tinted by the OS, both registers
-    expect(fn).toMatch(/catch \(err\)/); // a status area that refuses an item must not stop the boot
-    expect(fn).toContain('return null;');
+    const port = MAIN.slice(MAIN.indexOf('function osTrayPort'), MAIN.indexOf('function mountRunTray'));
+    expect(port).toContain('setTemplateImage(true)'); // one asset, tinted by the OS, both registers
+    // A status area that refuses an item must not stop the boot, and must not take the dock badge or
+    // the transitions down with it — hence a no-op port rather than a null handle.
+    expect(port).toMatch(/catch \(err\)/);
+    expect(port).toContain('setLabel: () => {}');
   });
 
   it('lets go of the menu-bar item on shutdown', () => {

@@ -375,6 +375,39 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
     both.kill();
   }, 20000);
 
+  /**
+   * Law 2, from the outside: a run created over REST has no window, and being promoted to one — or
+   * demoted back — is a fact on the same stream as everything else it does. An API client watching a
+   * headless run therefore learns that a human started watching it without asking anyone.
+   */
+  it('carries promote and demote as ordinary events, with the run still running across all three states', async () => {
+    const id = await createRun('headless, watched, headless again');
+    const client = new SseClient();
+    await client.open(`/v1/runs/${id}/events`);
+    await client.waitForFrames(1);
+
+    expect(((await request({ path: `/v1/runs/${id}` })).body as { run: { visibility: string } }).run.visibility).toBe('hidden');
+
+    appendRunEventWithTail(db, id, { actor: { kind: 'human' }, type: 'presentation.promoted', payload: { by: 'human', surface: 'tray' } });
+    appendRunEventWithTail(db, id, { actor: { kind: 'agent', driver: 'studio' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    appendRunEventWithTail(db, id, { actor: { kind: 'human' }, type: 'presentation.demoted', payload: { by: 'human' } });
+    await client.waitForFrames(4);
+
+    expect(client.frames.map((f) => f.event)).toEqual([
+      'run.created', 'presentation.promoted', 'cost.recorded', 'presentation.demoted',
+    ]);
+    expect(client.seqs()).toEqual([1, 2, 3, 4]); // one continuous log, no break where the window came and went
+    expect(JSON.parse(client.frames[1].data!)).toMatchObject({ payload: { by: 'human', surface: 'tray' } });
+
+    const after = (await request({ path: `/v1/runs/${id}` })).body as { run: { visibility: string; status: string; cost: { browserActions: number } } };
+    expect(after.run.visibility).toBe('hidden');
+    // The work done while it was being watched is still the run's, and demotion ended nothing.
+    expect(after.run.status).toBe('running');
+    expect(after.run.cost.browserActions).toBe(1);
+
+    client.kill();
+  }, 20000);
+
   it('opens the stream with a retry hint and keeps it alive with heartbeats', async () => {
     const id = await createRun('stream framing');
     const client = new SseClient();
