@@ -16,6 +16,13 @@ function rebindingResolver(addr: string, family = 4) {
   }) as never;
 }
 
+/**
+ * Promisify one call to the lookup hook.
+ *
+ * The hook is callback-shaped with two arities — `(err, address, family)` normally and
+ * `(err, addresses[])` under `all: true` — so both are captured and asserted on per test rather
+ * than normalised away here, since picking the wrong arity is itself a way the pin could break.
+ */
 function callLookup(
   fn: ReturnType<typeof createPinnedLookup>,
   host: string,

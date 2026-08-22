@@ -143,6 +143,17 @@ class HttpFetchError extends Error {
   }
 }
 
+/**
+ * Drive one fetch to completion, following redirects manually so every hop can be re-guarded.
+ *
+ * `redirect: 'manual'` is deliberate: an automatic redirect would connect to the next host without
+ * the SSRF checks below ever seeing it. Each hop therefore re-runs the literal-URL guard, the
+ * resolved-IP guard, and — since #207 — pins the socket to the addresses that guard just cleared,
+ * so the connection cannot be re-resolved onto a different address after validation.
+ *
+ * The response body is fully consumed here (text, or buffered for PDFs), which is what makes it
+ * safe to close the per-hop dispatchers in the `finally`.
+ */
 async function fetchWithRedirects(
   originalUrl: string,
   options: HttpFetchOptions,
