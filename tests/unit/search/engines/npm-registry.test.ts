@@ -217,6 +217,23 @@ describe('NpmRegistryEngine', () => {
     expect(results2).toEqual([]);
   });
 
+  it('skips null and non-object entries in objects array', async () => {
+    const body = {
+      objects: [
+        null,
+        { package: { name: 'valid', description: 'ok' } },
+        'not-an-object',
+        42,
+        { package: { name: 'also-valid', description: 'fine' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toHaveLength(2);
+    expect(results[0].title).toBe('valid');
+    expect(results[1].title).toBe('also-valid');
+  });
+
   it('propagates fetch errors (timeout/network)', async () => {
     vi.spyOn(global, 'fetch').mockRejectedValueOnce(new Error('aborted'));
     await expect(new NpmRegistryEngine().search('q')).rejects.toThrow(/aborted/);

@@ -81,7 +81,9 @@ export class NpmRegistryEngine implements SearchEngine {
     const total = objects.length;
 
     for (let i = 0; i < total; i++) {
-      const pkg = objects[i].package;
+      const entry = objects[i] as NpmSearchObject | null | undefined;
+      if (entry === null || typeof entry !== 'object') continue;
+      const pkg = entry.package;
       const name = asString(pkg?.name);
       if (!name) continue;
 
