@@ -4,6 +4,8 @@ import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import type { DebuggerLike } from '../../src/main/cdp-transport';
 import type { AuditRecordInput } from 'wigolo/studio';
 import { makeFakeBroker } from '../helpers/fake-broker';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 
 /**
  * P6 F4.3 — the per-session audit log → broker persist + live timeline broadcast wiring. A driven agent
@@ -36,8 +38,12 @@ function makeHost(broadcasts: Record<string, unknown>[], brokerOver: Record<stri
   const broker = makeFakeBroker(brokerOver);
   const engine = createDriveEngine();
   let n = 0;
+  // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
+  // so a host change that stopped recording it reds these tests rather than passing against a stub.
+  const runs = new RunViewModel(new FakeRunStore());
   const host = createStudioHost({
     broker: broker as never,
+    runs,
     onParked: () => { /* no card in this test */ },
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;

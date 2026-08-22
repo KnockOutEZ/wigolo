@@ -90,6 +90,7 @@ import {
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
+import { TabOwnedError } from './run-view-model';
 import type { QuoteMsg, RegionMsg, CaptureDto, KnowledgeHit, AuditDto } from '../shared/ipc';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
@@ -168,6 +169,24 @@ export interface StudioHostConfig {
   handoffMaxPolls?: number;
 }
 
+/**
+ * The run spine, as the host reaches it (SD1). Narrow on purpose: the host records ownership and reads
+ * it back, and everything it reads is a replay of the daemon's append-only log rather than a map this
+ * file keeps in step by hand — which is what `tabToSession` used to be, and how agent tabs leaked.
+ *
+ * `RunViewModel` satisfies this structurally; a test can bind it over an in-memory store.
+ */
+export interface HostRuns {
+  createRun(input: { task: string; sessionId?: string }): Promise<{ id: string }>;
+  attachTab(runId: string, tabId: string, url?: string): Promise<void>;
+  detachTab(tabId: string, reason: 'closed' | 'run_ended'): Promise<void>;
+  endRun(runId: string, terminal: 'completed' | 'cancelled'): Promise<void>;
+  ownerOf(tabId: string): string | undefined;
+  sessionIdOf(runId: string): string | undefined;
+  runForSession(sessionId: string): string | undefined;
+  agentVisibleTabs(runId: string, universe?: readonly string[]): string[];
+}
+
 export interface StudioHostDeps {
   /**
    * Stand up a driven tab for a new session (host-side: create WebContentsView + await driveEngine.attachTab).
@@ -198,6 +217,8 @@ export interface StudioHostDeps {
    * `call` is needed here — the app boots the full client (spawn/ready/teardown) in index.ts.
    */
   broker: Pick<BrokerClient, 'call'>;
+  /** SD1: the run store this host records tab ownership into (law 4's single enforcement seam). */
+  runs: HostRuns;
   /**
    * Capture a viewport region of a session tab as PNG bytes (P3 region clip). index.ts wires this to the
    * tab's `webContents.capturePage(rect)`. Optional: a host without it declines region clip explicitly
@@ -400,7 +421,6 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
   };
 
   const contexts = new Map<string, SessionContext>();
-  const tabToSession = new Map<string, string>();
   const parked = new Map<string, ParkedRecord>();
   let activeSessionId: string | null = null;
   // HOST-WIDE mark id sequence so ids are unique across concurrent sessions — a stale cross-session
@@ -968,6 +988,20 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     };
   }
 
+  /**
+   * Which session a tab belongs to, resolved through the run that owns it.
+   *
+   * This used to be a `tabToSession` map the host maintained beside the real ownership record, and it
+   * drifted: the agent close path never deleted from it. Now the run log answers "who owns this tab"
+   * and `run.created` answers "which session drives that run", so there is nothing to keep in step.
+   * A tab the human opened has no owner and therefore no session — the refusals below are what makes
+   * law 4's user group invisible rather than merely unlisted.
+   */
+  function sessionForTab(tabId: string): string | undefined {
+    const runId = deps.runs.ownerOf(tabId);
+    return runId ? deps.runs.sessionIdOf(runId) : undefined;
+  }
+
   function targetContext(): SessionContext | undefined {
     if (activeSessionId) {
       const c = contexts.get(activeSessionId);
@@ -1005,7 +1039,25 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     const tab = await deps.createTab({ initialHolder: 'agent', grant, partition: `studio-${sessionId}` });
     const ctx = buildContext(sessionId, name, tab, profileOrigin);
     contexts.set(sessionId, ctx);
-    tabToSession.set(tab.tabId, sessionId);
+    // SD1 §7.3: a session is how a client connects, a run is the task. The run is created here, records
+    // the session that spawned it, and takes ownership of the tab — the one place law 4's "a tab belongs
+    // to exactly one run" is checked, so a tab another run holds is refused before the session goes live.
+    //
+    // Both failures are REFUSALS, not exceptions: the agent gets a designed tool result rather than an
+    // unhandled throw at the gateway (law 9). And both roll the half-open session back, because a session
+    // whose tabs no run owns is one law 4 cannot police and no surface can see.
+    try {
+      const run = await deps.runs.createRun({ task: name, sessionId });
+      await deps.runs.attachTab(run.id, tab.tabId, typeof input.startUrl === 'string' ? input.startUrl : undefined);
+    } catch (err) {
+      ctx.status = 'closed';
+      contexts.delete(sessionId);
+      try { deps.closeTab(tab.tabId); } catch { /* best-effort teardown */ }
+      if (err instanceof TabOwnedError) {
+        return { error_reason: 'tab_already_owned', hint: 'That tab already belongs to another run — two runs never share a tab.' };
+      }
+      return { error_reason: 'run_unavailable', hint: 'The run record could not be opened, so no session was started — the local background service is not available right now.' };
+    }
     activeSessionId = sessionId;
     deps.onActiveSessionChange?.(activeSessionId); // P4: renderer re-backfills captures / resets per-session UI
     await ctx.loadProfile(); // P5: apply a matching-origin profile's cookies into the fresh partition BEFORE the gated nav
@@ -1067,7 +1119,21 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       ctx.status = 'closed';
       ctx.handoff.onClientGone(); // P5: LOCK an in-flight handoff (clear timers; no re-grant after teardown)
       deps.closeTab(ctx.tab.tabId);
-      tabToSession.delete(ctx.tab.tabId);
+      // The run is the unit, so its end is a recorded fact rather than a deleted map entry: `endRun`
+      // releases every tab it still owns and then writes the terminal event.
+      //
+      // Best-effort, unlike `open`'s: the tab is already destroyed by the line above, so throwing here
+      // would leave the session half-closed — its context and any parked approval below never reclaimed
+      // — and refuse a close the human already got. An unwritten terminal event leaves the run showing
+      // as running, which is visible and recoverable; a leaked half-closed session is neither.
+      const runId = deps.runs.runForSession(id);
+      if (runId) {
+        try {
+          await deps.runs.endRun(runId, 'completed');
+        } catch (err) {
+          process.stderr.write(`[studio] could not record the end of run ${runId}: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+      }
       actChains.delete(id);
       // Reclaim every map keyed on this session — else a long-lived host leaks a full SessionContext
       // (+ its snapshotter/queue/closures) and any never-resolved parked approval, per open/close cycle.
@@ -1079,14 +1145,20 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       }
       return { closed: true, session_id: id };
     },
+    // The agent-visible enumeration. Tabs are taken from what each RUN owns, never from the window's tab
+    // set filtered down — so a tab the human opened has no route into this answer even by accident.
     list: async (): Promise<StudioListOutput> => ({
-      sessions: [...contexts.values()].map((c) => ({
-        id: c.sessionId,
-        status: c.status,
-        clients: 0,
-        createdAt: c.createdAt,
-        lastActiveAt: c.lastActiveAt,
-      })),
+      sessions: [...contexts.values()].map((c) => {
+        const runId = deps.runs.runForSession(c.sessionId);
+        return {
+          id: c.sessionId,
+          status: c.status,
+          clients: 0,
+          createdAt: c.createdAt,
+          lastActiveAt: c.lastActiveAt,
+          ...(runId ? { runId, tabIds: deps.runs.agentVisibleTabs(runId) } : { tabIds: [] }),
+        };
+      }),
     }),
     // P4: agent→human chat post. Agent-authored text only; the renderer renders it as an inert text node
     // (no page content, no control/approval power — a legitimate 8th agent verb, PIN-SPLIT(b) intact).
@@ -1109,7 +1181,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       // with just a mark_id.
       let ctx: SessionContext | undefined;
       if (typeof input.tab_id === 'string' && input.tab_id) {
-        const sid = tabToSession.get(input.tab_id);
+        const sid = sessionForTab(input.tab_id);
         ctx = sid ? contexts.get(sid) : undefined;
         if (!ctx || ctx.status !== 'live' || ctx.sessionId !== activeSessionId) {
           return { error_reason: 'wrong_session', hint: 'That tab_id is not part of the active studio session.' };
@@ -1138,7 +1210,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     handlers,
     sessions,
     onHumanInput(tabId: string): void {
-      const sessionId = tabToSession.get(tabId);
+      const sessionId = sessionForTab(tabId);
       if (!sessionId) return;
       const ctx = contexts.get(sessionId);
       if (ctx && ctx.status === 'live') ctx.tab.drive.fsm.onHumanInput();
@@ -1188,7 +1260,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       ctx.eventQueue.enqueue({ type: 'approval', approval_id: approvalId, decision });
     },
     async markElement({ tabId, path, payload }): Promise<MarkCreated | StudioToolError> {
-      const sid = tabToSession.get(tabId);
+      const sid = sessionForTab(tabId);
       const ctx = sid ? contexts.get(sid) : undefined;
       if (!ctx || ctx.status !== 'live') return { error_reason: 'no_active_session', hint: 'That tab has no live session.' };
       // DR-1: an empty path would resolve to <html> — never a real mark intent (e.g. a shadow-broken path).
@@ -1246,7 +1318,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       return { ok: true };
     },
     async captureQuote(tabId: string, quote: QuoteMsg): Promise<StudioCaptureOutput | StudioToolError> {
-      const sid = tabToSession.get(tabId);
+      const sid = sessionForTab(tabId);
       const ctx = sid ? contexts.get(sid) : undefined;
       if (!ctx || ctx.status !== 'live') return { error_reason: 'no_active_session', hint: 'That tab has no live session.' };
       // Credential-gated at source (mirrors markElement/addComment): a quote on a login page can be a secret.
@@ -1264,7 +1336,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       }
     },
     async captureRegion(tabId: string, rect: RegionMsg['rect']): Promise<StudioCaptureOutput | StudioToolError> {
-      const sid = tabToSession.get(tabId);
+      const sid = sessionForTab(tabId);
       const ctx = sid ? contexts.get(sid) : undefined;
       if (!ctx || ctx.status !== 'live') return { error_reason: 'no_active_session', hint: 'That tab has no live session.' };
       if (!deps.capturePage) return { error_reason: 'capture_unavailable', hint: 'Region capture is not available in this build.' };
@@ -1340,9 +1412,16 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         try {
           deps.closeTab(ctx.tab.tabId); // detaches the CDP transport + destroys the WebContentsView
         } catch { /* best-effort teardown */ }
+        // The host is going away; the run is not finished, it is cancelled. Best-effort, because a
+        // shutdown that hangs on a store write is worse than a run whose last event lands late.
+        const runId = deps.runs.runForSession(ctx.sessionId);
+        if (runId) {
+          try {
+            await deps.runs.endRun(runId, 'cancelled');
+          } catch { /* best-effort teardown */ }
+        }
       }
       contexts.clear();
-      tabToSession.clear();
       parked.clear();
       actChains.clear();
       activeSessionId = null;

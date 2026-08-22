@@ -96,7 +96,7 @@ async function armCrash() {
   wc.forcefullyCrashRenderer();
   const details = await gone;
   const flags = readFlags(win);
-  const send = attemptSend(() => wc.send('wigolo:state-changed', { sessionName: 's', tabs: [] }));
+  const send = attemptSend(() => wc.send('wigolo:state-changed', { runs: [], focusedRunId: null, tabs: [] }));
   return { arm: 'crash', gone: { reason: details.reason, exitCode: details.exitCode }, flags, guardWouldSkip: guardWouldSkip(flags), send };
 }
 
@@ -108,7 +108,7 @@ async function armClose() {
   wc.close();
   await destroyed;
   const flags = readFlags(win);
-  const send = attemptSend(() => wc.send('wigolo:state-changed', { sessionName: 's', tabs: [] }));
+  const send = attemptSend(() => wc.send('wigolo:state-changed', { runs: [], focusedRunId: null, tabs: [] }));
   return { arm: 'close', flags, guardWouldSkip: guardWouldSkip(flags), send };
 }
 
@@ -118,7 +118,7 @@ async function armWindowDestroy() {
   win.destroy();
   const flags = readFlags(win);
   // The unguarded shape: reach for `.webContents` on a dead window, which is the access that throws.
-  const send = attemptSend(() => win.webContents.send('wigolo:state-changed', { sessionName: 's', tabs: [] }));
+  const send = attemptSend(() => win.webContents.send('wigolo:state-changed', { runs: [], focusedRunId: null, tabs: [] }));
   return { arm: 'windestroy', flags, guardWouldSkip: guardWouldSkip(flags), send };
 }
 

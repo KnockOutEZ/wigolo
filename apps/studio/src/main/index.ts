@@ -4,7 +4,7 @@ import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, hiddenWindowPresentation, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
-import { SessionRegistry } from './session-registry';
+import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
 import { registerIpc, registerMarksIpc } from './ipc-host';
 import { createDriveEngine } from './drive-engine';
 import { createStudioHost, type HostTab } from './studio-host';
@@ -111,9 +111,6 @@ async function createWindow(): Promise<void> {
     return { x: 0, y: top, width: width - (railOpen ? RAIL_WIDTH : 0), height: height - top };
   };
   const tabs = new TabManager(makeViewFactory(win), bounds);
-  const sessions = new SessionRegistry();
-  registerIpc(win, tabs, sessions);
-  win.on('resize', () => tabs.relayout());
 
   // ── Agent line: drive engine + session host + loopback MCP gateway (spec §2/§7) ──
   const driveEngine = createDriveEngine();
@@ -128,12 +125,26 @@ async function createWindow(): Promise<void> {
   // same local library the agent's cache/find_similar read. The host calls it for capture + find_similar.
   const broker = createBrokerClient();
 
+  // SD1 spine 1: runs live in the daemon and this projects them. Replacing SessionRegistry, which kept
+  // run-shaped facts (identity, tab membership) in a process that any run outlives.
+  const runs = new RunViewModel(createBrokerRunStoreClient(broker));
+  registerIpc(win, tabs, runs);
+  win.on('resize', () => tabs.relayout());
+
+  // Runs created before this window existed are already in the log; replay them so the chrome opens
+  // showing what is actually running. A broker that is not up yet simply leaves the projection empty —
+  // the live tail fills it in, and no run is lost by it.
+  void runs.hydrate().catch((err: unknown) => {
+    process.stderr.write(`[studio] could not replay the run log: ${err instanceof Error ? err.message : String(err)}\n`);
+  });
+
   // Resolved after the shell loads (below) and read pull-at-eval by createTab. A tab created before the
   // shell finishes loading simply omits the high-entropy hints rather than waiting on them.
   let hostHints: HostHints | null = null;
 
   const studioHost = createStudioHost({
     broker,
+    runs,
     // The host writes region-clip media under the SAME data dir the broker uses (both honor WIGOLO_DATA_DIR).
     config: process.env.WIGOLO_DATA_DIR ? { dataDir: process.env.WIGOLO_DATA_DIR } : undefined,
     // P5: the encrypted origin-scoped profile store (keychain-KEK'd AES-256-GCM; defaults dataDir to getConfig()).
@@ -197,7 +208,8 @@ async function createWindow(): Promise<void> {
       const tabId = tabs.adopt(tabView);
       sessionTabWc.set(tabId, wc);
       lastSessionTabId = tabId;
-      sessions.addTab(sessions.current().id, tabId);
+      // Ownership is NOT recorded here. The host attaches the tab to the run it opened the session for,
+      // so law 4's one-run-per-tab check runs at one seam instead of at every tab factory.
       // Arm the SSRF/redirect fence FIRST (awaited) — attachTab resolves only once Fetch.enable is acked.
       const drive = await driveEngine.attachTab(tabId, {
         debugger: wc.debugger as unknown as DebuggerLike,

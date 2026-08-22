@@ -4,6 +4,8 @@ import { createDriveEngine, type TabDrive } from '../../src/main/drive-engine';
 import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import { makeFakeBroker } from '../helpers/fake-broker';
 import type { StorageStateOut, StudioObserveOutput, MarkPayload } from 'wigolo/studio';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 
 const viewport = () => ({ width: 800, height: 600 });
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -96,8 +98,12 @@ function makeAuthHost(opts: HarnessOpts) {
   const order: string[] = [];
   const applied: StorageStateOut[] = [];
   let drive: TabDrive | undefined;
+  // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
+  // so a host change that stopped recording it reds these tests rather than passing against a stub.
+  const runs = new RunViewModel(new FakeRunStore());
   const host = createStudioHost({
     config: { handoffPollIntervalMs: 1, handoffMaxPolls: 50, dataDir: '/tmp/wigolo-p5-test' },
+    runs,
     broker: makeFakeBroker(),
     onParked: () => {},
     onLoginHandoff: (m) => loginPushes.push(m),

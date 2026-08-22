@@ -313,6 +313,13 @@ export interface StudioSessionView {
   clients: number;
   createdAt: number;
   lastActiveAt: number;
+  /** The run this session drives (law 4: the run id is also the tab-group id). */
+  runId?: string;
+  /**
+   * The tabs the run owns, and only those. Law 4's user group is defined by absence — a tab the human
+   * opened has no ownership record, so there is no path by which it can appear in an agent's listing.
+   */
+  tabIds?: string[];
 }
 
 export interface StudioListOutput {

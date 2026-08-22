@@ -4,6 +4,8 @@ import { createDriveEngine } from '../../src/main/drive-engine';
 import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import { makeFakeBroker } from '../helpers/fake-broker';
 import type { MarkPayload, StudioExtractSetOutput, StudioToolError } from 'wigolo/studio';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 
 /**
  * P6 F1 — the studio_extract_set HOST wiring. The core row-inference + orchestration is unit-tested in
@@ -90,8 +92,12 @@ function makeHost(dbg: () => DebuggerLike, broker = makeFakeBroker(), grantPriva
   const engine = createDriveEngine();
   const tabs = new Map<string, { navigate: ReturnType<typeof vi.fn>; url: string }>();
   let n = 0;
+  // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
+  // so a host change that stopped recording it reds these tests rather than passing against a stub.
+  const runs = new RunViewModel(new FakeRunStore());
   const host = createStudioHost({
     broker,
+    runs,
     onParked: () => {},
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;

@@ -1,7 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import { IPC, type StudioState, type OverlayMarkMsg, type QuoteMsg, type RegionMsg } from '../shared/ipc';
 import type { TabManager } from './tab-manager';
-import type { SessionRegistry } from './session-registry';
+import type { RunViewModel } from './run-view-model';
 import type { StudioHost } from './studio-host';
 import type { StudioHostHandlers } from 'wigolo/studio';
 
@@ -43,26 +43,43 @@ export function stateBroadcaster(win: BroadcastWindow, state: () => StudioState)
   };
 }
 
-export function registerIpc(win: BrowserWindow, tabs: TabManager, sessions: SessionRegistry): void {
-  const state = (): StudioState => ({
-    sessionName: sessions.current().name,
-    tabs: tabs.listTabs(),
-  });
+export function registerIpc(win: BrowserWindow, tabs: TabManager, runs: RunViewModel): void {
+  const state = (): StudioState => {
+    // Ownership is stamped on here rather than held by the tab layer: `TabManager` knows which views
+    // exist, the run log knows who they belong to, and only this projection needs both.
+    const withOwners = tabs.listTabs().map((t) => {
+      const runId = runs.ownerOf(t.id);
+      return runId ? { ...t, runId } : t;
+    });
+    return {
+      runs: runs.list(),
+      // Derived from the focused tab, never a pointer of its own. A separate "current run" would let
+      // the chrome name one run while the window shows another's page — which is what it did.
+      // `null` when the human is in their own tab: they are not inside any run.
+      focusedRunId: withOwners.find((t) => t.active)?.runId ?? null,
+      tabs: withOwners,
+    };
+  };
   const broadcast = stateBroadcaster(win, state);
   // Pre-existing, deliberately not reworked here: this subscription is never unsubscribed. The
-  // callback is inert once the window is gone (the guard above), but it keeps `win` and `sessions`
+  // callback is inert once the window is gone (the guard above), but it keeps `win` and `runs`
   // reachable through its closure for the lifetime of the TabManager.
   tabs.onChange(broadcast);
+  // A run event moves ownership without touching the tab set, and a detach lands one turn AFTER the
+  // close that caused it — so the tab strip needs both sources or it renders stale ownership.
+  runs.onChange(broadcast);
 
   ipcMain.handle(IPC.getState, () => state());
-  ipcMain.handle(IPC.tabCreate, (_e, url: string) => {
-    const id = tabs.createTab(url);
-    sessions.addTab(sessions.current().id, id);
-    return id;
-  });
+  // Law 4: a tab the human opens joins the USER group, which is defined by having no `tab.attached`
+  // event. Nothing is recorded here, and that absence is exactly what keeps it invisible to agents.
+  ipcMain.handle(IPC.tabCreate, (_e, url: string) => tabs.createTab(url));
   ipcMain.handle(IPC.tabClose, (_e, id: string) => {
     tabs.closeTab(id);
-    sessions.removeTab(sessions.current().id, id);
+    // No-op for a user tab; for an agent tab the human closed, this is the release the old registry
+    // never recorded — `removeTab` was wired to the human path only, so agent tabs leaked forever.
+    void runs.detachTab(id, 'closed').catch((err: unknown) => {
+      process.stderr.write(`[studio] could not record the tab release: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
   });
   ipcMain.handle(IPC.tabFocus, (_e, id: string) => tabs.focusTab(id));
   ipcMain.handle(IPC.tabNavigate, (_e, id: string, url: string) => tabs.navigate(id, url));
