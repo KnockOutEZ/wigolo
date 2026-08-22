@@ -18,6 +18,10 @@ import {
   RUN_ID_ALPHABET,
   RUN_ID_MIN_LENGTH,
   MAX_TASK_CHARS,
+  AUTO_DENY_MS,
+  isValidListCursor,
+  MAX_EVENT_PAYLOAD_CHARS,
+  runDir,
   runEventsFile,
   type RunEvent,
   type Run,
@@ -45,6 +49,42 @@ afterEach(() => {
 });
 
 const opts = () => ({ dataDir: dir });
+
+/**
+ * A handle whose event INSERT fails the way a full disk does — the only way to force the window
+ * between the run row and its birth event deterministically. A SIGKILL cannot be aimed at it.
+ *
+ * Everything else forwards to the real database, including `transaction`, so the rollback under
+ * test is SQLite's own and not the proxy's.
+ */
+function failEventInsert(real: Database.Database): Database.Database {
+  const forward = (target: Database.Database, prop: string | symbol): unknown => {
+    const value = Reflect.get(target, prop) as unknown;
+    return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+  };
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop !== 'prepare') return forward(target, prop);
+      return (sql: string) => {
+        const stmt = target.prepare(sql);
+        if (!/INSERT INTO studio_run_events/i.test(sql)) return stmt;
+        return new Proxy(stmt, {
+          get(s, p) {
+            if (p !== 'run') {
+              const value = Reflect.get(s, p) as unknown;
+              return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(s) : value;
+            }
+            return () => {
+              const err: Error & { code?: string } = new Error('database or disk is full');
+              err.code = 'SQLITE_FULL';
+              throw err;
+            };
+          },
+        });
+      };
+    },
+  });
+}
 
 describe('run-store — short ids (§2)', () => {
   it('mints ids only from the read-aloud alphabet, at the spec length', () => {
@@ -126,6 +166,33 @@ describe('run-store — create (§1)', () => {
   it('refuses a driver outside the law-3 vocabulary', () => {
     expect(() => createRun(db, { task: 't', driver: { kind: 'robot' } as never }, opts())).toThrow(/driver/i);
   });
+
+  /**
+   * WHY: law 1 says the event log is the single source of truth, so a `studio_runs` row whose
+   * `run.created` never landed is a fact the log does not contain — and it is visible, because
+   * `listRuns` reads the row directly. The mint and the birth event have to commit together or not
+   * at all; otherwise a crash between them leaves an orphan running at last_seq 0, and the caller's
+   * retry mints a SECOND run for one task.
+   */
+  it('leaves no run row behind when the birth event cannot be written', () => {
+    const failing = failEventInsert(db);
+    expect(() => createRun(failing, { task: 'find a monitor' }, { ...opts(), mintId: () => 'aaaa' }))
+      .toThrow(/disk is full/i);
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_runs').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 0 });
+    // The orphan's whole cost was that a surface could see it. Both surfaces stay clean.
+    expect(listRuns(db).runs).toEqual([]);
+    expect(runExists(db, 'aaaa')).toBe(false);
+  });
+
+  it('still mints a fresh id on the retry after a failed create — no half-run to collide with', () => {
+    const failing = failEventInsert(db);
+    expect(() => createRun(failing, { task: 't' }, { ...opts(), mintId: () => 'aaaa' })).toThrow();
+    const run = createRun(db, { task: 't' }, { ...opts(), mintId: () => 'aaaa' });
+    expect(run.id).toBe('aaaa');
+    expect(run.lastSeq).toBe(1);
+  });
 });
 
 describe('run-store — append-only event log (law 1)', () => {
@@ -190,7 +257,10 @@ describe('run-store — append-only event log (law 1)', () => {
   it('refuses an actor outside the vocabulary and an append to an unknown run', () => {
     const run = createRun(db, { task: 't' }, opts());
     expect(() => appendEvent(db, run.id, { actor: { kind: 'ghost' } as never, type: 'x.y' }, opts())).toThrow(/actor/i);
-    expect(() => appendEvent(db, 'nope', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/not found/i);
+    // A well-formed id nothing minted is "not found"; a string that could never BE an id is refused
+    // before the lookup, because it is a caller bug rather than a miss.
+    expect(() => appendEvent(db, 'zzzz', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/not found/i);
+    expect(() => appendEvent(db, 'nope', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/invalid run id/i);
   });
 });
 
@@ -283,6 +353,89 @@ describe('run-store — derived fields are projections of the log (law 1)', () =
   });
 });
 
+/**
+ * WHY: `autoDenyAt` was durable state nothing read. The app's in-memory two-minute timer was the
+ * ONLY writer of the resolving `decision.resolved`, so a crash after the broker auto-denied the
+ * action and before that append left a log whose replay still says "a human is needed" — the dock
+ * badge lit over a card that no longer exists, and no reconciler anywhere to put it out.
+ *
+ * Expiry is derived, like every other projected field (law 1). The log is not rewritten.
+ */
+describe('run-store — a pending decision expires on its own clock (pin 3)', () => {
+  const t0 = new Date('2026-08-23T10:00:00.000Z');
+  const at = (ms: number) => () => new Date(t0.getTime() + ms);
+
+  function runNeedingADecision(payload: Record<string, unknown> = {}): string {
+    const run = createRun(db, { task: 'sign in to the vendor portal' }, { ...opts(), now: () => t0 });
+    appendEvent(db, run.id, {
+      actor: { kind: 'agent' },
+      type: 'decision.requested',
+      payload: { decisionId: 'd1', kind: 'approval', prompt: 'sign in?', ...payload },
+    }, { ...opts(), now: () => t0 });
+    return run.id;
+  }
+
+  it('still needs you while the card can be answered', () => {
+    const run = getRun(db, runNeedingADecision(), { now: at(AUTO_DENY_MS - 1) })!;
+    expect(run.status).toBe('needs_you');
+    expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d1']);
+    expect(run.pendingDecisions[0].autoDenyAt).toBe(new Date(t0.getTime() + AUTO_DENY_MS).toISOString());
+  });
+
+  it('drops the card and the needs_you the instant autoDenyAt passes, with nothing appended', () => {
+    const id = runNeedingADecision();
+    const run = getRun(db, id, { now: at(AUTO_DENY_MS) })!;
+    expect(run.status).toBe('running');
+    expect(run.pendingDecisions).toEqual([]);
+    expect(eventsSince(db, id).map((e) => e.type)).toEqual(['run.created', 'decision.requested']);
+  });
+
+  it('expires the same way in a list page — one projection, every surface', () => {
+    const id = runNeedingADecision();
+    const statusAt = (ms: number) => listRuns(db, { now: at(ms) }).runs.find((r) => r.id === id)!.status;
+    expect(statusAt(AUTO_DENY_MS - 1)).toBe('needs_you');
+    expect(statusAt(AUTO_DENY_MS)).toBe('running');
+  });
+
+  it('measures the deadline from the payload requestedAt when the caller supplied one', () => {
+    // The card was raised a minute before the mirror got round to logging it; the clock the human
+    // saw is the payload's, not the envelope's.
+    const early = new Date(t0.getTime() - 60_000).toISOString();
+    const id = runNeedingADecision({ requestedAt: early });
+    expect(getRun(db, id, { now: at(-1) })!.status).toBe('needs_you');
+    expect(getRun(db, id, { now: at(AUTO_DENY_MS - 60_000) })!.status).toBe('running');
+  });
+
+  it('falls back to the envelope ts when requestedAt is unparseable, instead of poisoning the run', () => {
+    // A `new Date('later today').toISOString()` throws, and it threw inside the projection — which
+    // made one bad payload enough to make the whole run unreadable on every surface.
+    const id = runNeedingADecision({ requestedAt: 'later today' });
+    expect(getRun(db, id, { now: at(0) })!.status).toBe('needs_you');
+    expect(getRun(db, id, { now: at(AUTO_DENY_MS) })!.status).toBe('running');
+  });
+
+  it('lights again for a fresh decision raised after an expired one', () => {
+    const id = runNeedingADecision();
+    const later = new Date(t0.getTime() + AUTO_DENY_MS + 1_000);
+    appendEvent(db, id, {
+      actor: { kind: 'agent' },
+      type: 'decision.requested',
+      payload: { decisionId: 'd2', kind: 'approval', prompt: 'accept the cookie wall?' },
+    }, { ...opts(), now: () => later });
+    const run = getRun(db, id, { now: () => later })!;
+    expect(run.status).toBe('needs_you');
+    expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d2']);
+  });
+
+  it('refreshes the cached status column on the next append, so a filtered list agrees too', () => {
+    const id = runNeedingADecision();
+    const later = new Date(t0.getTime() + AUTO_DENY_MS + 1);
+    appendEvent(db, id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 't1' } }, { ...opts(), now: () => later });
+    expect(db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(id)).toEqual({ status: 'running' });
+    expect(listRuns(db, { status: ['needs_you'], now: () => later }).runs).toEqual([]);
+  });
+});
+
 describe('run-store — list (§5.3 semantics, in the store)', () => {
   it('orders newest first and pages by an opaque keyset cursor', () => {
     const ids: string[] = [];
@@ -299,6 +452,37 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
     expect(third.nextCursor).toBeUndefined();
   });
 
+  /**
+   * WHY: `Buffer.from(x, 'base64url')` never throws — it silently drops what it cannot read — and a
+   * cursor that decoded to nothing was treated as "no cursor". So a corrupted or truncated cursor
+   * restarted pagination from page 1 with no signal: a client paging in a loop never terminates,
+   * and a client processing each page double-processes the first and stops.
+   */
+  it('refuses a cursor that does not decode rather than silently restarting page 1', () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, i)) }).id);
+    }
+    const first = listRuns(db, { limit: 2 });
+    const good = first.nextCursor!;
+
+    for (const bad of [
+      'not a cursor',                              // spaces are not in the alphabet
+      '@@@@',                                      // nor is punctuation
+      good.slice(0, -3),                           // truncated in transit
+      Buffer.from('no newline here').toString('base64url'),   // decodes, but is not a keyset pair
+      Buffer.from('not-a-date\nabcd').toString('base64url'),  // a pair whose left half is not a time
+      Buffer.from('2026-08-22T00:00:00.000Z\n').toString('base64url'), // empty id half
+    ]) {
+      expect(() => listRuns(db, { limit: 2, cursor: bad }), bad).toThrow(/cursor/i);
+      expect(isValidListCursor(bad)).toBe(false);
+    }
+
+    // ...and the honest one still pages, which is the half a blanket rejection would break.
+    expect(isValidListCursor(good)).toBe(true);
+    expect(listRuns(db, { limit: 2, cursor: good }).runs.map((r) => r.id)).toEqual([ids[2], ids[1]]);
+  });
+
   it('filters by status and space', () => {
     const a = createRun(db, { task: 'a' }, opts());
     const b = createRun(db, { task: 'b', spaceId: 'other' }, opts());
@@ -311,6 +495,62 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
   it('caps the page size so one call cannot ask for the whole store', () => {
     for (let i = 0; i < 3; i++) createRun(db, { task: `t${i}` }, opts());
     expect(listRuns(db, { limit: 10_000 }).runs.length).toBeLessThanOrEqual(200);
+  });
+});
+
+/**
+ * WHY: a run id is `join()`ed into a filesystem path by `runDir`, and the store's own bound on what
+ * it will persist is the only thing standing between an event log and a disk-fill. Neither is
+ * reachable from outside today — the callers all pass minted ids, and REST caps its own fields —
+ * but both preconditions live in OTHER files, which is precisely the kind that a later caller
+ * deletes without noticing.
+ */
+describe('run-store — an id is an id and a payload is bounded (structural guards)', () => {
+  it('refuses anything outside the mint alphabet as a run id', () => {
+    for (const bad of ['../../etc/passwd', '..', 'a/b/c', 'run-1', 'nope', 'aa', 'a'.repeat(9), '', '  ']) {
+      expect(() => normalizeRunId(bad), bad).toThrow(/invalid run id/i);
+      expect(() => runDir(bad, dir), bad).toThrow(/invalid run id/i);
+      expect(() => runEventsFile(bad, dir), bad).toThrow(/invalid run id/i);
+    }
+    // The normalizer's real job still works: trimmed, lowercased, resolvable.
+    expect(normalizeRunId(' 7FQ2 ')).toBe('7fq2');
+    expect(runDir('7FQ2', dir)).toBe(runDir('7fq2', dir));
+  });
+
+  it('never lets a traversal id reach mkdirSync, even from a poisoned row', () => {
+    // The row is written behind the store's back, which is the only way this id can exist at all.
+    const at = new Date().toISOString();
+    db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)')
+      .run('../../escaped', 'poisoned', 'default', at, 'running', at);
+
+    expect(() => appendEvent(db, '../../escaped', { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 't1' } }, opts()))
+      .toThrow(/invalid run id/i);
+    // Nothing was written anywhere: not the escape, not a directory under the state dir.
+    expect(existsSync(join(dir, 'studio', 'runs'))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 0 });
+  });
+
+  it('reads an unmintable id as a miss, not an error — a typed URL is a 404', () => {
+    // `getRun` and friends are the READ side. A person typing a run id from a result footer must
+    // get "no such run", never a stack trace out of a 500.
+    expect(getRun(db, 'not an id')).toBeUndefined();
+    expect(runExists(db, '../../escaped')).toBe(false);
+    expect(eventsSince(db, 'run-1')).toEqual([]);
+  });
+
+  it('refuses an event payload past the cap — the log is persisted twice', () => {
+    const run = createRun(db, { task: 'bounded' }, opts());
+    const oversize = { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_CHARS) };
+    expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'note.added', payload: oversize }, opts()))
+      .toThrow(/payload/i);
+    // Refused at the door: no row, no seq burned, no line appended to the on-disk projection.
+    expect(eventsSince(db, run.id).map((e) => e.type)).toEqual(['run.created']);
+    expect(getRun(db, run.id)!.lastSeq).toBe(1);
+    expect(readFileSync(runEventsFile(run.id, dir), 'utf8').trimEnd().split('\n')).toHaveLength(1);
+
+    // Just under still appends — the cap has to be a bound, not a ban on real payloads.
+    const fits = { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_CHARS - 100) };
+    expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'note.added', payload: fits }, opts())).not.toThrow();
   });
 });
 

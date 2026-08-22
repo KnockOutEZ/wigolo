@@ -91,7 +91,10 @@ describe('studio-db-broker — run store methods', () => {
   it('surfaces a refusal instead of silently dropping a malformed append', async () => {
     const run = await handlers.runCreate({ input: { task: 't' } });
     await expect(handlers.runAppend({ runId: run.id, event: { actor: { kind: 'agent' }, type: 'nope' } })).rejects.toThrow(/type/i);
-    await expect(handlers.runAppend({ runId: 'missing', event: { actor: { kind: 'agent' }, type: 'a.b' } })).rejects.toThrow(/not found/i);
+    await expect(handlers.runAppend({ runId: 'zzzz', event: { actor: { kind: 'agent' }, type: 'a.b' } })).rejects.toThrow(/not found/i);
+    // `missing` is not merely absent — `i` is outside the mint alphabet, so it is refused as an id
+    // before anything looks it up, and never reaches the path join in the disk projection.
+    await expect(handlers.runAppend({ runId: 'missing', event: { actor: { kind: 'agent' }, type: 'a.b' } })).rejects.toThrow(/invalid run id/i);
     expect(await handlers.runEventsSince({ runId: run.id })).toHaveLength(1);
   });
 });

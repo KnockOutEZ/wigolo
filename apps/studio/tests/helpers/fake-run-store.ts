@@ -1,4 +1,4 @@
-import type { CreateRunInput, ListRunsResult, Run, RunEvent, RunEventInput } from 'wigolo/studio';
+import { RUN_ID_ALPHABET, type CreateRunInput, type ListRunsResult, type Run, type RunEvent, type RunEventInput } from 'wigolo/studio';
 import type { RunLogEntry, RunStoreClient } from '../../src/main/run-view-model';
 
 /**
@@ -7,7 +7,22 @@ import type { RunLogEntry, RunStoreClient } from '../../src/main/run-view-model'
  * broker's `run-event` notify does — before the call that caused them resolves, as the broker's own
  * ordering does. The app never loads the native DB, so the real store cannot bind in these tests, but
  * every rule the view-model depends on is reproduced here.
+ *
+ * Two of those rules are easy to fake WRONG, and both were:
+ *  - ids come from the mint alphabet. `run1` is not a run id the real store could ever produce, and
+ *    a surface that path-joins or validates one rejects it — so a fixture that mints them tests a
+ *    world where every id is legal.
+ *  - the clock runs now. Timestamps frozen in the past make every pending decision arrive already
+ *    past its two-minute auto-deny, which is a state the real store can only reach after a crash.
  */
+const FAKE_EPOCH = Date.now();
+
+/** Deterministic, monotonic, and inside the mint alphabet — the three things a real id is. */
+function fakeRunId(n: number): string {
+  const a = RUN_ID_ALPHABET;
+  return 'r' + a[n % a.length] + a[Math.floor(n / a.length) % a.length] + a[Math.floor(n / (a.length * a.length)) % a.length];
+}
+
 export class FakeRunStore implements RunStoreClient {
   readonly facts = new Map<string, { task: string; spaceId: string; createdAt: string }>();
   readonly log = new Map<string, RunEvent[]>();
@@ -23,8 +38,8 @@ export class FakeRunStore implements RunStoreClient {
   readonly reads: string[] = [];
 
   async createRun(input: CreateRunInput): Promise<Run> {
-    const id = `run${++this.n}`;
-    const createdAt = new Date(1_700_000_000_000 + this.n).toISOString();
+    const id = fakeRunId(++this.n);
+    const createdAt = new Date(FAKE_EPOCH + this.n).toISOString();
     this.facts.set(id, { task: input.task, spaceId: input.spaceId ?? 'default', createdAt });
     this.log.set(id, []);
     this.commit(id, {
@@ -50,7 +65,7 @@ export class FakeRunStore implements RunStoreClient {
     const events = this.log.get(runId)!;
     const committed: RunEvent = {
       seq: events.length + 1,
-      ts: new Date(1_700_000_000_000 + events.length).toISOString(),
+      ts: new Date(FAKE_EPOCH + events.length).toISOString(),
       actor: event.actor,
       type: event.type,
       payload: event.payload ?? {},

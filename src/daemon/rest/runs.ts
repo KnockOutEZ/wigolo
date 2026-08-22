@@ -26,7 +26,8 @@ import {
 } from './errors.js';
 import { bodyCapFor, readJsonBodyCapped, BodyTooLargeError } from './limits.js';
 import {
-  normalizeRunId,
+  resolveRunId,
+  isValidListCursor,
   MAX_TASK_CHARS,
   MAX_LIST_LIMIT,
   DEFAULT_LIST_LIMIT,
@@ -394,6 +395,13 @@ async function handleList(opts: RunsRequestOptions, store: RunsStore): Promise<v
 
   const spaceId = params.get('spaceId') ?? undefined;
   const cursor = params.get('cursor') ?? undefined;
+  // A cursor that does not decode used to be treated as no cursor at all, so a corrupted or
+  // truncated one silently restarted pagination — a client paging in a loop never terminates, and
+  // one processing each page double-processes the first. `status` and `limit` are already 400s.
+  if (cursor && !isValidListCursor(cursor)) {
+    opts.sendError(invalidInput('Query "cursor" is not a cursor this server issued. Start the page again without it.'));
+    return;
+  }
 
   const result = await store.list({
     ...(status ? { status } : {}),
@@ -550,7 +558,13 @@ async function handleEvents(
     opts.sendError(runNotFound());
     return;
   }
-  const id = normalizeRunId(decoded);
+  // An id outside the mint alphabet is a 404, not a 500: it is a typo in a URL, and the whole point
+  // of the read-aloud alphabet is that people type these by hand.
+  const id = resolveRunId(decoded);
+  if (id === undefined) {
+    opts.sendError(runNotFound());
+    return;
+  }
   // Existence only — `get` would project the run, reading the whole log, which is exactly what the
   // paged replay below exists to avoid doing in one burst.
   if (!(await store.exists(id))) {

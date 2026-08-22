@@ -4,7 +4,8 @@
  * A run is the unit of everything: task + append-only event log + tab group + pending decisions +
  * cost counters + driver state. The EVENT LOG IS THE SINGLE SOURCE OF TRUTH — every other field on
  * `Run` is a projection of it, and the `status`/`last_seq`/`updated_at` columns on `studio_runs`
- * are a cache that `projectRun` can rebuild from the log alone.
+ * are a cache that `projectRun` can rebuild from the log plus the clock — a pending decision expires
+ * on a deadline nothing writes down (pin 3), which is the only input a replay needs beyond the log.
  *
  * These are pure functions over a `Database` handle so the same code binds in-process (the daemon)
  * and behind the broker handlers (the desktop app topology) without a second implementation.
@@ -56,6 +57,7 @@ export interface PendingDecision {
   prompt: string;
   anchor?: { tabId: string; mark?: number };
   requestedAt: string;
+  /** Pin 3's deadline. Past it the decision is not projected at all — see `hasAutoDenied`. */
   autoDenyAt: string;
 }
 
@@ -107,7 +109,15 @@ export interface RunStoreOptions {
   onEvent?: (runId: string, event: RunEvent) => void;
 }
 
-export interface ListRunsOptions {
+/**
+ * A projection is a pure function of the log AND the clock — `autoDenyAt` is the one field that
+ * moves without an event. Injectable so a test can drive the two-minute deadline.
+ */
+export interface ReadRunOptions {
+  now?: () => Date;
+}
+
+export interface ListRunsOptions extends ReadRunOptions {
   status?: RunStatus[];
   spaceId?: string;
   limit?: number;
@@ -126,6 +136,12 @@ export interface ListRunsResult {
 export const RUN_ID_ALPHABET = '23456789abcdefghjkmnpqrstvwxyz';
 export const RUN_ID_MIN_LENGTH = 4;
 export const MAX_TASK_CHARS = 4000;
+/**
+ * The bound on one event's serialized payload. Generous — a decision prompt, a page title and a
+ * handful of URLs fit many times over — but finite, because the log is append-only and written to
+ * two places, so "no bound" means "a disk-fill primitive".
+ */
+export const MAX_EVENT_PAYLOAD_CHARS = 64_000;
 export const DEFAULT_SPACE_ID = 'default';
 /** Pin 3 — a pending decision auto-denies after two minutes. */
 export const AUTO_DENY_MS = 120_000;
@@ -182,9 +198,43 @@ export function mintRunId(length: number = RUN_ID_MIN_LENGTH): string {
   return out;
 }
 
-/** Ids are case-normalized on input everywhere — a footer read back in caps still resolves. */
+const RUN_ID_CHARS = new Set(RUN_ID_ALPHABET);
+
+/**
+ * Could this string have been minted? Nothing else is a run id.
+ *
+ * The guard is structural rather than a live exploit fix: a run id is `join()`ed into a filesystem
+ * path by `runDir`, so `..` or a separator in one would escape the state directory. Every current
+ * `projectToDisk` caller passes a minted id or an id that already matched a row, so traversal is
+ * not reachable today — which is exactly the kind of precondition a later caller deletes without
+ * noticing. Checking the alphabet costs nothing and does not depend on who calls.
+ */
+export function isValidRunId(id: string): boolean {
+  if (id.length < RUN_ID_MIN_LENGTH || id.length > MAX_ID_LENGTH) return false;
+  for (const ch of id) if (!RUN_ID_CHARS.has(ch)) return false;
+  return true;
+}
+
+/**
+ * Ids are case-normalized on input everywhere — a footer read back in caps still resolves — and
+ * refused outright when they are not ids at all.
+ *
+ * Throwing is right on the WRITE and filesystem paths, where an unmintable id means a caller bug.
+ * Lookups use `resolveRunId` instead: an id that could never have been minted is a MISS, so a typo
+ * in a URL stays a 404 rather than becoming a 500.
+ */
 export function normalizeRunId(id: string): string {
-  return String(id).trim().toLowerCase();
+  const normalized = String(id).trim().toLowerCase();
+  // Quoted and clipped, not interpolated raw: the string that reaches here is by definition NOT an
+  // id, so it is arbitrary caller input on its way into a log line.
+  if (!isValidRunId(normalized)) throw new Error(`invalid run id: ${JSON.stringify(normalized.slice(0, 32))}`);
+  return normalized;
+}
+
+/** The lookup-side normalizer. `undefined` means "no such run", never an error. */
+export function resolveRunId(id: string): string | undefined {
+  const normalized = String(id).trim().toLowerCase();
+  return isValidRunId(normalized) ? normalized : undefined;
 }
 
 /** Where a run's human-readable projection lives (law 11 — local and inspectable). */
@@ -198,7 +248,7 @@ export function runEventsFile(id: string, dataDir?: string): string {
 
 interface RunRow { id: string; task: string; space_id: string; created_at: string }
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
-interface StatusRow { seq: number; type: string; payload: string }
+interface StatusRow { seq: number; ts: string; type: string; payload: string }
 interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
 interface TailRow { seq: number; ts: string }
 
@@ -236,11 +286,20 @@ function assertType(type: string): string {
 function serializePayload(payload: Record<string, unknown> | undefined): string {
   if (payload === undefined) return '{}';
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('payload must be a JSON object');
+  let serialized: string;
   try {
-    return JSON.stringify(payload);
+    serialized = JSON.stringify(payload);
   } catch {
     throw new Error('payload must be JSON-serializable');
   }
+  // Every event is persisted TWICE — the row and the on-disk projection — and the log is
+  // append-only, so an unbounded payload is a disk-fill primitive with no compacting path out of
+  // it. REST already caps `task`, `spaceId` and the client fields on exactly this reasoning; the
+  // append path is the same surface reached by a different door.
+  if (serialized.length > MAX_EVENT_PAYLOAD_CHARS) {
+    throw new Error(`payload exceeds ${MAX_EVENT_PAYLOAD_CHARS} characters`);
+  }
+  return serialized;
 }
 
 function rowToEvent(r: EventRow): RunEvent {
@@ -291,7 +350,7 @@ function appendWithinTransaction(
     // Status-relevant rows only. The whole log used to be read and parsed here, inside the write
     // lock, to recompute one cached string — O(events-so-far) per append, held against every other
     // writer on the shared database.
-    const status = foldStatus(readStatusEvents(db, runId));
+    const status = foldStatus(readStatusEvents(db, runId), now);
     db.prepare('UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ? WHERE id = ?').run(status, seq, ts, runId);
     return { seq, ts, actor, type, payload: JSON.parse(payload) as Record<string, unknown> };
   });
@@ -306,13 +365,33 @@ function toFacts(r: RunRow): StoredRunFacts {
 }
 
 /**
+ * When the human's clock on a card started. The payload wins when it carries one, because the card
+ * can be raised before the mirror gets round to logging it — but only if it parses: a
+ * `new Date('later today').toISOString()` throws, and it used to throw INSIDE the projection, so
+ * one bad payload made the whole run unreadable on every surface.
+ */
+function requestedAtOf(event: Pick<RunEvent, 'ts' | 'payload'>): string {
+  const claimed = str(event.payload.requestedAt);
+  return claimed !== undefined && Number.isFinite(Date.parse(claimed)) ? claimed : event.ts;
+}
+
+/** Pin 3's deadline, derived rather than stored — `autoDenyAt` is a rendering of this, not a fact. */
+function autoDenyAtOf(requestedAt: string): string {
+  return new Date(Date.parse(requestedAt) + AUTO_DENY_MS).toISOString();
+}
+
+function hasAutoDenied(requestedAt: string, now: Date): boolean {
+  return now.getTime() >= Date.parse(requestedAt) + AUTO_DENY_MS;
+}
+
+/**
  * §1's ordered status rules, in exactly one place. `projectRun` and the append path's cache refresh
  * both go through here, so the projection and the cached column cannot drift apart.
  *
  * Every type it does not name is inert, which is what lets the append path feed it a read filtered
  * to `STATUS_EVENT_TYPES` and get the same answer as a full replay.
  */
-function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunStatus {
+function foldStatus(events: readonly Pick<RunEvent, 'ts' | 'type' | 'payload'>[], now: Date): RunStatus {
   let terminal: RunStatus | undefined;
   let pausedReason: string | undefined;
   const pending = new Set<string>();
@@ -327,7 +406,9 @@ function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunS
       case 'run.resumed': pausedReason = undefined; break;
       case 'decision.requested': {
         const decisionId = str(p.decisionId);
-        if (decisionId) pending.add(decisionId);
+        // An expired card is not pending. Nothing writes the resolving event when the process that
+        // owned the timer died, and a badge nobody can clear is worse than a missed one.
+        if (decisionId && !hasAutoDenied(requestedAtOf(event), now)) pending.add(decisionId);
         break;
       }
       case 'decision.resolved': {
@@ -356,13 +437,13 @@ function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunS
  * exactly the O(log-depth) read this exists to avoid. Unordered, it seeks (run_id, type) instead,
  * and a handful of status rows sort for free.
  */
-function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'type' | 'payload'>[] {
+function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'ts' | 'type' | 'payload'>[] {
   const rows = db
-    .prepare(`SELECT seq, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
+    .prepare(`SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
     .all(runId, ...STATUS_EVENT_TYPES) as StatusRow[];
   return rows
     .sort((a, b) => a.seq - b.seq)
-    .map((r) => ({ type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+    .map((r) => ({ ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
 }
 
 /**
@@ -416,6 +497,12 @@ function readEvents(db: Database.Database, runId: string, since = 0, limit?: num
 /**
  * Mint an id, try the INSERT, and let the primary key adjudicate. Racing writers are settled by the
  * same rule as a random collision — there is no read-then-write window to lose.
+ *
+ * The mint and the birth event share ONE transaction. Two of them would leave a window in which a
+ * crash, a full disk or a kill produces a `studio_runs` row with `last_seq = 0` and no events — a
+ * run the log does not contain, which law 1 forbids and `listRuns` (which reads the row directly)
+ * would show. The caller's retry would then mint a second run for the same task. Nested here means
+ * a SAVEPOINT when a caller already holds a transaction, which is what makes this composable.
  */
 export function createRun(db: Database.Database, input: CreateRunInput, opts: RunStoreOptions = {}): Run {
   const task = assertTask(input.task);
@@ -425,27 +512,36 @@ export function createRun(db: Database.Database, input: CreateRunInput, opts: Ru
   const createdAt = now.toISOString();
   const mint = opts.mintId ?? mintRunId;
 
-  const insertRun = db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
-  let id: string | undefined;
-  for (let length = RUN_ID_MIN_LENGTH; length <= MAX_ID_LENGTH && id === undefined; length++) {
-    for (let attempt = 0; attempt < MINT_ATTEMPTS_PER_LENGTH; attempt++) {
-      const candidate = normalizeRunId(mint(length));
-      try {
-        insertRun.run(candidate, task, spaceId, createdAt, 'running', createdAt);
-        id = candidate;
-        break;
-      } catch (err) {
-        if (!isUniqueViolation(err)) throw err;
+  const mintAndBirth = db.transaction((): { id: string; created: RunEvent } => {
+    const insertRun = db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
+    let id: string | undefined;
+    for (let length = RUN_ID_MIN_LENGTH; length <= MAX_ID_LENGTH && id === undefined; length++) {
+      for (let attempt = 0; attempt < MINT_ATTEMPTS_PER_LENGTH; attempt++) {
+        const candidate = normalizeRunId(mint(length));
+        try {
+          // A statement-level constraint failure aborts the statement, not the transaction, so the
+          // collision retry survives being wrapped.
+          insertRun.run(candidate, task, spaceId, createdAt, 'running', createdAt);
+          id = candidate;
+          break;
+        } catch (err) {
+          if (!isUniqueViolation(err)) throw err;
+        }
       }
     }
-  }
-  if (id === undefined) throw new Error('could not mint a unique run id');
+    if (id === undefined) throw new Error('could not mint a unique run id');
 
-  const created = appendWithinTransaction(db, id, {
-    actor: { kind: 'daemon' },
-    type: 'run.created',
-    payload: { task, spaceId, driver, ...(input.sessionId ? { sessionId: input.sessionId } : {}) },
-  }, now);
+    const created = appendWithinTransaction(db, id, {
+      actor: { kind: 'daemon' },
+      type: 'run.created',
+      payload: { task, spaceId, driver, ...(input.sessionId ? { sessionId: input.sessionId } : {}) },
+    }, now);
+    return { id, created };
+  });
+
+  const { id, created } = mintAndBirth.immediate();
+  // Both side effects are post-commit by contract — a disk projection or a live-tail listener must
+  // never be able to unwind, or observe, a write that is still in flight.
   projectToDisk(id, created, opts.dataDir);
   opts.onEvent?.(id, created);
 
@@ -467,11 +563,12 @@ export function appendEvent(db: Database.Database, runId: string, input: RunEven
   return event;
 }
 
-export function getRun(db: Database.Database, runId: string): Run | undefined {
-  const id = normalizeRunId(runId);
+export function getRun(db: Database.Database, runId: string, opts: ReadRunOptions = {}): Run | undefined {
+  const id = resolveRunId(runId);
+  if (id === undefined) return undefined;
   const row = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as RunRow | undefined;
   if (!row) return undefined;
-  return projectRun(toFacts(row), readEvents(db, id));
+  return projectRun(toFacts(row), readEvents(db, id), opts.now?.() ?? new Date());
 }
 
 /**
@@ -480,12 +577,15 @@ export function getRun(db: Database.Database, runId: string): Run | undefined {
  * of a replay that is careful to page — must not pay an unbounded synchronous read to ask.
  */
 export function runExists(db: Database.Database, runId: string): boolean {
-  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(normalizeRunId(runId));
+  const id = resolveRunId(runId);
+  if (id === undefined) return false;
+  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(id);
   return row !== undefined;
 }
 
 export function eventsSince(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
-  return readEvents(db, normalizeRunId(runId), since, limit);
+  const id = resolveRunId(runId);
+  return id === undefined ? [] : readEvents(db, id, since, limit);
 }
 
 export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
@@ -501,6 +601,11 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
     params.push(opts.spaceId);
   }
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : undefined;
+  // A cursor is opaque, not unchecked. `Buffer.from(x, 'base64url')` never throws — it drops the
+  // characters it cannot read — so a corrupted or truncated cursor used to decode to nothing and be
+  // treated as "no cursor", silently restarting pagination. A client that pages in a loop then
+  // never terminates, or double-processes the first page and calls it the last.
+  if (opts.cursor && !cursor) throw new Error('invalid cursor');
   if (cursor) {
     // Keyset, not offset: a run inserted mid-page cannot shift the rows a client has not seen yet.
     where.push('(created_at < ? OR (created_at = ? AND id < ?))');
@@ -513,8 +618,9 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   // Three bounded queries for the page, not one unbounded full-log read per row.
   const byRun = readProjectionEvents(db, ids);
   const tails = readEventTails(db, ids);
+  const now = opts.now?.() ?? new Date();
   const runs = page.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? []);
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now);
     const tail = tails.get(r.id);
     return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
   });
@@ -528,9 +634,33 @@ function encodeCursor(createdAt: string, id: string): string {
   return Buffer.from(`${createdAt}\n${id}`, 'utf8').toString('base64url');
 }
 
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Strict, because base64url decoding is not. The round-trip is the load-bearing check: a cursor
+ * with a dropped or flipped character still decodes to *something*, and only re-encoding proves the
+ * bytes we read are the bytes the encoder wrote.
+ */
 function decodeCursor(cursor: string): { createdAt: string; id: string } | undefined {
-  const [createdAt, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('\n');
-  return createdAt && id ? { createdAt, id } : undefined;
+  if (!BASE64URL.test(cursor)) return undefined;
+  const bytes = Buffer.from(cursor, 'base64url');
+  if (bytes.toString('base64url') !== cursor) return undefined;
+  const parts = bytes.toString('utf8').split('\n');
+  if (parts.length !== 2) return undefined;
+  const [createdAt, id] = parts;
+  // Both halves are checked against the shape the ENCODER produces, not merely "non-empty": a
+  // cursor truncated on a byte boundary still splits into two plausible halves, and the only thing
+  // that catches it is that the timestamp is no longer a canonical instant or the id is no longer
+  // a mintable id.
+  if (!createdAt || !id || !isValidRunId(id)) return undefined;
+  const at = Date.parse(createdAt);
+  if (!Number.isFinite(at) || new Date(at).toISOString() !== createdAt) return undefined;
+  return { createdAt, id };
+}
+
+/** The REST seam's pre-check, so a bad cursor is a 400 from the router rather than a thrown 500. */
+export function isValidListCursor(cursor: string): boolean {
+  return decodeCursor(cursor) !== undefined;
 }
 
 function num(value: unknown): number {
@@ -548,7 +678,7 @@ function str(value: unknown): string | undefined {
  * Unknown types are ignored and preserved — a consumer that does not know `mark.placed` must not
  * drop it or refuse the run.
  */
-export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[]): Run {
+export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[], now: Date = new Date()): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = 'hidden';
   const tabIds: string[] = [];
@@ -581,14 +711,18 @@ export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEv
       case 'decision.requested': {
         const decisionId = str(p.decisionId);
         if (!decisionId) break;
-        const requestedAt = str(p.requestedAt) ?? event.ts;
+        const requestedAt = requestedAtOf(event);
+        // Same rule as `foldStatus`: an expired card is gone, so it can neither be listed nor hold
+        // the run at needs_you. Skipping it here rather than filtering afterwards keeps a LATER
+        // re-request of the same decisionId able to overwrite it.
+        if (hasAutoDenied(requestedAt, now)) break;
         pending.set(decisionId, {
           decisionId,
           kind: str(p.kind) ?? 'approval',
           prompt: str(p.prompt) ?? '',
           ...(p.anchor ? { anchor: p.anchor as PendingDecision['anchor'] } : {}),
           requestedAt,
-          autoDenyAt: new Date(new Date(requestedAt).getTime() + AUTO_DENY_MS).toISOString(),
+          autoDenyAt: autoDenyAtOf(requestedAt),
         });
         break;
       }
@@ -611,7 +745,7 @@ export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEv
 
   const newest = events[events.length - 1];
   const pendingDecisions = [...pending.values()];
-  const projected = foldStatus(events);
+  const projected = foldStatus(events, now);
 
   return {
     id: facts.id,

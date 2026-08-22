@@ -308,6 +308,28 @@ describe('REST /v1/runs — create, list, fetch', () => {
     // Newest first, so the four just created lead the list.
     expect(seen.slice(0, 4).sort()).toEqual([...made].sort());
   });
+
+  /**
+   * WHY: base64url decoding never throws, so a corrupted or truncated cursor used to decode to
+   * nothing and be read as "no cursor" — page 1 again, with a 200 and no signal. A client paging in
+   * a loop never terminates; a client processing each page double-processes the first and calls it
+   * the last. `status` and `limit` were already 400s on this route; this closes the third input.
+   */
+  it('400s a cursor it did not issue instead of quietly restarting at page 1', async () => {
+    for (let i = 0; i < 3; i++) await createRun(`cursor guard ${i}`);
+    const first = await request({ path: '/v1/runs?limit=2' });
+    const cursor = (first.body as { next_cursor?: string }).next_cursor!;
+
+    for (const bad of ['not a cursor', '%40%40%40%40', cursor.slice(0, -3)]) {
+      const res = await request({ path: `/v1/runs?limit=2&cursor=${encodeURIComponent(bad)}` });
+      expect(res.status, bad).toBe(400);
+      expect(res.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+    }
+
+    // The honest cursor still pages — a blanket rejection would "fix" this by breaking pagination.
+    const good = await request({ path: `/v1/runs?limit=2&cursor=${encodeURIComponent(cursor)}` });
+    expect(good.status).toBe(200);
+  });
 });
 
 describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () => {
