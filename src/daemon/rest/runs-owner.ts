@@ -188,9 +188,12 @@ export function proxyRunsRequest(
 
   return new Promise<void>((resolve) => {
     let settled = false;
+    /** Cleared here rather than only on the paths that notice: an aborted tail takes none of them. */
+    let headerTimer: NodeJS.Timeout | undefined;
     const finish = (): void => {
       if (settled) return;
       settled = true;
+      if (headerTimer) clearTimeout(headerTimer);
       resolve();
     };
 
@@ -215,13 +218,13 @@ export function proxyRunsRequest(
     // replies is the one failure mode a connect-error handler cannot see, and it is indistinguishable
     // from a healthy silent tail once headers HAVE arrived — which is why the deadline covers the
     // headers only.
-    const headerTimer = setTimeout(() => {
+    headerTimer = setTimeout(() => {
       upstream.destroy(new Error('run-store owner did not send response headers in time'));
     }, RESPONSE_HEADER_TIMEOUT_MS);
     headerTimer.unref?.();
 
     const fail = (err: unknown): void => {
-      clearTimeout(headerTimer);
+      if (headerTimer) clearTimeout(headerTimer);
       log.debug('run-store owner hop failed', { endpoint: opts.target.endpoint, error: String(err) });
       if (!res.headersSent) opts.sendError(hostUnreachable());
       // Mid-stream there is no status left to change, and ending cleanly would look to the client
@@ -248,7 +251,7 @@ export function proxyRunsRequest(
     }
 
     upstream.on('response', (upstreamRes: IncomingMessage) => {
-      clearTimeout(headerTimer);
+      if (headerTimer) clearTimeout(headerTimer);
 
       if (res.writableEnded || res.destroyed) {
         upstreamRes.destroy();
