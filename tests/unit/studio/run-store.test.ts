@@ -414,9 +414,166 @@ describe('run-store — live subscription hook', () => {
   });
 });
 
+describe('run-store — an append costs its status, not its history (F1)', () => {
+  it('recomputes the cached status from status-relevant rows alone, at any log depth', () => {
+    const run = createRun(db, { task: 'deep' }, opts());
+    const mark = (i: number) => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: i } }, opts());
+    for (let i = 0; i < 200; i++) mark(i);
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'sign in?' } }, opts());
+    for (let i = 200; i < 400; i++) mark(i);
+
+    const seen = spyEventReads(db, () => mark(400));
+
+    // The log is 402 events deep and exactly one of them can move the status. The old append read
+    // and JSON-parsed all 402 — inside BEGIN IMMEDIATE, on the database the search cache and the
+    // embedding index queue also write to.
+    expect(seen.rows).toBe(1);
+    expect(seen.queries).toBe(1);
+    // ...and the answer is still the right one.
+    expect(cachedStatus(run.id)).toBe('needs_you');
+    expect(getRun(db, run.id)!.status).toBe('needs_you');
+  });
+
+  it('keeps the cached column equal to a full replay through every status transition', () => {
+    const run = createRun(db, { task: 'transitions' }, opts());
+    const step = (type: string, payload?: Record<string, unknown>) => {
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type, payload }, opts());
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } }, opts());
+      // The cache is what a status-filtered `listRuns` selects on; a replay is the truth. A
+      // type-filtered recompute is only correct while these two cannot disagree.
+      const replayed = projectRun({ id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, eventsSince(db, run.id, 0));
+      expect(cachedStatus(run.id), type).toBe(replayed.status);
+      return replayed.status;
+    };
+
+    expect(step('decision.requested', { decisionId: 'd1', prompt: 'ok?' })).toBe('needs_you');
+    expect(step('decision.resolved', { decisionId: 'd1', outcome: 'approved' })).toBe('running');
+    expect(step('run.paused', { reason: 'agent' })).toBe('paused');
+    expect(step('run.paused', { reason: 'cost_cap' })).toBe('needs_you');
+    expect(step('run.resumed', { by: 'human' })).toBe('running');
+    expect(step('run.completed')).toBe('done');
+  });
+
+  it('still assigns seq gap-free under the write lock', () => {
+    const run = createRun(db, { task: 'seq' }, opts());
+    for (let i = 0; i < 30; i++) appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: i } }, opts());
+    expect(eventsSince(db, run.id, 0).map((e) => e.seq)).toEqual(Array.from({ length: 31 }, (_, i) => i + 1));
+    expect(getRun(db, run.id)!.lastSeq).toBe(31);
+  });
+});
+
+describe('run-store — listing a page is bounded work (F2)', () => {
+  function busyRuns(count: number, eventsEach: number): string[] {
+    const ids: string[] = [];
+    for (let n = 0; n < count; n++) {
+      const r = createRun(db, { task: `busy ${n}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, n)) });
+      for (let m = 0; m < eventsEach; m++) {
+        appendEvent(db, r.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: m } }, opts());
+      }
+      ids.push(r.id);
+    }
+    return ids;
+  }
+
+  it('reads a fixed number of queries and projection-relevant rows, not the whole log per row', () => {
+    const ids = busyRuns(6, 60);
+
+    const seen = spyEventReads(db, () => listRuns(db, {}));
+
+    // Two queries for the whole page — the projection read and the tail read — never one per row.
+    expect(seen.queries).toBe(2);
+    // Per run: `run.created`, plus its newest row for lastSeq/updatedAt. The 60 marks each are the
+    // part that used to be read, parsed and thrown away; `better-sqlite3` is synchronous, so that
+    // was event-loop time the router's deadline could not fire during.
+    expect(seen.rows).toBe(ids.length * 2);
+  });
+
+  it('projects each list row exactly as getRun does, marks and unknown types included', () => {
+    const run = createRun(db, { task: 'busy', driver: { kind: 'cli', client: { name: 'a-harness', version: '2.1.0' } } }, opts());
+    const a = (type: string, payload?: Record<string, unknown>) =>
+      appendEvent(db, run.id, { actor: { kind: 'agent', driver: 'cli' }, type, payload }, opts());
+    a('tab.attached', { tabId: 'tab-1' });
+    a('mark.placed', { mark: 1 });
+    a('tab.attached', { tabId: 'tab-2' });
+    a('tab.detached', { tabId: 'tab-1' });
+    a('cost.recorded', { kind: 'browser_action', amount: 3 });
+    a('cost.recorded', { kind: 'spend_usd', amount: 0.25 });
+    a('presentation.promoted', { by: 'human', surface: 'tray' });
+    a('decision.requested', { decisionId: 'd1', prompt: 'sign in?', anchor: { tabId: 'tab-2', mark: 4 } });
+    a('decision.requested', { decisionId: 'd2', prompt: 'pay?' });
+    a('decision.resolved', { decisionId: 'd1', outcome: 'approved' });
+    a('run.paused', { reason: 'cost_cap' });
+    // A type nobody projects, appended LAST: lastSeq and updatedAt move with it even though the
+    // type-filtered read cannot see it.
+    a('mark.placed', { mark: 9 });
+
+    const listed = listRuns(db, {}).runs;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toEqual(getRun(db, run.id));
+    expect(listed[0].lastSeq).toBe(13);
+  });
+
+  it('returns an empty page without touching the event log at all', () => {
+    const seen = spyEventReads(db, () => listRuns(db, {}));
+    expect(seen.queries).toBe(0);
+  });
+
+  it('names every type that can move a projected field', () => {
+    // The list path reads ONLY these types. A `case` added to either fold without its type here
+    // would be silently dropped from every list row while `getRun` still honoured it — a divergence
+    // no behavioural test would catch, because the two paths would still each be self-consistent.
+    const src = readFileSync(fileURLToPath(new URL('../../../src/studio/run-store.ts', import.meta.url)), 'utf8');
+    const caseTypes = (body: string): string[] => [...body.matchAll(/case '([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)':/g)].map((m) => m[1]);
+    const body = (name: string): string => {
+      const start = src.indexOf(`function ${name}(`);
+      expect(start, `${name} not found`).toBeGreaterThan(-1);
+      const end = src.indexOf('\n}\n', start);
+      return src.slice(start, end);
+    };
+
+    expect(new Set(caseTypes(body('foldStatus')))).toEqual(new Set(store.STATUS_EVENT_TYPES));
+    expect(new Set([...caseTypes(body('foldStatus')), ...caseTypes(body('projectRun'))])).toEqual(new Set(store.PROJECTION_EVENT_TYPES));
+    // Control: the scan really does find cases, so an equal-sets result is evidence.
+    expect(caseTypes(body('projectRun')).length).toBeGreaterThan(0);
+  });
+});
+
 // --- helpers -------------------------------------------------------------
 
 import * as store from '../../../src/studio/run-store.js';
+
+function cachedStatus(runId: string): string {
+  return (db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(runId) as { status: string }).status;
+}
+
+/** Counts the queries against the event log, and the rows they actually hand back. */
+function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: number; rows: number; result: T } {
+  let queries = 0;
+  let rows = 0;
+  const realPrepare = database.prepare.bind(database);
+  const spy = ((sql: string) => {
+    const stmt = realPrepare(sql);
+    if (!/\bFROM studio_run_events\b/i.test(sql)) return stmt;
+    queries++;
+    const realAll = stmt.all.bind(stmt);
+    Object.defineProperty(stmt, 'all', {
+      value: (...args: unknown[]) => {
+        const out = realAll(...args) as unknown[];
+        rows += out.length;
+        return out;
+      },
+      configurable: true,
+    });
+    return stmt;
+  }) as typeof database.prepare;
+  Object.defineProperty(database, 'prepare', { value: spy, configurable: true });
+  try {
+    const result = fn();
+    return { queries, rows, result };
+  } finally {
+    Object.defineProperty(database, 'prepare', { value: realPrepare, configurable: true });
+  }
+}
 
 function scanSrc(pattern: RegExp): string[] {
   const root = fileURLToPath(new URL('../../../src/', import.meta.url));
