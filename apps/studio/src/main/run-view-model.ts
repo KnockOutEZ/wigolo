@@ -48,6 +48,15 @@ export class TabOwnedError extends Error {
 
 export type TabDetachReason = 'closed' | 'run_ended';
 export type RunTerminal = 'completed' | 'failed' | 'cancelled';
+/** §8 — where a promote was asked for. Demote carries no surface; only who did it matters. */
+export type PromoteSurface = 'tray' | 'chrome' | 'panel';
+export type PresentationBy = 'human' | 'system';
+
+const TERMINAL_STATUSES: ReadonlySet<Run['status']> = new Set<Run['status']>(['done', 'failed', 'cancelled']);
+
+export function isTerminal(status: Run['status']): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
 
 /** What a surface needs to name a run. Everything on it is projected; nothing is stored here. */
 export interface RunSummary {
@@ -55,6 +64,7 @@ export interface RunSummary {
   task: string;
   status: Run['status'];
   tabIds: string[];
+  visibility: Run['visibility'];
 }
 
 interface RunLog {
@@ -214,6 +224,31 @@ export class RunViewModel {
     this.applyEvent(runId, event);
   }
 
+  /**
+   * §8's promote/demote, as a fact in the log rather than as window state.
+   *
+   * The store enforces envelope mechanics only, so legality lives here: promoting a run that has
+   * already ended is refused (nobody can watch a run that is over), while demoting one is allowed —
+   * that is exactly the path a boot reconcile takes for a run that ended while it was being watched.
+   *
+   * Idempotent against the PROJECTION, not against a local flag: a promote written by another writer
+   * is already in this projection, so re-asserting it here writes nothing. Returns whether an event
+   * was appended, which is what a caller needs to know before it moves a window.
+   */
+  async setVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
+    const run = this.snapshot(runId);
+    if (!run) throw new Error(`no such run: ${runId}`);
+    if (run.visibility === next) return false;
+    if (next === 'visible' && isTerminal(run.status)) throw new Error(`run ${runId} has already ended`);
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: by },
+      type: next === 'visible' ? 'presentation.promoted' : 'presentation.demoted',
+      payload: next === 'visible' ? { by, ...(surface ? { surface } : {}) } : { by },
+    });
+    this.applyEvent(runId, event);
+    return true;
+  }
+
   ownerOf(tabId: string): string | undefined {
     for (const runId of this.logs.keys()) if (this.snapshot(runId)!.tabIds.includes(tabId)) return runId;
     return undefined;
@@ -244,7 +279,7 @@ export class RunViewModel {
   list(): RunSummary[] {
     return [...this.logs.keys()].map((id) => {
       const run = this.snapshot(id)!;
-      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds };
+      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds, visibility: run.visibility };
     });
   }
 

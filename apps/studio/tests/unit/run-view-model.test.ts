@@ -225,7 +225,9 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
     const a = await vm.createRun({ task: 'buy milk' });
     await vm.attachTab(a.id, 'tab-1');
 
-    expect(vm.list()).toEqual([{ id: a.id, task: 'buy milk', status: 'running', tabIds: ['tab-1'] }]);
+    expect(vm.list()).toEqual([
+      { id: a.id, task: 'buy milk', status: 'running', tabIds: ['tab-1'], visibility: 'hidden' },
+    ]);
   });
 
   it('marks a run terminal through the log when its session ends', async () => {
