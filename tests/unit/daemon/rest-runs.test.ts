@@ -178,6 +178,10 @@ describe('a client that aborts before the stream is set up', () => {
       respond: () => {},
       sendError: () => {},
       openDb: () => db,
+      // Pinned, not defaulted: ownership now resolves from the published studio handle, and the
+      // default reads the DEVELOPER's `~/.wigolo/studio/current.json`. Left ambient, this row would
+      // take the proxy path — and pass or fail on whether the app happened to be open.
+      resolveOwner: () => ({ kind: 'local' }),
     });
 
     expect(openRunStreamCount()).toBe(before);

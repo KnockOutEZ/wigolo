@@ -9,7 +9,9 @@ import {
   resolveRunsOwner,
   proxyRunsRequest,
   RUNS_PROXY_HOP_HEADER,
+  type RunsOwner,
 } from '../../../src/daemon/rest/runs-owner.js';
+import { handleRunsRequest } from '../../../src/daemon/rest/runs.js';
 import type { HttpError } from '../../../src/daemon/rest/errors.js';
 
 /**
@@ -353,5 +355,82 @@ describe('proxyRunsRequest — the raw hop to the live owner', () => {
     // A dropped client that leaves the hop alive leaks a socket per reconnect on the host — the
     // long-lived tail makes that a slow exhaustion rather than a visible failure.
     expect(upstreamClosed).toBe(true);
+  });
+});
+
+describe('handleRunsRequest — the ownership branch', () => {
+  /** A runs surface whose store access is observable, so "did not touch it" is an assertion. */
+  function startRunsServer(owner: RunsOwner): Promise<{ port: number; dbOpens: () => number }> {
+    let opens = 0;
+    proxy = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      void handleRunsRequest(req, res, {
+        pathname: url.pathname,
+        method: req.method ?? 'GET',
+        url,
+        respond: (status, body, headers) => {
+          res.writeHead(status, { 'Content-Type': 'application/json', ...(headers ?? {}) });
+          res.end(JSON.stringify(body));
+        },
+        sendError: (e: HttpError) => {
+          if (res.headersSent) return;
+          res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
+          res.end(JSON.stringify(e.body));
+        },
+        openDb: () => { opens++; throw new Error('the store must not be opened on the proxy path'); },
+        resolveOwner: () => owner,
+      });
+    });
+    return listen(proxy).then((port) => ({ port, dbOpens: () => opens }));
+  }
+
+  it('sends the request to the live owner and never opens its own store', async () => {
+    upstreamHandler = (_req, res) => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, run: { id: 'c29x' } }));
+    };
+    const { port, dbOpens } = await startRunsServer({
+      kind: 'proxy',
+      endpoint: `http://127.0.0.1:${upstreamPort}`,
+      token: 'host-token',
+    });
+
+    const r = await call({ method: 'POST', path: '/v1/runs', port, body: '{"task":"x"}', headers: { 'Content-Type': 'application/json' } });
+
+    expect(r.status).toBe(201);
+    expect((JSON.parse(r.body) as { run: { id: string } }).run.id).toBe('c29x');
+    // The daemon HAS a usable store here — that is the trap. Writing into it beside a live owner is
+    // the double-append whose live tails fan out separately.
+    expect(dbOpens()).toBe(0);
+    expect(seen[0].url).toBe('/v1/runs');
+  });
+
+  it('proxies the SSE tail as a stream, not as a buffered result', async () => {
+    const wire = 'id: 7\nevent: run.note\ndata: {"seq":7}\n\n';
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+      res.end(wire);
+    };
+    const { port } = await startRunsServer({
+      kind: 'proxy',
+      endpoint: `http://127.0.0.1:${upstreamPort}`,
+      token: 'host-token',
+    });
+
+    const r = await call({ path: '/v1/runs/c29x/events', port, headers: { Accept: 'text/event-stream' } });
+    expect(r.headers['content-type']).toBe('text/event-stream; charset=utf-8');
+    expect(r.body).toBe(wire);
+  });
+
+  it('still refuses a route that is not a run route before consulting the owner', async () => {
+    const { port } = await startRunsServer({
+      kind: 'proxy',
+      endpoint: `http://127.0.0.1:${upstreamPort}`,
+      token: 'host-token',
+    });
+    const r = await call({ path: '/v1/runs/c29x/events/extra', port });
+    expect(r.status).toBe(404);
+    // Shape errors are answered here rather than turned into traffic the owner has to reject too.
+    expect(seen).toHaveLength(0);
   });
 });

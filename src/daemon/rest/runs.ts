@@ -40,6 +40,7 @@ import {
   type RunStatus,
 } from '../../studio/run-store.js';
 import { createRunWithTail, subscribeRunEvents } from '../../studio/run-bus.js';
+import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
 
 const log = createLogger('rest');
 
@@ -111,6 +112,8 @@ export interface RunsRequestOptions {
   sendError: (error: HttpError) => void;
   /** Injected by tests; production resolves the shared cache DB lazily. */
   openDb?: () => Database.Database;
+  /** Injected by tests; production reads the published studio handle (SD1 §6 / A-43-5). */
+  resolveOwner?: () => RunsOwner;
 }
 
 function runNotFound(): HttpError {
@@ -171,6 +174,22 @@ export async function handleRunsRequest(
   }
   if (route.kind !== 'collection' && method !== 'GET') {
     opts.sendError(methodNotAllowed('GET'));
+    return;
+  }
+
+  // Ownership BEFORE the store resolve (SD1 §6 / A-43-5). A standalone daemon running beside a live
+  // studio host has a perfectly good DB handle of its own — that is exactly the trap. Opening it
+  // first and only then asking who owns the run would make the answer look optional, and the whole
+  // rule exists because two processes appending to one log fan their live tails out separately.
+  const owner = (opts.resolveOwner ?? resolveRunsOwner)();
+  if (owner.kind === 'proxy') {
+    await proxyRunsRequest(req, res, {
+      target: { endpoint: owner.endpoint, token: owner.token },
+      path: `${opts.pathname}${opts.url.search}`,
+      method,
+      streaming: route.kind === 'events',
+      sendError: opts.sendError,
+    });
     return;
   }
 
