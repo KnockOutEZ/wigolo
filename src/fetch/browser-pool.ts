@@ -663,11 +663,12 @@ export class MultiBrowserPool {
 
     // OFF by default: only reach the hosted scraping-browser rung when it is
     // explicitly configured (`scrapingBrowserWss`) AND the caller did not already
-    // pin an explicit CDP endpoint. When null, this is a hard no-op — the default
-    // acquire/launch path below is entirely unchanged. The connector itself
-    // owns the P8 scheme-guard + credential redaction; a bad scheme / connect
-    // failure returns null so we fall through to the normal browser tier.
-    const scrapingWss = !options.cdpUrl ? config.scrapingBrowserWss : null;
+    // pin an explicit CDP endpoint or provide an authenticated profile. When null,
+    // this is a hard no-op — the default acquire/launch path below is entirely
+    // unchanged. The connector itself owns the P8 scheme-guard + credential
+    // redaction; a bad scheme / connect failure returns null so we fall through
+    // to the normal browser tier.
+    const scrapingWss = !options.cdpUrl && !options.userDataDir ? config.scrapingBrowserWss : null;
 
     // Stealth applies only to the launch path — the CDP path connects to an
     // external browser that owns its own fingerprint, and the persistent-profile
@@ -719,6 +720,39 @@ export class MultiBrowserPool {
         this.releaseStealthSlot();
         stealthSlotHeld = false;
         throw err;
+      }
+    } else if (scrapingWss) {
+      // Hosted scraping-browser rung (opt-in). Reuse the P8 connector: it
+      // validates the ws:/wss: scheme, redacts credentials in every log line,
+      // and connects over CDP. On success it hands back a live Browser we drive
+      // exactly like the pinned-CDP path; on null (bad scheme / connect failure)
+      // we fall back to the normal browser tier — a fetch is NEVER hard-failed.
+      resolvedType = 'chromium';
+      const scrapingHandle = await connectScrapingBrowser({
+        wss: scrapingWss,
+        signal: options.signal,
+      }).catch(() => null);
+      if (scrapingHandle) {
+        // Treat the hosted browser like the pinned-CDP browser so the shared
+        // finally closes it (never released to the local pool).
+        cdpBrowser = scrapingHandle.browser;
+        try {
+          const contexts = cdpBrowser.contexts();
+          ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+        } catch (err) {
+          // This runs BEFORE the main try/finally, so a context failure here
+          // would strand the hosted browser — and a hosted one keeps running
+          // (and billing) remotely. Close it and degrade like a failed connect.
+          log.warn('hosted scraping-browser context creation failed, falling back to a local browser', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await scrapingHandle.close().catch(() => {});
+          cdpBrowser = null;
+          ctx = await this.acquireForType(resolvedType);
+        }
+      } else {
+        // Off / bad scheme / connect failed → graceful fall back to launch.
+        ctx = await this.acquireForType(resolvedType);
       }
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
