@@ -51,6 +51,7 @@
     "tests/unit/server/tool-audit.test.ts",
     "tests/integration/tool-audit-dispatch.test.ts",
     "tests/unit/daemon/proxy-roundtrip.test.ts",
+    "tests/unit/daemon/rest-runs-proxy.test.ts",
     "tests/integration/studio-session-target.test.ts",
     "tests/integration/studio-observe-seam.test.ts",
     "tests/security-regression.test.ts",

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +33,9 @@ allowNetworkInThisFile(
  * `npm run build` after touching `src/daemon/rest/` or the host half of this file tests yesterday.
  */
 
+/** `stdio: ['ignore', 'pipe', 'pipe']` — no stdin, both output streams readable. */
+type HostChild = ChildProcessByStdio<null, Readable, Readable>;
+
 const HOST_TOKEN = 'host-secret-token';
 
 /**
@@ -51,7 +55,7 @@ const HOST_TOKEN = 'host-secret-token';
 let daemonDataDir: string;
 let hostDataDir: string;
 let hostInstanceId = '';
-let child: ChildProcessWithoutNullStreams | undefined;
+let child: HostChild | undefined;
 let hostRestPort = 0;
 let hostControlPort = 0;
 let daemon: import('../../src/daemon/http-server.js').DaemonHttpServer;
@@ -210,7 +214,7 @@ function startHostChild(): Promise<{ rest: number; control: number; instanceId: 
     child = spawn(process.execPath, [join(process.cwd(), 'tests/integration/studio-runs-host-child.mjs')], {
       env: { ...process.env, WIGOLO_DATA_DIR: hostDataDir, WIGOLO_TEST_HOST_TOKEN: HOST_TOKEN },
       stdio: ['ignore', 'pipe', 'pipe'],
-    }) as ChildProcessWithoutNullStreams;
+    });
 
     let out = '';
     let stderr = '';
