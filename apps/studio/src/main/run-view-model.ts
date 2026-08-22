@@ -88,14 +88,19 @@ export class RunViewModel {
     for (const cb of this.listeners) cb();
   }
 
-  /** Replay every run from the store. Safe to call repeatedly — it discards what it holds first. */
+  /**
+   * Replay every run from the store. Safe to call repeatedly — it replaces what it holds.
+   *
+   * A run the listing did not name is KEPT rather than dropped: the listing is a snapshot, and a run
+   * created after it was taken would otherwise be discarded here and stay invisible until it happened
+   * to emit again. Runs are never deleted, so "absent from the listing" only ever means "newer than it".
+   */
   async hydrate(): Promise<void> {
     const { runs } = await this.store.listRuns();
-    this.logs.clear();
-    this.projected.clear();
     for (const run of runs) {
       const events = await this.store.eventsSince(run.id, 0);
       this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
+      this.projected.delete(run.id);
     }
     this.emit();
   }

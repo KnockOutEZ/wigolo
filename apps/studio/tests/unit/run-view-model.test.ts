@@ -139,6 +139,29 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
     expect(fresh.tabsOf(a.id)).toEqual(['tab-1']); // the detach replayed too, not just the attaches
   });
 
+  // `listRuns` is a snapshot. A run created after it was taken but before the replay finished used to be
+  // wiped by the clear-then-refill, and would then stay invisible until it happened to emit again.
+  it('keeps a run created while it was replaying, rather than discarding it with the old state', async () => {
+    const slow = new FakeRunStore();
+    const known = await slow.createRun({ task: 'already there' });
+    const vm2 = new RunViewModel(slow);
+
+    // The listing is a snapshot taken BEFORE the newcomer exists, and it lands after the newcomer is
+    // registered — the exact interleaving a boot-time hydrate races a first `studio_open` into.
+    const stale = await slow.listRuns();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    slow.listRuns = async () => { await gate; return stale; };
+
+    const inFlight = vm2.hydrate();
+    const newcomer = await vm2.createRun({ task: 'born mid-replay' });
+    release();
+    await inFlight;
+
+    expect(vm2.list().map((r) => r.id).sort()).toEqual([known.id, newcomer.id].sort());
+    expect(vm2.list().find((r) => r.id === known.id)?.task).toBe('already there');
+  });
+
   it('picks up a tab another writer attached, off the live tail', async () => {
     const run = await vm.createRun({ task: 'a' });
     // Nothing the view-model called — a second writer on the same run, arriving as a broker notify.
