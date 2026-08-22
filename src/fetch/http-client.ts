@@ -165,14 +165,16 @@ async function fetchWithRedirects(
   const visited = new Set<string>();
   let currentUrl = originalUrl;
   let redirectCount = 0;
-  // One Agent per hop, each holding a connection pool. They are closed in the finally below once
-  // the body has been consumed — an Agent left open is a socket leak, and the body is read inside
-  // this function, so closing on the way out is safe.
+  // Every Agent created across the redirect chain, kept only so the finally below can close them
+  // once the body has been consumed. An Agent left open is a socket leak, and the body is read
+  // inside this function, so closing on the way out is safe.
   const agents: Agent[] = [];
-  let pinnedAgent: Agent | undefined;
 
   try {
   while (true) {
+    // Per HOP, not per request: an IP-literal hop takes no pin, and leaving the previous hop's
+    // Agent in scope would send that request through a dispatcher built for a different host.
+    let pinnedAgent: Agent | undefined;
     if (visited.has(currentUrl)) {
       throw new HttpFetchError(`Redirect loop detected at ${currentUrl}`, false);
     }
