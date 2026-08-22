@@ -83,6 +83,52 @@ describe('presentation transitions are run events', () => {
     ]);
   });
 
+  /**
+   * Found by double-clicking the real menu-bar item: both clicks read the same projection before
+   * either append landed, so the run's log got two `presentation.promoted` events in a row for one
+   * transition. Checking against the projection is only idempotent if the checks are serialised.
+   */
+  it('writes one event for two promotes fired before the first one lands', async () => {
+    const run = await vm.createRun({ task: 'double-clicked' });
+    store.appends.length = 0;
+
+    const [first, second] = await Promise.all([
+      vm.setVisibility(run.id, 'visible', 'human', 'tray'),
+      vm.setVisibility(run.id, 'visible', 'human', 'tray'),
+    ]);
+
+    expect([first, second]).toEqual([true, false]);
+    expect(store.appends).toEqual([
+      { runId: run.id, type: 'presentation.promoted', payload: { by: 'human', surface: 'tray' } },
+    ]);
+  });
+
+  it('still serialises a promote and a demote fired together, in the order they were asked', async () => {
+    const run = await vm.createRun({ task: 'fast fingers' });
+    store.appends.length = 0;
+
+    await Promise.all([
+      vm.setVisibility(run.id, 'visible', 'human', 'tray'),
+      vm.setVisibility(run.id, 'hidden', 'human'),
+    ]);
+
+    expect(store.appends.map((a) => a.type)).toEqual(['presentation.promoted', 'presentation.demoted']);
+    expect(vm.snapshot(run.id)!.visibility).toBe('hidden');
+  });
+
+  it('does not let one run’s transition queue behind another’s', async () => {
+    const a = await vm.createRun({ task: 'first' });
+    const b = await vm.createRun({ task: 'second' });
+    store.appends.length = 0;
+
+    await Promise.all([
+      vm.setVisibility(a.id, 'visible', 'human', 'tray'),
+      vm.setVisibility(b.id, 'visible', 'human', 'tray'),
+    ]);
+
+    expect(store.appends.map((x) => x.runId).sort()).toEqual([a.id, b.id].sort());
+  });
+
   it('refuses to promote a run that has ended, and writes nothing', async () => {
     const run = await vm.createRun({ task: 'already over' });
     await vm.endRun(run.id, 'completed');

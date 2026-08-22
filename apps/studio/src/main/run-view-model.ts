@@ -80,6 +80,8 @@ export class RunViewModel {
   private readonly listeners = new Set<() => void>();
   /** Runs being replayed right now, so a burst of events for one of them causes a single replay. */
   private readonly adopting = new Set<string>();
+  /** One presentation transition at a time per run — see `setVisibility`. */
+  private readonly transitions = new Map<string, Promise<void>>();
 
   constructor(private readonly store: RunStoreClient) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
@@ -247,7 +249,20 @@ export class RunViewModel {
    * is already in this projection, so re-asserting it here writes nothing. Returns whether an event
    * was appended, which is what a caller needs to know before it moves a window.
    */
-  async setVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
+  setVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
+    // Serialised per run, because the check below is against the PROJECTION: two clicks on the same
+    // menu item both read "hidden" before either append lands, and the log gets two promotes for one
+    // transition. A human double-clicking is the ordinary way to produce that. Per run, not global, so
+    // one run's slow append never holds another's up.
+    const queued = (this.transitions.get(runId) ?? Promise.resolve()).then(
+      () => this.applyVisibility(runId, next, by, surface),
+      () => this.applyVisibility(runId, next, by, surface),
+    );
+    this.transitions.set(runId, queued.then(() => undefined, () => undefined));
+    return queued;
+  }
+
+  private async applyVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
     const run = this.snapshot(runId);
     if (!run) throw new Error(`no such run: ${runId}`);
     if (run.visibility === next) return false;
