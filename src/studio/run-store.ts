@@ -225,7 +225,9 @@ export function isValidRunId(id: string): boolean {
  */
 export function normalizeRunId(id: string): string {
   const normalized = String(id).trim().toLowerCase();
-  if (!isValidRunId(normalized)) throw new Error(`invalid run id: ${normalized}`);
+  // Quoted and clipped, not interpolated raw: the string that reaches here is by definition NOT an
+  // id, so it is arbitrary caller input on its way into a log line.
+  if (!isValidRunId(normalized)) throw new Error(`invalid run id: ${JSON.stringify(normalized.slice(0, 32))}`);
   return normalized;
 }
 
