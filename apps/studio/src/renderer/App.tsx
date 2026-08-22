@@ -178,6 +178,7 @@ export function App() {
         onFocus={(id) => void window.studio.focusTab(id)}
         onClose={(id) => void window.studio.closeTab(id)}
         onNew={() => void window.studio.createTab('about:blank')}
+        focusedRunId={state.focusedRunId}
         provenance={(id) => controlStore.provenance(id, state.tabs.find((t) => t.id === id)?.active ?? false, Date.now())}
       />
       <Toolbar
@@ -215,8 +216,10 @@ export function App() {
                   Timeline{timeline.length ? ` · ${timeline.length}` : ''}
                 </button>
               </span>
-              {/* The session name died with the registry. Until #49 designs the run chrome, the badge
-                  names the focused run — the same short id the terminal, replay and audit log use. */}
+              {/* The session name died with the registry. The badge names the run you are inside — the
+                  same short id the tab group above it, the terminal, REST, replay and the audit log
+                  carry. It repeats the group label deliberately: the rail is where you talk to that
+                  run, so it must say which one without making you find its group in the strip. */}
               <span className="rail__badge">{state.focusedRunId ?? 'no run'}</span>
               <span className="rail__spacer" />
             </div>

@@ -57,6 +57,25 @@ button { font-family: inherit; }
   background: var(--bg);
   -webkit-app-region: drag;        /* the empty titlebar is a window drag handle */
 }
+/* A run's tab group. The run id is the group's label and the group is the only thing in the chrome
+   that names a run, so the id NEVER shrinks: `flex: none` on the label against `min-width: 0` on the
+   group means a crowded strip eats tab titles and leaves every id readable. */
+.tab-group {
+  display: flex; align-items: flex-end; gap: 3px;
+  min-width: 0;
+}
+/* Deliberately NOT `no-drag`: the chip is a label, nothing clicks it, and carving it out of the
+   titlebar's drag region would leave a dead strip the window cannot be moved by. */
+.tab-group__id {
+  flex: none; align-self: center;
+  font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
+  color: var(--text-mono-muted); border: var(--hair-width) solid var(--hair-soft);
+  padding: 2px 6px; margin-right: 1px; border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+/* The run you are inside reads at full strength; the others stay legible but recede. Neither is an
+   accent — an id is not a state, and amber here would stop meaning "needs you". */
+.tab-group--focused .tab-group__id { color: var(--text-primary); border-color: var(--hair); }
 .tab {
   -webkit-app-region: no-drag;
   display: flex; align-items: center; gap: var(--space-chip);
