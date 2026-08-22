@@ -63,11 +63,29 @@ const SSE_RETRY_MS = 3000;
  * every other request on the daemon, including the other runs' tails, stops until it finishes.
  */
 const DEFAULT_REPLAY_PAGE = 500;
+/**
+ * How many live events the replay may hold back before it stops holding at all.
+ *
+ * The hold-back is what keeps a live event from overtaking an older replayed one, and it is the
+ * only place on this route where the daemon's heap grows with something it does not control: a run
+ * appending while a long log replays is bounded by nothing but replay-duration × event-rate, and
+ * the deliberate yield between pages widens that window on purpose. Past the ceiling the buffer is
+ * DROPPED rather than trimmed — a trimmed buffer would put a hole in the middle of the stream and
+ * call it delivery, where a dropped one ends the stream and lets the client resume from its
+ * `Last-Event-ID` against the durable log, which is the same door every reconnect already uses.
+ */
+const DEFAULT_MAX_HELD_EVENTS = 2048;
 
 function replayPageSize(): number {
   const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
   const parsed = raw === undefined ? NaN : Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_REPLAY_PAGE;
+}
+
+function maxHeldEvents(): number {
+  const raw = process.env.WIGOLO_STUDIO_SSE_MAX_HELD;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_HELD_EVENTS;
 }
 
 function maxSseConnections(): number {
@@ -469,11 +487,18 @@ export interface OrderedEmitter {
   offer(event: RunEvent): void;
   goLive(): void;
   lastEmitted(): number;
+  /** True once the hold buffer hit its ceiling and was dropped. The stream must then END. */
+  overflowed(): boolean;
 }
 
-export function createOrderedEmitter(since: number, write: (event: RunEvent) => void): OrderedEmitter {
+export function createOrderedEmitter(
+  since: number,
+  write: (event: RunEvent) => void,
+  maxHeld: number = maxHeldEvents(),
+): OrderedEmitter {
   let last = since;
   let replaying = true;
+  let overflow = false;
   const held: RunEvent[] = [];
 
   const emit = (event: RunEvent): void => {
@@ -485,8 +510,22 @@ export function createOrderedEmitter(since: number, write: (event: RunEvent) => 
   return {
     emit,
     offer(event) {
-      if (replaying) held.push(event);
-      else emit(event);
+      if (!replaying) {
+        emit(event);
+        return;
+      }
+      // Nothing more is worth holding: the buffer is gone and the stream is ending.
+      if (overflow) return;
+      // The replay has already passed this seq, so the durable read covered it and `goLive` would
+      // drop it anyway. Not holding it is what keeps an append storm the replay is KEEPING UP with
+      // from spending the ceiling on events nobody would ever have written.
+      if (event.seq <= last) return;
+      if (held.length >= maxHeld) {
+        held.length = 0;
+        overflow = true;
+        return;
+      }
+      held.push(event);
     },
     goLive() {
       replaying = false;
@@ -495,6 +534,7 @@ export function createOrderedEmitter(since: number, write: (event: RunEvent) => 
       for (const event of pending) emit(event);
     },
     lastEmitted: () => last,
+    overflowed: () => overflow,
   };
 }
 
@@ -629,5 +669,19 @@ async function handleEvents(
   }
 
   // Step 3 — release whatever arrived mid-replay through the same door, then run live.
+  //
+  // Unless the run out-appended the hold buffer, in which case the events it dropped are still in
+  // the durable log and the honest move is to end the stream: the client reconnects with the last
+  // seq it actually saw and replays the gap. Going live over a dropped buffer would skip those seqs
+  // silently, which is the one thing this route promises never to do.
+  if (emitter.overflowed()) {
+    log.warn('run tail dropped its replay hold buffer under an append storm; ending the stream so the client resumes', {
+      runId: id,
+      lastEmitted: emitter.lastEmitted(),
+    });
+    cleanup();
+    res.end();
+    return;
+  }
   emitter.goLive();
 }

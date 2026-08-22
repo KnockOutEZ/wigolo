@@ -76,6 +76,57 @@ describe('run stream ordering — the exactly-once door', () => {
     expect(written).toEqual([5, 6]);
   });
 
+  /**
+   * WHY: the hold-back is the one place on this route where the daemon's heap grows with something
+   * it does not control — a run appending while a long log replays, with the deliberate yield
+   * between pages widening the window. The ceiling is what makes that bounded, and DROPPING at the
+   * ceiling rather than trimming is what keeps the promise: a trimmed buffer puts a hole in the
+   * middle of the stream and calls it delivery, a dropped one ends the stream and sends the client
+   * back through the reconnect door it already has.
+   */
+  it('holds up to the ceiling and no further — the buffer cannot grow with the run', () => {
+    const written: number[] = [];
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
+
+    for (const seq of [2, 3, 4, 5]) emitter.offer(ev(seq));
+    expect(emitter.overflowed()).toBe(false);
+    emitter.goLive();
+    // Exactly at the ceiling is still a delivery, not a drop.
+    expect(written).toEqual([2, 3, 4, 5]);
+  });
+
+  it('drops the whole hold buffer past the ceiling rather than delivering it with a hole in it', () => {
+    const written: number[] = [];
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
+    emitter.emit(ev(1));
+
+    for (let seq = 2; seq <= 40; seq++) emitter.offer(ev(seq));
+
+    expect(emitter.overflowed()).toBe(true);
+    emitter.goLive();
+    // Nothing from the storm goes out: whatever the buffer was holding is gone, and the caller's
+    // answer to `overflowed()` is to end the stream so the client replays the gap from the log.
+    expect(written).toEqual([1]);
+    expect(emitter.lastEmitted()).toBe(1);
+  });
+
+  it('does not spend the ceiling on events the replay has already covered', () => {
+    const written: number[] = [];
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 2);
+
+    // The overlap window, at volume: every one of these is both published to us and visible to the
+    // next page's query. Holding them would burn the ceiling on events `goLive` drops anyway — so a
+    // storm the replay is KEEPING UP with must not be mistaken for one that outran it.
+    for (let seq = 1; seq <= 50; seq++) {
+      emitter.emit(ev(seq));
+      emitter.offer(ev(seq));
+    }
+
+    expect(emitter.overflowed()).toBe(false);
+    emitter.goLive();
+    expect(written).toHaveLength(50);
+  });
+
   it('flushes held events in sequence order even if they were offered out of order', () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));

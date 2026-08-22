@@ -18,9 +18,11 @@
  */
 import { request as httpRequest, type IncomingMessage, type ServerResponse, type ClientRequest, type OutgoingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { networkInterfaces } from 'node:os';
 import { readHandle, getMyInstanceId } from '../../studio/handle.js';
 import { createLogger } from '../../logger.js';
 import { errorEnvelope, type HttpError } from './errors.js';
+import { isLoopbackBind } from './auth.js';
 
 const log = createLogger('rest');
 
@@ -60,8 +62,15 @@ const HOP_BY_HOP = new Set([
  * Request headers that cross the hop. An allowlist rather than a filter: the request may carry a
  * caller's cookies or bearer for a DIFFERENT surface, and forwarding ambient credentials to another
  * process is a widening nobody asked for. `authorization` is set from the handle token instead.
+ *
+ * `content-length` is deliberately absent, and is the one entry whose absence is load-bearing. It
+ * describes THIS hop's body, which is `opts.body` or nothing — never whatever the client announced.
+ * Relayed, a bodyless proxied GET carrying a client `Content-Length` leaves the owner's parser
+ * waiting for a body on a socket the keep-alive pool immediately hands to the NEXT request, whose
+ * opening bytes are then eaten as that body; the owner's parser rejects the remainder and an
+ * unrelated caller gets a 502 for a request the owner never saw. One crafted read, one dead victim.
  */
-const FORWARDED_REQUEST_HEADERS = ['accept', 'content-type', 'content-length', 'last-event-id'];
+const FORWARDED_REQUEST_HEADERS = ['accept', 'content-type', 'last-event-id'];
 
 export type RunsOwner =
   | { kind: 'local' }
@@ -94,6 +103,17 @@ export function resolveRunsOwner(dataDir?: string): RunsOwner {
   // unreachable-owner branch forever. A handle that cannot name a host does not name an owner.
   if (!isUsableEndpoint(handle.endpoint)) {
     log.debug('ignoring studio handle with an unusable endpoint', { endpoint: handle.endpoint });
+    return { kind: 'local' };
+  }
+
+  // The hop carries the handle's bearer token — and the caller's `Last-Event-ID` — to whatever host
+  // the handle names, so where that host may be is worth constraining. The owner is by definition a
+  // process on THIS machine (it is what wrote this file), so an endpoint that is not an address of
+  // this machine cannot be the owner; it can only be somewhere a credential goes. Writing the handle
+  // already needs the same UID, so this is depth rather than a boundary — which is exactly why it is
+  // a WARN and not a refusal: the run request is still served, from the local store.
+  if (!isThisMachineEndpoint(handle.endpoint)) {
+    log.warn('ignoring studio handle whose endpoint is not on this machine', { endpoint: handle.endpoint });
     return { kind: 'local' };
   }
 
@@ -134,6 +154,49 @@ function isUsableEndpoint(endpoint: string): boolean {
   }
 }
 
+/**
+ * The wildcard binds. Neither is an address OF anything, but dialing either reaches this machine,
+ * and `studio --host 0.0.0.0 --allow-remote` publishes exactly that string as its endpoint.
+ */
+const UNSPECIFIED_HOSTS = new Set(['0.0.0.0', '::', '0:0:0:0:0:0:0:0']);
+
+/**
+ * Whether an endpoint names this machine.
+ *
+ * Loopback is the common case and reuses the bind gate's predicate rather than a second spelling of
+ * it, so the set of hosts we will DIAL cannot drift from the set we are willing to BIND. It is not
+ * the whole answer, though: `studio --allow-remote` is a supported bind, and the handle it publishes
+ * then names one of this machine's routable addresses — which is still the live owner and must still
+ * be proxied to, or the fan-out splits exactly as A-43-5 forbids.
+ *
+ * No name is resolved, deliberately: a hostname is not an address of this machine as far as this
+ * predicate is concerned, so the unknown case fails closed. DNS would also make the answer depend on
+ * a resolver the handle's writer may control.
+ */
+function isThisMachineEndpoint(endpoint: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(endpoint).hostname;
+  } catch {
+    return false;
+  }
+  if (isLoopbackBind(hostname)) return true;
+
+  // `URL` keeps IPv6 literals bracketed, and a link-local address carries a percent-encoded zone id
+  // that names an interface rather than the address.
+  const bare = (hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname)
+    .split('%')[0]
+    .toLowerCase();
+  if (UNSPECIFIED_HOSTS.has(bare)) return true;
+
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.address.split('%')[0].toLowerCase() === bare) return true;
+    }
+  }
+  return false;
+}
+
 /** Upstream response headers minus the ones that describe our hop rather than the client's. */
 function relayHeaders(upstreamRes: IncomingMessage): OutgoingHttpHeaders {
   const out: OutgoingHttpHeaders = {};
@@ -151,8 +214,13 @@ function hostUnreachable(): HttpError {
       'studio_host_unreachable',
       'The live run-store owner is not reachable.',
       {
+        // Never "delete the handle": the handle is what names the single live owner, and an operator
+        // who removes it while the app is up leaves two processes each believing they own the live
+        // fan-out — the exact split this route exists to close. Quitting the app is the answer,
+        // because that is what makes this daemon the owner honestly.
         hint: 'A studio session handle is published but its endpoint did not answer (stale handle?). '
-          + 'Close the studio app or remove ~/.wigolo/studio/current.json to make this daemon the owner.',
+          + 'Quit or re-launch the studio app so the handle names the live owner; with the app closed '
+          + 'this daemon owns the run store.',
       },
     ),
     headers: {},
@@ -244,8 +312,8 @@ export function proxyRunsRequest(
     const value = req.headers[name];
     if (value !== undefined) headers[name] = value;
   }
-  // A re-serialized body is rarely byte-identical to the one that arrived, so the client's own
-  // content-length would describe a body we are not sending.
+  // The hop's only statement about its own body. A re-serialized body is rarely byte-identical to
+  // the one that arrived, and a bodyless hop announces nothing at all.
   if (opts.body) headers['content-length'] = opts.body.length;
 
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest;

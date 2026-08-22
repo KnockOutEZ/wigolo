@@ -87,6 +87,8 @@ class SseClient {
   readonly comments: string[] = [];
   status = 0;
   headers: http.IncomingHttpHeaders = {};
+  /** Whether the SERVER ended the stream. A tail that ends on its own is a statement to the client. */
+  ended = false;
   private buffer = '';
   private req?: http.ClientRequest;
   private waiters: Array<() => void> = [];
@@ -102,6 +104,10 @@ class SseClient {
           res.on('data', (chunk: string) => {
             this.buffer += chunk;
             this.drain();
+          });
+          res.on('end', () => {
+            this.ended = true;
+            for (const w of this.waiters.splice(0)) w();
           });
           resolve();
         },
@@ -148,6 +154,14 @@ class SseClient {
         const t = setTimeout(r, 25);
         this.waiters.push(() => { clearTimeout(t); r(); });
       });
+    }
+  }
+
+  async waitForEnd(timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!this.ended) {
+      if (Date.now() > deadline) throw new Error(`stream did not end; frames: ${JSON.stringify(this.seqs())}`);
+      await new Promise<void>((r) => setTimeout(r, 25));
     }
   }
 
@@ -453,6 +467,68 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
       else process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = previous;
     }
   }, 20000);
+
+  /**
+   * WHY: the replay holds live events back so none of them overtakes an older replayed one, and
+   * nothing bounded that buffer — a run appending while a long log paged could put its whole burst
+   * into daemon heap, with the deliberate yield between pages widening the window. The ceiling is
+   * the fix, and the interesting half is what the ceiling COSTS: the buffer is dropped, so the
+   * stream must end rather than go live over the hole. The client then resumes through the same
+   * `Last-Event-ID` door a dropped connection already uses, and the durable log makes it whole.
+   */
+  it('ends the stream instead of going live over a hold buffer an append storm overflowed', async () => {
+    const previousPage = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
+    const previousHeld = process.env.WIGOLO_STUDIO_SSE_MAX_HELD;
+    process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = '1';
+    process.env.WIGOLO_STUDIO_SSE_MAX_HELD = '4';
+    try {
+      const id = await createRun('append storm during replay');
+      const append = (): void => {
+        appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+      };
+      // Long enough that a one-event page size cannot drain it before the client is even connected;
+      // the replay has to still be paging when the storm arrives or the row asserts nothing.
+      let total = 1;
+      for (; total < 400; total++) append();
+
+      const client = new SseClient();
+      await client.open(`/v1/runs/${id}/events`);
+      // The storm: twenty appends per tick against a replay that advances one. They land in the hold
+      // buffer with nothing draining it — the shape that used to grow without a bound — and while it
+      // continues the replay keeps finding full pages, so it cannot reach the end and finish.
+      for (let round = 0; round < 20 && !client.ended; round++) {
+        for (let i = 0; i < 20; i++) { append(); total++; }
+        await new Promise<void>((r) => setImmediate(r));
+      }
+
+      await client.waitForEnd(15_000);
+      const first = client.seqs();
+      // Everything delivered is contiguous from the start. A buffer that was trimmed instead of
+      // dropped — delivered with a hole and called delivery — shows up here as a jump.
+      expect(first.length).toBeGreaterThan(0);
+      expect(first).toEqual(first.map((_, i) => i + 1));
+
+      // The run keeps going after the tail let go; law 2 — a run exists whether or not anyone is
+      // watching. These are what the reconnect must fetch on top of whatever the storm cost it.
+      for (let i = 0; i < 3; i++) { append(); total++; }
+
+      // The reconnect the ending exists to provoke. Everything after the client's last seq arrives,
+      // in order, with nothing repeated and nothing skipped.
+      const resumed = new SseClient();
+      const missing = total - first.length;
+      await resumed.open(`/v1/runs/${id}/events`, { 'Last-Event-ID': String(first[first.length - 1]) });
+      await resumed.waitForFrames(missing, 15_000);
+      expect(resumed.seqs()).toEqual(
+        Array.from({ length: missing }, (_, i) => first[first.length - 1] + 1 + i),
+      );
+      resumed.kill();
+    } finally {
+      if (previousPage === undefined) delete process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
+      else process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = previousPage;
+      if (previousHeld === undefined) delete process.env.WIGOLO_STUDIO_SSE_MAX_HELD;
+      else process.env.WIGOLO_STUDIO_SSE_MAX_HELD = previousHeld;
+    }
+  }, 30000);
 
   it('releases its subscription when the client goes away', async () => {
     const { runEventListenerCount } = await import('../../src/studio/run-bus.js');

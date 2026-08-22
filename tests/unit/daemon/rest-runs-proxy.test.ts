@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import type { AddressInfo } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -235,6 +236,48 @@ describe('resolveRunsOwner — who owns the live run store for this request', ()
     publishHandle('host-instance-abc', 'file:///etc/passwd');
     expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
   });
+
+  /**
+   * WHY: the hop sends the handle's bearer token — and the caller's `Last-Event-ID` — to whatever
+   * host the handle names. The owner is by definition a process on this machine, since it is what
+   * wrote the handle, so an endpoint elsewhere cannot be the owner; it can only be a destination for
+   * a credential. Writing the handle needs the same UID already, so this is depth rather than a
+   * boundary — but the constraint is free, and "the owner is on this machine" is then a thing we
+   * know rather than a thing we hope.
+   *
+   * The addresses below are RFC 5737 documentation ranges, which are never assigned to a real
+   * interface — a plausible-looking LAN literal could be this machine's own on some runner, and the
+   * row would then assert nothing.
+   */
+  it('serves in-process when the handle names a host that is not this machine', () => {
+    publishHandle('host-instance-abc', 'http://192.0.2.10:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    publishHandle('host-instance-abc', 'https://collector.example.com/v1');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    // No DNS, on purpose: a name is not an address of this machine, and resolving one would put the
+    // answer in the hands of a resolver the handle's writer may control.
+    publishHandle('host-instance-abc', 'http://localhost.evil.example:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    publishHandle('host-instance-abc', 'http://[2001:db8::5]:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+  });
+
+  /**
+   * The must-not-fire half. `--allow-remote` is a supported studio bind, and the handle it publishes
+   * then names a routable address of this machine or the wildcard it bound — that host is still the
+   * one live owner, and a fence that refused it would split the live fan-out A-43-5 exists to close.
+   */
+  it('still proxies to every address that names this machine — the fence must not eat the real host', () => {
+    const local = Object.values(networkInterfaces())
+      .flatMap((addrs) => addrs ?? [])
+      .filter((a) => !a.internal)
+      .map((a) => (a.family === 'IPv6' ? `[${a.address.split('%')[0]}]` : a.address));
+    for (const host of ['127.0.0.1', 'localhost', '[::1]', '127.8.9.10', '0.0.0.0', ...local.slice(0, 2)]) {
+      const endpoint = `http://${host}:${upstreamPort}`;
+      publishHandle('host-instance-abc', endpoint);
+      expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'proxy', endpoint, token: 'host-token' });
+    }
+  });
 });
 
 describe('proxyRunsRequest — the raw hop to the live owner', () => {
@@ -410,6 +453,66 @@ describe('proxyRunsRequest — the raw hop to the live owner', () => {
     // A dropped client that leaves the hop alive leaks a socket per reconnect on the host — the
     // long-lived tail makes that a slow exhaustion rather than a visible failure.
     expect(upstreamClosed).toBe(true);
+  });
+});
+
+/**
+ * WHY: the hop runs over Node's keep-alive pool, so a `Content-Length` describing a body the hop
+ * never writes does not fail the request that carried it — the owner's parser is simply left
+ * waiting for bytes on a socket that goes straight back into the pool. The NEXT request over that
+ * socket is the casualty: its opening bytes are swallowed as the previous request's body and what
+ * remains is not a request line. That makes one crafted read a denial primitive against an
+ * unrelated caller, which in the default local posture (loopback, no API token) is any process on
+ * the machine. The framing of the hop is ours to state, never the client's.
+ */
+describe('request framing across the hop', () => {
+  /**
+   * An owner that answers without draining the request body — the ordinary shape for a GET handler,
+   * and the one that leaves the announced bytes pending on the socket.
+   */
+  function startBodylessOwner(seenReqs: SeenRequest[], sockets: number[], clientErrors: string[]): Promise<number> {
+    const owner = http.createServer((req, res) => {
+      seenReqs.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: '' });
+      sockets.push(req.socket.remotePort ?? 0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    // Replaces Node's default handler, so the socket has to be destroyed here. A parser error is the
+    // symptom the desync produces, and it is invisible from the client side without this.
+    owner.on('clientError', (err, socket) => {
+      clientErrors.push((err as NodeJS.ErrnoException).code ?? String(err));
+      socket.destroy();
+    });
+    // Adopted as the suite's upstream so the shared teardown closes it.
+    upstream = owner;
+    return listen(owner);
+  }
+
+  it('never relays the client’s content-length onto a bodyless proxied request', async () => {
+    const ownerSeen: SeenRequest[] = [];
+    const ownerSockets: number[] = [];
+    const clientErrors: string[] = [];
+    await close(upstream);
+    upstreamPort = await startBodylessOwner(ownerSeen, ownerSockets, clientErrors);
+    proxyPort = await startProxyServer(false);
+
+    // The crafted read: a GET with no body that claims to carry 40 bytes. The proxy's own answer is
+    // fine — the damage is deferred to whoever gets the socket next.
+    const first = await call({ path: '/v1/runs/aaa', headers: { 'Content-Length': '40' } });
+    expect(first.status).toBe(200);
+
+    // The victim: an unrelated request the owner must see whole.
+    const second = await call({ path: '/v1/runs/bbb' });
+
+    expect(ownerSeen.map((r) => r.url)).toEqual(['/v1/runs/aaa', '/v1/runs/bbb']);
+    expect(clientErrors).toEqual([]);
+    expect(second.status).toBe(200);
+    expect(JSON.parse(second.body)).toEqual({ ok: true });
+    // Both hops shared one pooled socket. Without that the desync has nowhere to land and the rows
+    // above would pass on a bug they never exercised.
+    expect(new Set(ownerSockets).size).toBe(1);
+    // The cause, stated directly: our hop describes its own framing, never the client's.
+    expect(ownerSeen[0]?.headers['content-length']).toBeUndefined();
   });
 });
 
