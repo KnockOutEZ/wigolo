@@ -199,6 +199,36 @@ export class RestRouter {
         return;
       }
 
+      // Run routes: /v1/runs, /v1/runs/{id}, /v1/runs/{id}/events (SD1 §5). These sit BEFORE tool
+      // dispatch because that branch slices a flat single-segment tool name and would read
+      // `runs/abcd` as an unknown tool. Auth is the same gate.
+      //
+      // Create/list/fetch take the SAME slot and deadline discipline as the tool routes — they are
+      // ordinary request work and must not be an unbounded-in-flight escape hatch. The SSE tail is
+      // the single exemption in the whole surface: a deadline would 504 a healthy stream and the
+      // slot would be pinned for the life of the tail, so it is bounded by its own connection cap
+      // instead (see runs.ts).
+      if (pathname === '/v1/runs' || pathname.startsWith('/v1/runs/')) {
+        if (!this.passesAuth(req, res)) return;
+        const { handleRunsRequest, parseRunsPath, RUNS_ROUTE_LABEL } = await import('./runs.js');
+        const runsOpts = {
+          pathname,
+          method,
+          url,
+          respond: (status: number, body: unknown, headers?: Record<string, string>) =>
+            this.respond(res, status, body, headers),
+          sendError: (e: HttpError) => this.sendError(res, e),
+        };
+        if (parseRunsPath(pathname)?.kind === 'events') {
+          await handleRunsRequest(req, res, runsOpts);
+          return;
+        }
+        await this.runUnderSlotAndDeadline(res, deadlineFor(RUNS_ROUTE_LABEL), RUNS_ROUTE_LABEL, async () => {
+          await handleRunsRequest(req, res, runsOpts);
+        });
+        return;
+      }
+
       // Tool routes: /v1/{tool}.
       if (pathname.startsWith('/v1/')) {
         const tool = pathname.slice('/v1/'.length);
