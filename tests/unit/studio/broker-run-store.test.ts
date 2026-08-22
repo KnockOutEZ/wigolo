@@ -82,8 +82,10 @@ describe('studio-db-broker — run store methods', () => {
   it('exposes no method that could rewrite or drop an event', async () => {
     // The append-only guarantee has to hold at the RPC surface too: a host that can call
     // `runUpdate` has a second source of truth no matter what the store module refuses.
+    // Still a CLOSED enum, not a "contains no update/delete" predicate: a new mutation method has to
+    // be added here deliberately, which is the point. `runExists` and `runListLogs` are reads.
     const names = Object.keys(handlers).filter((n) => n.startsWith('run'));
-    expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runGet', 'runList']);
+    expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runExists', 'runGet', 'runList', 'runListLogs']);
   });
 
   it('surfaces a refusal instead of silently dropping a malformed append', async () => {

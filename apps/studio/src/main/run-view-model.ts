@@ -18,6 +18,12 @@ import type { BrokerClient } from './broker-client';
  * one agent another agent's page.
  */
 
+/** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
+export interface RunLogEntry {
+  facts: StoredRunFacts;
+  events: RunEvent[];
+}
+
 /** The store, as this process reaches it. Broker-backed in the app; the port exists so tests can bind. */
 export interface RunStoreClient {
   createRun(input: CreateRunInput): Promise<Run>;
@@ -31,6 +37,17 @@ export interface RunStoreClient {
   listRuns(opts?: ListRunsOptions): Promise<ListRunsResult>;
   eventsSince(runId: string, since?: number, limit?: number): Promise<RunEvent[]>;
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
+  /**
+   * The whole boot page — facts and events together — in one round-trip, rather than a listing
+   * followed by a read per run. Optional because this is a port: a store that does not offer it is
+   * still correct, and `hydrate` falls back to the listing plus a concurrent read per run.
+   */
+  listRunLogs?(opts?: ListRunsOptions): Promise<RunLogEntry[]>;
+  /**
+   * Does this run exist, without projecting it? `getRun` replays the whole log to answer, which is
+   * what the SSE route's paged replay exists to avoid. Optional for the same reason as `listRunLogs`.
+   */
+  runExists?(runId: string): Promise<boolean>;
 }
 
 export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient {
@@ -39,9 +56,15 @@ export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient
     appendEvent: (runId, event) => broker.call<RunEvent>('runAppend', { runId, event }),
     getRun: (runId) => broker.call<Run | undefined>('runGet', { runId }),
     listRuns: (opts = {}) => broker.call<ListRunsResult>('runList', opts),
+    listRunLogs: (opts = {}) => broker.call<RunLogEntry[]>('runListLogs', opts),
     eventsSince: (runId, since = 0, limit) => broker.call<RunEvent[]>('runEventsSince', { runId, since, limit }),
+    runExists: (runId) => broker.call<boolean>('runExists', { runId }),
     onRunEvent: (handler) => broker.onRunEvent(handler),
   };
+}
+
+function factsOf(run: Run): StoredRunFacts {
+  return { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt };
 }
 
 export class TabOwnedError extends Error {
@@ -58,6 +81,12 @@ export type PromoteSurface = 'tray' | 'chrome' | 'panel';
 export type PresentationBy = 'human' | 'system';
 
 const TERMINAL_STATUSES: ReadonlySet<Run['status']> = new Set<Run['status']>(['done', 'failed', 'cancelled']);
+/**
+ * The event types that make a run terminal. Kept as types rather than derived by projecting, because
+ * this is asked on EVERY folded envelope — projecting to find out whether to project would make
+ * folding a long run quadratic, which is the class of defect the retention bound exists to remove.
+ */
+const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set(['run.completed', 'run.failed', 'run.cancelled']);
 
 export function isTerminal(status: Run['status']): boolean {
   return TERMINAL_STATUSES.has(status);
@@ -74,17 +103,30 @@ export interface RunSummary {
 
 interface RunLog {
   facts: StoredRunFacts;
+  /** The envelopes this projection is folding. Emptied once `final` is set — see `seal`. */
   events: RunEvent[];
+  /**
+   * The highest seq folded in. Tracked beside the events rather than read off their tail, because a
+   * sealed run has no tail left and still has to reject an envelope it has already seen.
+   */
+  lastSeq: number;
+  /** Replayed from `run.created` once, rather than searched for on every `runForSession` sweep. */
+  sessionId?: string;
+  /** A terminal run's last projection, kept in place of the events that produced it. */
+  final?: Run;
 }
 
 export class RunViewModel {
-  /** A verbatim replica of the log, refillable at any time from the store. Not a second source of truth. */
+  /** A replica of each live run's log, refillable at any time from the store. Not a second source of truth. */
   private readonly logs = new Map<string, RunLog>();
   /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
   private readonly projected = new Map<string, Run>();
   private readonly listeners = new Set<() => void>();
-  /** Runs being replayed right now, so a burst of events for one of them causes a single replay. */
-  private readonly adopting = new Set<string>();
+  /**
+   * Replays in flight, so a burst of events for one run causes a single replay — and so a caller that
+   * needs the projection current before it resolves can await the replay somebody else started.
+   */
+  private readonly adopting = new Map<string, Promise<void>>();
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
 
@@ -113,13 +155,64 @@ export class RunViewModel {
    * to emit again. Runs are never deleted, so "absent from the listing" only ever means "newer than it".
    */
   async hydrate(): Promise<void> {
-    const { runs } = await this.store.listRuns();
-    for (const run of runs) {
-      const events = await this.store.eventsSince(run.id, 0);
-      this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
-      this.projected.delete(run.id);
-    }
+    for (const { facts, events } of await this.loadLogs()) this.retain(facts, events);
     this.emit();
+  }
+
+  /**
+   * The boot page, in as few round-trips as the bound store allows.
+   *
+   * It used to be `listRuns` and then one awaited `eventsSince` per run, strictly in series: fifty runs
+   * meant fifty-one sequential stdio hops before the chrome could name anything. Worse, `listRuns`
+   * already reads each run's projection events in the child to build the `Run`s it returns, so those
+   * events crossed the pipe twice — once inside a projection this class recomputes anyway, once raw.
+   * The combined read asks for facts+events and nothing else, in one hop for the whole page.
+   */
+  private async loadLogs(): Promise<RunLogEntry[]> {
+    if (this.store.listRunLogs) return this.store.listRunLogs();
+    const { runs } = await this.store.listRuns();
+    return Promise.all(
+      runs.map(async (run) => ({ facts: factsOf(run), events: await this.store.eventsSince(run.id, 0) })),
+    );
+  }
+
+  /**
+   * Take a freshly-read log. The single seam every full replay goes through, so the derived facts a
+   * sealed run keeps — its session id, its last seq, its final projection — are computed in exactly
+   * one place rather than at each of the four call sites that read a whole log.
+   */
+  private retain(facts: StoredRunFacts, events: RunEvent[]): void {
+    const sessionId = events.find((e) => e.type === 'run.created')?.payload.sessionId;
+    this.logs.set(facts.id, {
+      facts,
+      events,
+      lastSeq: events.at(-1)?.seq ?? 0,
+      ...(typeof sessionId === 'string' ? { sessionId } : {}),
+    });
+    this.projected.delete(facts.id);
+    if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
+  }
+
+  /**
+   * Drop a finished run's envelopes, keeping the projection they produced.
+   *
+   * A terminal run's projection cannot move again, and every reader — `list`, `ownerOf`, `snapshot` —
+   * asks for the projection, never the log. Holding the envelopes as well meant the app's memory grew
+   * monotonically with every run it had ever seen and never gave any of it back, since runs are never
+   * deleted and `hydrate` deliberately keeps what the listing did not name. Nothing observable changes;
+   * what changes is that a run's cost here ends when the run does.
+   *
+   * An envelope that arrives for a sealed run afterwards is not folded — there is nothing to fold into
+   * — it triggers a replay, which re-reads the log and re-seals it. Rare (the log is over) and bounded.
+   */
+  private seal(runId: string): void {
+    const log = this.logs.get(runId);
+    if (!log || log.final) return;
+    const run = this.snapshot(runId);
+    if (!run || !isTerminal(run.status)) return;
+    log.events = [];
+    log.final = run;
+    this.projected.delete(runId);
   }
 
   /**
@@ -133,47 +226,79 @@ export class RunViewModel {
     // the whole log is replayed instead. Without this it would stay invisible until the next hydrate,
     // and nothing calls hydrate after boot.
     if (!log) { void this.adopt(runId); return; }
-    const last = log.events.at(-1)?.seq ?? 0;
-    if (event.seq <= last) return;
+    if (event.seq <= log.lastSeq) return;
     // A gap means an envelope was missed — one that landed while this run was being adopted, or a
     // dropped notify. Appending the newer one anyway would leave a log that silently disagrees with the
-    // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail.
-    if (event.seq > last + 1) { void this.adopt(runId, { replace: true }); return; }
+    // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail. A sealed run
+    // takes the same path for a different reason: its envelopes are gone, so folding is not available.
+    if (event.seq > log.lastSeq + 1 || log.final) { void this.adopt(runId, { replace: true }); return; }
     log.events.push(event);
+    log.lastSeq = event.seq;
     this.projected.delete(runId);
+    if (TERMINAL_EVENT_TYPES.has(event.type)) this.seal(runId);
     this.emit();
   }
 
   /**
-   * Replay one run into the projection. `in flight` and the post-await `has` check together keep a burst
-   * of events for the same unknown run to a single replay, and keep it from racing `createRun`, which
-   * registers the same id by a shorter path (the store notifies before its RPC resolves).
+   * Fold in an envelope this class just wrote. A sealed run has nothing to fold into, so it is replayed
+   * instead — and awaited, so the projection is current by the time the caller's promise settles. That
+   * matters for the one legal write to a finished run: demoting it, which is what a boot reconcile does
+   * to a run that ended while it was being watched.
    */
-  private async adopt(runId: string, opts: { replace?: boolean } = {}): Promise<void> {
-    if ((this.logs.has(runId) && !opts.replace) || this.adopting.has(runId)) return;
-    this.adopting.add(runId);
+  private async fold(runId: string, event: RunEvent): Promise<void> {
+    const log = this.logs.get(runId);
+    // The store notifies before the append's RPC resolves, so by the time we get here this envelope is
+    // usually already in. Checked BEFORE the sealed branch: an append that seals the run would
+    // otherwise replay it immediately afterwards to fold an envelope it has already folded.
+    if (log && event.seq <= log.lastSeq) return;
+    if (log?.final) { await this.adopt(runId, { replace: true }); return; }
+    this.applyEvent(runId, event);
+  }
+
+  /**
+   * Replay one run into the projection. The in-flight map and the post-await `has` check together keep a
+   * burst of events for the same unknown run to a single replay, and keep it from racing `createRun`,
+   * which registers the same id by a shorter path (the store notifies before its RPC resolves).
+   */
+  private adopt(runId: string, opts: { replace?: boolean } = {}): Promise<void> {
+    const inFlight = this.adopting.get(runId);
+    if (inFlight) return inFlight;
+    if (this.logs.has(runId) && !opts.replace) return Promise.resolve();
+    const started = this.replay(runId, opts);
+    const tracked: Promise<void> = started.finally(() => {
+      if (this.adopting.get(runId) === tracked) this.adopting.delete(runId);
+    });
+    this.adopting.set(runId, tracked);
+    return tracked;
+  }
+
+  private async replay(runId: string, opts: { replace?: boolean }): Promise<void> {
     try {
       const run = await this.store.getRun(runId);
       if (!run || (this.logs.has(runId) && !opts.replace)) return;
       const events = await this.store.eventsSince(runId, 0);
       if (this.logs.has(runId) && !opts.replace) return;
-      this.logs.set(runId, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
-      this.projected.delete(runId);
+      this.retain(factsOf(run), events);
       this.emit();
     } catch {
       // The store is unreachable; the run is not lost, only unseen. A later event retries.
-    } finally {
-      this.adopting.delete(runId);
     }
   }
 
   async createRun(input: CreateRunInput): Promise<Run> {
     const run = await this.store.createRun(input);
     const events = await this.store.eventsSince(run.id, 0);
-    this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
-    this.projected.delete(run.id);
+    this.retain(factsOf(run), events);
     this.emit();
     return run;
+  }
+
+  /**
+   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal — the
+   * retention bound is a property callers and tests can actually check, not a comment.
+   */
+  retainedEventCount(runId: string): number {
+    return this.logs.get(runId)?.events.length ?? 0;
   }
 
   /**
@@ -182,9 +307,7 @@ export class RunViewModel {
    * second map for the host to keep in step with the log.
    */
   sessionIdOf(runId: string): string | undefined {
-    const created = this.logs.get(runId)?.events.find((e) => e.type === 'run.created');
-    const sessionId = created?.payload.sessionId;
-    return typeof sessionId === 'string' ? sessionId : undefined;
+    return this.logs.get(runId)?.sessionId;
   }
 
   runForSession(sessionId: string): string | undefined {
@@ -217,7 +340,7 @@ export class RunViewModel {
       type: 'tab.attached',
       payload: { tabId, ...(url ? { url } : {}) },
     });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
   }
 
   /** A tab nobody owns is the human's, and closing it is not a run fact. */
@@ -229,7 +352,7 @@ export class RunViewModel {
       type: 'tab.detached',
       payload: { tabId, reason },
     });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
   }
 
   /** Terminal transition: release the run's tabs first, so the log never ends owning a dead tab. */
@@ -240,7 +363,7 @@ export class RunViewModel {
         : terminal === 'cancelled' ? { by: 'system' }
           : { ...(detail ? { outcome: detail } : {}) };
     const event = await this.store.appendEvent(runId, { actor: { kind: 'system' }, type: `run.${terminal}`, payload });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
   }
 
   /**
@@ -281,7 +404,7 @@ export class RunViewModel {
       type: next === 'visible' ? 'presentation.promoted' : 'presentation.demoted',
       payload: next === 'visible' ? { by, ...(surface ? { surface } : {}) } : { by },
     });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
     return true;
   }
 
@@ -292,7 +415,7 @@ export class RunViewModel {
       type: 'decision.requested',
       payload: { decisionId: input.decisionId, kind: input.kind, prompt: input.prompt },
     });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
   }
 
   async resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
@@ -301,7 +424,7 @@ export class RunViewModel {
       type: 'decision.resolved',
       payload: { decisionId, outcome, by },
     });
-    this.applyEvent(runId, event);
+    await this.fold(runId, event);
   }
 
   ownerOf(tabId: string): string | undefined {
@@ -341,6 +464,7 @@ export class RunViewModel {
   snapshot(runId: string): Run | undefined {
     const log = this.logs.get(runId);
     if (!log) return undefined;
+    if (log.final) return log.final;
     let run = this.projected.get(runId);
     if (!run) {
       run = projectRun(log.facts, log.events);

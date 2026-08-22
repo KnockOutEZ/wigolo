@@ -216,6 +216,28 @@ describe('the app gateway serves /v1/runs* from the bound store', () => {
     expect((missing.body as { error_reason: string }).error_reason).toBe('not_found');
   });
 
+  // F6 — the SSE route checks the run exists before it replays. Answering that with `getRun` projects
+  // the whole log, which is precisely the one-burst read the paged replay under it exists to avoid, and
+  // `SSE_RETRY_MS` is 3s, so a client stuck reconnecting pays it against a log that only grows. The
+  // instrument is which store method the connect reached, not how long it took.
+  it('probes existence for an SSE connect instead of projecting the whole log', async () => {
+    const run = await store.createRun({ task: 'a long-running one' });
+    for (let i = 0; i < 60; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'run.progress', payload: { i } });
+    }
+    store.reads.length = 0;
+
+    const client = new SseClient();
+    open.push(client);
+    await client.open(`/v1/runs/${run.id}/events`);
+    await client.waitForFrames(61);
+
+    expect(client.status).toBe(200);
+    expect(store.reads).toContain('runExists');
+    // A projection here would replay all 61 envelopes to answer a yes/no the key index already knows.
+    expect(store.reads, 'the connect projected the run to ask whether it exists').not.toContain('getRun');
+  });
+
   it('tails events THIS process appends, live — replay first, then the bus', async () => {
     const run = await store.createRun({ task: 'tailed' });
 

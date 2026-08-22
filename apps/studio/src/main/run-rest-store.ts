@@ -39,10 +39,13 @@ export function createBrokerRunsStore(client: RunStoreClient): RunsStore {
     create: (input) => client.createRun(input),
     list: (opts) => client.listRuns(opts),
     get: (runId) => client.getRun(runId),
-    // `runExists` is a cheap key probe the broker does not expose, so existence costs a projection
-    // here where it costs an index hit on the daemon. It is charged once per SSE connect, not per
-    // replayed page, and the alternative was a broker method in another lane's territory.
-    exists: async (runId) => (await client.getRun(runId)) !== undefined,
+    // Existence is a key probe, not a projection — `getRun` replays the whole log to answer it, which
+    // is what the paged replay underneath the SSE route exists to avoid doing in one burst, and a
+    // client in a 3s reconnect loop charges it again every retry. The broker now exposes the same
+    // cheap probe the daemon's binding uses (reversing A-73-2), so the two bindings cost the same.
+    // The projection stays as the fallback for a store that binds only the minimal port.
+    exists: async (runId) =>
+      client.runExists ? client.runExists(runId) : (await client.getRun(runId)) !== undefined,
     eventsSince: (runId, since, limit) => client.eventsSince(runId, since, limit),
   };
 }
