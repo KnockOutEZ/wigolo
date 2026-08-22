@@ -284,6 +284,15 @@ async function fetchWithRedirects(
     }
 
     if (REDIRECT_STATUSES.has(response.status)) {
+      // Let go of the body before doing anything else with this hop. We never read a redirect
+      // body, and an unread one keeps the request in flight, which stalls the Agent cleanup in
+      // the `finally` for a full timeoutMs. Placed above the error branches too, so the
+      // no-location and too-many-redirects throws release it as well.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed, or never had a body */
+      }
       const location = response.headers.get('location');
       if (!location) {
         throw new HttpFetchError(`Redirect with no location header at ${currentUrl}`, false);
@@ -311,6 +320,12 @@ async function fetchWithRedirects(
     }
 
     if (RETRYABLE_STATUSES.has(response.status)) {
+      // Same reasoning as the redirect branch: this throws without reading the body.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed, or never had a body */
+      }
       throw new HttpFetchError(`HTTP ${response.status} from ${currentUrl}`, true);
     }
 
@@ -363,9 +378,13 @@ async function fetchWithRedirects(
   } finally {
     for (const a of agents) {
       try {
-        await a.close();
+        // destroy(), not close(): close() waits for in-flight requests, so a body we failed to
+        // release anywhere above would stall this cleanup for a full timeoutMs. By the time we
+        // reach here the body has either been read in full or deliberately cancelled, so there is
+        // nothing left worth waiting for, and this way a missed path cannot cost latency.
+        await a.destroy();
       } catch {
-        /* closing a pool must never mask the real result */
+        /* tearing down a pool must never mask the real result */
       }
     }
   }
