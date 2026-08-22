@@ -243,7 +243,9 @@ describe('registerIpc', () => {
     expect(state.tabs.find((t) => t.id === 'human-inbox'), 'the human’s own tab was filed under a run').toEqual({
       id: 'human-inbox', url: 'https://mail.example/', title: 'Inbox', active: false,
     });
-    expect(state.runs).toEqual([{ id: run.id, task: 'check the order', status: 'running', tabIds: ['agent-tab'] }]);
+    expect(state.runs).toEqual([
+      { id: run.id, task: 'check the order', status: 'running', tabIds: ['agent-tab'], visibility: 'hidden' },
+    ]);
   });
 
   /**

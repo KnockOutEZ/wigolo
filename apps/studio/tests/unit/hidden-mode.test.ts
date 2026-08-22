@@ -119,16 +119,31 @@ describe('hiddenWindowPresentation — a hidden window must be MAPPED, not merel
     expect(hiddenWindowPresentation()).not.toHaveProperty('position');
   });
 
+  /**
+   * The call site moved: it is no longer the boot branch in `index.ts` but the hidden arm of the
+   * runtime transition in `run-presentation.ts`, which is now the only place a window is withheld.
+   * The claims are unchanged, because the regressions they guard are properties of the CALL, not of
+   * the function — and the call is now made on every demote rather than once at boot.
+   */
+  const hiddenArm = (): string => {
+    const src = readFileSync(join(import.meta.dirname, '../../src/main/run-presentation.ts'), 'utf-8');
+    const from = src.indexOf('hiddenWindowPresentation()');
+    const to = src.indexOf('this.applied = want');
+    expect(from, 'the hidden arm moved again — this slice matched nothing').toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    return src.slice(from, to);
+  };
+
   it('is applied without a setPosition call at the call site either, since that is where the X11 regression actually lived', () => {
-    const src = readFileSync(join(import.meta.dirname, '../../src/main/index.ts'), 'utf-8');
-    const branch = src.slice(src.indexOf('hiddenWindowPresentation()'), src.indexOf('running hidden'));
-    expect(branch).not.toContain('setPosition');
+    expect(hiddenArm()).not.toContain('setPosition');
   });
 
   it('is applied with showInactive, never show — asserted at the call site, because taking foreground away from the human mid-task is the one thing a background run must never do', () => {
-    const src = readFileSync(join(import.meta.dirname, '../../src/main/index.ts'), 'utf-8');
-    const hiddenBranch = src.slice(src.indexOf('hiddenWindowPresentation()'), src.indexOf('running hidden'));
-    expect(hiddenBranch).toContain('win.showInactive()');
-    expect(hiddenBranch).not.toMatch(/win\.show\(\)|win\.focus\(\)/);
+    const arm = hiddenArm();
+    expect(arm).toContain('win.showInactive()');
+    expect(arm).not.toMatch(/win\.show\(\)|win\.focus\(\)/);
+    // Demote must never minimise or unmap either: both cost the window its compositor surface, which
+    // is the same frame-clock starvation by a different route.
+    expect(arm).not.toMatch(/win\.(minimize|hide)\(\)/);
   });
 });
