@@ -211,6 +211,10 @@ export interface OrchestratorInput {
    * result whose title+snippet does not contain the unquoted query as a
    * case-insensitive substring is dropped post-rerank. */
   exactMatch?: boolean;
+  /** Caller-supplied engine allowlist. When non-empty, only engines whose
+   * name matches an entry (case-insensitive) are dispatched. Wired from
+   * SearchInput.search_engines via the MCP schema and CLI --search-engines. */
+  engineFilter?: string[];
 }
 
 export interface OrchestratorOutput {
@@ -365,8 +369,19 @@ export async function runV1Search(
   // Probe-only engines are held back from the primary wave: they are a
   // per-call latency/failure tax on the happy path but still an independent
   // signal the degraded-recovery wave can pull in when the pool collapses.
-  const entries = allEntries.filter((e) => e.probeOnly !== true);
+  let entries = allEntries.filter((e) => e.probeOnly !== true);
   const probeEntries = allEntries.filter((e) => e.probeOnly === true);
+
+  // Apply caller-supplied engine allowlist (SearchInput.search_engines).
+  // Case-insensitive match against engine name. Unknown names are silently
+  // ignored — if no entries match, fall back to the full roster.
+  if (input.engineFilter && input.engineFilter.length > 0) {
+    const allowlist = input.engineFilter.map((n) => n.toLowerCase());
+    const filtered = entries.filter((e) => allowlist.includes(e.engine.name.toLowerCase()));
+    if (filtered.length > 0) {
+      entries = filtered;
+    }
+  }
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,

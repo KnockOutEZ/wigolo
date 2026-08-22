@@ -395,6 +395,7 @@ export class CoreSearchProvider implements SearchProvider {
             country: input.country,
             timeRange: input.time_range,
             exactMatch: input.exact_match,
+            engineFilter: input.search_engines,
           }),
         ),
       );
@@ -452,6 +453,7 @@ export class CoreSearchProvider implements SearchProvider {
             country: input.country,
             timeRange: input.time_range,
             exactMatch: input.exact_match,
+            engineFilter: input.search_engines,
           });
           // RRF-merge the retry results on top of the initial dispatch so
           // we keep ranking signal from both passes.
