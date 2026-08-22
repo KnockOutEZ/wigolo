@@ -69,7 +69,12 @@ function startBroker(dataDir: string): Promise<Broker> {
 
 describe('run store — survives a broker process restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wigolo-run-restart-'));
-  afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
+  afterAll(() => {
+    // A SIGKILLed child releases its database handle asynchronously, and Windows keeps the file
+    // locked until it does — so the unlink races the kill and raises EBUSY. Retry, and never let
+    // a leftover temp directory redden a test whose subject is durability, not cleanup.
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }); } catch { /* the runner reclaims it */ }
+  });
 
   it('reads back the identical run and event sequence from a second process', async () => {
     const first = await startBroker(dir);
