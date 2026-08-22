@@ -4,7 +4,8 @@
  * A run is the unit of everything: task + append-only event log + tab group + pending decisions +
  * cost counters + driver state. The EVENT LOG IS THE SINGLE SOURCE OF TRUTH — every other field on
  * `Run` is a projection of it, and the `status`/`last_seq`/`updated_at` columns on `studio_runs`
- * are a cache that `projectRun` can rebuild from the log alone.
+ * are a cache that `projectRun` can rebuild from the log plus the clock — a pending decision expires
+ * on a deadline nothing writes down (pin 3), which is the only input a replay needs beyond the log.
  *
  * These are pure functions over a `Database` handle so the same code binds in-process (the daemon)
  * and behind the broker handlers (the desktop app topology) without a second implementation.
@@ -56,6 +57,7 @@ export interface PendingDecision {
   prompt: string;
   anchor?: { tabId: string; mark?: number };
   requestedAt: string;
+  /** Pin 3's deadline. Past it the decision is not projected at all — see `hasAutoDenied`. */
   autoDenyAt: string;
 }
 
@@ -107,7 +109,15 @@ export interface RunStoreOptions {
   onEvent?: (runId: string, event: RunEvent) => void;
 }
 
-export interface ListRunsOptions {
+/**
+ * A projection is a pure function of the log AND the clock — `autoDenyAt` is the one field that
+ * moves without an event. Injectable so a test can drive the two-minute deadline.
+ */
+export interface ReadRunOptions {
+  now?: () => Date;
+}
+
+export interface ListRunsOptions extends ReadRunOptions {
   status?: RunStatus[];
   spaceId?: string;
   limit?: number;
@@ -198,7 +208,7 @@ export function runEventsFile(id: string, dataDir?: string): string {
 
 interface RunRow { id: string; task: string; space_id: string; created_at: string }
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
-interface StatusRow { seq: number; type: string; payload: string }
+interface StatusRow { seq: number; ts: string; type: string; payload: string }
 interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
 interface TailRow { seq: number; ts: string }
 
@@ -291,7 +301,7 @@ function appendWithinTransaction(
     // Status-relevant rows only. The whole log used to be read and parsed here, inside the write
     // lock, to recompute one cached string — O(events-so-far) per append, held against every other
     // writer on the shared database.
-    const status = foldStatus(readStatusEvents(db, runId));
+    const status = foldStatus(readStatusEvents(db, runId), now);
     db.prepare('UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ? WHERE id = ?').run(status, seq, ts, runId);
     return { seq, ts, actor, type, payload: JSON.parse(payload) as Record<string, unknown> };
   });
@@ -306,13 +316,33 @@ function toFacts(r: RunRow): StoredRunFacts {
 }
 
 /**
+ * When the human's clock on a card started. The payload wins when it carries one, because the card
+ * can be raised before the mirror gets round to logging it — but only if it parses: a
+ * `new Date('later today').toISOString()` throws, and it used to throw INSIDE the projection, so
+ * one bad payload made the whole run unreadable on every surface.
+ */
+function requestedAtOf(event: Pick<RunEvent, 'ts' | 'payload'>): string {
+  const claimed = str(event.payload.requestedAt);
+  return claimed !== undefined && Number.isFinite(Date.parse(claimed)) ? claimed : event.ts;
+}
+
+/** Pin 3's deadline, derived rather than stored — `autoDenyAt` is a rendering of this, not a fact. */
+function autoDenyAtOf(requestedAt: string): string {
+  return new Date(Date.parse(requestedAt) + AUTO_DENY_MS).toISOString();
+}
+
+function hasAutoDenied(requestedAt: string, now: Date): boolean {
+  return now.getTime() >= Date.parse(requestedAt) + AUTO_DENY_MS;
+}
+
+/**
  * §1's ordered status rules, in exactly one place. `projectRun` and the append path's cache refresh
  * both go through here, so the projection and the cached column cannot drift apart.
  *
  * Every type it does not name is inert, which is what lets the append path feed it a read filtered
  * to `STATUS_EVENT_TYPES` and get the same answer as a full replay.
  */
-function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunStatus {
+function foldStatus(events: readonly Pick<RunEvent, 'ts' | 'type' | 'payload'>[], now: Date): RunStatus {
   let terminal: RunStatus | undefined;
   let pausedReason: string | undefined;
   const pending = new Set<string>();
@@ -327,7 +357,9 @@ function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunS
       case 'run.resumed': pausedReason = undefined; break;
       case 'decision.requested': {
         const decisionId = str(p.decisionId);
-        if (decisionId) pending.add(decisionId);
+        // An expired card is not pending. Nothing writes the resolving event when the process that
+        // owned the timer died, and a badge nobody can clear is worse than a missed one.
+        if (decisionId && !hasAutoDenied(requestedAtOf(event), now)) pending.add(decisionId);
         break;
       }
       case 'decision.resolved': {
@@ -356,13 +388,13 @@ function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunS
  * exactly the O(log-depth) read this exists to avoid. Unordered, it seeks (run_id, type) instead,
  * and a handful of status rows sort for free.
  */
-function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'type' | 'payload'>[] {
+function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'ts' | 'type' | 'payload'>[] {
   const rows = db
-    .prepare(`SELECT seq, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
+    .prepare(`SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
     .all(runId, ...STATUS_EVENT_TYPES) as StatusRow[];
   return rows
     .sort((a, b) => a.seq - b.seq)
-    .map((r) => ({ type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+    .map((r) => ({ ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
 }
 
 /**
@@ -482,11 +514,11 @@ export function appendEvent(db: Database.Database, runId: string, input: RunEven
   return event;
 }
 
-export function getRun(db: Database.Database, runId: string): Run | undefined {
+export function getRun(db: Database.Database, runId: string, opts: ReadRunOptions = {}): Run | undefined {
   const id = normalizeRunId(runId);
   const row = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as RunRow | undefined;
   if (!row) return undefined;
-  return projectRun(toFacts(row), readEvents(db, id));
+  return projectRun(toFacts(row), readEvents(db, id), opts.now?.() ?? new Date());
 }
 
 /**
@@ -528,8 +560,9 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   // Three bounded queries for the page, not one unbounded full-log read per row.
   const byRun = readProjectionEvents(db, ids);
   const tails = readEventTails(db, ids);
+  const now = opts.now?.() ?? new Date();
   const runs = page.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? []);
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now);
     const tail = tails.get(r.id);
     return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
   });
@@ -563,7 +596,7 @@ function str(value: unknown): string | undefined {
  * Unknown types are ignored and preserved — a consumer that does not know `mark.placed` must not
  * drop it or refuse the run.
  */
-export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[]): Run {
+export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[], now: Date = new Date()): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = 'hidden';
   const tabIds: string[] = [];
@@ -596,14 +629,18 @@ export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEv
       case 'decision.requested': {
         const decisionId = str(p.decisionId);
         if (!decisionId) break;
-        const requestedAt = str(p.requestedAt) ?? event.ts;
+        const requestedAt = requestedAtOf(event);
+        // Same rule as `foldStatus`: an expired card is gone, so it can neither be listed nor hold
+        // the run at needs_you. Skipping it here rather than filtering afterwards keeps a LATER
+        // re-request of the same decisionId able to overwrite it.
+        if (hasAutoDenied(requestedAt, now)) break;
         pending.set(decisionId, {
           decisionId,
           kind: str(p.kind) ?? 'approval',
           prompt: str(p.prompt) ?? '',
           ...(p.anchor ? { anchor: p.anchor as PendingDecision['anchor'] } : {}),
           requestedAt,
-          autoDenyAt: new Date(new Date(requestedAt).getTime() + AUTO_DENY_MS).toISOString(),
+          autoDenyAt: autoDenyAtOf(requestedAt),
         });
         break;
       }
@@ -626,7 +663,7 @@ export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEv
 
   const newest = events[events.length - 1];
   const pendingDecisions = [...pending.values()];
-  const projected = foldStatus(events);
+  const projected = foldStatus(events, now);
 
   return {
     id: facts.id,

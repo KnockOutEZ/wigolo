@@ -18,6 +18,7 @@ import {
   RUN_ID_ALPHABET,
   RUN_ID_MIN_LENGTH,
   MAX_TASK_CHARS,
+  AUTO_DENY_MS,
   runEventsFile,
   type RunEvent,
   type Run,
@@ -343,6 +344,89 @@ describe('run-store — derived fields are projections of the log (law 1)', () =
     expect(projected.lastSeq).toBe(2);
     // Forward compatibility is "ignore, preserve" — never "drop".
     expect(eventsSince(db, run.id, 0).map((e) => e.type)).toEqual(['run.created', 'mark.placed']);
+  });
+});
+
+/**
+ * WHY: `autoDenyAt` was durable state nothing read. The app's in-memory two-minute timer was the
+ * ONLY writer of the resolving `decision.resolved`, so a crash after the broker auto-denied the
+ * action and before that append left a log whose replay still says "a human is needed" — the dock
+ * badge lit over a card that no longer exists, and no reconciler anywhere to put it out.
+ *
+ * Expiry is derived, like every other projected field (law 1). The log is not rewritten.
+ */
+describe('run-store — a pending decision expires on its own clock (pin 3)', () => {
+  const t0 = new Date('2026-08-23T10:00:00.000Z');
+  const at = (ms: number) => () => new Date(t0.getTime() + ms);
+
+  function runNeedingADecision(payload: Record<string, unknown> = {}): string {
+    const run = createRun(db, { task: 'sign in to the vendor portal' }, { ...opts(), now: () => t0 });
+    appendEvent(db, run.id, {
+      actor: { kind: 'agent' },
+      type: 'decision.requested',
+      payload: { decisionId: 'd1', kind: 'approval', prompt: 'sign in?', ...payload },
+    }, { ...opts(), now: () => t0 });
+    return run.id;
+  }
+
+  it('still needs you while the card can be answered', () => {
+    const run = getRun(db, runNeedingADecision(), { now: at(AUTO_DENY_MS - 1) })!;
+    expect(run.status).toBe('needs_you');
+    expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d1']);
+    expect(run.pendingDecisions[0].autoDenyAt).toBe(new Date(t0.getTime() + AUTO_DENY_MS).toISOString());
+  });
+
+  it('drops the card and the needs_you the instant autoDenyAt passes, with nothing appended', () => {
+    const id = runNeedingADecision();
+    const run = getRun(db, id, { now: at(AUTO_DENY_MS) })!;
+    expect(run.status).toBe('running');
+    expect(run.pendingDecisions).toEqual([]);
+    expect(eventsSince(db, id).map((e) => e.type)).toEqual(['run.created', 'decision.requested']);
+  });
+
+  it('expires the same way in a list page — one projection, every surface', () => {
+    const id = runNeedingADecision();
+    const statusAt = (ms: number) => listRuns(db, { now: at(ms) }).runs.find((r) => r.id === id)!.status;
+    expect(statusAt(AUTO_DENY_MS - 1)).toBe('needs_you');
+    expect(statusAt(AUTO_DENY_MS)).toBe('running');
+  });
+
+  it('measures the deadline from the payload requestedAt when the caller supplied one', () => {
+    // The card was raised a minute before the mirror got round to logging it; the clock the human
+    // saw is the payload's, not the envelope's.
+    const early = new Date(t0.getTime() - 60_000).toISOString();
+    const id = runNeedingADecision({ requestedAt: early });
+    expect(getRun(db, id, { now: at(-1) })!.status).toBe('needs_you');
+    expect(getRun(db, id, { now: at(AUTO_DENY_MS - 60_000) })!.status).toBe('running');
+  });
+
+  it('falls back to the envelope ts when requestedAt is unparseable, instead of poisoning the run', () => {
+    // A `new Date('later today').toISOString()` throws, and it threw inside the projection — which
+    // made one bad payload enough to make the whole run unreadable on every surface.
+    const id = runNeedingADecision({ requestedAt: 'later today' });
+    expect(getRun(db, id, { now: at(0) })!.status).toBe('needs_you');
+    expect(getRun(db, id, { now: at(AUTO_DENY_MS) })!.status).toBe('running');
+  });
+
+  it('lights again for a fresh decision raised after an expired one', () => {
+    const id = runNeedingADecision();
+    const later = new Date(t0.getTime() + AUTO_DENY_MS + 1_000);
+    appendEvent(db, id, {
+      actor: { kind: 'agent' },
+      type: 'decision.requested',
+      payload: { decisionId: 'd2', kind: 'approval', prompt: 'accept the cookie wall?' },
+    }, { ...opts(), now: () => later });
+    const run = getRun(db, id, { now: () => later })!;
+    expect(run.status).toBe('needs_you');
+    expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d2']);
+  });
+
+  it('refreshes the cached status column on the next append, so a filtered list agrees too', () => {
+    const id = runNeedingADecision();
+    const later = new Date(t0.getTime() + AUTO_DENY_MS + 1);
+    appendEvent(db, id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 't1' } }, { ...opts(), now: () => later });
+    expect(db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(id)).toEqual({ status: 'running' });
+    expect(listRuns(db, { status: ['needs_you'], now: () => later }).runs).toEqual([]);
   });
 });
 
