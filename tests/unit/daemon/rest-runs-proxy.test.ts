@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import type { AddressInfo } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -234,6 +235,48 @@ describe('resolveRunsOwner — who owns the live run store for this request', ()
     expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
     publishHandle('host-instance-abc', 'file:///etc/passwd');
     expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+  });
+
+  /**
+   * WHY: the hop sends the handle's bearer token — and the caller's `Last-Event-ID` — to whatever
+   * host the handle names. The owner is by definition a process on this machine, since it is what
+   * wrote the handle, so an endpoint elsewhere cannot be the owner; it can only be a destination for
+   * a credential. Writing the handle needs the same UID already, so this is depth rather than a
+   * boundary — but the constraint is free, and "the owner is on this machine" is then a thing we
+   * know rather than a thing we hope.
+   *
+   * The addresses below are RFC 5737 documentation ranges, which are never assigned to a real
+   * interface — a plausible-looking LAN literal could be this machine's own on some runner, and the
+   * row would then assert nothing.
+   */
+  it('serves in-process when the handle names a host that is not this machine', () => {
+    publishHandle('host-instance-abc', 'http://192.0.2.10:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    publishHandle('host-instance-abc', 'https://collector.example.com/v1');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    // No DNS, on purpose: a name is not an address of this machine, and resolving one would put the
+    // answer in the hands of a resolver the handle's writer may control.
+    publishHandle('host-instance-abc', 'http://localhost.evil.example:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+    publishHandle('host-instance-abc', 'http://[2001:db8::5]:9310');
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+  });
+
+  /**
+   * The must-not-fire half. `--allow-remote` is a supported studio bind, and the handle it publishes
+   * then names a routable address of this machine or the wildcard it bound — that host is still the
+   * one live owner, and a fence that refused it would split the live fan-out A-43-5 exists to close.
+   */
+  it('still proxies to every address that names this machine — the fence must not eat the real host', () => {
+    const local = Object.values(networkInterfaces())
+      .flatMap((addrs) => addrs ?? [])
+      .filter((a) => !a.internal)
+      .map((a) => (a.family === 'IPv6' ? `[${a.address.split('%')[0]}]` : a.address));
+    for (const host of ['127.0.0.1', 'localhost', '[::1]', '127.8.9.10', '0.0.0.0', ...local.slice(0, 2)]) {
+      const endpoint = `http://${host}:${upstreamPort}`;
+      publishHandle('host-instance-abc', endpoint);
+      expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'proxy', endpoint, token: 'host-token' });
+    }
   });
 });
 
