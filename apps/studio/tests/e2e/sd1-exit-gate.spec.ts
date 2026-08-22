@@ -586,10 +586,16 @@ describe.skipIf(!RUN)('SD1 exit gate — a REST-created run survives restart, pr
   }, 120_000);
 
   it('the window chrome paints no id for a run that owns no tab — the gap this gate exposes', async () => {
-    // `#49` labels TAB GROUPS with their owning run's id, and nothing on the tip attaches a tab to an
-    // existing run: `studio_open` always mints a fresh one and takes no run id. So a REST-created run
-    // is promotable and named in the menu-bar item, but its id cannot reach the tab strip — recorded
-    // as decision A-50-2 and filed, not patched here. Asserted so the day it changes, this reds.
+    // Nothing on the tip attaches a tab to an EXISTING run: `studio_open` always mints a fresh one and
+    // takes no run id. Both of the window's run-id surfaces are keyed off tabs — `#49`'s strip labels
+    // TAB GROUPS, and the rail badge names the run owning the ACTIVE TAB (`ipc-host.ts` derives
+    // `focusedRunId` that way) — so a run with no tab reaches neither, however promoted it is. The
+    // menu-bar item is the surface that names it, and the gate's law-8 comparison runs there.
+    //
+    // Recorded as decision A-50-2 and filed as `wigolo-studio-run#72`, not patched here: this lane
+    // owns no source paths and the gate does not need it. Asserted rather than left as a gap, so the
+    // day a tab can join an existing run these rows red and someone reads the decision.
+    expect((await getRun(daemon!.rest, runId)).visibility).toBe('visible'); // promoted, and still absent
     const chrome = await app!.firstWindow();
     const painted = await chrome.evaluate(
       (id) => document.querySelector(`[data-testid="run-id-${id}"]`)?.textContent ?? null,
@@ -600,5 +606,7 @@ describe.skipIf(!RUN)('SD1 exit gate — a REST-created run survives restart, pr
       Array.from(document.querySelectorAll('.tab-group')).map((el) => el.getAttribute('data-testid')),
     );
     expect(groups).not.toContain(`run-group-${runId}`);
+    const badge = await chrome.evaluate(() => document.querySelector('.rail__badge')?.textContent ?? null);
+    expect(badge).toBe('no run');
   }, 60_000);
 });
