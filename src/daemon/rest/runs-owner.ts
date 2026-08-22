@@ -245,6 +245,19 @@ export function proxyRunsRequest(
     res.on('close', abortUpstream);
     req.on('aborted', abortUpstream);
 
+    // `pipe` adds no error listener to its destination, and an 'error' with no listener is an
+    // UNHANDLED one — which exits the process with every test still reported passing. The local tail
+    // in `runs.ts` registers the same handler on the same reasoning; this path must not be the one
+    // that skips it.
+    res.on('error', (err) => {
+      log.debug('run hop client socket failed', { error: String(err) });
+      abortUpstream();
+    });
+    req.on('error', (err) => {
+      log.debug('run hop request stream failed', { error: String(err) });
+      abortUpstream();
+    });
+
     if (opts.streaming) {
       res.setTimeout(0);
       req.socket?.setTimeout(0);
