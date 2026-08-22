@@ -186,6 +186,18 @@ export class RunViewModel {
   }
 
   /**
+   * The run a still-pending decision belongs to, replayed rather than remembered. An answer arrives
+   * carrying only the card's id, and a map from card to run would be one more thing to keep in step
+   * with the log — the log already knows, because a resolved decision is no longer pending.
+   */
+  runForDecision(decisionId: string): string | undefined {
+    for (const runId of this.logs.keys()) {
+      if (this.snapshot(runId)!.pendingDecisions.some((d) => d.decisionId === decisionId)) return runId;
+    }
+    return undefined;
+  }
+
+  /**
    * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
    * owner is a no-op rather than a duplicate fact.
    */
@@ -247,6 +259,25 @@ export class RunViewModel {
     });
     this.applyEvent(runId, event);
     return true;
+  }
+
+  /** A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source). */
+  async requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: 'agent', driver: 'studio' },
+      type: 'decision.requested',
+      payload: { decisionId: input.decisionId, kind: input.kind, prompt: input.prompt },
+    });
+    this.applyEvent(runId, event);
+  }
+
+  async resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: by },
+      type: 'decision.resolved',
+      payload: { decisionId, outcome, by },
+    });
+    this.applyEvent(runId, event);
   }
 
   ownerOf(tabId: string): string | undefined {

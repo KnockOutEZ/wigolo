@@ -44,13 +44,46 @@ describe.skipIf(!RUN)('headless runs, promoted and demoted (e2e, real app)', () 
   const clickMenu = (index: number): Promise<void> =>
     app.evaluate((_e, i) => (globalThis as never as { __wigoloRunMenu: { click(n: number): void } }).__wigoloRunMenu.click(i), index);
 
+  /**
+   * Per-window opacity is the mechanism this feature withholds a window with, and it is the one part
+   * of it the platform can refuse: X11 honours it only under a compositing window manager, and this
+   * lane runs under a bare xvfb display with none (the ceiling is recorded in `hidden-mode.ts`, where
+   * the alternative — moving the window off-screen — was measured to be worse because it starves the
+   * tab of frames). So the WINDOW is asserted where the platform honours it, and the state machine,
+   * the events and the menu — which is what this issue actually builds — are asserted everywhere.
+   */
+  const WINDOW_OPACITY_HONOURED = process.platform === 'darwin';
+
   const settle = async (want: 'visible' | 'hidden'): Promise<void> => {
     for (let i = 0; i < 100; i++) {
-      const { opacity } = await windowState();
-      if ((want === 'visible' ? opacity : 1 - opacity) === 1) return;
+      if (await presented() === (want === 'visible')) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`the window never became ${want}`);
+    throw new Error(`the run never became ${want}`);
+  };
+
+  /** Whether any run is being watched, read from the projection the window is driven by. */
+  const presented = async (): Promise<boolean> => (await menuChecked()).some(Boolean);
+
+  const expectWindow = async (want: 'visible' | 'hidden'): Promise<void> => {
+    const state = await windowState();
+    // Mapped and never minimised in BOTH states: a window with no compositor surface has no frame
+    // clock, so its tabs stop painting. That claim holds on every platform.
+    expect(state.visible).toBe(true);
+    expect(state.minimized).toBe(false);
+    if (WINDOW_OPACITY_HONOURED) expect(state.opacity).toBe(want === 'visible' ? 1 : 0);
+  };
+
+  /** The durable log, read off disk — an outside signal, and platform-independent. */
+  const logTypes = async (): Promise<string[]> => {
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(join(dataDir, 'wigolo.db'), { readonly: true });
+    try {
+      return (db.prepare('SELECT type FROM studio_run_events ORDER BY run_id, seq').all() as Array<{ type: string }>)
+        .map((r) => r.type);
+    } finally {
+      db.close();
+    }
   };
 
   beforeAll(async () => {
@@ -69,18 +102,24 @@ describe.skipIf(!RUN)('headless runs, promoted and demoted (e2e, real app)', () 
   });
 
   afterAll(async () => {
-    await app?.close();
+    // Bounded, then killed. This lane runs one spec file at a time in one process, so an app that
+    // declines to quit does not fail this spec — it starves every spec after it, which is what a
+    // 60-second hook timeout here looked like the first time: seven unrelated specs red behind one
+    // leaked window. A withheld window has no human to close it, so this is its normal exit.
+    try {
+      await Promise.race([
+        app?.close(),
+        new Promise((_resolve, reject) => setTimeout(() => reject(new Error('the app did not quit')), 15_000)),
+      ]);
+    } catch {
+      try { app?.process().kill('SIGKILL'); } catch { /* already gone */ }
+    }
     try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   it('boots with no run and nothing presented, and says so in the menu', async () => {
     await settle('hidden');
-    const state = await windowState();
-    expect(state.opacity).toBe(0);
-    // Mapped, never minimised: an unmapped window has no compositor surface, so a driven tab would
-    // stop painting altogether. This is the difference between "withheld" and "broken".
-    expect(state.visible).toBe(true);
-    expect(state.minimized).toBe(false);
+    await expectWindow('hidden');
     expect(await menuLabels()).toEqual(['No runs']);
   });
 
@@ -92,18 +131,18 @@ describe.skipIf(!RUN)('headless runs, promoted and demoted (e2e, real app)', () 
     // 1. Headless. The run exists, has a tab, and nobody is watching it.
     await expect.poll(() => menuLabels().then((l) => l.length)).toBeGreaterThan(2);
     expect((await menuLabels())[0]).toBe('1 run');
-    expect(await windowState()).toMatchObject({ opacity: 0 });
+    await expectWindow('hidden');
     expect((await menuChecked())[2]).toBe(false);
+    expect(await logTypes()).toEqual(['run.created', 'tab.attached']); // nothing about presentation yet
     const runId = (await menuLabels())[2].split(' · ')[0];
     expect(runId).toMatch(/^[23456789abcdefghjkmnpqrstvwxyz]{4,}$/); // the short id, as every surface shows it
 
     // 2. Promote — the human clicks the run in the menu bar. The window comes up around a live run.
     await clickMenu(2);
     await settle('visible');
-    const shown = await windowState();
-    expect(shown.opacity).toBe(1);
-    expect(shown.minimized).toBe(false);
-    await expect.poll(() => menuChecked().then((c) => c[2])).toBe(true);
+    await expectWindow('visible');
+    expect((await menuChecked())[2]).toBe(true);
+    expect(await logTypes()).toEqual(['run.created', 'tab.attached', 'presentation.promoted']);
 
     // The tab the agent is driving is on screen, not a blank stage.
     const stage = await app.evaluate(({ BrowserWindow, webContents }) => {
@@ -119,8 +158,8 @@ describe.skipIf(!RUN)('headless runs, promoted and demoted (e2e, real app)', () 
     // notice: the agent keeps working through the gateway with nobody watching.
     await clickMenu(2);
     await settle('hidden');
-    expect(await windowState()).toMatchObject({ opacity: 0, visible: true, minimized: false });
-    await expect.poll(() => menuChecked().then((c) => c[2])).toBe(false);
+    await expectWindow('hidden');
+    expect((await menuChecked())[2]).toBe(false);
 
     const observed = body(await proxy.callTool('studio_observe', {}));
     expect(observed.trusted).toBe(false); // a real answer from a real page, with no window presented
@@ -128,7 +167,7 @@ describe.skipIf(!RUN)('headless runs, promoted and demoted (e2e, real app)', () 
     // 4. Finish, headless. The run leaves the live count behind it.
     expect(body(await proxy.callTool('studio_close', { session_id: sessionId })).closed).toBe(true);
     await expect.poll(() => menuLabels()).toEqual(['No runs']);
-    expect(await windowState()).toMatchObject({ opacity: 0 });
+    await expectWindow('hidden');
   });
 
   it('records the promote and the demote in the run’s own log, in order, around its work', async () => {

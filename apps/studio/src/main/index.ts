@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { RunPresentationController } from './run-presentation';
+import { createDecisionMirror } from './run-decisions';
 import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle, type TrayPort } from './run-tray';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
@@ -221,6 +222,10 @@ async function createWindow(): Promise<void> {
   if (hidden) presentation.apply();
 
   const runTray = mountRunTray(runs, presentation);
+  const onDecisionError = (err: unknown): void => {
+    process.stderr.write(`[studio] could not record an approval on its run: ${err instanceof Error ? err.message : String(err)}\n`);
+  };
+  const decisions = createDecisionMirror({ runs, onError: onDecisionError });
 
   // Resolved after the shell loads (below) and read pull-at-eval by createTab. A tab created before the
   // shell finishes loading simply omits the high-entropy hints rather than waiting on them.
@@ -248,6 +253,9 @@ async function createWindow(): Promise<void> {
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
       win.webContents.send(IPC.approvalParked, dto);
+      // …and onto the run, so a run with a card waiting reads `needs_you` everywhere — including the
+      // dock badge, which is the only attention affordance a withheld window has.
+      void decisions.parked(notice).catch(onDecisionError);
     },
     // P4: the agent posted a chat message (studio_say) → the chat rail. Agent-authored text; the renderer
     // renders it as an inert text node.
@@ -398,6 +406,7 @@ async function createWindow(): Promise<void> {
 
   ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {
     studioHost.resolveApproval(id, decision);
+    void decisions.resolved(id, decision === 'allow' ? 'approved' : 'denied').catch(onDecisionError);
   });
 
   ipcMain.handle(IPC.setRailOpen, (_e, open: boolean) => {
