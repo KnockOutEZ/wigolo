@@ -86,4 +86,26 @@ describe('browser-pool proxy launch option', () => {
     expect(proxy.server).not.toContain('s3cret');
     expect(proxy.server).toContain('proxy.example.com:8080');
   });
+
+  it('forceNoProxy launches the dedicated stealth browser WITHOUT a proxy even when one is configured', async () => {
+    process.env.USE_PROXY = 'true';
+    process.env.PROXY_URL = 'http://alice:s3cret@proxy.example.com:8080';
+    // Force bundled to skip the channel:'chrome' probe (one extra launch call).
+    process.env.WIGOLO_BROWSER_CHANNEL = 'chromium';
+    resetConfig();
+    const pool = new MultiBrowserPool();
+    await pool.fetchWithBrowser('https://example.com', { stealth: true, forceNoProxy: true });
+    expect(launchCalls.length).toBeGreaterThan(0);
+    for (const c of launchCalls) expect(c.proxy).toBeUndefined();
+  });
+
+  it('stealth WITHOUT forceNoProxy still threads the proxy', async () => {
+    process.env.USE_PROXY = 'true';
+    process.env.PROXY_URL = 'http://alice:s3cret@proxy.example.com:8080';
+    process.env.WIGOLO_BROWSER_CHANNEL = 'chromium';
+    resetConfig();
+    const pool = new MultiBrowserPool();
+    await pool.fetchWithBrowser('https://example.com', { stealth: true });
+    expect(launchCalls.find((c) => c.proxy !== undefined)).toBeDefined();
+  });
 });

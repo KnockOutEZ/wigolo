@@ -72,6 +72,13 @@ export async function handleCrawl(
           images: [],
           cached: false,
           error: r.error_reason,
+          // Carry the upstream status through when the failure exposes one
+          // (anti-bot 403/429) so the crawl limiter can adapt pace per-domain,
+          // plus the solve-ladder provenance — the three travel together, and a
+          // per-adapter subset is how the surfaces drift apart.
+          ...(typeof r.http_status === 'number' ? { http_status: r.http_status } : {}),
+          ...(r.challenge_class !== undefined ? { challenge_class: r.challenge_class } : {}),
+          ...(r.solve_method !== undefined ? { solve_method: r.solve_method } : {}),
         };
       }
       return r.data;

@@ -29,7 +29,7 @@ const STEPS = [
   {
     n: "1",
     title: "Install & wire your agent",
-    note: "Auto-wires the agent for you — comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity. Using any other MCP client? Drop --agents — init still sets everything up and you point it at wigolo yourself. init does the full setup — downloads the browser engine + models and runs a health check so any problem surfaces here; add --no-warmup to defer downloads to first use.",
+    note: "Auto-wires the agent for you — comma-separated: claude-code · cursor · codex · gemini-cli · opencode · vscode · windsurf · zed · antigravity. Using any other MCP client? Drop --agents — init still sets everything up and you point it at wigolo yourself. init does the full setup — downloads the browser engine + models and runs a health check so any problem surfaces here; add --no-warmup to defer downloads to first use.",
     cmd: "npx wigolo init --agents=<your-agent>",
     foot: "That's the whole setup — search, fetch, crawl, extract & cache need no API key. Beyond MCP: a REST API, TypeScript & Python SDKs, an agent-skills installer, and framework integrations (LangChain, CrewAI, LlamaIndex, Vercel AI SDK).",
   },

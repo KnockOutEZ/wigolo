@@ -85,6 +85,38 @@ describe('handleCrawl', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it('surfaces challenge_class/solve_method provenance through the tool output reshape', async () => {
+    const mockCrawl = vi.fn().mockResolvedValue({
+      pages: [
+        {
+          url: 'https://docs.example.com',
+          title: 'Cleared',
+          markdown: '# Home\n\nBehind a challenge.',
+          depth: 0,
+          challenge_class: 'interactive' as const,
+          solve_method: 'auto-pass' as const,
+        },
+        { url: 'https://docs.example.com/plain', title: 'Plain', markdown: '# Plain', depth: 1 },
+      ],
+      total_found: 2,
+      crawled: 2,
+    });
+
+    vi.mocked(Crawler).mockImplementation(function (this: any) {
+      this.crawl = mockCrawl;
+      this.crawlSitemap = vi.fn();
+    } as any);
+
+    const router = mockRouter();
+    const result = await handleCrawl({ url: 'https://docs.example.com' }, router as any) as CrawlOutput;
+
+    expect(result.pages[0].challenge_class).toBe('interactive');
+    expect(result.pages[0].solve_method).toBe('auto-pass');
+    // A plain page carries neither field.
+    expect(result.pages[1].challenge_class).toBeUndefined();
+    expect(result.pages[1].solve_method).toBeUndefined();
+  });
+
   it('calls deduplicatePages', async () => {
     const router = mockRouter();
     const input: CrawlInput = { url: 'https://docs.example.com' };

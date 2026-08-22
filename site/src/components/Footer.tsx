@@ -27,6 +27,8 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     title: "Support",
     links: [
       { label: "Star on GitHub", href: GH, ext: true },
+      { label: "Sponsors", href: "#sponsors" },
+      { label: "Sponsor wigolo", href: `${GH}/blob/main/SPONSORS.md`, ext: true },
       { label: "Buy me a coffee", href: "https://buymeacoffee.com/knockoutez", ext: true },
       { label: "Email the maintainer", href: "mailto:ktowhid20@gmail.com" },
     ],

@@ -172,6 +172,13 @@ const CONTENT_COMPLETENESS_COLUMNS = [
   'content_completeness_settled_by',
 ];
 
+// Nullable route-identity column on domain_routing. A cf_clearance is bound to
+// the {IP + UA + TLS} of the egress it was solved on, so a clearance harvested
+// on one route (proxy-or-direct) is invalid from another. `solved_route`
+// records that egress at harvest; legacy rows read NULL → 'direct'. Empty SQL —
+// the whole effect is the guarded ADD COLUMN in the postStep (mirrors 008).
+const MIGRATION_010_CLEARANCE_ROUTE = '';
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -262,6 +269,22 @@ export const MIGRATIONS: Migration[] = [
         if (!names.has(col)) {
           db.exec(`ALTER TABLE url_cache ADD COLUMN ${col} TEXT`);
         }
+      }
+    },
+  },
+  {
+    name: '010-clearance-route',
+    sql: MIGRATION_010_CLEARANCE_ROUTE,
+    /**
+     * Adds the nullable route-identity column to domain_routing, skipping it if
+     * already present (idempotent) — mirrors the 008 postStep. SQLite has no
+     * `ADD COLUMN IF NOT EXISTS`, so we guard on PRAGMA table_info.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(domain_routing)') as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has('solved_route')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN solved_route TEXT');
       }
     },
   },

@@ -770,6 +770,12 @@ export interface DomainClearance {
   ua: string;
   tier: string;
   expiresAt: string;
+  /**
+   * The egress route the clearance was solved on (`proxyUrl ?? 'direct'`). A
+   * cf_clearance is IP/UA/TLS-bound, so it is only valid from the same route.
+   * Absent on legacy rows (pre-migration 010); those read back as `'direct'`.
+   */
+  solvedRoute?: string;
 }
 
 interface DomainClearanceRawRow {
@@ -777,6 +783,7 @@ interface DomainClearanceRawRow {
   clearance_ua: string | null;
   clearance_tier: string | null;
   clearance_expires_at: string | null;
+  solved_route: string | null;
 }
 
 /**
@@ -790,7 +797,7 @@ export function getDomainClearance(host: string): DomainClearance | null {
   try {
     const db = getDatabase();
     const row = db.prepare(
-      `SELECT cf_clearance, clearance_ua, clearance_tier, clearance_expires_at
+      `SELECT cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route
        FROM domain_routing WHERE domain = ? LIMIT 1`,
     ).get(host) as DomainClearanceRawRow | undefined;
     if (!row || row.cf_clearance == null) return null;
@@ -799,6 +806,9 @@ export function getDomainClearance(host: string): DomainClearance | null {
       ua: row.clearance_ua ?? '',
       tier: row.clearance_tier ?? '',
       expiresAt: row.clearance_expires_at ?? '',
+      // A legacy NULL route reads back as 'direct' — the only egress those rows
+      // could have been harvested on before route capture existed.
+      solvedRoute: row.solved_route ?? 'direct',
     };
   } catch (err) {
     log.warn('getDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
@@ -807,22 +817,58 @@ export function getDomainClearance(host: string): DomainClearance | null {
 }
 
 /** Store (or replace) the anti-bot clearance for a host. */
+/**
+ * The stable, NON-SECRET identity of an egress route.
+ *
+ * `solvedRoute` is supplied as `proxyUrl ?? 'direct'`, and proxyUrl is resolved
+ * through `resolveCredentialUrl` — so it can carry inline `user:pass@`. The
+ * reuse gate only ever needs EQUALITY of the route, never the original string,
+ * and persisted-config.ts already treats credential-bearing URLs as secrets
+ * that must not reach disk in cleartext. Strip the userinfo down to
+ * `scheme//host:port` so the cache DB never holds a credential, while two
+ * different proxies stay distinguishable.
+ *
+ * Lives here, at the disk boundary, so no caller can bypass it; the comparison
+ * side imports the same function so both ends agree.
+ */
+export function routeIdentity(route: string | undefined | null): string {
+  if (route == null) return 'direct';
+  const trimmed = route.trim();
+  if (trimmed.length === 0 || trimmed === 'direct') return 'direct';
+  try {
+    const u = new URL(trimmed);
+    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
+  } catch {
+    // Not a URL (a label, or malformed). It carries no userinfo to leak, so
+    // keep it as-is rather than collapsing distinct routes into 'direct'.
+    return trimmed;
+  }
+}
+
 export function recordDomainClearance(host: string, clearance: DomainClearance): void {
   try {
     const db = getDatabase();
     db.prepare(`
       INSERT INTO domain_routing (
         domain, prefer_playwright, http_failures,
-        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, last_updated
+        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route, last_updated
       )
-      VALUES (?, 0, 0, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, 0, 0, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(domain) DO UPDATE SET
         cf_clearance = excluded.cf_clearance,
         clearance_ua = excluded.clearance_ua,
         clearance_tier = excluded.clearance_tier,
         clearance_expires_at = excluded.clearance_expires_at,
+        solved_route = excluded.solved_route,
         last_updated = datetime('now')
-    `).run(host, clearance.cookie, clearance.ua, clearance.tier, clearance.expiresAt);
+    `).run(
+      host,
+      clearance.cookie,
+      clearance.ua,
+      clearance.tier,
+      clearance.expiresAt,
+      routeIdentity(clearance.solvedRoute),
+    );
   } catch (err) {
     log.warn('recordDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
   }

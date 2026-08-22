@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Crawler, type FetchFn, type RawFetchFn } from '../../../src/crawl/crawler.js';
-import type { FetchOutput } from '../../../src/types.js';
+import { RateLimiter } from '../../../src/crawl/rate-limiter.js';
+import type { FetchOutput, RawFetchResult } from '../../../src/types.js';
+import { handleFetch } from '../../../src/tools/fetch.js';
 
 vi.mock('../../../src/config.js', () => ({
   getConfig: () => ({
@@ -8,7 +10,12 @@ vi.mock('../../../src/config.js', () => ({
     crawlDelayMs: 0,
     crawlPrivateConcurrency: 10,
     crawlPrivateDelayMs: 0,
+    crawlJitterPct: 0,
+    crawlCooldownFactor: 2,
+    crawlCooldownMaxMs: 300000,
     respectRobotsTxt: false,
+    fetchAllowPrivate: false,
+    fastStaleMaxHours: 24,
     logLevel: 'error',
     logFormat: 'json',
   }),
@@ -22,6 +29,24 @@ vi.mock('../../../src/logger.js', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   }),
+}));
+
+// Mocks so the REAL handleFetch (src/tools/fetch.ts) runs its challenge-block
+// early-return path without touching disk/network. The de-vacuumed cooldown
+// test below drives handleFetch → r.http_status → the tools/crawl.ts closure →
+// Crawler → recordResponse, so the field name mismatch that dropped the status
+// can regress the test rather than pass vacuously.
+vi.mock('../../../src/cache/store.js', () => ({
+  getCachedContent: vi.fn().mockReturnValue(null),
+  cacheContent: vi.fn(),
+  isCacheUsable: vi.fn().mockReturnValue({ usable: false, stale: false }),
+}));
+vi.mock('../../../src/providers/extract-provider.js', () => ({
+  getExtractProvider: vi.fn(async () => ({ name: 'v1' as const, extract: vi.fn() })),
+  _resetExtractProviderForTest: vi.fn(),
+}));
+vi.mock('../../../src/cache/change-detector.js', () => ({
+  detectChange: vi.fn().mockReturnValue({ changed: false }),
 }));
 
 function makeFetchOutput(url: string, title: string, markdown: string, links: string[] = []): FetchOutput {
@@ -134,6 +159,35 @@ describe('Crawler — BFS', () => {
       max_pages: 1,
     });
     expect(result.pages[0].content_completeness).toBeUndefined();
+  });
+
+  it('threads challenge_class/solve_method from a cleared-via-solve page fetch onto the crawl item', async () => {
+    const solvedFetch: FetchFn = vi.fn(async (url: string) => ({
+      ...makeFetchOutput(url, 'Cleared', '# Cleared\n\nBehind a challenge.', []),
+      challenge_class: 'interactive' as const,
+      solve_method: 'auto-pass' as const,
+    }));
+    const crawler = new Crawler(solvedFetch, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].challenge_class).toBe('interactive');
+    expect(result.pages[0].solve_method).toBe('auto-pass');
+  });
+
+  it('leaves challenge_class/solve_method absent on a normal page (no challenge)', async () => {
+    const crawler = new Crawler(fetchFn, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].challenge_class).toBeUndefined();
+    expect(result.pages[0].solve_method).toBeUndefined();
   });
 
   it('respects max_pages', async () => {
@@ -435,6 +489,36 @@ describe('Crawler — Sitemap', () => {
     expect(result.crawled).toBeLessThanOrEqual(5);
     expect(result.total_found).toBe(50);
   });
+
+  it('threads challenge_class/solve_method through the sitemap/explicit-urls path', async () => {
+    const sitemapXml = `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.example.com/page1</loc></url>
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch: FetchFn = vi.fn(async (url) => ({
+      ...makeFetchOutput(url, 'Cleared', '# Content', []),
+      challenge_class: 'interactive' as const,
+      solve_method: 'auto-pass' as const,
+    }));
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 10,
+    });
+
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0].challenge_class).toBe('interactive');
+    expect(result.pages[0].solve_method).toBe('auto-pass');
+  });
 });
 
 describe('Crawler — canonical output URLs', () => {
@@ -600,5 +684,97 @@ describe('Crawler — canonical output URLs', () => {
 
     expect(result.pages).toHaveLength(1);
     expect(result.pages[0].url).toBe('https://docs.example.com/intro');
+  });
+});
+
+describe('Crawler — adaptive cooldown wiring', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  // Rebuild the EXACT fetchFn closure tools/crawl.ts hands the Crawler: it calls
+  // the real handleFetch and, on a failure carrying an upstream status, spreads
+  // r.http_status onto the crawler FetchOutput. Driving the real handleFetch (via
+  // a mocked router.fetch returning a StageError) exercises the whole handoff —
+  // router StageError → fetch.ts field copy → r.http_status → this closure →
+  // Crawler → recordResponse — so a field-name regression in fetch.ts fails here
+  // instead of passing on a fabricated FetchOutput.http_status.
+  function crawlFetchFn(router: { fetch: ReturnType<typeof vi.fn> }): FetchFn {
+    return async (url: string): Promise<FetchOutput> => {
+      const r = await handleFetch(
+        { url, include_full_markdown: true } as never,
+        router as never,
+      );
+      if (!r.ok) {
+        return {
+          url,
+          title: '',
+          markdown: '',
+          metadata: {},
+          links: [],
+          images: [],
+          cached: false,
+          error: r.error_reason,
+          ...(typeof r.http_status === 'number' ? { http_status: r.http_status } : {}),
+        };
+      }
+      return r.data;
+    };
+  }
+
+  const rawFetchStub: RawFetchFn = vi.fn(async (): Promise<RawFetchResult> => ({
+    url: '', finalUrl: '', html: '', contentType: 'text/plain',
+    statusCode: 200, method: 'http' as const, headers: {},
+  }));
+
+  it('feeds a challenge-block 429 through the real handleFetch handoff into the limiter', async () => {
+    const recordSpy = vi.spyOn(RateLimiter.prototype, 'recordResponse');
+
+    // The router returns a challenge-block StageError carrying http_status — the
+    // exact shape the anti-bot tier produces. handleFetch must copy that status
+    // onto its { ok:false } envelope for the crawl cooldown to see it.
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        error: 'blocked_by_challenge',
+        error_reason: 'Blocked by an anti-bot challenge',
+        stage: 'fetch',
+        http_status: 429,
+      }),
+    };
+
+    const crawler = new Crawler(crawlFetchFn(router), rawFetchStub);
+    await crawler.crawl({ url: 'https://blocked.example.com', strategy: 'bfs', max_depth: 0, max_pages: 1 });
+
+    expect(recordSpy).toHaveBeenCalledWith('blocked.example.com', 429);
+  });
+
+  it('does not call recordResponse when the challenge-block carries no status', async () => {
+    const recordSpy = vi.spyOn(RateLimiter.prototype, 'recordResponse');
+
+    // A StageError with no numeric status (SSRF/validation, or a 2xx-served
+    // challenge) must leave http_status unset all the way through.
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        error: 'blocked_by_challenge',
+        error_reason: 'Blocked by an anti-bot challenge',
+        stage: 'fetch',
+      }),
+    };
+
+    const crawler = new Crawler(crawlFetchFn(router), rawFetchStub);
+    await crawler.crawl({ url: 'https://nostatus.example.com', strategy: 'bfs', max_depth: 0, max_pages: 1 });
+
+    expect(recordSpy).not.toHaveBeenCalled();
+  });
+
+  it('a recorded 429 grows the domain next wait (end-to-end effect)', () => {
+    // Proves the limiter method the crawler wires into actually raises pace.
+    const limiter = new RateLimiter({ jitterPct: 0, cooldownFactor: 2, cooldownMaxMs: 300000 });
+    // base delay comes from the mocked config (crawlDelayMs 0), so use a real
+    // delay via robots floor to make the multiplier observable.
+    limiter.setRobotsCrawlDelay('blocked.example.com', 0.1); // 100ms floor
+    limiter.registerDomain('https://blocked.example.com/a');
+    const before = limiter.nextWaitMs('blocked.example.com', () => 0.5);
+    limiter.recordResponse('blocked.example.com', 429);
+    const after = limiter.nextWaitMs('blocked.example.com', () => 0.5);
+    expect(after).toBeGreaterThan(before);
   });
 });

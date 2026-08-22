@@ -43,7 +43,15 @@ export type PersistedConfigPatch = Partial<Omit<PersistedConfig, 'version'>>;
  * without this guard a caller could round-trip an API key onto disk in plain
  * text. Strip them on the write path. Keys go to the keychain/env only.
  */
-export const SETTINGS_SECRETS_DENYLIST = new Set<string>(['braveApiKey', 'githubToken']);
+export const SETTINGS_SECRETS_DENYLIST = new Set<string>([
+  'braveApiKey',
+  'githubToken',
+  'redditClientSecret',
+  // Hosted-CDP (Bright-Data-style) endpoint may carry inline credentials and
+  // acts as an IP+solver escape rung. Treat it like a secret: never persist it
+  // to config.json in cleartext. Resolved from env or the OS keychain.
+  'scrapingBrowserWss',
+]);
 
 // ---------------------------------------------------------------------------
 // Credential keychain adapter (injectable for tests)
