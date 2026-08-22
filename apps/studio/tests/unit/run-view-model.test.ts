@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RunViewModel, TabOwnedError } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
@@ -163,11 +163,39 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
     expect(vm.snapshot(run.id)?.cost.browserActions).toBe(1);
   });
 
-  it('learns a run it has never seen from a live event without being told to re-list', async () => {
-    const outsider = await store.createRun({ task: 'created behind our back' });
-    await store.appendEvent(outsider.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-x' } });
-    await vm.hydrate();
-    expect(vm.ownerOf('tab-x')).toBe(outsider.id);
+  // #46's REST surface creates runs in this same process. Waiting for the next `hydrate()` would mean
+  // the chrome silently omitted them, and nothing calls hydrate after boot — so the projection adopts a
+  // run it has never seen off the tail, replaying its WHOLE log rather than folding in the one envelope
+  // that woke it. A run whose history starts at seq 4 has no owner for the tab attached at seq 2.
+  it('adopts a run it has never seen off the live tail, replaying its whole history', async () => {
+    const fresh = new FakeRunStore();
+    const outsider = await fresh.createRun({ task: 'created behind our back' });
+    await fresh.appendEvent(outsider.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-x' } });
+    await fresh.appendEvent(outsider.id, { actor: { kind: 'daemon' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 3 } });
+
+    // Constructed AFTER all of that and never hydrated: everything above is history it has not seen.
+    const blind = new RunViewModel(fresh);
+    expect(blind.list()).toEqual([]);
+    await fresh.appendEvent(outsider.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-y' } });
+
+    await vi.waitFor(() => expect(blind.list().map((r) => r.id)).toContain(outsider.id));
+    expect(blind.ownerOf('tab-x'), 'the run was adopted from the waking envelope, not its log').toBe(outsider.id);
+    expect(blind.ownerOf('tab-y')).toBe(outsider.id);
+    expect(blind.snapshot(outsider.id)?.cost.browserActions).toBe(3);
+    expect(blind.list()[0]!.task).toBe('created behind our back');
+  });
+
+  // A gap means an envelope was missed — during an adoption, or a dropped notify. Folding the newer one
+  // in anyway would leave a log that silently disagrees with the store, so the run is replayed instead.
+  it('re-replays a run rather than accepting a log with a hole in it', async () => {
+    const run = await vm.createRun({ task: 'a' });
+    await vm.attachTab(run.id, 'tab-1');
+    const missed = await store.appendEvent(run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-2' } });
+    // Deliver an envelope from the FUTURE, as a tail that dropped `missed` on the floor would.
+    vm.applyEvent(run.id, { ...missed, seq: missed.seq + 5, payload: { tabId: 'tab-9' } });
+
+    await vi.waitFor(() => expect(vm.tabsOf(run.id)).toEqual(['tab-1', 'tab-2']));
+    expect(vm.ownerOf('tab-9'), 'the phantom future envelope was folded in as if nothing was missing').toBeUndefined();
   });
 
   it('summarises runs for the chrome straight out of the log', async () => {

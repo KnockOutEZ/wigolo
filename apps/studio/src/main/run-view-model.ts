@@ -68,6 +68,8 @@ export class RunViewModel {
   /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
   private readonly projected = new Map<string, Run>();
   private readonly listeners = new Set<() => void>();
+  /** Runs being replayed right now, so a burst of events for one of them causes a single replay. */
+  private readonly adopting = new Set<string>();
 
   constructor(private readonly store: RunStoreClient) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
@@ -104,11 +106,43 @@ export class RunViewModel {
    */
   applyEvent(runId: string, event: RunEvent): void {
     const log = this.logs.get(runId);
-    if (!log) return; // a run we have never replayed; the next hydrate picks it up whole
-    if (event.seq <= (log.events.at(-1)?.seq ?? 0)) return;
+    // A run this projection has never seen — created by the REST surface, or by another writer in this
+    // process. Folding one mid-stream envelope in would leave a run whose history starts at seq 9, so
+    // the whole log is replayed instead. Without this it would stay invisible until the next hydrate,
+    // and nothing calls hydrate after boot.
+    if (!log) { void this.adopt(runId); return; }
+    const last = log.events.at(-1)?.seq ?? 0;
+    if (event.seq <= last) return;
+    // A gap means an envelope was missed — one that landed while this run was being adopted, or a
+    // dropped notify. Appending the newer one anyway would leave a log that silently disagrees with the
+    // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail.
+    if (event.seq > last + 1) { void this.adopt(runId, { replace: true }); return; }
     log.events.push(event);
     this.projected.delete(runId);
     this.emit();
+  }
+
+  /**
+   * Replay one run into the projection. `in flight` and the post-await `has` check together keep a burst
+   * of events for the same unknown run to a single replay, and keep it from racing `createRun`, which
+   * registers the same id by a shorter path (the store notifies before its RPC resolves).
+   */
+  private async adopt(runId: string, opts: { replace?: boolean } = {}): Promise<void> {
+    if ((this.logs.has(runId) && !opts.replace) || this.adopting.has(runId)) return;
+    this.adopting.add(runId);
+    try {
+      const run = await this.store.getRun(runId);
+      if (!run || (this.logs.has(runId) && !opts.replace)) return;
+      const events = await this.store.eventsSince(runId, 0);
+      if (this.logs.has(runId) && !opts.replace) return;
+      this.logs.set(runId, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
+      this.projected.delete(runId);
+      this.emit();
+    } catch {
+      // The store is unreachable; the run is not lost, only unseen. A later event retries.
+    } finally {
+      this.adopting.delete(runId);
+    }
   }
 
   async createRun(input: CreateRunInput): Promise<Run> {
