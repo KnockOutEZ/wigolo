@@ -29,6 +29,7 @@ import {
   createRun,
   appendEvent,
   getRun,
+  runExists,
   listRuns,
   eventsSince,
   type CreateRunInput,
@@ -171,6 +172,11 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       appendEvent(deps.db, p.runId, p.event, { onEvent: deps.onRunEvent }),
     runGet: async (p: { runId: string }): Promise<Run | undefined> => getRun(deps.db, p.runId),
     runList: async (p: ListRunsOptions = {}): Promise<ListRunsResult> => listRuns(deps.db, p),
+    // Existence without a projection. `runGet(...) !== undefined` replays a run's whole log to answer,
+    // and the host charges this once per SSE connect — every 3s for a client in a reconnect loop, against
+    // a log that only grows. The daemon's own binding answers it with an index hit; this closes that
+    // asymmetry rather than making the host pay for the pipe it sits behind.
+    runExists: async (p: { runId: string }): Promise<boolean> => runExists(deps.db, p.runId),
     // The host's boot page in ONE round-trip. The host projects runs itself (it holds the same pure
     // `projectRun`), so it needs facts+events and not the `Run`s `runList` serializes — asking for both
     // sent every projection event across the pipe twice, once inside a projection the host recomputes.
