@@ -373,7 +373,14 @@ export type LookupAll = (
   callback: (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void,
 ) => void;
 
-export type ResolveGuardResult = { ok: true } | SsrfRejection;
+/**
+ * `addresses` carries the records that passed validation, so a caller can PIN the socket to
+ * them (see `src/fetch/pinned-dispatcher.ts`). It is absent when the host did not resolve —
+ * there is nothing to pin to, and that is not a bypass.
+ */
+export type ResolveGuardResult =
+  | { ok: true; addresses?: { address: string; family: number }[] }
+  | SsrfRejection;
 
 /**
  * Fetch-time SSRF re-check. `guardFetchUrl` validates only the LITERAL hostname,
@@ -384,10 +391,11 @@ export type ResolveGuardResult = { ok: true } | SsrfRejection;
  * resolved-IP policy is identical to the literal-IP policy — no drift.
  *
  * Call this right before the actual fetch (and on each redirect hop) for any
- * non-IP-literal host. For full rebinding (TOCTOU) safety the connection should
- * additionally be pinned to the validated address — a `lookup` hook / custom
- * dispatcher — which callers can layer on; this guard closes the static-record
- * bypass (the metadata-credential-theft case) on its own.
+ * non-IP-literal host. On success it returns the validated `addresses`; pass them to
+ * `createPinnedAgent` (src/fetch/pinned-dispatcher.ts) so the socket dials one of those
+ * addresses instead of re-resolving, which is what closes the rebinding (TOCTOU) window.
+ * Without pinning this guard still closes the static-record bypass (the
+ * metadata-credential-theft case) on its own.
  */
 /** Resolve every A/AAAA record for a host, or null on NXDOMAIN / timeout / empty. */
 async function resolveAll(
@@ -437,7 +445,7 @@ export async function guardResolvedHost(
       };
     }
   }
-  return { ok: true };
+  return { ok: true, addresses };
 }
 
 /**
@@ -475,5 +483,5 @@ export async function guardResolvedServeTarget(
       };
     }
   }
-  return { ok: true };
+  return { ok: true, addresses };
 }

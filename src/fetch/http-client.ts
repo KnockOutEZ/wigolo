@@ -2,6 +2,8 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import { createPinnedAgent } from './pinned-dispatcher.js';
+import type { Agent } from 'undici';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -152,7 +154,13 @@ async function fetchWithRedirects(
   const visited = new Set<string>();
   let currentUrl = originalUrl;
   let redirectCount = 0;
+  // One Agent per hop, each holding a connection pool. They are closed in the finally below once
+  // the body has been consumed — an Agent left open is a socket leak, and the body is read inside
+  // this function, so closing on the way out is safe.
+  const agents: Agent[] = [];
+  let pinnedAgent: Agent | undefined;
 
+  try {
   while (true) {
     if (visited.has(currentUrl)) {
       throw new HttpFetchError(`Redirect loop detected at ${currentUrl}`, false);
@@ -175,6 +183,15 @@ async function fetchWithRedirects(
         });
         if (!resolved.ok) {
           throw new HttpFetchError(resolved.reason, false);
+        }
+        // PIN the socket to what we just validated. Without this the connection resolves DNS a
+        // second time, and an attacker controlling the resolver can answer with a public IP for
+        // the check above and a private one for the connect (DNS rebinding). Pinning removes the
+        // second resolution, so there is no window to race. Literal IPs need no pinning — there
+        // is no name to re-resolve.
+        if (resolved.addresses?.length) {
+          pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
+          agents.push(pinnedAgent);
         }
       }
     }
@@ -210,6 +227,9 @@ async function fetchWithRedirects(
         headers: mergedHeaders,
         redirect: 'manual',
         signal,
+        // `dispatcher` is undici's extension to RequestInit; Node's global fetch honours it but
+        // the DOM typings do not declare it, hence the cast.
+        ...(pinnedAgent ? ({ dispatcher: pinnedAgent } as Record<string, unknown>) : {}),
       });
     } catch (err) {
       const isTimeout = err instanceof Error && err.name === 'TimeoutError';
@@ -313,5 +333,14 @@ async function fetchWithRedirects(
       headers,
       rawBuffer,
     };
+  }
+  } finally {
+    for (const a of agents) {
+      try {
+        await a.close();
+      } catch {
+        /* closing a pool must never mask the real result */
+      }
+    }
   }
 }
