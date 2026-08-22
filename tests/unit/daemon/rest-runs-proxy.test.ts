@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as http from 'node:http';
+import * as net from 'node:net';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import type { AddressInfo } from 'node:net';
@@ -15,6 +16,7 @@ import {
   type RunsOwner,
 } from '../../../src/daemon/rest/runs-owner.js';
 import { handleRunsRequest } from '../../../src/daemon/rest/runs.js';
+import { ConcurrencySlots } from '../../../src/daemon/rest/limits.js';
 import type { HttpError } from '../../../src/daemon/rest/errors.js';
 
 /**
@@ -124,6 +126,33 @@ function call(opts: { method?: string; path: string; headers?: Record<string, st
     req.on('error', reject);
     req.setTimeout(10_000, () => req.destroy(new Error('client timeout')));
     if (opts.body !== undefined) req.write(opts.body);
+    req.end();
+  });
+}
+
+/**
+ * The same call, read as bytes. `call` decodes to a string, which cannot tell a body that survived
+ * the hop unchanged from one that was re-encoded — and `complete` is the only way to distinguish a
+ * message the client saw the END of from a socket that merely stopped.
+ */
+function callRaw(opts: { path: string; port?: number }): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer; complete: boolean }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port: opts.port ?? proxyPort, method: 'GET', path: opts.path, headers: { Connection: 'close' } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve({
+          status: res.statusCode ?? 0,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+          complete: res.complete,
+        }));
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.setTimeout(10_000, () => req.destroy(new Error('client timeout')));
     req.end();
   });
 }
@@ -755,5 +784,179 @@ describe('an owner that declares it holds no store', () => {
     expect(seenBytes.headers['content-type']).toBe('text/event-stream; charset=utf-8');
     expect(seenBytes.body).toContain('id: 1');
     expect(seenBytes.body).toContain('event: run.created');
+  });
+});
+
+/**
+ * WHY: the decline branch is the one place the hop stops piping and starts BUFFERING — it has to
+ * read the body before anything is written, because once a status is on the wire the local fallback
+ * is impossible. Buffering is what makes it the branch with no natural end: the relay branch dies
+ * with its socket, but a buffer just waits.
+ *
+ * That wait is not free. `ConcurrencySlots` releases a slot ONLY when the handler promise settles
+ * (`limits.ts`), so a hop that never settles does not merely hang its own caller — it permanently
+ * spends one of the process's 16 slots, and sixteen of them close the whole REST surface until a
+ * restart. An owner does not have to be malicious to do this: a half-written response from a
+ * process that is being killed has exactly this shape.
+ */
+describe('the decline branch when the owner never finishes its 503', () => {
+  let slots: ConcurrencySlots;
+
+  /**
+   * The daemon side, wrapped the way `router.runUnderSlotAndDeadline` wraps it: acquire before
+   * dispatch, release when the work promise settles. `slots.active` is therefore an assertion about
+   * the hop's promise, not about this test's bookkeeping.
+   */
+  function startSlottedProxy(bodyTimeoutMs?: number): Promise<number> {
+    slots = new ConcurrencySlots(16);
+    proxy = http.createServer((req, res) => {
+      slots.tryAcquire();
+      void proxyRunsRequest(req, res, {
+        target: { endpoint: `http://127.0.0.1:${upstreamPort}`, token: 'host-token' },
+        path: req.url ?? '/',
+        method: req.method ?? 'GET',
+        streaming: false,
+        ...(bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs }),
+        sendError: (e: HttpError) => {
+          if (res.headersSent) return;
+          res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
+          res.end(JSON.stringify(e.body));
+        },
+      }).finally(() => slots.release());
+    });
+    return listen(proxy);
+  }
+
+  it('settles — and frees the slot — when the owner flushes 503 headers and never ends the body', async () => {
+    // The forced condition. Not "a slow owner": a response that is committed to a status and then
+    // stops, which is what the branch's `data`/`end`-only listener set can wait on forever.
+    const wedged: http.ServerResponse[] = [];
+    upstreamHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.write('{"ok":false,"error_reason":"store_unav');
+      wedged.push(res);
+    };
+    const port = await startSlottedProxy(150);
+
+    const r = await call({ path: '/v1/runs', port });
+
+    // A 502 is the honest answer: the owner did not complete a response, so there is nothing to
+    // relay and nothing it told us about itself.
+    expect(r.status).toBe(502);
+    expect((JSON.parse(r.body) as { error_reason: string }).error_reason).toBe('studio_host_unreachable');
+    // The load-bearing one. Without it this row would pass on a hop that answered the client from a
+    // timeout and still left its promise pending forever.
+    expect(slots.active).toBe(0);
+
+    for (const res of wedged) res.destroy();
+  });
+
+  it('does not leave the reset unhandled when the 503 body dies mid-flight', async () => {
+    upstreamHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.write('{"ok":false');
+      // A reset, not a close: the branch has to see an `error`, which with no listener is an
+      // UNHANDLED one — and that exits the process with every test still reported passing.
+      setTimeout(() => res.socket?.destroy(), 20);
+    };
+    const port = await startSlottedProxy(5_000);
+
+    const unhandled: unknown[] = [];
+    const capture = (err: unknown): void => { unhandled.push(err); };
+    process.on('uncaughtException', capture);
+    try {
+      const r = await call({ path: '/v1/runs', port });
+      expect(r.status).toBe(502);
+    } finally {
+      process.off('uncaughtException', capture);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(slots.active).toBe(0);
+  });
+});
+
+/**
+ * WHY: `content-length` describes bytes on ONE connection. The decline branch reads the owner's
+ * body into a buffer and then writes its own — a body it may have truncated at the cap, and which
+ * it re-encoded through `toString('utf-8')`, a transform that maps every invalid byte to U+FFFD and
+ * so changes the byte count. Relaying the owner's number alongside a body of a different length is
+ * the same category of lie `HOP_BY_HOP`'s docstring already names, and the client pays it: it waits
+ * for bytes that will never arrive, or reads the next response as this one's tail.
+ */
+describe('response framing across the hop', () => {
+  it('frames a relayed 503 by the bytes it actually sends, not the owner’s content-length', async () => {
+    // A body that is honestly framed upstream and is NOT valid UTF-8. Re-encoded it is 8 bytes, not
+    // 4 — so the owner's `Content-Length: 4` describes a body this hop no longer has.
+    const raw = Buffer.from([0x7b, 0xff, 0xfe, 0x7d]);
+    upstreamHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(raw.length) });
+      res.end(raw);
+    };
+    proxyPort = await startProxyServer(false);
+
+    const r = await callRaw({ path: '/v1/runs' });
+
+    expect(r.status).toBe(503);
+    // The bytes, unexamined — the same contract the pipe branch keeps. A re-encoded relay fails
+    // this even when the length happens to match.
+    expect(r.body.equals(raw)).toBe(true);
+    // And the framing is ours: whatever the owner announced, the client's message ends where our
+    // body ends. `complete` is Node telling us it saw the end of the message, not a socket drop.
+    expect(r.complete).toBe(true);
+    expect(r.headers['content-length']).toBeUndefined();
+  });
+
+  it('keeps the client’s connection framed when the owner over-announces its 503 body', async () => {
+    // The security-reviewer's case: headers promise 20 000 bytes, four arrive, the owner never ends.
+    // Relayed, the client hangs on a promise the owner broke. A raw socket is required — Node's own
+    // server refuses to send a body shorter than the length it announced.
+    const liarSockets: net.Socket[] = [];
+    const liar = net.createServer((socket) => {
+      liarSockets.push(socket);
+      socket.on('data', () => {
+        socket.write(
+          'HTTP/1.1 503 Service Unavailable\r\n'
+          + 'Content-Type: application/json\r\n'
+          + 'Content-Length: 20000\r\n'
+          + '\r\n'
+          + '{"ok"',
+        );
+      });
+      socket.on('error', () => { /* the hop hangs up on us; that is the point */ });
+    });
+    // The suite's http upstream stays up and is torn down as usual; this row simply points the hop
+    // at a socket that answers for itself.
+    upstreamPort = await new Promise<number>((resolve) => {
+      liar.listen(0, '127.0.0.1', () => resolve((liar.address() as AddressInfo).port));
+    });
+
+    try {
+      proxy = http.createServer((req, res) => {
+        void proxyRunsRequest(req, res, {
+          target: { endpoint: `http://127.0.0.1:${upstreamPort}`, token: 'host-token' },
+          path: req.url ?? '/',
+          method: req.method ?? 'GET',
+          streaming: false,
+          bodyTimeoutMs: 150,
+          sendError: (e: HttpError) => {
+            if (res.headersSent) return;
+            res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
+            res.end(JSON.stringify(e.body));
+          },
+        });
+      });
+      proxyPort = await listen(proxy);
+
+      const r = await callRaw({ path: '/v1/runs' });
+
+      // Not a hang. The client gets a complete, framed answer that says the owner failed.
+      expect(r.status).toBe(502);
+      expect(r.complete).toBe(true);
+      expect((JSON.parse(r.body.toString('utf-8')) as { error_reason: string }).error_reason).toBe('studio_host_unreachable');
+    } finally {
+      for (const socket of liarSockets) socket.destroy();
+      await new Promise<void>((resolve) => liar.close(() => resolve()));
+    }
   });
 });

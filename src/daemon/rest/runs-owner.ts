@@ -46,9 +46,17 @@ const BODY_TIMEOUT_MS = 30_000;
  * Hop-by-hop headers (RFC 9110 §7.6.1) describe ONE connection. Relaying the owner's framing onto
  * the client's socket would describe a connection that is not theirs — and `content-length` from a
  * response we may re-chunk is the same category of lie.
+ *
+ * `content-length` is the entry that had to be learned twice. It is not merely redundant: the
+ * decline branch below BUFFERS the owner's body and writes its own, which may be shorter than the
+ * owner announced (the cap) or a different number of bytes for the same characters (a re-encode).
+ * A client handed a length its body does not match either waits for bytes that never come or reads
+ * the next response as this one's tail. Node computes our framing correctly from what we actually
+ * write; the owner's number can only overrule it with a wrong one.
  */
 const HOP_BY_HOP = new Set([
   'connection',
+  'content-length',
   'keep-alive',
   'proxy-authenticate',
   'proxy-authorization',
@@ -275,6 +283,13 @@ export interface RunsProxyOptions {
    * in-process tail.
    */
   streaming: boolean;
+  /**
+   * Override for the non-streaming body deadline. Production never sets it — the constant is the
+   * contract. It exists so a stalled owner can be FORCED in a test in milliseconds instead of
+   * waited out for thirty seconds, because "we ran it and it did not hang" is not evidence about a
+   * branch whose whole failure mode is patience.
+   */
+  bodyTimeoutMs?: number;
   sendError: (error: HttpError) => void;
 }
 
@@ -356,6 +371,10 @@ export function proxyRunsRequest(
     headerTimer.unref?.();
 
     const fail = (err: unknown): void => {
+      // A dead socket reaches us more than once — an `error` on the response and a `close` behind
+      // it, or a client hang-up that already resolved this hop. Past the first, there is no status
+      // left to choose and `sendError` would write onto a response someone else has finished.
+      if (settled) return;
       if (headerTimer) clearTimeout(headerTimer);
       log.debug('run-store owner hop failed', { endpoint: opts.target.endpoint, error: String(err) });
       if (!res.headersSent) opts.sendError(hostUnreachable());
@@ -411,26 +430,59 @@ export function proxyRunsRequest(
         const chunks: Buffer[] = [];
         let size = 0;
         let overflow = false;
+
+        // This is the one branch that stops piping and waits, and waiting is what makes it the one
+        // branch with no natural end: a pipe dies with its socket, a buffer does not. The deadline
+        // is unconditional — unlike the relay below, which exempts streams because a healthy tail
+        // is silent for minutes. A 503 decline is never a tail; it is a bounded error envelope, so
+        // an owner that has not finished one in time has stopped rather than gone quiet.
+        //
+        // Left open, the cost is not just this caller: `runUnderSlotAndDeadline` releases its
+        // concurrency slot only when this promise settles, so a hop that never settles spends one
+        // of the process's slots permanently, and enough of them close the REST surface until a
+        // restart. On the events route there is no route deadline at all, so nothing else would
+        // ever notice.
+        const declineTimer = setTimeout(() => {
+          upstreamRes.destroy(new Error('run-store owner 503 body stalled'));
+        }, opts.bodyTimeoutMs ?? BODY_TIMEOUT_MS);
+        declineTimer.unref?.();
+
         upstreamRes.on('data', (c: Buffer) => {
           size += c.length;
           if (size > DECLINE_BODY_CAP_BYTES) { overflow = true; return; }
           chunks.push(c);
         });
         upstreamRes.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf-8');
+          clearTimeout(declineTimer);
+          const body = Buffer.concat(chunks);
           let reason: unknown;
-          try { reason = (JSON.parse(text) as { error_reason?: unknown }).error_reason; } catch { /* not an envelope */ }
+          try { reason = (JSON.parse(body.toString('utf-8')) as { error_reason?: unknown }).error_reason; } catch { /* not an envelope */ }
           if (!overflow && reason === DECLINED_BY_OWNER.reason) {
             log.debug('run-store owner declares it holds no store; serving in-process', { endpoint: opts.target.endpoint });
             finish('owner_declared_no_store');
             return;
           }
-          // Some other 503 — a real "temporarily unavailable" from the owner. Relay it as its own.
+          // Some other 503 — a real "temporarily unavailable" from the owner. Relay it as its own,
+          // and relay the BYTES: `toString('utf-8')` maps every invalid byte to U+FFFD, which is a
+          // different body of a different length from the one the owner sent.
           if (!res.headersSent) {
             res.writeHead(503, relayHeaders(upstreamRes));
-            res.end(text);
+            res.end(body);
           }
           finish();
+        });
+        // Everything the relay branch already handles, and for the same reason: an `error` with no
+        // listener is an UNHANDLED one, and a `close` without an `end` is a body that stopped —
+        // both of which this branch would otherwise sit on forever. `fail` is the right answer to
+        // each: nothing is on the wire yet, and an owner that did not finish a response has told
+        // us nothing to relay.
+        upstreamRes.on('error', (err) => {
+          clearTimeout(declineTimer);
+          fail(err);
+        });
+        upstreamRes.on('close', () => {
+          clearTimeout(declineTimer);
+          fail(new Error('run-store owner closed its 503 before the body ended'));
         });
         return;
       }
@@ -444,7 +496,7 @@ export function proxyRunsRequest(
       if (!opts.streaming) {
         bodyTimer = setTimeout(() => {
           upstreamRes.destroy(new Error('run-store owner response body stalled'));
-        }, BODY_TIMEOUT_MS);
+        }, opts.bodyTimeoutMs ?? BODY_TIMEOUT_MS);
         bodyTimer.unref?.();
       }
 
