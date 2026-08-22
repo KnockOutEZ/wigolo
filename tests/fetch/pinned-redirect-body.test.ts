@@ -1,65 +1,86 @@
-﻿import { createServer, type Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { httpFetch } from '../../src/fetch/http-client.js';
 
 /**
- * A redirect whose body never ends must not be able to hang the fetch.
+ * A redirect whose body never ends must not be able to hold up the fetch.
  *
  * The redirect path reads `location` and continues without consuming the response body. That was
- * untidy before this branch; it became a hang once the per-hop Agents started being closed on the
- * way out, because `Agent.close()` waits for in-flight requests and an undrained body keeps one in
- * flight forever. The wait happens in the `finally`, outside the AbortSignal that bounds the
- * request, so `timeoutMs` cannot rescue it.
+ * untidy before this branch; it became costly once the per-hop Agents started being torn down on
+ * the way out, because an unread body keeps the request in flight. Measured at the time: 2038ms
+ * against `timeoutMs=2000`, i.e. a full timeout added to every such redirect.
  *
- * The server here sends a 302 with a valid Location and then writes forever without ending. If the
- * body is not cancelled before the hop advances, this test times out instead of asserting.
+ * WHY /done IS GATED ON THE REDIRECT SOCKET CLOSING
+ * -------------------------------------------------
+ * An elapsed-time assertion alone does NOT test what it looks like it tests. The fix has two
+ * halves — `response.body.cancel()` on the redirect path, and `Agent.destroy()` rather than
+ * `close()` in the cleanup — and `destroy()` does not wait for in-flight requests. So with the
+ * cancel deleted and only `destroy()` left, the call still returns immediately and a naive timing
+ * test passes. Verified by deleting it: the test passed in 202ms with no cancel anywhere.
+ *
+ * Gating `/done` on the redirect response's `close` event makes the second hop *depend* on the
+ * first hop's body actually being released. With the cancel in place the socket closes at once and
+ * this finishes in milliseconds. Without it, nothing closes until the per-hop AbortSignal fires,
+ * so `/done` cannot answer and elapsed climbs to `timeoutMs` — the assertion fails, by design.
  */
-describe('a never-ending redirect body must not hang the fetch', () => {
+describe('a never-ending redirect body must not hold up the fetch', () => {
   let server: Server;
   let port: number;
-  let stop: (() => void) | undefined;
+  let stopWriting: (() => void) | undefined;
+  let onRedirectClosed: (() => void) | undefined;
+  let redirectClosed: Promise<void>;
 
   beforeAll(async () => {
+    redirectClosed = new Promise<void>((resolve) => {
+      onRedirectClosed = resolve;
+    });
+
     server = createServer((req, res) => {
       if (req.url === '/redir') {
         res.writeHead(302, {
           location: `http://127.0.0.1:${port}/done`,
           'content-type': 'text/plain',
         });
-        // Never call res.end(). Keep the body open so the request stays in flight.
-        const t = setInterval(() => {
+        // Never end this response. It stays in flight until the client lets go of the body.
+        const timer = setInterval(() => {
           try {
             res.write('.'.repeat(1024));
           } catch {
-            /* client went away */
+            /* peer gone */
           }
         }, 10);
-        stop = () => clearInterval(t);
-        res.on('close', () => clearInterval(t));
+        stopWriting = () => clearInterval(timer);
+        res.on('close', () => {
+          clearInterval(timer);
+          onRedirectClosed?.();
+        });
         return;
       }
-      res.writeHead(200, { 'content-type': 'text/html' });
-      res.end('<html><body>done</body></html>');
+
+      // The second hop only answers once the first hop's body has actually been released.
+      void redirectClosed.then(() => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html><body>done</body></html>');
+      });
     });
+
     await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()));
     port = (server.address() as { port: number }).port;
   });
 
   afterAll(async () => {
-    stop?.();
+    stopWriting?.();
+    onRedirectClosed?.();
     await new Promise<void>((res) => server.close(() => res()));
   });
 
-  it('completes rather than hanging on the undrained redirect body', async () => {
+  it('releases the redirect body instead of leaving it in flight', async () => {
     const started = Date.now();
     const res = await httpFetch(`http://localhost:${port}/redir`, { timeoutMs: 2000 });
     const elapsed = Date.now() - started;
     expect(res.statusCode).toBe(200);
     expect(res.html).toContain('done');
-    // With the body cancelled the hop costs nothing. If it is left undrained the call is held up
-    // until the per-hop AbortSignal fires, so elapsed tracks timeoutMs instead.
     console.log(`   elapsed ${elapsed}ms for timeoutMs=2000`);
     expect(elapsed).toBeLessThan(1500);
   }, 20000);
 });
-
