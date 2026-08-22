@@ -187,6 +187,15 @@ describe('NpmRegistryEngine', () => {
     expect(results).toEqual([]);
   });
 
+  it('returns empty array when maxResults is 0', async () => {
+    const body = {
+      objects: [{ package: { name: 'foo', description: 'a thing' } }],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 0 });
+    expect(results).toEqual([]);
+  });
+
   it('returns empty array when objects field is absent', async () => {
     captureFetch({});
     const results = await new NpmRegistryEngine().search('q');
