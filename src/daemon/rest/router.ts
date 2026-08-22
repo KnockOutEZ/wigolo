@@ -28,6 +28,7 @@ import {
 import { validateInput } from './validate.js';
 import { dispatchTool, type DispatchContext } from './dispatch.js';
 import { buildOpenApi, buildToolsIndex } from './openapi.js';
+import type { RunsStore } from './runs-store.js';
 import {
   resolveUntrustedMode,
   UNTRUSTED_MODE_HEADER,
@@ -66,6 +67,11 @@ export interface RestRouterOptions {
   bindHost: string;
   token: string | null;
   allowUnauthenticated: boolean;
+  /**
+   * The bound run store, for an owner that cannot open a native handle (the Electron main — SD1 §6 /
+   * A-43-5). Absent on the daemon, which resolves its own.
+   */
+  runStore?: RunsStore;
 }
 
 export class RestRouter {
@@ -218,6 +224,7 @@ export class RestRouter {
           respond: (status: number, body: unknown, headers?: Record<string, string>) =>
             this.respond(res, status, body, headers),
           sendError: (e: HttpError) => this.sendError(res, e),
+          ...(this.opts.runStore ? { store: this.opts.runStore } : {}),
         };
         if (parseRunsPath(pathname)?.kind === 'events') {
           await handleRunsRequest(req, res, runsOpts);

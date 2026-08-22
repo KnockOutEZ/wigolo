@@ -26,10 +26,6 @@ import {
 } from './errors.js';
 import { bodyCapFor, readJsonBodyCapped, BodyTooLargeError } from './limits.js';
 import {
-  getRun,
-  runExists,
-  listRuns,
-  eventsSince,
   normalizeRunId,
   MAX_TASK_CHARS,
   MAX_LIST_LIMIT,
@@ -39,7 +35,8 @@ import {
   type RunEvent,
   type RunStatus,
 } from '../../studio/run-store.js';
-import { createRunWithTail, subscribeRunEvents } from '../../studio/run-bus.js';
+import { subscribeRunEvents } from '../../studio/run-bus.js';
+import { sqliteRunsStore, type RunsStore } from './runs-store.js';
 import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
 
 const log = createLogger('rest');
@@ -112,6 +109,11 @@ export interface RunsRequestOptions {
   sendError: (error: HttpError) => void;
   /** Injected by tests; production resolves the shared cache DB lazily. */
   openDb?: () => Database.Database;
+  /**
+   * The bound run store, when this process cannot open a native handle at all. The Electron main
+   * passes a broker-backed one (SD1 §6 / A-43-5) — see `runs-store.ts`. Wins over `openDb`.
+   */
+  store?: RunsStore;
   /** Injected by tests; production reads the published studio handle (SD1 §6 / A-43-5). */
   resolveOwner?: () => RunsOwner;
 }
@@ -138,19 +140,23 @@ function storeUnavailable(): HttpError {
 
 /**
  * Resolved per request, not per router: the store opens during subsystem init, and a REST surface
- * running without it (studio-only mode) must say so with a structured 503 rather than a stack.
+ * running without one at all must say so with a structured 503 rather than a stack.
+ *
+ * A bound `store` is checked first because it is the only answer available to a process that cannot
+ * open a native handle — falling through to `getDatabase()` there would 503 an owner that CAN serve.
  */
-async function resolveDb(opts: RunsRequestOptions): Promise<Database.Database | null> {
+async function resolveStore(opts: RunsRequestOptions): Promise<RunsStore | null> {
+  if (opts.store) return opts.store;
   if (opts.openDb) {
     try {
-      return opts.openDb();
+      return sqliteRunsStore(opts.openDb());
     } catch {
       return null;
     }
   }
   try {
     const { getDatabase } = await import('../../cache/db.js');
-    return getDatabase();
+    return sqliteRunsStore(getDatabase());
   } catch {
     return null;
   }
@@ -212,23 +218,23 @@ export async function handleRunsRequest(
     if (outcome === 'served') return;
   }
 
-  const db = await resolveDb(opts);
-  if (!db) {
+  const store = await resolveStore(opts);
+  if (!store) {
     opts.sendError(storeUnavailable());
     return;
   }
 
   try {
     if (route.kind === 'collection') {
-      if (method === 'POST') await handleCreate(req, opts, db, createBody);
-      else handleList(opts, db);
+      if (method === 'POST') await handleCreate(req, opts, store, createBody);
+      else await handleList(opts, store);
       return;
     }
     if (route.kind === 'item') {
-      handleGet(opts, db, route.id);
+      await handleGet(opts, store, route.id);
       return;
     }
-    await handleEvents(req, res, opts, db, route.id);
+    await handleEvents(req, res, opts, store, route.id);
   } catch (err) {
     log.error('runs route failed', { route: route.kind, error: String(err) });
     opts.sendError(internalError());
@@ -257,7 +263,7 @@ function createFailure(err: unknown): HttpError {
 async function handleCreate(
   req: IncomingMessage,
   opts: RunsRequestOptions,
-  db: Database.Database,
+  store: RunsStore,
   preRead?: unknown,
 ): Promise<void> {
   const cap = bodyCapFor(RUNS_ROUTE_LABEL);
@@ -308,7 +314,7 @@ async function handleCreate(
   }
 
   try {
-    const run = createRunWithTail(db, {
+    const run = await store.create({
       task,
       ...(typeof input.spaceId === 'string' ? { spaceId: input.spaceId } : {}),
       ...(driver ? { driver } : {}),
@@ -342,7 +348,7 @@ function parseDriver(raw: unknown): { ok: true; driver: Driver } | { ok: false; 
   return { ok: true, driver };
 }
 
-function handleList(opts: RunsRequestOptions, db: Database.Database): void {
+async function handleList(opts: RunsRequestOptions, store: RunsStore): Promise<void> {
   const params = opts.url.searchParams;
 
   let status: RunStatus[] | undefined;
@@ -371,7 +377,7 @@ function handleList(opts: RunsRequestOptions, db: Database.Database): void {
   const spaceId = params.get('spaceId') ?? undefined;
   const cursor = params.get('cursor') ?? undefined;
 
-  const result = listRuns(db, {
+  const result = await store.list({
     ...(status ? { status } : {}),
     ...(spaceId ? { spaceId } : {}),
     ...(limit !== undefined ? { limit } : {}),
@@ -397,9 +403,9 @@ function decodeRunId(rawId: string): string | null {
   }
 }
 
-function handleGet(opts: RunsRequestOptions, db: Database.Database, rawId: string): void {
+async function handleGet(opts: RunsRequestOptions, store: RunsStore, rawId: string): Promise<void> {
   const decoded = decodeRunId(rawId);
-  const run = decoded === null ? undefined : getRun(db, decoded);
+  const run = decoded === null ? undefined : await store.get(decoded);
   if (!run) {
     opts.sendError(runNotFound());
     return;
@@ -496,7 +502,7 @@ async function handleEvents(
   req: IncomingMessage,
   res: ServerResponse,
   opts: RunsRequestOptions,
-  db: Database.Database,
+  store: RunsStore,
   rawId: string,
 ): Promise<void> {
   const decoded = decodeRunId(rawId);
@@ -505,9 +511,9 @@ async function handleEvents(
     return;
   }
   const id = normalizeRunId(decoded);
-  // Existence only — `getRun` would project the run, reading the whole log synchronously, which is
-  // exactly what the paged replay below exists to avoid.
-  if (!runExists(db, id)) {
+  // Existence only — `get` would project the run, reading the whole log, which is exactly what the
+  // paged replay below exists to avoid doing in one burst.
+  if (!(await store.exists(id))) {
     opts.sendError(runNotFound());
     return;
   }
@@ -600,7 +606,7 @@ async function handleEvents(
     let cursor = resume.since;
     for (;;) {
       if (closed) return;
-      const page = eventsSince(db, id, cursor, pageSize);
+      const page = await store.eventsSince(id, cursor, pageSize);
       if (page.length === 0) break;
       for (const event of page) emitter.emit(event);
       cursor = page[page.length - 1].seq;

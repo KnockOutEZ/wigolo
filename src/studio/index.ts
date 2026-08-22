@@ -191,6 +191,14 @@ export type {
 export { DaemonHttpServer } from '../daemon/http-server.js';
 export type { DaemonOptions, DaemonAuthConfig, UpgradeHandler } from '../daemon/http-server.js';
 
+// SD1 §6 / A-43-5 — the run store as the REST surface reaches it. The Electron main binds this to
+// the broker child and hands it to the gateway, which is what makes the live owner able to serve.
+export type { RunsStore } from '../daemon/rest/runs-store.js';
+
+// The in-process live tail (`run-bus.ts`). The app's broker bridge publishes onto it so an SSE tail
+// opened on the gateway sees what THIS process appends — the point of the one-owner rule.
+export { publishRunEvent, subscribeRunEvents, runEventListenerCount } from './run-bus.js';
+
 // The bearer-authed MCP client for the gateway (the same client the stdio proxy uses; the e2e drives with it).
 export { DaemonProxy } from '../daemon/proxy.js';
 

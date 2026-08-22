@@ -10,6 +10,7 @@ import {
   type StudioSessionsAccessor,
   type DaemonOptions,
   type SessionHandle,
+  type RunsStore,
 } from 'wigolo/studio';
 
 // The agent gateway: the salvaged loopback MCP server (DaemonHttpServer) embedded IN the Electron
@@ -33,6 +34,12 @@ export interface GatewayDeps {
   sessions: StudioSessionsAccessor;
   /** The published session id (the handle's `id`). */
   sessionId: string;
+  /**
+   * The broker-backed run store (SD1 §6 / A-43-5). While the app runs it is the one live store
+   * owner, and this is what lets `/v1/runs*` serve instead of answering `503 store_unavailable`.
+   * Omitting it is a deliberate, visible degradation, not a silent one — the surface refuses.
+   */
+  runStore?: RunsStore;
   dataDir?: string;
   /** Operator-supplied stable token; when absent a per-launch token is minted. */
   configuredToken?: string | null;
@@ -61,11 +68,15 @@ export async function startGateway(deps: GatewayDeps): Promise<Gateway> {
 
   // STUDIO-ONLY gateway: the embedded server hosts just the studio_* surface via this factory, so it
   // never loads the core subsystems' native cache DB (which can't run in the Electron main — spec §13.7).
+  //
+  // `runStore` is the one exception to that, and does not breach it: the store is REACHED from here,
+  // not LOADED here — the native handle stays in the broker child and this is an async port over it.
   const opts: DaemonOptions = {
     port,
     host,
     auth: { token, host },
     mcpServerFactory: () => createStudioMcpServer({ studioHost: deps.host, sessions: deps.sessions, dataDir: deps.dataDir }),
+    ...(deps.runStore ? { runStore: deps.runStore } : {}),
   };
   const daemon: GatewayDaemon = deps.makeDaemon ? deps.makeDaemon(opts) : new DaemonHttpServer(opts);
 

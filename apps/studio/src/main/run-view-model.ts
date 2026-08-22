@@ -1,4 +1,4 @@
-import { projectRun, type CreateRunInput, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
+import { projectRun, type CreateRunInput, type ListRunsOptions, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
 import type { BrokerClient } from './broker-client';
 
 /**
@@ -23,8 +23,13 @@ export interface RunStoreClient {
   createRun(input: CreateRunInput): Promise<Run>;
   appendEvent(runId: string, event: RunEventInput): Promise<RunEvent>;
   getRun(runId: string): Promise<Run | undefined>;
-  listRuns(): Promise<ListRunsResult>;
-  eventsSince(runId: string, since?: number): Promise<RunEvent[]>;
+  /**
+   * The filter/paging options exist for the REST surface (`GET /v1/runs?status=&limit=&cursor=`),
+   * which this process now serves as the live store owner. The view-model itself always wants the
+   * whole snapshot and passes nothing.
+   */
+  listRuns(opts?: ListRunsOptions): Promise<ListRunsResult>;
+  eventsSince(runId: string, since?: number, limit?: number): Promise<RunEvent[]>;
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
 }
 
@@ -33,8 +38,8 @@ export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient
     createRun: (input) => broker.call<Run>('runCreate', { input }),
     appendEvent: (runId, event) => broker.call<RunEvent>('runAppend', { runId, event }),
     getRun: (runId) => broker.call<Run | undefined>('runGet', { runId }),
-    listRuns: () => broker.call<ListRunsResult>('runList', {}),
-    eventsSince: (runId, since = 0) => broker.call<RunEvent[]>('runEventsSince', { runId, since }),
+    listRuns: (opts = {}) => broker.call<ListRunsResult>('runList', opts),
+    eventsSince: (runId, since = 0, limit) => broker.call<RunEvent[]>('runEventsSince', { runId, since, limit }),
     onRunEvent: (handler) => broker.onRunEvent(handler),
   };
 }
