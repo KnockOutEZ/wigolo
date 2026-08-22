@@ -71,8 +71,9 @@ export class FakeRunStore implements RunStoreClient {
     return { runs: runs.filter((r): r is Run => r !== undefined) };
   }
 
-  async eventsSince(runId: string, since = 0): Promise<RunEvent[]> {
-    return (this.log.get(runId) ?? []).filter((e) => e.seq > since);
+  async eventsSince(runId: string, since = 0, limit?: number): Promise<RunEvent[]> {
+    const page = (this.log.get(runId) ?? []).filter((e) => e.seq > since);
+    return limit === undefined ? page : page.slice(0, limit);
   }
 
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void {
