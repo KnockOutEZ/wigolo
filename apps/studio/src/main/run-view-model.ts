@@ -81,6 +81,12 @@ export type PromoteSurface = 'tray' | 'chrome' | 'panel';
 export type PresentationBy = 'human' | 'system';
 
 const TERMINAL_STATUSES: ReadonlySet<Run['status']> = new Set<Run['status']>(['done', 'failed', 'cancelled']);
+/**
+ * The event types that make a run terminal. Kept as types rather than derived by projecting, because
+ * this is asked on EVERY folded envelope — projecting to find out whether to project would make
+ * folding a long run quadratic, which is the class of defect the retention bound exists to remove.
+ */
+const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set(['run.completed', 'run.failed', 'run.cancelled']);
 
 export function isTerminal(status: Run['status']): boolean {
   return TERMINAL_STATUSES.has(status);
@@ -184,7 +190,7 @@ export class RunViewModel {
       ...(typeof sessionId === 'string' ? { sessionId } : {}),
     });
     this.projected.delete(facts.id);
-    this.seal(facts.id);
+    if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
   }
 
   /**
@@ -229,7 +235,7 @@ export class RunViewModel {
     log.events.push(event);
     log.lastSeq = event.seq;
     this.projected.delete(runId);
-    this.seal(runId);
+    if (TERMINAL_EVENT_TYPES.has(event.type)) this.seal(runId);
     this.emit();
   }
 
@@ -240,7 +246,12 @@ export class RunViewModel {
    * to a run that ended while it was being watched.
    */
   private async fold(runId: string, event: RunEvent): Promise<void> {
-    if (this.logs.get(runId)?.final) { await this.adopt(runId, { replace: true }); return; }
+    const log = this.logs.get(runId);
+    // The store notifies before the append's RPC resolves, so by the time we get here this envelope is
+    // usually already in. Checked BEFORE the sealed branch: an append that seals the run would
+    // otherwise replay it immediately afterwards to fold an envelope it has already folded.
+    if (log && event.seq <= log.lastSeq) return;
+    if (log?.final) { await this.adopt(runId, { replace: true }); return; }
     this.applyEvent(runId, event);
   }
 
