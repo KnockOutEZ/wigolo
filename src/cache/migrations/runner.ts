@@ -388,6 +388,34 @@ CREATE INDEX IF NOT EXISTS idx_url_versions_hash
   ON url_versions(content_hash, fetched_at, id);
 `;
 
+// SD1 spine 1: the durable run store. studio_run_events is the single source of truth; the
+// status/last_seq/updated_at columns on studio_runs are a projection cache, rebuildable by replay.
+// (run_id, seq) mirrors the studio_audit (session_id, seq) append-only precedent.
+const MIGRATION_016_STUDIO_RUNS = `
+CREATE TABLE IF NOT EXISTS studio_runs (
+  id         TEXT PRIMARY KEY,
+  task       TEXT NOT NULL,
+  space_id   TEXT NOT NULL DEFAULT 'default',
+  created_at TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'running',
+  last_seq   INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS studio_run_events (
+  run_id  TEXT NOT NULL REFERENCES studio_runs(id),
+  seq     INTEGER NOT NULL,
+  ts      TEXT NOT NULL,
+  actor   TEXT NOT NULL,
+  type    TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY (run_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_studio_run_events_type ON studio_run_events(run_id, type);
+CREATE INDEX IF NOT EXISTS idx_studio_runs_status ON studio_runs(status, created_at);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -593,6 +621,7 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  { name: '016-studio-runs', sql: MIGRATION_016_STUDIO_RUNS },
 ];
 
 function isReadOnlyError(err: unknown): boolean {

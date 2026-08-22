@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { ArtifactDelta } from 'wigolo/studio';
+import type { ArtifactDelta, RunEvent } from 'wigolo/studio';
 
 /**
  * Client for the studio DB broker (a plain-Node child process that owns the cache DB — the Electron
@@ -13,6 +13,8 @@ export interface BrokerClient {
   ready(): Promise<void>;
   call<T = unknown>(method: string, params?: unknown): Promise<T>;
   onArtifact(handler: (delta: ArtifactDelta) => void): void;
+  /** Live tail of the run log — one call per committed envelope, in seq order. */
+  onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
   stop(): Promise<void>;
 }
 
@@ -243,6 +245,7 @@ function deadClient(reason: string): BrokerClient {
     ready: () => Promise.reject(new Error(reason)),
     call: () => Promise.reject(new Error(reason)),
     onArtifact: () => { /* never fires */ },
+    onRunEvent: () => { /* never fires */ },
     stop: async () => { /* nothing to stop */ },
   };
 }
@@ -285,6 +288,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
   let readyPromise: Promise<void> = new Promise((r) => { readyResolve = r; });
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const artifactHandlers: Array<(d: ArtifactDelta) => void> = [];
+  const runEventHandlers: Array<(runId: string, e: RunEvent) => void> = [];
 
   const rejectAllPending = (reason: string): void => {
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(new Error(reason)); }
@@ -297,6 +301,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     try { msg = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     if (msg.notify === 'ready') { readyResolve?.(); return; }
     if (msg.notify === 'artifact') { for (const h of artifactHandlers) h(msg.delta as ArtifactDelta); return; }
+    if (msg.notify === 'run-event') { for (const h of runEventHandlers) h(msg.runId as string, msg.envelope as RunEvent); return; }
     const id = msg.id as number | undefined;
     if (id == null) return;
     const p = pending.get(id);
@@ -368,6 +373,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
       });
     },
     onArtifact(handler) { artifactHandlers.push(handler); },
+    onRunEvent(handler) { runEventHandlers.push(handler); },
     async stop() { stopped = true; rejectAllPending('stopped'); child?.kill(); child = null; },
   };
 }
