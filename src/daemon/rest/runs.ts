@@ -54,6 +54,18 @@ const DEFAULT_MAX_SSE_CONNECTIONS = 32;
 const SSE_HEARTBEAT_MS = 15_000;
 /** Told to the client once at stream open; it governs the client's own reconnect backoff. */
 const SSE_RETRY_MS = 3000;
+/**
+ * Replay reads the log a page at a time and yields between pages. A long-running run's log is
+ * unbounded, and draining it in one synchronous loop would hold the event loop for the whole of it —
+ * every other request on the daemon, including the other runs' tails, stops until it finishes.
+ */
+const DEFAULT_REPLAY_PAGE = 500;
+
+function replayPageSize(): number {
+  const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_REPLAY_PAGE;
+}
 
 function maxSseConnections(): number {
   const raw = process.env.WIGOLO_STUDIO_SSE_MAX_CONNECTIONS;
@@ -173,7 +185,7 @@ export async function handleRunsRequest(
       handleGet(opts, db, route.id);
       return;
     }
-    handleEvents(req, res, opts, db, route.id);
+    await handleEvents(req, res, opts, db, route.id);
   } catch (err) {
     log.error('runs route failed', { route: route.kind, error: String(err) });
     opts.sendError(internalError());
@@ -330,13 +342,61 @@ export function resolveSince(
   return { ok: true, since: parsed };
 }
 
-function handleEvents(
+/**
+ * The exactly-once door. Everything the stream writes — replayed or live — goes through `emit`, and
+ * `offer` is what the live subscription calls.
+ *
+ * Two rules, and both are load-bearing only because replay yields to the event loop between pages:
+ *
+ *  - While replaying, a live event is HELD. Emitting it immediately would put a newer seq on the
+ *    wire ahead of older ones the replay has not reached yet.
+ *  - A held event whose seq the replay already covered is DROPPED, not written again. The overlap
+ *    window is real: an event appended during a yield is both published to us and visible to the
+ *    next page's query.
+ *
+ * Together they are why a reconnecting client gets each seq exactly once with no coordination.
+ */
+export interface OrderedEmitter {
+  emit(event: RunEvent): void;
+  offer(event: RunEvent): void;
+  goLive(): void;
+  lastEmitted(): number;
+}
+
+export function createOrderedEmitter(since: number, write: (event: RunEvent) => void): OrderedEmitter {
+  let last = since;
+  let replaying = true;
+  const held: RunEvent[] = [];
+
+  const emit = (event: RunEvent): void => {
+    if (event.seq <= last) return;
+    last = event.seq;
+    write(event);
+  };
+
+  return {
+    emit,
+    offer(event) {
+      if (replaying) held.push(event);
+      else emit(event);
+    },
+    goLive() {
+      replaying = false;
+      const pending = held.splice(0);
+      pending.sort((a, b) => a.seq - b.seq);
+      for (const event of pending) emit(event);
+    },
+    lastEmitted: () => last,
+  };
+}
+
+async function handleEvents(
   req: IncomingMessage,
   res: ServerResponse,
   opts: RunsRequestOptions,
   db: Database.Database,
   rawId: string,
-): void {
+): Promise<void> {
   const id = normalizeRunId(decodeURIComponent(rawId));
   if (!getRun(db, id)) {
     opts.sendError(runNotFound());
@@ -362,9 +422,6 @@ function handleEvents(
 
   openSseConnections++;
 
-  let lastEmitted = resume.since;
-  let replaying = true;
-  const pending: RunEvent[] = [];
   let heartbeat: NodeJS.Timeout | undefined;
   let closed = false;
 
@@ -378,20 +435,14 @@ function handleEvents(
     heartbeat.unref?.();
   };
 
-  /** The monotone guard. Everything — replayed or live — goes through exactly this door. */
-  const emit = (event: RunEvent): void => {
-    if (closed || event.seq <= lastEmitted) return;
-    lastEmitted = event.seq;
+  const emitter = createOrderedEmitter(resume.since, (event) => {
+    if (closed) return;
     res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     armHeartbeat();
-  };
+  });
 
   // Step 1 — subscribe BEFORE reading the log, so nothing appended during the replay is missed.
-  // Events arriving while `replaying` is true are held back so they cannot overtake older ones.
-  const unsubscribe = subscribeRunEvents(id, (event) => {
-    if (replaying) pending.push(event);
-    else emit(event);
-  });
+  const unsubscribe = subscribeRunEvents(id, (event) => emitter.offer(event));
 
   const cleanup = (): void => {
     if (closed) return;
@@ -416,8 +467,20 @@ function handleEvents(
   armHeartbeat();
 
   try {
-    // Step 2 — the durable replay. Nothing is dropped here: the backing log is the DB, not a ring.
-    for (const event of eventsSince(db, id, resume.since)) emit(event);
+    // Step 2 — the durable replay, a page at a time. Nothing is dropped here: the backing log is
+    // the DB, not a ring. The yield between pages is what keeps a long log from freezing the daemon,
+    // and is also what makes the emitter's overlap window real.
+    const pageSize = replayPageSize();
+    let cursor = resume.since;
+    for (;;) {
+      if (closed) return;
+      const page = eventsSince(db, id, cursor, pageSize);
+      if (page.length === 0) break;
+      for (const event of page) emitter.emit(event);
+      cursor = page[page.length - 1].seq;
+      if (page.length < pageSize) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   } catch (err) {
     log.error('run event replay failed', { runId: id, error: String(err) });
     cleanup();
@@ -425,8 +488,6 @@ function handleEvents(
     return;
   }
 
-  // Step 3 — flush whatever arrived mid-replay through the same guard, then go live.
-  replaying = false;
-  for (const event of pending) emit(event);
-  pending.length = 0;
+  // Step 3 — release whatever arrived mid-replay through the same door, then run live.
+  emitter.goLive();
 }
