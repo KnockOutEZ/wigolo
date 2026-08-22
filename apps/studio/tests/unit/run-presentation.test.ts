@@ -195,7 +195,7 @@ describe('the window is a projection of the runs, never the other way round', ()
   it('follows a promotion it did not make itself', async () => {
     const run = await vm.createRun({ task: 'promoted elsewhere' });
     const c = controller();
-    c.apply();
+    await c.reconcile(); // boot has settled; from here the log is what says which runs are watched
     win.calls.length = 0;
 
     await vm.setVisibility(run.id, 'visible', 'system', 'panel');
@@ -231,6 +231,33 @@ describe('the window is a projection of the runs, never the other way round', ()
       { runId: b.id, type: 'presentation.demoted', payload: { by: 'system' } },
     ]);
     expect(win.opacity).toBe(0);
+  });
+
+  // Caught by reading the boot order rather than by a test: the replay emits a change of its own, so a
+  // run left visible by the last session was applied on the way past — the human got a window thrown up
+  // at login, which the reconcile then took away again.
+  it('never flashes the window up for a run the last session left visible', async () => {
+    const stale = await vm.createRun({ task: 'left visible last time' });
+    await vm.setVisibility(stale.id, 'visible', 'human', 'tray');
+    const c = controller();
+
+    // The boot order, in order: the projection lands (and emits) BEFORE anything reconciles it.
+    await vm.hydrate();
+    expect(win.calls.filter((call) => call === 'show')).toEqual([]);
+    expect(win.opacity).toBe(0);
+
+    await c.reconcile();
+    expect(win.opacity).toBe(0);
+    expect(vm.snapshot(stale.id)!.visibility).toBe('hidden');
+  });
+
+  it('still comes up for a run promoted before the reconcile has landed', async () => {
+    const run = await vm.createRun({ task: 'promoted during boot' });
+    const c = controller();
+
+    await c.promote(run.id, 'human', 'tray');
+
+    expect(win.opacity).toBe(1);
   });
 
   it('refuses a transition when the window is gone, and records nothing', async () => {

@@ -51,6 +51,13 @@ export class WindowGoneError extends Error {
 export class RunPresentationController {
   /** What was last applied, so a projection change that does not move the window costs nothing. */
   private applied: 'visible' | 'hidden' | undefined;
+  /**
+   * Whether the log has been reconciled with THIS app lifetime yet (A-43-2). Until it has, nothing the
+   * log says about visibility may present a window: the replay at boot emits a change, and a run left
+   * visible by the last session would otherwise flash a window onto the screen at login before the
+   * reconcile took it away again.
+   */
+  private reconciled = false;
 
   constructor(private readonly deps: PresentationDeps) {
     this.deps.runs.onChange(() => this.apply());
@@ -59,6 +66,7 @@ export class RunPresentationController {
   /** True while any run is being watched, or the human launched the app with a window. */
   private wanted(): 'visible' | 'hidden' {
     if (!this.deps.bootHidden) return 'visible';
+    if (!this.reconciled) return 'hidden';
     return this.deps.runs.list().some((r) => r.visibility === 'visible') ? 'visible' : 'hidden';
   }
 
@@ -92,6 +100,9 @@ export class RunPresentationController {
   async promote(runId: string, by: PresentationBy, surface: PromoteSurface): Promise<void> {
     if (this.deps.window.isDestroyed()) throw new WindowGoneError();
     await this.deps.runs.setVisibility(runId, 'visible', by, surface);
+    // An explicit promote IS a statement about this lifetime, so it settles the question the boot
+    // reconcile answers — a run promoted before the replay landed must still come up.
+    this.reconciled = true;
     this.apply();
     const [first] = this.deps.runs.tabsOf(runId);
     if (first !== undefined) this.deps.focusTab(first);
@@ -114,6 +125,7 @@ export class RunPresentationController {
       if (run.visibility !== 'visible') continue;
       await this.deps.runs.setVisibility(run.id, 'hidden', 'system');
     }
+    this.reconciled = true;
     this.apply();
   }
 
