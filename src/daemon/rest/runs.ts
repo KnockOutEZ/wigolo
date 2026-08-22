@@ -37,6 +37,7 @@ import {
 } from '../../studio/run-store.js';
 import { subscribeRunEvents } from '../../studio/run-bus.js';
 import { sqliteRunsStore, type RunsStore } from './runs-store.js';
+import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
 
 const log = createLogger('rest');
 
@@ -113,6 +114,8 @@ export interface RunsRequestOptions {
    * passes a broker-backed one (SD1 §6 / A-43-5) — see `runs-store.ts`. Wins over `openDb`.
    */
   store?: RunsStore;
+  /** Injected by tests; production reads the published studio handle (SD1 §6 / A-43-5). */
+  resolveOwner?: () => RunsOwner;
 }
 
 function runNotFound(): HttpError {
@@ -180,6 +183,41 @@ export async function handleRunsRequest(
     return;
   }
 
+  // Ownership BEFORE the store resolve (SD1 §6 / A-43-5). A standalone daemon running beside a live
+  // studio host has a perfectly good DB handle of its own — that is exactly the trap. Opening it
+  // first and only then asking who owns the run would make the answer look optional, and the whole
+  // rule exists because two processes appending to one log fan their live tails out separately.
+  const owner = (opts.resolveOwner ?? resolveRunsOwner)();
+  let createBody: unknown;
+  if (owner.kind === 'proxy') {
+    // The body has to be read HERE, before the hop, because a request stream can be consumed once
+    // and the fallback below needs to create the run itself. Re-serializing it is safe in a way
+    // re-serializing an SSE frame is not: a JSON body carries no framing contract, and reading it
+    // here is also what keeps THIS daemon's body cap the one that applies.
+    if (route.kind === 'collection' && method === 'POST') {
+      const cap = bodyCapFor(RUNS_ROUTE_LABEL);
+      try {
+        createBody = await readJsonBodyCapped(req, cap);
+      } catch (err) {
+        opts.sendError(err instanceof BodyTooLargeError ? bodyTooLarge(cap) : invalidJson());
+        return;
+      }
+    }
+    const outcome = await proxyRunsRequest(req, res, {
+      target: { endpoint: owner.endpoint, token: owner.token },
+      path: `${opts.pathname}${opts.url.search}`,
+      method,
+      streaming: route.kind === 'events',
+      sendError: opts.sendError,
+      ...(createBody !== undefined ? { body: Buffer.from(JSON.stringify(createBody)) } : {}),
+    });
+    // `served` is every case where the owner answered — including its errors, which are the
+    // client's errors. The single exception is the owner telling us it holds no store at all, and
+    // a process with no store is not an owner: falling through is the ONLY branch that does not
+    // hand the caller a 503 for a run this daemon can perfectly well serve. (A-70-1.)
+    if (outcome === 'served') return;
+  }
+
   const store = await resolveStore(opts);
   if (!store) {
     opts.sendError(storeUnavailable());
@@ -188,7 +226,7 @@ export async function handleRunsRequest(
 
   try {
     if (route.kind === 'collection') {
-      if (method === 'POST') await handleCreate(req, opts, store);
+      if (method === 'POST') await handleCreate(req, opts, store, createBody);
       else await handleList(opts, store);
       return;
     }
@@ -218,14 +256,27 @@ function createFailure(err: unknown): HttpError {
   return internalError();
 }
 
-async function handleCreate(req: IncomingMessage, opts: RunsRequestOptions, store: RunsStore): Promise<void> {
+/**
+ * `preRead` is set only on the fallback path, where the ownership hop already consumed the request
+ * stream. Reading `req` again there would yield an empty body and reject a perfectly good create.
+ */
+async function handleCreate(
+  req: IncomingMessage,
+  opts: RunsRequestOptions,
+  store: RunsStore,
+  preRead?: unknown,
+): Promise<void> {
   const cap = bodyCapFor(RUNS_ROUTE_LABEL);
   let body: unknown;
-  try {
-    body = await readJsonBodyCapped(req, cap);
-  } catch (err) {
-    opts.sendError(err instanceof BodyTooLargeError ? bodyTooLarge(cap) : invalidJson());
-    return;
+  if (preRead !== undefined) {
+    body = preRead;
+  } else {
+    try {
+      body = await readJsonBodyCapped(req, cap);
+    } catch (err) {
+      opts.sendError(err instanceof BodyTooLargeError ? bodyTooLarge(cap) : invalidJson());
+      return;
+    }
   }
 
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
