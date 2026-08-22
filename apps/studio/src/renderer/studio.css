@@ -64,8 +64,9 @@ button { font-family: inherit; }
   display: flex; align-items: flex-end; gap: 3px;
   min-width: 0;
 }
+/* Deliberately NOT `no-drag`: the chip is a label, nothing clicks it, and carving it out of the
+   titlebar's drag region would leave a dead strip the window cannot be moved by. */
 .tab-group__id {
-  -webkit-app-region: no-drag;
   flex: none; align-self: center;
   font: var(--type-pill-mono); letter-spacing: var(--tracking-pill-mono);
   color: var(--text-mono-muted); border: var(--hair-width) solid var(--hair-soft);
