@@ -112,7 +112,12 @@ export function buildTrayMenu(
 
 export function createRunTray(deps: RunTrayDeps): RunTrayHandle {
   let current: TrayMenuItem[] = [];
+  let gone = false;
   const refresh = (): void => {
+    // The projection outlives this item — shutdown ends every run, and each of those is a change.
+    // Redrawing a destroyed OS item throws from inside a listener the run log is fanning out to,
+    // which is how a menu-bar item took a whole app shutdown down with it.
+    if (gone) return;
     const runs = deps.runs.list();
     deps.tray.setLabel(trayLabel(runs));
     deps.tray.setToolTip(trayTooltip(runs));
@@ -131,7 +136,15 @@ export function createRunTray(deps: RunTrayDeps): RunTrayHandle {
   deps.runs.onChange(refresh);
   refresh();
 
-  return { refresh, destroy: () => deps.tray.destroy(), menu: () => current };
+  return {
+    refresh,
+    destroy: () => {
+      if (gone) return;
+      gone = true;
+      deps.tray.destroy();
+    },
+    menu: () => current,
+  };
 }
 
 /**

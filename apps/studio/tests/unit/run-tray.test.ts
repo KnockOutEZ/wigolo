@@ -220,4 +220,36 @@ describe('the tray follows the projection', () => {
     mount().destroy();
     expect(tray.destroyed).toBe(true);
   });
+
+  /**
+   * Found by running the whole e2e lane: shutdown ends every run, each of those is a projection
+   * change, and a redraw of a destroyed OS item throws from inside a listener the run log is fanning
+   * out to. That took the app's own quit sequence with it — the studio could not exit at all, and
+   * seven unrelated specs went red behind the one that hung.
+   */
+  it('stops redrawing once it is torn down, because the runs it watches outlive it', () => {
+    const handle = mount();
+    handle.destroy();
+    tray.label = '<untouched>';
+    tray.tooltip = '<untouched>';
+    tray.menu = [];
+    dock.badge = '<untouched>';
+
+    runs = [run({ id: 'c' })];
+    notify();
+    handle.refresh();
+
+    expect(tray.label).toBe('<untouched>');
+    expect(tray.tooltip).toBe('<untouched>');
+    expect(tray.menu).toEqual([]);
+    expect(dock.badge).toBe('<untouched>');
+  });
+
+  it('is torn down only once, however many times it is asked', () => {
+    const handle = mount();
+    handle.destroy();
+    tray.destroyed = false; // a second destroy on a dead OS item throws
+    handle.destroy();
+    expect(tray.destroyed).toBe(false);
+  });
 });

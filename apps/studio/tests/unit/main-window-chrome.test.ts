@@ -158,3 +158,17 @@ describe('the app boots headless and can be promoted out of it', () => {
     expect(MAIN.slice(MAIN.indexOf('const shutdown ='), MAIN.indexOf("app.on('before-quit'"))).toContain('runTray?.destroy()');
   });
 });
+
+describe('shutdown lets go of the menu-bar item in the right order', () => {
+  it('destroys it AFTER the host, because ending every run redraws it', () => {
+    // The regression: destroying it first left the run log fanning change events into a dead OS
+    // object during shutdown, and the app could not quit at all.
+    const body = MAIN.slice(MAIN.indexOf('const shutdown ='), MAIN.indexOf("app.on('before-quit'"));
+    const host = body.indexOf('studioHost.shutdown()');
+    const tray = body.indexOf('runTray?.destroy()');
+    expect(host).toBeGreaterThan(-1);
+    expect(tray).toBeGreaterThan(host);
+    // And the approval mirror's timers go with it, or one can outlive the window it belonged to.
+    expect(body).toContain('decisions.dispose()');
+  });
+});

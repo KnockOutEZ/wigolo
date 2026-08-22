@@ -456,10 +456,14 @@ async function createWindow(): Promise<void> {
   }
 
   const shutdown = async (): Promise<void> => {
-    try { runTray?.destroy(); } catch { /* best-effort */ }
     try { await studioHost.shutdown(); } catch { /* best-effort */ }
     try { await gateway?.stop(); } catch { /* best-effort */ }
     try { await broker.stop(); } catch { /* best-effort */ }
+    // Last, and after the host: ending every run is a projection change, and the item redraws on each
+    // one. Destroying it first left the run log fanning events into a dead OS object, which took the
+    // rest of this sequence with it and left the app unable to quit at all.
+    try { runTray?.destroy(); } catch { /* best-effort */ }
+    decisions.dispose();
   };
   app.on('before-quit', () => { void shutdown(); });
 
