@@ -213,3 +213,24 @@ export { flowIdForSession, insertFlowStep, listFlowSteps } from './flow/store.js
 export type { FlowStep, FlowProjection, FlowTargetSeed, RecordedHealTier } from './flow/store.js';
 export { resolveFlowStep, HEAL_HALT_CONFIDENCES } from './flow/resolve-step.js';
 export type { StepResolution, StepResolved, StepHalted, StepDegraded, StepHaltReason } from './flow/resolve-step.js';
+
+// SD1 spine 1 — the durable run store. The Electron main gets the TYPES only: the run log lives in the
+// broker child that owns the DB handle, so main reads and appends over RPC and never touches the tables.
+export type {
+  Run,
+  RunStatus,
+  RunEvent,
+  RunEventInput,
+  RunCost,
+  PendingDecision,
+  Driver,
+  DriverKind,
+  Actor,
+  ActorKind,
+  ClientInfo,
+  CreateRunInput,
+  ListRunsOptions,
+  ListRunsResult,
+  StoredRunFacts,
+} from './run-store.js';
+export { projectRun, normalizeRunId, RUN_ID_ALPHABET, AUTO_DENY_MS } from './run-store.js';

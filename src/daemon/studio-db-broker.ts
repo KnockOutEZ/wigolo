@@ -25,6 +25,19 @@ import {
 import { findSimilar } from '../search/find-similar.js';
 import { SessionAuditLog, listSessionAudit, type AuditRecordInput, type AuditDto } from '../studio/audit.js';
 import { insertFlowStep, type FlowProjection, type FlowStep } from '../studio/flow/store.js';
+import {
+  createRun,
+  appendEvent,
+  getRun,
+  listRuns,
+  eventsSince,
+  type CreateRunInput,
+  type ListRunsOptions,
+  type ListRunsResult,
+  type Run,
+  type RunEvent,
+  type RunEventInput,
+} from '../studio/run-store.js';
 import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
 import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
 import { buildResearchBrief } from '../research/brief.js';
@@ -51,6 +64,8 @@ export interface BrokerHandlerDeps {
   /** Embed-job sink. Injected in tests; production leaves it undefined → the shared background queue. */
   enqueue?: (job: IndexJobInput) => unknown;
   onArtifact: (delta: ArtifactDelta) => void;
+  /** Live tail for the run log. Fires after the append commits, never inside the transaction. */
+  onRunEvent?: (runId: string, event: RunEvent) => void;
 }
 
 /** Pure dispatch map — unit-testable without a process. */
@@ -143,6 +158,20 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       );
       return { brief, provenance };
     },
+    // SD1 spine 1 — the run store behind the broker. A run outlives every UI, so the child that owns
+    // the DB owns the log; the host never mints run identity and never writes an event itself.
+    //
+    // There is deliberately NO runUpdate and NO runDelete: the log is append-only, and the store
+    // exports no path that could rewrite it. Retention, if it ever exists, goes the sanctioned-pruner
+    // route (the audit-retention.ts precedent), never a broker method.
+    runCreate: async (p: { input: CreateRunInput }): Promise<Run> =>
+      createRun(deps.db, p.input, { onEvent: deps.onRunEvent }),
+    runAppend: async (p: { runId: string; event: RunEventInput }): Promise<RunEvent> =>
+      appendEvent(deps.db, p.runId, p.event, { onEvent: deps.onRunEvent }),
+    runGet: async (p: { runId: string }): Promise<Run | undefined> => getRun(deps.db, p.runId),
+    runList: async (p: ListRunsOptions = {}): Promise<ListRunsResult> => listRuns(deps.db, p),
+    runEventsSince: async (p: { runId: string; since?: number; limit?: number }): Promise<RunEvent[]> =>
+      eventsSince(deps.db, p.runId, p.since ?? 0, p.limit),
   };
 }
 export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;
@@ -168,6 +197,7 @@ async function main(): Promise<void> {
     router: subsystems.router,
     backendStatus: subsystems.backendStatus,
     onArtifact: (delta) => send({ notify: 'artifact', delta }),
+    onRunEvent: (runId, envelope) => send({ notify: 'run-event', runId, envelope }),
   });
   const rl = createInterface({ input: process.stdin });
   rl.on('close', bail); // parent closed the stdin pipe (app exited/crashed) → don't linger
