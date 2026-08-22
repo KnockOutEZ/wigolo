@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { applyMigrations, MIGRATIONS, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
 
 /**
  * D15 — migration identity is the `name` field, and a released name must never be
@@ -142,7 +143,7 @@ describe('MIGRATIONS — merged union of origin/main and studio-handoff (D15)', 
   });
 
   function open(name: string): Database.Database {
-    return new Database(join(dir, `${name}.db`));
+    return openMigrationTestDb(join(dir, `${name}.db`));
   }
 
   it('carries both branches\' released names, unrenamed, with no duplicates', () => {

@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
 import {
   getDomainClearance,
   recordDomainClearance,
@@ -37,7 +37,7 @@ describe('migration 008 — anti-bot clearance columns', () => {
   });
 
   it('adds the six clearance columns to domain_routing on a fresh DB', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
 
     const cols = (db.prepare("PRAGMA table_info('domain_routing')").all() as Array<{ name: string }>)
@@ -51,7 +51,7 @@ describe('migration 008 — anti-bot clearance columns', () => {
   });
 
   it('is idempotent — running twice does not error or duplicate columns', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
     _resetMigrationGuard();
     expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
@@ -73,7 +73,7 @@ describe('migration 008 — anti-bot clearance columns', () => {
   });
 
   it('is idempotent against a domain_routing that already has the columns', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE domain_routing (
         domain TEXT PRIMARY KEY,
@@ -110,7 +110,7 @@ describe('migration 010 — clearance route-identity column', () => {
   });
 
   it('adds the solved_route column to domain_routing on a fresh DB', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
 
     const cols = (db.prepare("PRAGMA table_info('domain_routing')").all() as Array<{ name: string }>)
@@ -124,7 +124,7 @@ describe('migration 010 — clearance route-identity column', () => {
   });
 
   it('is idempotent — running twice does not error or duplicate the column', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
     _resetMigrationGuard();
     expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
@@ -136,7 +136,7 @@ describe('migration 010 — clearance route-identity column', () => {
   });
 
   it('is idempotent against a domain_routing that already has solved_route', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE domain_routing (
         domain TEXT PRIMARY KEY,
@@ -155,7 +155,7 @@ describe('migration 010 — clearance route-identity column', () => {
   });
 
   it('a legacy row with a NULL solved_route reads back as direct via the store', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
     // A pre-010 clearance row (route left NULL by the migration ALTER default).
     db.prepare(

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
 
 describe('applyMigrations', () => {
   let dir: string;
@@ -21,7 +22,7 @@ describe('applyMigrations', () => {
   });
 
   it('applies all non-vec migrations on a writable empty DB', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
 
     const applied = (db.prepare('SELECT name FROM schema_migrations ORDER BY name').all() as Array<{ name: string }>)
@@ -58,7 +59,7 @@ describe('applyMigrations', () => {
   });
 
   it('is idempotent — second call on the same DB does not re-run', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     applyMigrations(db, { vecLoaded: false });
     const firstCount = (db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number }).n;
 
@@ -71,7 +72,7 @@ describe('applyMigrations', () => {
 
   it('on read-only DB, warns once and stops without throwing', () => {
     // Seed a writable empty DB then reopen read-only.
-    const seed = new Database(dbPath);
+    const seed = openMigrationTestDb(dbPath);
     seed.close();
 
     const ro = new Database(dbPath, { readonly: true });
@@ -80,7 +81,7 @@ describe('applyMigrations', () => {
   });
 
   it('after one read-only call, subsequent applyMigrations calls are no-ops in the same process', () => {
-    const seed = new Database(dbPath);
+    const seed = openMigrationTestDb(dbPath);
     seed.close();
 
     const ro = new Database(dbPath, { readonly: true });
@@ -89,7 +90,7 @@ describe('applyMigrations', () => {
 
     // Even a fresh writable DB handle should be skipped because the guard tripped.
     const other = mkdtempSync(join(tmpdir(), 'wigolo-mig-other-'));
-    const otherDb = new Database(join(other, 'cache.db'));
+    const otherDb = openMigrationTestDb(join(other, 'cache.db'));
     applyMigrations(otherDb, { vecLoaded: false });
     // No schema_migrations table since the guard short-circuited.
     const hasTable = otherDb
@@ -102,7 +103,7 @@ describe('applyMigrations', () => {
 
   it('migration 005 is idempotent against a domain_routing that already has the columns', () => {
     // Simulate a hand-patched install: domain_routing already has the new columns.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE domain_routing (
         domain TEXT PRIMARY KEY,
@@ -123,7 +124,7 @@ describe('applyMigrations', () => {
 
   it('migration 007 drops a pre-existing lightpanda_routing table (SP1)', () => {
     // Simulate a pre-SP1 DB that still has the routing telemetry table.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec('CREATE TABLE lightpanda_routing (domain TEXT PRIMARY KEY);');
     expect(
       db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='lightpanda_routing'").all(),
@@ -143,7 +144,7 @@ describe('applyMigrations', () => {
 
   it('migration 007 is a no-op on a fresh DB without lightpanda_routing (SP1)', () => {
     // Fresh DB never had the table; migration must apply cleanly without error.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
     const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
       .map((r) => r.name);
@@ -152,7 +153,7 @@ describe('applyMigrations', () => {
   });
 
   it('_resetMigrationGuard clears the read-only flag for the next test', () => {
-    const seed = new Database(dbPath);
+    const seed = openMigrationTestDb(dbPath);
     seed.close();
 
     const ro = new Database(dbPath, { readonly: true });
@@ -162,7 +163,7 @@ describe('applyMigrations', () => {
     _resetMigrationGuard();
 
     const fresh = mkdtempSync(join(tmpdir(), 'wigolo-mig-fresh-'));
-    const writable = new Database(join(fresh, 'cache.db'));
+    const writable = openMigrationTestDb(join(fresh, 'cache.db'));
     applyMigrations(writable, { vecLoaded: false });
     const applied = (writable.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>);
     expect(applied.length).toBeGreaterThan(0);
@@ -173,7 +174,7 @@ describe('applyMigrations', () => {
   it('migration 009 adds content_completeness columns to an existing url_cache', () => {
     // url_cache is created inline by initDatabase(), not by the runner — mirror
     // that here so the 009 postStep's table_info guard has a table to ALTER.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,7 +200,7 @@ describe('applyMigrations', () => {
 
   it('migration 009 is idempotent against a url_cache that already has the columns', () => {
     // Hand-patched install: the completeness columns already exist.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,7 +222,7 @@ describe('applyMigrations', () => {
   it('migration 009 is a no-op on a bare runner DB with no url_cache table', () => {
     // The runner-only harness never creates url_cache; the guarded postStep
     // must apply cleanly (recorded, no throw) rather than ALTER a missing table.
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
     const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
       .map((r) => r.name);
@@ -235,7 +236,7 @@ describe('applyMigrations', () => {
   // populated table walks every existing row, and a throw here would abort the
   // whole migration pass — not just this migration.
   it('migration 012 indexes a url_cache that already holds rows, and indexes them', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,7 +296,7 @@ describe('applyMigrations', () => {
   });
 
   it('migration 012 is idempotent on a DB that already has the index', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,7 +319,7 @@ describe('applyMigrations', () => {
   // took migration 009's assertions down with it. The failure mode is not
   // local to the migration that fails, so the guard checks the COLUMN.
   it('migration 012 no-ops on a url_cache lacking content_hash without aborting the pass', () => {
-    const db = new Database(dbPath);
+    const db = openMigrationTestDb(dbPath);
     db.exec(`
       CREATE TABLE url_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
