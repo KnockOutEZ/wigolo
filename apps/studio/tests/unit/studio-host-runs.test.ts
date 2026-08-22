@@ -3,7 +3,7 @@ import type { DebuggerLike } from '../../src/main/cdp-transport';
 import { createDriveEngine } from '../../src/main/drive-engine';
 import { createStudioHost, type HostTab } from '../../src/main/studio-host';
 import { makeFakeBroker } from '../helpers/fake-broker';
-import { RunViewModel, TabOwnedError } from '../../src/main/run-view-model';
+import { RunViewModel } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 import type { StudioListOutput, StudioToolError } from 'wigolo/studio';
 
@@ -42,9 +42,10 @@ const viewport = () => ({ width: 800, height: 600 });
  * — created, painting, and with no ownership recorded. `nextTabId` lets a test hand the host a tab id
  * that is already spoken for, which is the only way to reach the double-attach refusal from outside.
  */
-function makeHost(opts: { nextTabId?: () => string } = {}) {
+function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean } = {}) {
   const engine = createDriveEngine();
   const store = new FakeRunStore();
+  if (opts.breakRunStore) store.createRun = async () => { throw new Error('studio background service unavailable'); };
   const runs = new RunViewModel(store);
   /** Every tab the window holds — agent tabs and the human's alike, exactly as TabManager would. */
   const universe: string[] = [];
@@ -112,10 +113,25 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     const first = await host.handlers.spawn({}) as { session_id: string };
     const runA = runs.runForSession(first.session_id)!;
 
-    await expect(host.handlers.spawn({})).rejects.toBeInstanceOf(TabOwnedError);
+    // A designed refusal, not an unhandled throw at the gateway (law 9).
+    const second = await host.handlers.spawn({}) as StudioToolError;
+    expect(second.error_reason).toBe('tab_already_owned');
+    expect(second.hint).toMatch(/never share a tab/i);
     expect(runs.ownerOf('recycled'), 'the second session stole the first run’s tab').toBe(runA);
-    // And the tab still resolves to the run that actually holds it.
     expect(runs.sessionIdOf(runs.ownerOf('recycled')!)).toBe(first.session_id);
+    // The half-open session is rolled back — one live session, not two, and the first still drives.
+    expect(((await host.handlers.list()) as StudioListOutput).sessions.filter((x) => x.status === 'live')).toHaveLength(1);
+  });
+
+  // A run that cannot be recorded is a run no surface can see and law 4 cannot police, so the session is
+  // refused rather than started untracked — and refused as a tool result the agent can read.
+  it('refuses to open a session at all when the run record cannot be written', async () => {
+    const { host, universe } = makeHost({ breakRunStore: true });
+
+    const out = await host.handlers.spawn({}) as StudioToolError;
+    expect(out.error_reason).toBe('run_unavailable');
+    expect(universe, 'a tab was left behind by the refused session').toEqual([]);
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
   });
 
   it('releases the tab and ends the run when the session closes', async () => {

@@ -90,6 +90,7 @@ import {
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
+import { TabOwnedError } from './run-view-model';
 import type { QuoteMsg, RegionMsg, CaptureDto, KnowledgeHit, AuditDto } from '../shared/ipc';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
@@ -1041,8 +1042,22 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // SD1 §7.3: a session is how a client connects, a run is the task. The run is created here, records
     // the session that spawned it, and takes ownership of the tab — the one place law 4's "a tab belongs
     // to exactly one run" is checked, so a tab another run holds is refused before the session goes live.
-    const run = await deps.runs.createRun({ task: name, sessionId });
-    await deps.runs.attachTab(run.id, tab.tabId, typeof input.startUrl === 'string' ? input.startUrl : undefined);
+    //
+    // Both failures are REFUSALS, not exceptions: the agent gets a designed tool result rather than an
+    // unhandled throw at the gateway (law 9). And both roll the half-open session back, because a session
+    // whose tabs no run owns is one law 4 cannot police and no surface can see.
+    try {
+      const run = await deps.runs.createRun({ task: name, sessionId });
+      await deps.runs.attachTab(run.id, tab.tabId, typeof input.startUrl === 'string' ? input.startUrl : undefined);
+    } catch (err) {
+      ctx.status = 'closed';
+      contexts.delete(sessionId);
+      try { deps.closeTab(tab.tabId); } catch { /* best-effort teardown */ }
+      if (err instanceof TabOwnedError) {
+        return { error_reason: 'tab_already_owned', hint: 'That tab already belongs to another run — two runs never share a tab.' };
+      }
+      return { error_reason: 'run_unavailable', hint: 'The run record could not be opened, so no session was started — the local background service is not available right now.' };
+    }
     activeSessionId = sessionId;
     deps.onActiveSessionChange?.(activeSessionId); // P4: renderer re-backfills captures / resets per-session UI
     await ctx.loadProfile(); // P5: apply a matching-origin profile's cookies into the fresh partition BEFORE the gated nav
