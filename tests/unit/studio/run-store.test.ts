@@ -331,6 +331,16 @@ describe('run-store — files on disk (law 11, A-43-3)', () => {
     if (process.platform !== 'win32') expect(mode).toBe(0o700);
   });
 
+  it('keeps the event file itself owner-only, not merely owner-only by its parent', () => {
+    if (process.platform === 'win32') return;
+    const run = createRun(db, { task: 't' }, opts());
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'card number?' } }, opts());
+    // The line above is why: prompts, task text and attached URLs that can carry a query-string
+    // token all live in this file, and the 0700 directory stops shielding it the moment the tree is
+    // copied, archived or synced.
+    expect(statSync(runEventsFile(run.id, dir)).mode & 0o777).toBe(0o600);
+  });
+
   it('is a projection — a lost or damaged file never changes what the store reads back', () => {
     const run = createRun(db, { task: 't' }, opts());
     appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 2 } }, opts());

@@ -256,11 +256,15 @@ function rowToEvent(r: EventRow): RunEvent {
 /**
  * The disk projection (A-43-3). Written after the commit, NEVER read back — the DB is the source of
  * truth, so a failed write costs a `cat`-able copy and never an event.
+ *
+ * Owner-only, not merely owner-only-by-parent: the file carries decision prompts, task text and
+ * attached URLs that can hold a query-string token, and it outlives the 0700 directory the moment
+ * the tree is copied, archived or synced. The mode applies on create and is ignored on append.
  */
 function projectToDisk(runId: string, event: RunEvent, dataDir?: string): void {
   try {
     mkdirSync(runDir(runId, dataDir), { recursive: true, mode: 0o700 });
-    appendFileSync(runEventsFile(runId, dataDir), JSON.stringify(event) + '\n');
+    appendFileSync(runEventsFile(runId, dataDir), JSON.stringify(event) + '\n', { mode: 0o600 });
   } catch (err) {
     log.warn('run event disk projection failed', { runId, seq: event.seq, error: err instanceof Error ? err.message : String(err) });
   }
