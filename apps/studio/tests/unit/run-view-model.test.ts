@@ -170,21 +170,6 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
     expect(vm.ownerOf('tab-x')).toBe(outsider.id);
   });
 
-  it('keeps the focused run as ephemeral UI state that no event ever writes', async () => {
-    const a = await vm.createRun({ task: 'a' });
-    const b = await vm.createRun({ task: 'b' });
-    expect(vm.focusedRunId).toBe(a.id); // the first run focuses itself; a human can move it
-    store.appends.length = 0;
-
-    vm.focusRun(b.id);
-    expect(vm.focusedRunId).toBe(b.id);
-    expect(store.appends).toEqual([]); // focus is not a run fact — it never reaches the log
-
-    const fresh = new RunViewModel(store);
-    await fresh.hydrate();
-    expect(fresh.focusedRunId).toBeNull(); // replaying every run restores no focus, because none was stored
-  });
-
   it('summarises runs for the chrome straight out of the log', async () => {
     const a = await vm.createRun({ task: 'buy milk' });
     await vm.attachTab(a.id, 'tab-1');

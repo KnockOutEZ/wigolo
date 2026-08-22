@@ -245,4 +245,40 @@ describe('registerIpc', () => {
     });
     expect(state.runs).toEqual([{ id: run.id, task: 'check the order', status: 'running', tabIds: ['agent-tab'] }]);
   });
+
+  /**
+   * Caught in the running app: with a "current run" pointer of its own, the chrome named the FIRST run
+   * ever created while the window was showing the second one's page. Focus is the owner of the focused
+   * tab and nothing else — and when the human is in their own tab, no run is focused at all.
+   */
+  it('names the run whose tab is focused, not the first one created', async () => {
+    const listeners: Array<() => void> = [];
+    const universe = [
+      { id: 'tab-a', url: 'https://a.example/', title: 'A', active: false },
+      { id: 'tab-b', url: 'https://b.example/', title: 'B', active: true },
+      { id: 'human-inbox', url: 'https://mail.example/', title: 'Inbox', active: false },
+    ];
+    const tabs = { onChange: (fn: () => void) => listeners.push(fn), listTabs: () => universe };
+    const runs = new RunViewModel(new FakeRunStore());
+    const first = await runs.createRun({ task: 'first' });
+    const second = await runs.createRun({ task: 'second' });
+    await runs.attachTab(first.id, 'tab-a');
+    await runs.attachTab(second.id, 'tab-b');
+
+    const { win, send } = liveWindow();
+    registerIpc(
+      win as unknown as Parameters<typeof registerIpc>[0],
+      tabs as unknown as Parameters<typeof registerIpc>[1],
+      runs as unknown as Parameters<typeof registerIpc>[2],
+    );
+    listeners[0]!();
+    const focused = () => (send.mock.calls.at(-1) as [string, StudioState])[1].focusedRunId;
+    expect(focused(), 'the chrome named a run other than the one on screen').toBe(second.id);
+
+    // The human moves to their own tab: they are inside no run, and the chrome must not claim otherwise.
+    universe[1]!.active = false;
+    universe[2]!.active = true;
+    listeners[0]!();
+    expect(focused()).toBeNull();
+  });
 });

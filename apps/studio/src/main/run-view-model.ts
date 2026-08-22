@@ -7,7 +7,10 @@ import type { BrokerClient } from './broker-client';
  * `SessionRegistry` used to keep session identity, a `tabIds` array and a "current" pointer in Electron
  * main, which made the app a second source of truth for facts that outlive it. The inversion: the daemon
  * store owns run identity and tab membership as an append-only log, and everything here is either a
- * replay of that log or ephemeral UI state (the focused run) that is deliberately never written back.
+ * replay of that log. There is deliberately no "current run" pointer to mirror the old `currentId`:
+ * which run the human is looking at is the owner of the focused TAB, derived where the state push is
+ * assembled. A second pointer beside the tab layer is what let the chrome name one run while showing
+ * another's page — which is the same class of drift the `tabIds` array was.
  *
  * The one rule the log cannot express by itself is law 4's "a tab belongs to exactly one run" — an append
  * is unconditional, so the refusal has to happen before it. That check lives here, at the single seam
@@ -64,8 +67,6 @@ export class RunViewModel {
   private readonly logs = new Map<string, RunLog>();
   /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
   private readonly projected = new Map<string, Run>();
-  /** Ephemeral UI state: which run the human is looking at. Never an event, never restored. */
-  private focused: string | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly store: RunStoreClient) {
@@ -115,7 +116,6 @@ export class RunViewModel {
     const events = await this.store.eventsSince(run.id, 0);
     this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
     this.projected.delete(run.id);
-    if (this.focused === null) this.focused = run.id;
     this.emit();
     return run;
   }
@@ -173,7 +173,6 @@ export class RunViewModel {
           : { ...(detail ? { outcome: detail } : {}) };
     const event = await this.store.appendEvent(runId, { actor: { kind: 'system' }, type: `run.${terminal}`, payload });
     this.applyEvent(runId, event);
-    if (this.focused === runId) this.focused = null;
   }
 
   ownerOf(tabId: string): string | undefined {
@@ -201,15 +200,6 @@ export class RunViewModel {
   /** The human's own group: everything in the universe that no run has ever attached. */
   userTabs(universe: readonly string[]): string[] {
     return universe.filter((t) => this.isUserTab(t));
-  }
-
-  get focusedRunId(): string | null {
-    return this.focused;
-  }
-
-  focusRun(runId: string | null): void {
-    this.focused = runId !== null && this.logs.has(runId) ? runId : null;
-    this.emit();
   }
 
   list(): RunSummary[] {

@@ -44,16 +44,22 @@ export function stateBroadcaster(win: BroadcastWindow, state: () => StudioState)
 }
 
 export function registerIpc(win: BrowserWindow, tabs: TabManager, runs: RunViewModel): void {
-  const state = (): StudioState => ({
-    runs: runs.list(),
-    focusedRunId: runs.focusedRunId,
+  const state = (): StudioState => {
     // Ownership is stamped on here rather than held by the tab layer: `TabManager` knows which views
     // exist, the run log knows who they belong to, and only this projection needs both.
-    tabs: tabs.listTabs().map((t) => {
+    const withOwners = tabs.listTabs().map((t) => {
       const runId = runs.ownerOf(t.id);
       return runId ? { ...t, runId } : t;
-    }),
-  });
+    });
+    return {
+      runs: runs.list(),
+      // Derived from the focused tab, never a pointer of its own. A separate "current run" would let
+      // the chrome name one run while the window shows another's page — which is what it did.
+      // `null` when the human is in their own tab: they are not inside any run.
+      focusedRunId: withOwners.find((t) => t.active)?.runId ?? null,
+      tabs: withOwners,
+    };
+  };
   const broadcast = stateBroadcaster(win, state);
   // Pre-existing, deliberately not reworked here: this subscription is never unsubscribed. The
   // callback is inert once the window is gone (the guard above), but it keeps `win` and `runs`
