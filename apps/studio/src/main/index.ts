@@ -5,6 +5,7 @@ import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hi
 import { RunPresentationController } from './run-presentation';
 import { createDecisionMirror } from './run-decisions';
 import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle, type TrayPort } from './run-tray';
+import { livingTrayPort } from './tray-lifetime';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
@@ -100,12 +101,16 @@ function osTrayPort(): TrayPort {
     // Monochrome, tinted by the OS — one asset for both registers, the same rule the token layer follows.
     icon.setTemplateImage(true);
     const item = new Tray(icon);
-    return {
+    // The item is destroyed by the platform during quit while runs are still ending, and every one of
+    // those endings is a redraw — so the lifetime is asked about here, once, rather than at each call.
+    // See `tray-lifetime.ts`: an unguarded redraw of a dead item is a main-process throw, and Electron
+    // answers that with a modal the process can never get past.
+    return livingTrayPort(item, {
       setLabel: (text) => item.setTitle(text),
       setToolTip: (text) => item.setToolTip(text),
       setMenu: (items) => item.setContextMenu(Menu.buildFromTemplate(items)),
       destroy: () => item.destroy(),
-    };
+    });
   } catch (err) {
     // No status area on this system (a bare X11 session, a locked-down desktop). The item is a
     // discovery surface, not a dependency: the dock badge and every other surface still work, and a
