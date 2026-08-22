@@ -331,6 +331,16 @@ describe('run-store — files on disk (law 11, A-43-3)', () => {
     if (process.platform !== 'win32') expect(mode).toBe(0o700);
   });
 
+  it('keeps the event file itself owner-only, not merely owner-only by its parent', () => {
+    if (process.platform === 'win32') return;
+    const run = createRun(db, { task: 't' }, opts());
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'card number?' } }, opts());
+    // The line above is why: prompts, task text and attached URLs that can carry a query-string
+    // token all live in this file, and the 0700 directory stops shielding it the moment the tree is
+    // copied, archived or synced.
+    expect(statSync(runEventsFile(run.id, dir)).mode & 0o777).toBe(0o600);
+  });
+
   it('is a projection — a lost or damaged file never changes what the store reads back', () => {
     const run = createRun(db, { task: 't' }, opts());
     appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 2 } }, opts());
@@ -414,9 +424,222 @@ describe('run-store — live subscription hook', () => {
   });
 });
 
+describe('run-store — an append costs its status, not its history (F1)', () => {
+  it('recomputes the cached status from status-relevant rows alone, at any log depth', () => {
+    const run = createRun(db, { task: 'deep' }, opts());
+    const mark = (i: number) => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: i } }, opts());
+    for (let i = 0; i < 200; i++) mark(i);
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'sign in?' } }, opts());
+    for (let i = 200; i < 400; i++) mark(i);
+
+    const seen = spyEventReads(db, () => mark(400));
+
+    // The log is 402 events deep and exactly one of them can move the status. The old append read
+    // and JSON-parsed all 402 — inside BEGIN IMMEDIATE, on the database the search cache and the
+    // embedding index queue also write to.
+    expect(seen.rows).toBe(1);
+    expect(seen.queries).toBe(1);
+    // ...and the answer is still the right one.
+    expect(cachedStatus(run.id)).toBe('needs_you');
+    expect(getRun(db, run.id)!.status).toBe('needs_you');
+  });
+
+  it('reaches those rows through the type index rather than walking the run', () => {
+    const run = createRun(db, { task: 'plan' }, opts());
+    for (let i = 0; i < 50; i++) appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: i } }, opts());
+
+    const seen = spyEventReads(db, () => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: 99 } }, opts()));
+    expect(seen.reads).toHaveLength(1);
+    const plan = queryPlan(seen.reads[0]);
+
+    // The row count above cannot see this. Ask SQLite for `ORDER BY seq` and it prefers the
+    // (run_id, seq) primary key — the sort comes free, but it walks EVERY row the run has and
+    // returns the identical handful, so the read is O(log depth) again with no visible change.
+    // The order is restored in JS precisely so the planner is left free to seek the type index.
+    expect(plan, plan).toContain('idx_studio_run_events_type');
+    expect(plan, plan).not.toContain('sqlite_autoindex_studio_run_events');
+  });
+
+  it('keeps the cached column equal to a full replay through every status transition', () => {
+    const run = createRun(db, { task: 'transitions' }, opts());
+    const step = (type: string, payload?: Record<string, unknown>) => {
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type, payload }, opts());
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } }, opts());
+      // The cache is what a status-filtered `listRuns` selects on; a replay is the truth. A
+      // type-filtered recompute is only correct while these two cannot disagree.
+      const replayed = projectRun({ id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, eventsSince(db, run.id, 0));
+      expect(cachedStatus(run.id), type).toBe(replayed.status);
+      return replayed.status;
+    };
+
+    expect(step('decision.requested', { decisionId: 'd1', prompt: 'ok?' })).toBe('needs_you');
+    expect(step('decision.resolved', { decisionId: 'd1', outcome: 'approved' })).toBe('running');
+    expect(step('run.paused', { reason: 'agent' })).toBe('paused');
+    expect(step('run.paused', { reason: 'cost_cap' })).toBe('needs_you');
+    expect(step('run.resumed', { by: 'human' })).toBe('running');
+    expect(step('run.completed')).toBe('done');
+  });
+
+  it('still assigns seq gap-free under the write lock', () => {
+    const run = createRun(db, { task: 'seq' }, opts());
+    for (let i = 0; i < 30; i++) appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: i } }, opts());
+    expect(eventsSince(db, run.id, 0).map((e) => e.seq)).toEqual(Array.from({ length: 31 }, (_, i) => i + 1));
+    expect(getRun(db, run.id)!.lastSeq).toBe(31);
+  });
+});
+
+describe('run-store — listing a page is bounded work (F2)', () => {
+  function busyRuns(count: number, eventsEach: number): string[] {
+    const ids: string[] = [];
+    for (let n = 0; n < count; n++) {
+      const r = createRun(db, { task: `busy ${n}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, n)) });
+      for (let m = 0; m < eventsEach; m++) {
+        appendEvent(db, r.id, { actor: { kind: 'agent' }, type: 'mark.placed', payload: { mark: m } }, opts());
+      }
+      ids.push(r.id);
+    }
+    return ids;
+  }
+
+  it('does the same work at any log depth — the page cost tracks runs, never their history', () => {
+    const shallow = (() => {
+      const ids = busyRuns(6, 10);
+      return { ids, seen: spyEventReads(db, () => listRuns(db, {})) };
+    })();
+    db = freshDb();
+    const deep = (() => {
+      const ids = busyRuns(6, 200);
+      return { ids, seen: spyEventReads(db, () => listRuns(db, {})) };
+    })();
+
+    // Twenty times the log, identical work. A fixed expectation could be met by a slow path that
+    // happened to hit the number once; the differential is what says "not O(events)".
+    expect(deep.seen.queries).toBe(shallow.seen.queries);
+    expect(deep.seen.rows).toBe(shallow.seen.rows);
+    // One projection read for the whole page, plus one newest-row seek per run for lastSeq —
+    // never the unbounded full-log read per row this replaced.
+    expect(deep.seen.queries).toBe(1 + deep.ids.length);
+    // Per run: `run.created` from the projection read, and the tail row. The 200 marks each are
+    // what used to be read, parsed and thrown away, synchronously, before the router could yield.
+    expect(deep.seen.rows).toBe(deep.ids.length * 2);
+  });
+
+  it('reaches both of those reads through an index rather than walking a log', () => {
+    busyRuns(4, 40);
+    const seen = spyEventReads(db, () => listRuns(db, {}));
+
+    // Row counts cannot see a scan that returns the right rows — see the append-path test.
+    const projection = seen.reads.find((r) => /type IN/i.test(r.sql));
+    const tail = seen.reads.find((r) => /ORDER BY seq DESC/i.test(r.sql));
+    expect(projection).toBeDefined();
+    expect(tail).toBeDefined();
+    expect(queryPlan(projection!), queryPlan(projection!)).toContain('idx_studio_run_events_type');
+    // The tail is the one place ORDER BY earns its keep: reversed on the primary key it stops at
+    // the first row. Every page-wide alternative — a correlated max, a GROUP BY, a row-value IN —
+    // measured 250x worse at depth because each walks the run.
+    expect(queryPlan(tail!), queryPlan(tail!)).toContain('SEARCH');
+    expect(queryPlan(tail!), queryPlan(tail!)).not.toContain('TEMP B-TREE');
+  });
+
+  it('projects each list row exactly as getRun does, marks and unknown types included', () => {
+    const run = createRun(db, { task: 'busy', driver: { kind: 'cli', client: { name: 'a-harness', version: '2.1.0' } } }, opts());
+    const a = (type: string, payload?: Record<string, unknown>) =>
+      appendEvent(db, run.id, { actor: { kind: 'agent', driver: 'cli' }, type, payload }, opts());
+    a('tab.attached', { tabId: 'tab-1' });
+    a('mark.placed', { mark: 1 });
+    a('tab.attached', { tabId: 'tab-2' });
+    a('tab.detached', { tabId: 'tab-1' });
+    a('cost.recorded', { kind: 'browser_action', amount: 3 });
+    a('cost.recorded', { kind: 'spend_usd', amount: 0.25 });
+    a('presentation.promoted', { by: 'human', surface: 'tray' });
+    a('decision.requested', { decisionId: 'd1', prompt: 'sign in?', anchor: { tabId: 'tab-2', mark: 4 } });
+    a('decision.requested', { decisionId: 'd2', prompt: 'pay?' });
+    a('decision.resolved', { decisionId: 'd1', outcome: 'approved' });
+    a('run.paused', { reason: 'cost_cap' });
+    // A type nobody projects, appended LAST: lastSeq and updatedAt move with it even though the
+    // type-filtered read cannot see it.
+    a('mark.placed', { mark: 9 });
+
+    const listed = listRuns(db, {}).runs;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toEqual(getRun(db, run.id));
+    expect(listed[0].lastSeq).toBe(13);
+  });
+
+  it('returns an empty page without touching the event log at all', () => {
+    const seen = spyEventReads(db, () => listRuns(db, {}));
+    expect(seen.queries).toBe(0);
+  });
+
+  it('names every type that can move a projected field', () => {
+    // The list path reads ONLY these types. A `case` added to either fold without its type here
+    // would be silently dropped from every list row while `getRun` still honoured it — a divergence
+    // no behavioural test would catch, because the two paths would still each be self-consistent.
+    const src = readFileSync(fileURLToPath(new URL('../../../src/studio/run-store.ts', import.meta.url)), 'utf8');
+    const caseTypes = (body: string): string[] => [...body.matchAll(/case '([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)':/g)].map((m) => m[1]);
+    const body = (name: string): string => {
+      const start = src.indexOf(`function ${name}(`);
+      expect(start, `${name} not found`).toBeGreaterThan(-1);
+      const end = src.indexOf('\n}\n', start);
+      return src.slice(start, end);
+    };
+
+    expect(new Set(caseTypes(body('foldStatus')))).toEqual(new Set(store.STATUS_EVENT_TYPES));
+    expect(new Set([...caseTypes(body('foldStatus')), ...caseTypes(body('projectRun'))])).toEqual(new Set(store.PROJECTION_EVENT_TYPES));
+    // Control: the scan really does find cases, so an equal-sets result is evidence.
+    expect(caseTypes(body('projectRun')).length).toBeGreaterThan(0);
+  });
+});
+
 // --- helpers -------------------------------------------------------------
 
 import * as store from '../../../src/studio/run-store.js';
+
+function cachedStatus(runId: string): string {
+  return (db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(runId) as { status: string }).status;
+}
+
+interface EventRead { sql: string; params: unknown[]; rows: number }
+
+/**
+ * Every EXECUTION against the event log — not every prepare. A statement prepared once and stepped
+ * per run is still a read per run, and counting prepares would hide exactly that.
+ */
+function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: number; rows: number; reads: EventRead[]; result: T } {
+  const reads: EventRead[] = [];
+  const realPrepare = database.prepare.bind(database);
+  const spy = ((sql: string) => {
+    const stmt = realPrepare(sql);
+    if (!/\bFROM studio_run_events\b/i.test(sql)) return stmt;
+    const wrap = (name: 'all' | 'get', count: (out: unknown) => number): void => {
+      const real = stmt[name].bind(stmt) as (...args: unknown[]) => unknown;
+      Object.defineProperty(stmt, name, {
+        value: (...args: unknown[]) => {
+          const out = real(...args);
+          reads.push({ sql, params: args, rows: count(out) });
+          return out;
+        },
+        configurable: true,
+      });
+    };
+    wrap('all', (out) => (out as unknown[]).length);
+    wrap('get', (out) => (out === undefined ? 0 : 1));
+    return stmt;
+  }) as typeof database.prepare;
+  Object.defineProperty(database, 'prepare', { value: spy, configurable: true });
+  try {
+    const result = fn();
+    return { queries: reads.length, rows: reads.reduce((n, r) => n + r.rows, 0), reads, result };
+  } finally {
+    Object.defineProperty(database, 'prepare', { value: realPrepare, configurable: true });
+  }
+}
+
+/** What SQLite actually does with a read, as one string. */
+function queryPlan(read: EventRead): string {
+  const rows = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params) as { detail: string }[];
+  return rows.map((r) => r.detail).join(' | ');
+}
 
 function scanSrc(pattern: RegExp): string[] {
   const root = fileURLToPath(new URL('../../../src/', import.meta.url));

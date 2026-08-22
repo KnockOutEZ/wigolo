@@ -37,6 +37,12 @@ export interface RunEvent {
   payload: Record<string, unknown>;
 }
 
+/**
+ * The slice of an envelope a projection actually reads. A type-filtered read skips `actor` — no
+ * projection rule looks at it, and JSON-parsing it per row is a large part of what F1 was paying.
+ */
+export type ProjectableEvent = Pick<RunEvent, 'seq' | 'ts' | 'type' | 'payload'>;
+
 /** What a caller supplies. There is deliberately no `seq` and no `ts`. */
 export interface RunEventInput {
   actor: Actor;
@@ -130,6 +136,42 @@ export const MAX_LIST_LIMIT = 200;
 const MINT_ATTEMPTS_PER_LENGTH = 3;
 const MAX_ID_LENGTH = RUN_ID_MIN_LENGTH + 4;
 
+/**
+ * The only types `foldStatus` can be moved by. The append path recomputes the `studio_runs.status`
+ * cache column from these alone — over `idx_studio_run_events_type` — instead of re-reading and
+ * re-parsing the whole log inside the write transaction, which cost O(events-so-far) of held
+ * write-lock time on the shared database every single append.
+ *
+ * Adding a status rule to `foldStatus` means adding its type here.
+ */
+export const STATUS_EVENT_TYPES: readonly string[] = [
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.paused',
+  'run.resumed',
+  'decision.requested',
+  'decision.resolved',
+];
+
+/**
+ * Every type `projectRun`'s switch reads. `listRuns` projects a whole page from these alone: the
+ * `default: break` arm is the proof that no other type can change a projected field, and `lastSeq` /
+ * `updatedAt` — which DO move with any type — come from a separate bounded tail read.
+ *
+ * Adding a `case` to `projectRun` means adding its type here. A source guard in the run-store tests
+ * enforces that, because a case added without its type would silently drop from every list row.
+ */
+export const PROJECTION_EVENT_TYPES: readonly string[] = [
+  'run.created',
+  'tab.attached',
+  'tab.detached',
+  'presentation.promoted',
+  'presentation.demoted',
+  'cost.recorded',
+  ...STATUS_EVENT_TYPES,
+];
+
 const EVENT_TYPE_GRAMMAR = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 const ACTOR_KINDS = new Set<string>(['agent', 'human', 'daemon', 'system']);
 const DRIVER_KINDS = new Set<string>(['cli', 'sdk', 'api', 'studio', 'human']);
@@ -156,6 +198,13 @@ export function runEventsFile(id: string, dataDir?: string): string {
 
 interface RunRow { id: string; task: string; space_id: string; created_at: string }
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
+interface StatusRow { seq: number; type: string; payload: string }
+interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
+interface TailRow { seq: number; ts: string }
+
+function placeholders(values: readonly unknown[]): string {
+  return values.map(() => '?').join(', ');
+}
 
 function assertTask(task: unknown): string {
   if (typeof task !== 'string' || task.trim().length === 0) throw new Error('task is required');
@@ -207,11 +256,15 @@ function rowToEvent(r: EventRow): RunEvent {
 /**
  * The disk projection (A-43-3). Written after the commit, NEVER read back — the DB is the source of
  * truth, so a failed write costs a `cat`-able copy and never an event.
+ *
+ * Owner-only, not merely owner-only-by-parent: the file carries decision prompts, task text and
+ * attached URLs that can hold a query-string token, and it outlives the 0700 directory the moment
+ * the tree is copied, archived or synced. The mode applies on create and is ignored on append.
  */
 function projectToDisk(runId: string, event: RunEvent, dataDir?: string): void {
   try {
     mkdirSync(runDir(runId, dataDir), { recursive: true, mode: 0o700 });
-    appendFileSync(runEventsFile(runId, dataDir), JSON.stringify(event) + '\n');
+    appendFileSync(runEventsFile(runId, dataDir), JSON.stringify(event) + '\n', { mode: 0o600 });
   } catch (err) {
     log.warn('run event disk projection failed', { runId, seq: event.seq, error: err instanceof Error ? err.message : String(err) });
   }
@@ -235,9 +288,10 @@ function appendWithinTransaction(
     const seq = head.last_seq + 1;
     db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)')
       .run(runId, seq, ts, JSON.stringify(actor), type, payload);
-    const events = readEvents(db, runId);
-    const facts = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(runId) as RunRow;
-    const status = projectRun(toFacts(facts), events).status;
+    // Status-relevant rows only. The whole log used to be read and parsed here, inside the write
+    // lock, to recompute one cached string — O(events-so-far) per append, held against every other
+    // writer on the shared database.
+    const status = foldStatus(readStatusEvents(db, runId));
     db.prepare('UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ? WHERE id = ?').run(status, seq, ts, runId);
     return { seq, ts, actor, type, payload: JSON.parse(payload) as Record<string, unknown> };
   });
@@ -249,6 +303,107 @@ function appendWithinTransaction(
 
 function toFacts(r: RunRow): StoredRunFacts {
   return { id: r.id, task: r.task, spaceId: r.space_id, createdAt: r.created_at };
+}
+
+/**
+ * §1's ordered status rules, in exactly one place. `projectRun` and the append path's cache refresh
+ * both go through here, so the projection and the cached column cannot drift apart.
+ *
+ * Every type it does not name is inert, which is what lets the append path feed it a read filtered
+ * to `STATUS_EVENT_TYPES` and get the same answer as a full replay.
+ */
+function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunStatus {
+  let terminal: RunStatus | undefined;
+  let pausedReason: string | undefined;
+  const pending = new Set<string>();
+
+  for (const event of events) {
+    const p = event.payload;
+    switch (event.type) {
+      case 'run.completed': terminal = 'done'; break;
+      case 'run.failed': terminal = 'failed'; break;
+      case 'run.cancelled': terminal = 'cancelled'; break;
+      case 'run.paused': pausedReason = str(p.reason) ?? 'agent'; break;
+      case 'run.resumed': pausedReason = undefined; break;
+      case 'decision.requested': {
+        const decisionId = str(p.decisionId);
+        if (decisionId) pending.add(decisionId);
+        break;
+      }
+      case 'decision.resolved': {
+        const decisionId = str(p.decisionId);
+        if (decisionId) pending.delete(decisionId);
+        break;
+      }
+      default: break;
+    }
+  }
+
+  // A terminal event outranks a pause; a cap or a decision means "needs you", an agent parking
+  // itself does not.
+  if (terminal) return terminal;
+  if (pausedReason !== undefined) {
+    return pausedReason === 'cost_cap' || pausedReason === 'action_cap' || pausedReason === 'decision' ? 'needs_you' : 'paused';
+  }
+  return pending.size > 0 ? 'needs_you' : 'running';
+}
+
+/**
+ * One run's status-relevant rows, and nothing else. This runs inside the write lock — keep it thin.
+ *
+ * The seq order is restored here rather than asked of SQLite: an `ORDER BY seq` makes the planner
+ * prefer the (run_id, seq) primary key, which satisfies the sort but scans every row the run has —
+ * exactly the O(log-depth) read this exists to avoid. Unordered, it seeks (run_id, type) instead,
+ * and a handful of status rows sort for free.
+ */
+function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'type' | 'payload'>[] {
+  const rows = db
+    .prepare(`SELECT seq, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
+    .all(runId, ...STATUS_EVENT_TYPES) as StatusRow[];
+  return rows
+    .sort((a, b) => a.seq - b.seq)
+    .map((r) => ({ type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+}
+
+/**
+ * A whole page's projectable rows in ONE query. The old list path issued an unbounded full-log read
+ * per row — up to `MAX_LIST_LIMIT` of them, synchronously, so the router's deadline could not fire
+ * during it.
+ */
+function readProjectionEvents(db: Database.Database, runIds: readonly string[]): Map<string, ProjectableEvent[]> {
+  const byRun = new Map<string, ProjectableEvent[]>();
+  for (const id of runIds) byRun.set(id, []);
+  if (runIds.length === 0) return byRun;
+  const rows = db
+    .prepare(`SELECT run_id, seq, ts, type, payload FROM studio_run_events WHERE run_id IN (${placeholders(runIds)}) AND type IN (${placeholders(PROJECTION_EVENT_TYPES)})`)
+    .all(...runIds, ...PROJECTION_EVENT_TYPES) as ProjectionRow[];
+  for (const r of rows) {
+    byRun.get(r.run_id)?.push({ seq: r.seq, ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> });
+  }
+  // Ordered here for the same reason as the status read: an ORDER BY would cost the type index.
+  for (const events of byRun.values()) events.sort((a, b) => a.seq - b.seq);
+  return byRun;
+}
+
+/**
+ * `lastSeq`/`updatedAt` move with EVERY type, including the ones a projection ignores, so they
+ * cannot come from the type-filtered read. They come from the log rather than the cached columns,
+ * because a list row is a projection of the log and nothing else (law 1).
+ *
+ * One newest-row seek per run, not one page-wide query: every batched form — a correlated max, a
+ * GROUP BY, a row-value IN — makes SQLite walk each run's whole log. Measured at 50 runs × 5000
+ * events, those cost 68 / 22 / 14 ms against 0.05 ms for the seeks, because reversing the primary
+ * key and stopping at the first row is O(log depth) and the rest are not.
+ */
+function readEventTails(db: Database.Database, runIds: readonly string[]): Map<string, { seq: number; ts: string }> {
+  const tails = new Map<string, { seq: number; ts: string }>();
+  if (runIds.length === 0) return tails;
+  const newest = db.prepare('SELECT seq, ts FROM studio_run_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1');
+  for (const id of runIds) {
+    const row = newest.get(id) as TailRow | undefined;
+    if (row) tails.set(id, { seq: row.seq, ts: row.ts });
+  }
+  return tails;
 }
 
 function readEvents(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
@@ -354,7 +509,15 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   const sql = `SELECT id, task, space_id, created_at FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
   const rows = db.prepare(sql).all(...params, limit + 1) as RunRow[];
   const page = rows.slice(0, limit);
-  const runs = page.map((r) => projectRun(toFacts(r), readEvents(db, r.id)));
+  const ids = page.map((r) => r.id);
+  // Three bounded queries for the page, not one unbounded full-log read per row.
+  const byRun = readProjectionEvents(db, ids);
+  const tails = readEventTails(db, ids);
+  const runs = page.map((r) => {
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? []);
+    const tail = tails.get(r.id);
+    return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
+  });
   const last = page[page.length - 1];
   return rows.length > limit && last
     ? { runs, nextCursor: encodeCursor(last.created_at, last.id) }
@@ -385,11 +548,9 @@ function str(value: unknown): string | undefined {
  * Unknown types are ignored and preserved — a consumer that does not know `mark.placed` must not
  * drop it or refuse the run.
  */
-export function projectRun(facts: StoredRunFacts, events: RunEvent[]): Run {
-  let status: RunStatus | undefined;
+export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[]): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = 'hidden';
-  let pausedReason: string | undefined;
   const tabIds: string[] = [];
   const pending = new Map<string, PendingDecision>();
   const cost: RunCost = { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 };
@@ -402,11 +563,8 @@ export function projectRun(facts: StoredRunFacts, events: RunEvent[]): Run {
         if (d && DRIVER_KINDS.has(d.kind)) driver = d.client ? { kind: d.kind, client: d.client } : { kind: d.kind };
         break;
       }
-      case 'run.completed': status = 'done'; break;
-      case 'run.failed': status = 'failed'; break;
-      case 'run.cancelled': status = 'cancelled'; break;
-      case 'run.paused': pausedReason = str(p.reason) ?? 'agent'; break;
-      case 'run.resumed': pausedReason = undefined; break;
+      // run.completed / run.failed / run.cancelled / run.paused / run.resumed move only the status,
+      // which `foldStatus` owns below. They stay listed in PROJECTION_EVENT_TYPES all the same.
       case 'tab.attached': {
         const tabId = str(p.tabId);
         if (tabId && !tabIds.includes(tabId)) tabIds.push(tabId);
@@ -453,12 +611,7 @@ export function projectRun(facts: StoredRunFacts, events: RunEvent[]): Run {
 
   const newest = events[events.length - 1];
   const pendingDecisions = [...pending.values()];
-  // §1's ordered rules. A terminal event outranks a pause; a cap or a decision means "needs you",
-  // an agent parking itself does not.
-  const projected: RunStatus = status
-    ?? (pausedReason !== undefined
-      ? (pausedReason === 'cost_cap' || pausedReason === 'action_cap' || pausedReason === 'decision' ? 'needs_you' : 'paused')
-      : pendingDecisions.length > 0 ? 'needs_you' : 'running');
+  const projected = foldStatus(events);
 
   return {
     id: facts.id,
