@@ -21,6 +21,7 @@ import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
 import type { RestRouter } from './rest/router.js';
+import type { RunsStore } from './rest/runs-store.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
@@ -72,6 +73,13 @@ export interface DaemonOptions {
    * behavior is unchanged when this is absent.
    */
   mcpServerFactory?: () => Server;
+  /**
+   * The run store this process serves `/v1/runs*` from, for an owner that cannot open a native
+   * handle. SD1 §6 rules that the studio-hosting process is the ONE live owner while the app runs,
+   * and the Electron main reaches its store only through the broker child — so without this the
+   * owner answers 503 and nobody serves. Absent on the daemon, which opens the shared cache DB.
+   */
+  runStore?: RunsStore;
   /** Configured API token (null = open mode). Resolved by the CLI. */
   apiToken?: string | null;
   /** Operator opted into open remote access. */
@@ -168,6 +176,7 @@ export class DaemonHttpServer {
           bindHost: this.restBindHost,
           token: this.apiToken,
           allowUnauthenticated: this.allowUnauthenticated,
+          ...(this.options.runStore ? { runStore: this.options.runStore } : {}),
         });
         this.restRouter = router;
         return router;

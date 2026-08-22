@@ -9,6 +9,7 @@ import { livingTrayPort } from './tray-lifetime';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
+import { bridgeRunEventsToBus, createBrokerRunsStore } from './run-rest-store';
 import { registerIpc, registerMarksIpc } from './ipc-host';
 import { createDriveEngine } from './drive-engine';
 import { createStudioHost, type HostTab } from './studio-host';
@@ -195,7 +196,12 @@ async function createWindow(): Promise<void> {
 
   // SD1 spine 1: runs live in the daemon and this projects them. Replacing SessionRegistry, which kept
   // run-shaped facts (identity, tab membership) in a process that any run outlives.
-  const runs = new RunViewModel(createBrokerRunStoreClient(broker));
+  const runStoreClient = createBrokerRunStoreClient(broker);
+  // §6 — this process is the live run-store owner while the app runs, so its gateway serves
+  // `/v1/runs*` from the broker and its in-process bus carries what the broker commits. Bridge
+  // FIRST: a subscriber that attaches before any append cannot miss one.
+  bridgeRunEventsToBus(runStoreClient);
+  const runs = new RunViewModel(runStoreClient);
   registerIpc(win, tabs, runs);
   win.on('resize', () => tabs.relayout());
 
@@ -452,6 +458,7 @@ async function createWindow(): Promise<void> {
       host: studioHost.handlers,
       sessions: studioHost.sessions,
       sessionId: `studio-${process.pid}`,
+      runStore: createBrokerRunsStore(runStoreClient),
     });
   } catch (err) {
     // The gateway is the agent endpoint; if it cannot bind, the human UI still works. Surface the
