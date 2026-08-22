@@ -48,6 +48,15 @@ export class TabOwnedError extends Error {
 
 export type TabDetachReason = 'closed' | 'run_ended';
 export type RunTerminal = 'completed' | 'failed' | 'cancelled';
+/** §8 — where a promote was asked for. Demote carries no surface; only who did it matters. */
+export type PromoteSurface = 'tray' | 'chrome' | 'panel';
+export type PresentationBy = 'human' | 'system';
+
+const TERMINAL_STATUSES: ReadonlySet<Run['status']> = new Set<Run['status']>(['done', 'failed', 'cancelled']);
+
+export function isTerminal(status: Run['status']): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
 
 /** What a surface needs to name a run. Everything on it is projected; nothing is stored here. */
 export interface RunSummary {
@@ -55,6 +64,7 @@ export interface RunSummary {
   task: string;
   status: Run['status'];
   tabIds: string[];
+  visibility: Run['visibility'];
 }
 
 interface RunLog {
@@ -70,6 +80,8 @@ export class RunViewModel {
   private readonly listeners = new Set<() => void>();
   /** Runs being replayed right now, so a burst of events for one of them causes a single replay. */
   private readonly adopting = new Set<string>();
+  /** One presentation transition at a time per run — see `setVisibility`. */
+  private readonly transitions = new Map<string, Promise<void>>();
 
   constructor(private readonly store: RunStoreClient) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
@@ -176,6 +188,18 @@ export class RunViewModel {
   }
 
   /**
+   * The run a still-pending decision belongs to, replayed rather than remembered. An answer arrives
+   * carrying only the card's id, and a map from card to run would be one more thing to keep in step
+   * with the log — the log already knows, because a resolved decision is no longer pending.
+   */
+  runForDecision(decisionId: string): string | undefined {
+    for (const runId of this.logs.keys()) {
+      if (this.snapshot(runId)!.pendingDecisions.some((d) => d.decisionId === decisionId)) return runId;
+    }
+    return undefined;
+  }
+
+  /**
    * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
    * owner is a no-op rather than a duplicate fact.
    */
@@ -214,6 +238,67 @@ export class RunViewModel {
     this.applyEvent(runId, event);
   }
 
+  /**
+   * §8's promote/demote, as a fact in the log rather than as window state.
+   *
+   * The store enforces envelope mechanics only, so legality lives here: promoting a run that has
+   * already ended is refused (nobody can watch a run that is over), while demoting one is allowed —
+   * that is exactly the path a boot reconcile takes for a run that ended while it was being watched.
+   *
+   * Idempotent against the PROJECTION, not against a local flag: a promote written by another writer
+   * is already in this projection, so re-asserting it here writes nothing. Returns whether an event
+   * was appended, which is what a caller needs to know before it moves a window.
+   */
+  setVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
+    // Serialised per run, because the check below is against the PROJECTION: two clicks on the same
+    // menu item both read "hidden" before either append lands, and the log gets two promotes for one
+    // transition. A human double-clicking is the ordinary way to produce that. Per run, not global, so
+    // one run's slow append never holds another's up.
+    const queued = (this.transitions.get(runId) ?? Promise.resolve()).then(
+      () => this.applyVisibility(runId, next, by, surface),
+      () => this.applyVisibility(runId, next, by, surface),
+    );
+    const tail = queued.then(
+      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
+      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
+    );
+    this.transitions.set(runId, tail);
+    return queued;
+  }
+
+  private async applyVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
+    const run = this.snapshot(runId);
+    if (!run) throw new Error(`no such run: ${runId}`);
+    if (run.visibility === next) return false;
+    if (next === 'visible' && isTerminal(run.status)) throw new Error(`run ${runId} has already ended`);
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: by },
+      type: next === 'visible' ? 'presentation.promoted' : 'presentation.demoted',
+      payload: next === 'visible' ? { by, ...(surface ? { surface } : {}) } : { by },
+    });
+    this.applyEvent(runId, event);
+    return true;
+  }
+
+  /** A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source). */
+  async requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: 'agent', driver: 'studio' },
+      type: 'decision.requested',
+      payload: { decisionId: input.decisionId, kind: input.kind, prompt: input.prompt },
+    });
+    this.applyEvent(runId, event);
+  }
+
+  async resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
+    const event = await this.store.appendEvent(runId, {
+      actor: { kind: by },
+      type: 'decision.resolved',
+      payload: { decisionId, outcome, by },
+    });
+    this.applyEvent(runId, event);
+  }
+
   ownerOf(tabId: string): string | undefined {
     for (const runId of this.logs.keys()) if (this.snapshot(runId)!.tabIds.includes(tabId)) return runId;
     return undefined;
@@ -244,7 +329,7 @@ export class RunViewModel {
   list(): RunSummary[] {
     return [...this.logs.keys()].map((id) => {
       const run = this.snapshot(id)!;
-      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds };
+      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds, visibility: run.visibility };
     });
   }
 

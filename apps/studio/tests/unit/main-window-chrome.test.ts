@@ -112,3 +112,63 @@ describe('the chrome geometry the main process insets the page view by', () => {
     expect(() => cssPx('--not-a-geometry-token')).toThrow();
   });
 });
+
+/**
+ * The headless-default wiring, asserted the same way and for the same reason: `src/main/index.ts`
+ * constructs a BrowserWindow on import, so no unit test can call into it, and everything below was
+ * invisible to every gate. Each of these was deleted or reordered in a scratch build and the whole
+ * suite stayed green.
+ */
+describe('the app boots headless and can be promoted out of it', () => {
+  it('applies the presentation from the run projection rather than from a boot-time branch', () => {
+    // The regression this replaces: `if (hidden) {…} else {…}` ran once and no runtime transition
+    // existed anywhere, so a promote had nothing to move.
+    expect(MAIN).toContain('presentation.apply()');
+    expect(MAIN).not.toMatch(/if \(hidden\) \{\s*const p = hiddenWindowPresentation\(\)/);
+  });
+
+  it('gives the controller the boot default and a way to focus the promoted run’s tab', () => {
+    const ctor = MAIN.slice(MAIN.indexOf('new RunPresentationController({'), MAIN.indexOf('void runs.hydrate()'));
+    expect(ctor).toContain('bootHidden: hidden');
+    expect(ctor).toContain('focusTab: (tabId) => tabs.focusTab(tabId)');
+  });
+
+  it('reconciles the log back to hidden once the replay lands, not before it', () => {
+    // Order matters: reconciling before hydrate would find an empty projection and write nothing, so
+    // a run left visible by the last session would keep claiming a window nobody can see.
+    const hydrate = MAIN.indexOf('void runs.hydrate()');
+    const reconcile = MAIN.indexOf('presentation.reconcile()');
+    expect(hydrate).toBeGreaterThan(-1);
+    expect(reconcile).toBeGreaterThan(hydrate);
+    expect(MAIN.slice(hydrate, reconcile)).toContain('.then(');
+  });
+
+  it('mounts the menu-bar item, and survives a system that will not give it one', () => {
+    expect(MAIN).toContain('mountRunTray(runs, presentation)');
+    const port = MAIN.slice(MAIN.indexOf('function osTrayPort'), MAIN.indexOf('function mountRunTray'));
+    expect(port).toContain('setTemplateImage(true)'); // one asset, tinted by the OS, both registers
+    // A status area that refuses an item must not stop the boot, and must not take the dock badge or
+    // the transitions down with it — hence a no-op port rather than a null handle.
+    expect(port).toMatch(/catch \(err\)/);
+    expect(port).toContain('setLabel: () => {}');
+  });
+
+  it('lets go of the menu-bar item on shutdown', () => {
+    // A Tray that outlives the app leaves a dead icon in the menu bar until the OS reaps it.
+    expect(MAIN.slice(MAIN.indexOf('const shutdown ='), MAIN.indexOf("app.on('before-quit'"))).toContain('runTray?.destroy()');
+  });
+});
+
+describe('shutdown lets go of the menu-bar item in the right order', () => {
+  it('destroys it AFTER the host, because ending every run redraws it', () => {
+    // The regression: destroying it first left the run log fanning change events into a dead OS
+    // object during shutdown, and the app could not quit at all.
+    const body = MAIN.slice(MAIN.indexOf('const shutdown ='), MAIN.indexOf("app.on('before-quit'"));
+    const host = body.indexOf('studioHost.shutdown()');
+    const tray = body.indexOf('runTray?.destroy()');
+    expect(host).toBeGreaterThan(-1);
+    expect(tray).toBeGreaterThan(host);
+    // And the approval mirror's timers go with it, or one can outlive the window it belonged to.
+    expect(body).toContain('decisions.dispose()');
+  });
+});

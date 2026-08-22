@@ -1,7 +1,10 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, nativeTheme } from 'electron';
+import { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, nativeTheme } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
-import { chromeWebPreferences, hiddenWindowPresentation, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
+import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
+import { RunPresentationController } from './run-presentation';
+import { createDecisionMirror } from './run-decisions';
+import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle, type TrayPort } from './run-tray';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
@@ -78,6 +81,66 @@ function windowRegister(): Register {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
+/** The dev-only read of the menu-bar menu (see `mountRunTray`). */
+interface RunMenuProbe {
+  labels(): string[];
+  checked(): boolean[];
+  click(index: number): void;
+}
+
+/**
+ * Pin 5's menu-bar item. Kept out of `createWindow` because the OS item is the ONE surface that has to
+ * exist while no window is presented, and because a status area that refuses to accept an item must not
+ * be able to stop the app from booting — a headless run does not need a menu bar to run, only to be found.
+ */
+function osTrayPort(): TrayPort {
+  try {
+    const icon = nativeImage.createFromBuffer(TRAY_ICON_1X, { scaleFactor: 1 });
+    icon.addRepresentation({ scaleFactor: 2, buffer: TRAY_ICON_2X });
+    // Monochrome, tinted by the OS — one asset for both registers, the same rule the token layer follows.
+    icon.setTemplateImage(true);
+    const item = new Tray(icon);
+    return {
+      setLabel: (text) => item.setTitle(text),
+      setToolTip: (text) => item.setToolTip(text),
+      setMenu: (items) => item.setContextMenu(Menu.buildFromTemplate(items)),
+      destroy: () => item.destroy(),
+    };
+  } catch (err) {
+    // No status area on this system (a bare X11 session, a locked-down desktop). The item is a
+    // discovery surface, not a dependency: the dock badge and every other surface still work, and a
+    // headless run must not fail to start because there is nowhere to draw an icon.
+    process.stderr.write(`[studio] no menu-bar item is available on this system: ${err instanceof Error ? err.message : String(err)}\n`);
+    return { setLabel: () => {}, setToolTip: () => {}, setMenu: () => {}, destroy: () => {} };
+  }
+}
+
+function mountRunTray(runs: RunViewModel, presentation: RunPresentationController): RunTrayHandle {
+  const handle = createRunTray({
+    tray: osTrayPort(),
+    // Absent off macOS; the count in the menu bar is what carries there.
+    dock: app.dock ? { setBadge: (text) => app.dock?.setBadge(text) } : undefined,
+    runs,
+    setVisibility: (runId, next) =>
+      next === 'visible'
+        ? presentation.promote(runId, 'human', 'tray')
+        : presentation.demote(runId, 'human'),
+    onError: (err) => process.stderr.write(`[studio] could not change what is on screen: ${err instanceof Error ? err.message : String(err)}\n`),
+  });
+
+  // The menu is drawn by the OS, so no driver can click it and the promote path would otherwise be
+  // the one affordance no test can reach. This exposes the menu ALREADY BUILT — same items, same
+  // handlers, nothing the human cannot do — to the main process, in dev builds only.
+  if (!app.isPackaged) {
+    (globalThis as typeof globalThis & { __wigoloRunMenu?: RunMenuProbe }).__wigoloRunMenu = {
+      labels: () => handle.menu().map((i) => i.label ?? ''),
+      checked: () => handle.menu().map((i) => i.checked === true),
+      click: (index: number) => handle.menu()[index]?.click?.(),
+    };
+  }
+  return handle;
+}
+
 async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
     width: 1360,
@@ -131,12 +194,38 @@ async function createWindow(): Promise<void> {
   registerIpc(win, tabs, runs);
   win.on('resize', () => tabs.relayout());
 
+  // Law 2 — headless is the default, and promote/demote is a runtime transition rather than the boot
+  // boolean it used to be. `hidden` is now only the BOOT default; which runs are being watched is a
+  // fact in the run log, and this moves the window to match it.
+  const presentation = new RunPresentationController({
+    runs,
+    window: win,
+    focusTab: (tabId) => tabs.focusTab(tabId),
+    bootHidden: hidden,
+  });
+
   // Runs created before this window existed are already in the log; replay them so the chrome opens
   // showing what is actually running. A broker that is not up yet simply leaves the projection empty —
   // the live tail fills it in, and no run is lost by it.
-  void runs.hydrate().catch((err: unknown) => {
-    process.stderr.write(`[studio] could not replay the run log: ${err instanceof Error ? err.message : String(err)}\n`);
-  });
+  void runs.hydrate()
+    // Presentation is per-app-lifetime: a run that was being watched when the app last quit is written
+    // back to hidden, so the log never claims a window the human cannot see.
+    .then(() => presentation.reconcile())
+    .catch((err: unknown) => {
+      process.stderr.write(`[studio] could not replay the run log: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
+
+  // Applied here as well as at the end of boot, and only in the withheld direction: a window that is
+  // being withheld must be MAPPED as early as possible, because one that never acquired a compositor
+  // surface starves its tabs of frames — and there is nothing to flash, since it is transparent. A
+  // window the human asked for is shown at the end of boot instead, once the shell has painted.
+  if (hidden) presentation.apply();
+
+  const runTray = mountRunTray(runs, presentation);
+  const onDecisionError = (err: unknown): void => {
+    process.stderr.write(`[studio] could not record an approval on its run: ${err instanceof Error ? err.message : String(err)}\n`);
+  };
+  const decisions = createDecisionMirror({ runs, onError: onDecisionError });
 
   // Resolved after the shell loads (below) and read pull-at-eval by createTab. A tab created before the
   // shell finishes loading simply omits the high-entropy hints rather than waiting on them.
@@ -164,6 +253,9 @@ async function createWindow(): Promise<void> {
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
       win.webContents.send(IPC.approvalParked, dto);
+      // …and onto the run, so a run with a card waiting reads `needs_you` everywhere — including the
+      // dock badge, which is the only attention affordance a withheld window has.
+      void decisions.parked(notice).catch(onDecisionError);
     },
     // P4: the agent posted a chat message (studio_say) → the chat rail. Agent-authored text; the renderer
     // renders it as an inert text node.
@@ -314,6 +406,7 @@ async function createWindow(): Promise<void> {
 
   ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {
     studioHost.resolveApproval(id, decision);
+    void decisions.resolved(id, decision === 'allow' ? 'approved' : 'denied').catch(onDecisionError);
   });
 
   ipcMain.handle(IPC.setRailOpen, (_e, open: boolean) => {
@@ -366,6 +459,11 @@ async function createWindow(): Promise<void> {
     try { await studioHost.shutdown(); } catch { /* best-effort */ }
     try { await gateway?.stop(); } catch { /* best-effort */ }
     try { await broker.stop(); } catch { /* best-effort */ }
+    // Last, and after the host: ending every run is a projection change, and the item redraws on each
+    // one. Destroying it first left the run log fanning events into a dead OS object, which took the
+    // rest of this sequence with it and left the app unable to quit at all.
+    try { runTray?.destroy(); } catch { /* best-effort */ }
+    decisions.dispose();
   };
   app.on('before-quit', () => { void shutdown(); });
 
@@ -381,24 +479,15 @@ async function createWindow(): Promise<void> {
   hostHints = await resolveHostHints(() => win.webContents.executeJavaScript(HOST_HINTS_EXPR), {
     warn: (line) => process.stderr.write(line),
   });
-  // `--hidden`: the window is mapped but never presented. GPU stays on and the compositor stays real
-  // (this is not offscreen rendering) — only the presentation is withheld, so a background fetch keeps
-  // the same renderer, codec and API surface a visible window has. It must be MAPPED, not merely
-  // unshown: a never-shown window has no compositor surface, which measurably stops the frame clock
-  // for its child views (rAF 0fps) and flips `document.visibilityState` to `hidden`. See
-  // hidden-mode.ts for the measurement.
+  // Headless by default: the window is mapped but never presented. GPU stays on and the compositor
+  // stays real (this is not offscreen rendering) — only the presentation is withheld, so a background
+  // fetch keeps the same renderer, codec and API surface a visible window has. It must be MAPPED, not
+  // merely unshown: a never-shown window has no compositor surface, which measurably stops the frame
+  // clock for its child views (rAF 0fps) and flips `document.visibilityState` to `hidden`. See
+  // hidden-mode.ts for the measurement, and run-presentation.ts for the transition that applies it.
+  presentation.apply();
   if (hidden) {
-    const p = hiddenWindowPresentation();
-    win.setOpacity(p.opacity);
-    win.setIgnoreMouseEvents(p.ignoreMouseEvents);
-    win.setSkipTaskbar(p.skipTaskbar);
-    // Left at its natural position ON the display: a window parked off-screen is not viewable on X11
-    // and gets no frames, which is the starvation this whole branch exists to avoid.
-    win.showInactive(); // never `show()`: a background run must not take foreground from the human
-    process.stderr.write('[studio] running hidden: no window is presented; the agent line is live.\n');
-  } else {
-    win.show();
-    win.focus(); // take foreground on launch (a background/CLI launch otherwise leaves the window unfocused)
+    process.stderr.write('[studio] running hidden: no window is presented; the agent line is live. Promote a run from the menu bar to watch it.\n');
   }
 }
 

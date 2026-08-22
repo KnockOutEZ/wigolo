@@ -262,6 +262,15 @@ padding `20px 18px`, `flex column gap:16`. Bottom cluster uses `margin-top:auto`
 placeholder `body` at `.3`, then a wrapping row of meta pills that state the delivery
 promise ("delivered instantly" vs "delivers on next browser call").
 
+**`menu-bar item`** — the one surface the OS draws, not us: the tray/menu-bar entry that exists
+so a run nobody is watching is still discoverable. Glyph is `identity-ring` as a **monochrome
+template image**, tinted by the OS, so one asset serves both registers. Text to its right is the
+live run count and nothing else. Its menu is: a disabled count line ("2 runs, 1 needs you"), a
+separator, then one checkbox row per run — `id · task`, ticked while the run is being watched,
+clicking toggles promote/demote. No colour is available here, so "needs you" is said in words
+(`— needs you`) rather than in amber, and the dock badge carries the attention instead. Truncate
+the task; the label-fitting law applies to a menu the same as to a lane.
+
 **`annotation-footer`** — after a screen: a wrapping row, `gap:26`, of
 `mono` `.34` lines each starting `→ `. Two maximum. This is where design rationale lives.
 
