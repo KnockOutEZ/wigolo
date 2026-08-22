@@ -458,7 +458,10 @@ describe('the owner goes away', () => {
     const body = r.body as { ok: boolean; error_reason: string; hint?: string };
     expect(body.ok).toBe(false);
     expect(body.error_reason).toBe('studio_host_unreachable');
-    expect(body.hint).toContain('current.json');
+    // Names the app, never the handle file: an operator told to delete the handle while the app is
+    // still up ends up with two processes each believing they own the live fan-out.
+    expect(body.hint).toContain('studio app');
+    expect(body.hint).not.toContain('current.json');
 
     // The tail fails the same way — the shape that matters is that it ANSWERS. A stream that hung
     // here would look to a client exactly like a run that had gone quiet.

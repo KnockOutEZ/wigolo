@@ -413,6 +413,66 @@ describe('proxyRunsRequest — the raw hop to the live owner', () => {
   });
 });
 
+/**
+ * WHY: the hop runs over Node's keep-alive pool, so a `Content-Length` describing a body the hop
+ * never writes does not fail the request that carried it — the owner's parser is simply left
+ * waiting for bytes on a socket that goes straight back into the pool. The NEXT request over that
+ * socket is the casualty: its opening bytes are swallowed as the previous request's body and what
+ * remains is not a request line. That makes one crafted read a denial primitive against an
+ * unrelated caller, which in the default local posture (loopback, no API token) is any process on
+ * the machine. The framing of the hop is ours to state, never the client's.
+ */
+describe('request framing across the hop', () => {
+  /**
+   * An owner that answers without draining the request body — the ordinary shape for a GET handler,
+   * and the one that leaves the announced bytes pending on the socket.
+   */
+  function startBodylessOwner(seenReqs: SeenRequest[], sockets: number[], clientErrors: string[]): Promise<number> {
+    const owner = http.createServer((req, res) => {
+      seenReqs.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: '' });
+      sockets.push(req.socket.remotePort ?? 0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    // Replaces Node's default handler, so the socket has to be destroyed here. A parser error is the
+    // symptom the desync produces, and it is invisible from the client side without this.
+    owner.on('clientError', (err, socket) => {
+      clientErrors.push((err as NodeJS.ErrnoException).code ?? String(err));
+      socket.destroy();
+    });
+    // Adopted as the suite's upstream so the shared teardown closes it.
+    upstream = owner;
+    return listen(owner);
+  }
+
+  it('never relays the client’s content-length onto a bodyless proxied request', async () => {
+    const ownerSeen: SeenRequest[] = [];
+    const ownerSockets: number[] = [];
+    const clientErrors: string[] = [];
+    await close(upstream);
+    upstreamPort = await startBodylessOwner(ownerSeen, ownerSockets, clientErrors);
+    proxyPort = await startProxyServer(false);
+
+    // The crafted read: a GET with no body that claims to carry 40 bytes. The proxy's own answer is
+    // fine — the damage is deferred to whoever gets the socket next.
+    const first = await call({ path: '/v1/runs/aaa', headers: { 'Content-Length': '40' } });
+    expect(first.status).toBe(200);
+
+    // The victim: an unrelated request the owner must see whole.
+    const second = await call({ path: '/v1/runs/bbb' });
+
+    expect(ownerSeen.map((r) => r.url)).toEqual(['/v1/runs/aaa', '/v1/runs/bbb']);
+    expect(clientErrors).toEqual([]);
+    expect(second.status).toBe(200);
+    expect(JSON.parse(second.body)).toEqual({ ok: true });
+    // Both hops shared one pooled socket. Without that the desync has nowhere to land and the rows
+    // above would pass on a bug they never exercised.
+    expect(new Set(ownerSockets).size).toBe(1);
+    // The cause, stated directly: our hop describes its own framing, never the client's.
+    expect(ownerSeen[0]?.headers['content-length']).toBeUndefined();
+  });
+});
+
 describe('handleRunsRequest — the ownership branch', () => {
   /** A runs surface whose store access is observable, so "did not touch it" is an assertion. */
   function startRunsServer(owner: RunsOwner): Promise<{ port: number; dbOpens: () => number }> {

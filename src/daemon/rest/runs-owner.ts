@@ -60,8 +60,15 @@ const HOP_BY_HOP = new Set([
  * Request headers that cross the hop. An allowlist rather than a filter: the request may carry a
  * caller's cookies or bearer for a DIFFERENT surface, and forwarding ambient credentials to another
  * process is a widening nobody asked for. `authorization` is set from the handle token instead.
+ *
+ * `content-length` is deliberately absent, and is the one entry whose absence is load-bearing. It
+ * describes THIS hop's body, which is `opts.body` or nothing — never whatever the client announced.
+ * Relayed, a bodyless proxied GET carrying a client `Content-Length` leaves the owner's parser
+ * waiting for a body on a socket the keep-alive pool immediately hands to the NEXT request, whose
+ * opening bytes are then eaten as that body; the owner's parser rejects the remainder and an
+ * unrelated caller gets a 502 for a request the owner never saw. One crafted read, one dead victim.
  */
-const FORWARDED_REQUEST_HEADERS = ['accept', 'content-type', 'content-length', 'last-event-id'];
+const FORWARDED_REQUEST_HEADERS = ['accept', 'content-type', 'last-event-id'];
 
 export type RunsOwner =
   | { kind: 'local' }
@@ -151,8 +158,13 @@ function hostUnreachable(): HttpError {
       'studio_host_unreachable',
       'The live run-store owner is not reachable.',
       {
+        // Never "delete the handle": the handle is what names the single live owner, and an operator
+        // who removes it while the app is up leaves two processes each believing they own the live
+        // fan-out — the exact split this route exists to close. Quitting the app is the answer,
+        // because that is what makes this daemon the owner honestly.
         hint: 'A studio session handle is published but its endpoint did not answer (stale handle?). '
-          + 'Close the studio app or remove ~/.wigolo/studio/current.json to make this daemon the owner.',
+          + 'Quit or re-launch the studio app so the handle names the live owner; with the app closed '
+          + 'this daemon owns the run store.',
       },
     ),
     headers: {},
@@ -244,8 +256,8 @@ export function proxyRunsRequest(
     const value = req.headers[name];
     if (value !== undefined) headers[name] = value;
   }
-  // A re-serialized body is rarely byte-identical to the one that arrived, so the client's own
-  // content-length would describe a body we are not sending.
+  // The hop's only statement about its own body. A re-serialized body is rarely byte-identical to
+  // the one that arrived, and a bodyless hop announces nothing at all.
   if (opts.body) headers['content-length'] = opts.body.length;
 
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
