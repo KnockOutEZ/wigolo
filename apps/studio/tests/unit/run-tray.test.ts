@@ -248,7 +248,9 @@ describe('the tray follows the projection', () => {
   it('is torn down only once, however many times it is asked', () => {
     const handle = mount();
     handle.destroy();
-    tray.destroyed = false; // a second destroy on a dead OS item throws
+    // Not because a second destroy throws — measured on Electron 43, it does not (see
+    // `tray-lifetime.ts`) — but because the handle must not reach for an item it has already let go of.
+    tray.destroyed = false;
     handle.destroy();
     expect(tray.destroyed).toBe(false);
   });
