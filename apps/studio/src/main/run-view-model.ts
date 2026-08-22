@@ -6,8 +6,8 @@ import type { BrokerClient } from './broker-client';
  *
  * `SessionRegistry` used to keep session identity, a `tabIds` array and a "current" pointer in Electron
  * main, which made the app a second source of truth for facts that outlive it. The inversion: the daemon
- * store owns run identity and tab membership as an append-only log, and everything here is either a
- * replay of that log. There is deliberately no "current run" pointer to mirror the old `currentId`:
+ * store owns run identity and tab membership as an append-only log, and everything here is a replay of
+ * that log. There is deliberately no "current run" pointer to mirror the old `currentId`:
  * which run the human is looking at is the owner of the focused TAB, derived where the state push is
  * assembled. A second pointer beside the tab layer is what let the chrome name one run while showing
  * another's page — which is the same class of drift the `tabIds` array was.
