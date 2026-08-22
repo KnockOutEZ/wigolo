@@ -66,9 +66,23 @@ export class RunViewModel {
   private readonly projected = new Map<string, Run>();
   /** Ephemeral UI state: which run the human is looking at. Never an event, never restored. */
   private focused: string | null = null;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly store: RunStoreClient) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
+  }
+
+  /**
+   * Fires whenever the projection moves. The tab strip needs this on top of `TabManager.onChange`:
+   * detaching is an async append, so a tab closing and its run releasing it are two separate moments
+   * and only the second one carries the new ownership.
+   */
+  onChange(cb: () => void): void {
+    this.listeners.add(cb);
+  }
+
+  private emit(): void {
+    for (const cb of this.listeners) cb();
   }
 
   /** Replay every run from the store. Safe to call repeatedly — it discards what it holds first. */
@@ -80,6 +94,7 @@ export class RunViewModel {
       const events = await this.store.eventsSince(run.id, 0);
       this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
     }
+    this.emit();
   }
 
   /**
@@ -92,6 +107,7 @@ export class RunViewModel {
     if (event.seq <= (log.events.at(-1)?.seq ?? 0)) return;
     log.events.push(event);
     this.projected.delete(runId);
+    this.emit();
   }
 
   async createRun(input: CreateRunInput): Promise<Run> {
@@ -100,7 +116,24 @@ export class RunViewModel {
     this.logs.set(run.id, { facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, events });
     this.projected.delete(run.id);
     if (this.focused === null) this.focused = run.id;
+    this.emit();
     return run;
+  }
+
+  /**
+   * The daemon studio session that spawned this run (§7.3's linkage), replayed from `run.created`.
+   * A session is how a client connects; a run is the task — so the link is a recorded fact, not a
+   * second map for the host to keep in step with the log.
+   */
+  sessionIdOf(runId: string): string | undefined {
+    const created = this.logs.get(runId)?.events.find((e) => e.type === 'run.created');
+    const sessionId = created?.payload.sessionId;
+    return typeof sessionId === 'string' ? sessionId : undefined;
+  }
+
+  runForSession(sessionId: string): string | undefined {
+    for (const runId of this.logs.keys()) if (this.sessionIdOf(runId) === sessionId) return runId;
+    return undefined;
   }
 
   /**
@@ -176,6 +209,7 @@ export class RunViewModel {
 
   focusRun(runId: string | null): void {
     this.focused = runId !== null && this.logs.has(runId) ? runId : null;
+    this.emit();
   }
 
   list(): RunSummary[] {

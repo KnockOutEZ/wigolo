@@ -38,7 +38,7 @@ const loginStore = createLoginStore();
 type RailTab = 'agent' | 'marks' | 'captures' | 'timeline';
 
 export function App() {
-  const [state, setState] = useState<StudioState>({ sessionName: '', tabs: [] });
+  const [state, setState] = useState<StudioState>({ runs: [], focusedRunId: null, tabs: [] });
   const [pending, setPending] = useState<PendingApproval[]>([]);
   const [marks, setMarks] = useState<Mark[]>([]);
   const [captures, setCaptures] = useState<CaptureDto[]>([]);
@@ -215,7 +215,9 @@ export function App() {
                   Timeline{timeline.length ? ` · ${timeline.length}` : ''}
                 </button>
               </span>
-              <span className="rail__badge">{state.sessionName || 'session'}</span>
+              {/* The session name died with the registry. Until #49 designs the run chrome, the badge
+                  names the focused run — the same short id the terminal, replay and audit log use. */}
+              <span className="rail__badge">{state.focusedRunId ?? 'no run'}</span>
               <span className="rail__spacer" />
             </div>
             {railTab === 'agent' ? (

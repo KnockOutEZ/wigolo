@@ -5,6 +5,8 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn() } }));
 
 import { registerIpc, stateBroadcaster } from '../../src/main/ipc-host';
+import { RunViewModel } from '../../src/main/run-view-model';
+import { FakeRunStore } from '../helpers/fake-run-store';
 import { IPC } from '../../src/shared/ipc';
 import type { StudioState } from '../../src/shared/ipc';
 
@@ -23,7 +25,7 @@ import type { StudioState } from '../../src/shared/ipc';
  * threw before sending.
  */
 
-const state = (): StudioState => ({ sessionName: 's', tabs: [] });
+const state = (): StudioState => ({ runs: [], focusedRunId: null, tabs: [] });
 
 /**
  * A window whose `webContents` THROWS on access, exactly as Electron's does after destruction.
@@ -106,7 +108,7 @@ describe('stateBroadcaster', () => {
   it('pushes the state to a live window', () => {
     const { win, send } = liveWindow();
     stateBroadcaster(win, state)();
-    expect(send).toHaveBeenCalledWith(IPC.stateChanged, { sessionName: 's', tabs: [] });
+    expect(send).toHaveBeenCalledWith(IPC.stateChanged, { runs: [], focusedRunId: null, tabs: [] });
   });
 
   it('does not throw when the window was destroyed before the tab event landed', () => {
@@ -148,7 +150,7 @@ describe('stateBroadcaster', () => {
     expect(() => stateBroadcaster(win, state)()).not.toThrow();
     expect(send, 'the crash path was skipped — the guard now claims coverage the comment denies').toHaveBeenCalledWith(
       IPC.stateChanged,
-      { sessionName: 's', tabs: [] },
+      { runs: [], focusedRunId: null, tabs: [] },
     );
   });
 });
@@ -167,17 +169,19 @@ describe('registerIpc', () => {
   function fakeDeps() {
     const listeners: Array<() => void> = [];
     const tabs = { onChange: (fn: () => void) => listeners.push(fn), listTabs: () => [] };
-    const sessions = { current: () => ({ id: 'sess1', name: 's' }) };
-    return { listeners, tabs, sessions };
+    // The REAL view-model over a faithful store, not a stub: `registerIpc` now reads run state through
+    // it, so a stub would let a projection bug through the one test that exercises the wiring.
+    const runs = new RunViewModel(new FakeRunStore());
+    return { listeners, tabs, runs };
   }
 
   it('subscribes the guarded push to tab changes, not an unguarded one', () => {
-    const { listeners, tabs, sessions } = fakeDeps();
+    const { listeners, tabs, runs } = fakeDeps();
     const { win, touched } = destroyedWindow();
     registerIpc(
       win as unknown as Parameters<typeof registerIpc>[0],
       tabs as unknown as Parameters<typeof registerIpc>[1],
-      sessions as unknown as Parameters<typeof registerIpc>[2],
+      runs as unknown as Parameters<typeof registerIpc>[2],
     );
     expect(listeners, 'nothing subscribed to tab changes — the state push is dead').toHaveLength(1);
     expect(() => listeners[0]!()).not.toThrow();
@@ -185,12 +189,12 @@ describe('registerIpc', () => {
   });
 
   it('subscribes a push that survives a destroyed webContents too', () => {
-    const { listeners, tabs, sessions } = fakeDeps();
+    const { listeners, tabs, runs } = fakeDeps();
     const { win, send } = windowAliveContentsDestroyed();
     registerIpc(
       win as unknown as Parameters<typeof registerIpc>[0],
       tabs as unknown as Parameters<typeof registerIpc>[1],
-      sessions as unknown as Parameters<typeof registerIpc>[2],
+      runs as unknown as Parameters<typeof registerIpc>[2],
     );
     expect(() => listeners[0]!()).not.toThrow();
     expect(send()).toBe(false);
@@ -199,14 +203,14 @@ describe('registerIpc', () => {
   it('the subscriber it registers really is the one that pushes state', () => {
     // The control for the two above: a subscriber that no longer sends anything would satisfy both
     // "did not throw" assertions vacuously. Against a live window the same callback must push.
-    const { listeners, tabs, sessions } = fakeDeps();
+    const { listeners, tabs, runs } = fakeDeps();
     const { win, send } = liveWindow();
     registerIpc(
       win as unknown as Parameters<typeof registerIpc>[0],
       tabs as unknown as Parameters<typeof registerIpc>[1],
-      sessions as unknown as Parameters<typeof registerIpc>[2],
+      runs as unknown as Parameters<typeof registerIpc>[2],
     );
     listeners[0]!();
-    expect(send).toHaveBeenCalledWith(IPC.stateChanged, { sessionName: 's', tabs: [] });
+    expect(send).toHaveBeenCalledWith(IPC.stateChanged, { runs: [], focusedRunId: null, tabs: [] });
   });
 });

@@ -13,6 +13,19 @@ export interface TabInfo {
   url: string;
   title: string;
   active: boolean;
+  /**
+   * The run that owns this tab (law 4). Absent means the tab is the human's own — a group no agent
+   * can see or drive. Projected from the run log, never assigned by the tab layer.
+   */
+  runId?: string;
+}
+
+/** main → renderer: one run, projected from the daemon's run log. Nothing here is renderer state. */
+export interface RunView {
+  id: string;
+  task: string;
+  status: string;
+  tabIds: string[];
 }
 
 /** overlay(tab) → main: the human committed a mark. `path` is element-child indices from documentElement. */
@@ -39,7 +52,10 @@ export interface MarkAssignedDto {
 }
 
 export interface StudioState {
-  sessionName: string;
+  /** Every run the daemon knows about. The session name this used to carry died with the registry. */
+  runs: RunView[];
+  /** Which run the human is looking at. UI state — the daemon neither knows nor records it. */
+  focusedRunId: string | null;
   tabs: TabInfo[];
 }
 
