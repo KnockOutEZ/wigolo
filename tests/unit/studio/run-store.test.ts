@@ -19,6 +19,7 @@ import {
   RUN_ID_MIN_LENGTH,
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
+  isValidListCursor,
   runEventsFile,
   type RunEvent,
   type Run,
@@ -254,7 +255,10 @@ describe('run-store — append-only event log (law 1)', () => {
   it('refuses an actor outside the vocabulary and an append to an unknown run', () => {
     const run = createRun(db, { task: 't' }, opts());
     expect(() => appendEvent(db, run.id, { actor: { kind: 'ghost' } as never, type: 'x.y' }, opts())).toThrow(/actor/i);
-    expect(() => appendEvent(db, 'nope', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/not found/i);
+    // A well-formed id nothing minted is "not found"; a string that could never BE an id is refused
+    // before the lookup, because it is a caller bug rather than a miss.
+    expect(() => appendEvent(db, 'zzzz', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/not found/i);
+    expect(() => appendEvent(db, 'nope', { actor: { kind: 'agent' }, type: 'x.y' }, opts())).toThrow(/invalid run id/i);
   });
 });
 
@@ -444,6 +448,37 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
     const third = listRuns(db, { limit: 2, cursor: second.nextCursor });
     expect(third.runs.map((r) => r.id)).toEqual([ids[0]]);
     expect(third.nextCursor).toBeUndefined();
+  });
+
+  /**
+   * WHY: `Buffer.from(x, 'base64url')` never throws — it silently drops what it cannot read — and a
+   * cursor that decoded to nothing was treated as "no cursor". So a corrupted or truncated cursor
+   * restarted pagination from page 1 with no signal: a client paging in a loop never terminates,
+   * and a client processing each page double-processes the first and stops.
+   */
+  it('refuses a cursor that does not decode rather than silently restarting page 1', () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, i)) }).id);
+    }
+    const first = listRuns(db, { limit: 2 });
+    const good = first.nextCursor!;
+
+    for (const bad of [
+      'not a cursor',                              // spaces are not in the alphabet
+      '@@@@',                                      // nor is punctuation
+      good.slice(0, -3),                           // truncated in transit
+      Buffer.from('no newline here').toString('base64url'),   // decodes, but is not a keyset pair
+      Buffer.from('not-a-date\nabcd').toString('base64url'),  // a pair whose left half is not a time
+      Buffer.from('2026-08-22T00:00:00.000Z\n').toString('base64url'), // empty id half
+    ]) {
+      expect(() => listRuns(db, { limit: 2, cursor: bad }), bad).toThrow(/cursor/i);
+      expect(isValidListCursor(bad)).toBe(false);
+    }
+
+    // ...and the honest one still pages, which is the half a blanket rejection would break.
+    expect(isValidListCursor(good)).toBe(true);
+    expect(listRuns(db, { limit: 2, cursor: good }).runs.map((r) => r.id)).toEqual([ids[2], ids[1]]);
   });
 
   it('filters by status and space', () => {

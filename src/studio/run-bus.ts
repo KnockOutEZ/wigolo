@@ -15,7 +15,7 @@ import { createLogger } from '../logger.js';
 import {
   appendEvent,
   createRun,
-  normalizeRunId,
+  resolveRunId,
   type CreateRunInput,
   type Run,
   type RunEvent,
@@ -29,9 +29,15 @@ type Listener = (event: RunEvent) => void;
 
 const listeners = new Map<string, Set<Listener>>();
 
+function busKey(runId: string): string {
+  return resolveRunId(runId) ?? String(runId).trim().toLowerCase();
+}
+
 /** Returns the unsubscribe. Callers MUST call it — a leaked listener holds a dead connection alive. */
 export function subscribeRunEvents(runId: string, listener: Listener): () => void {
-  const id = normalizeRunId(runId);
+  // The bus keys an in-memory fan-out, so an unmintable id is simply a key nothing publishes to —
+  // never a reason to throw at a caller that is only registering interest.
+  const id = busKey(runId);
   let set = listeners.get(id);
   if (!set) {
     set = new Set();
@@ -51,7 +57,7 @@ export function subscribeRunEvents(runId: string, listener: Listener): () => voi
  * append that produced it — the DB write already committed by the time we get here.
  */
 export function publishRunEvent(runId: string, event: RunEvent): void {
-  const set = listeners.get(normalizeRunId(runId));
+  const set = listeners.get(busKey(runId));
   if (!set || set.size === 0) return;
   for (const listener of [...set]) {
     try {
@@ -64,7 +70,7 @@ export function publishRunEvent(runId: string, event: RunEvent): void {
 
 /** Test/diagnostic seam — a non-zero count after a connection closes is a leak. */
 export function runEventListenerCount(runId: string): number {
-  return listeners.get(normalizeRunId(runId))?.size ?? 0;
+  return listeners.get(busKey(runId))?.size ?? 0;
 }
 
 function withTail(opts: RunStoreOptions): RunStoreOptions {

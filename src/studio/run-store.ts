@@ -192,9 +192,41 @@ export function mintRunId(length: number = RUN_ID_MIN_LENGTH): string {
   return out;
 }
 
-/** Ids are case-normalized on input everywhere — a footer read back in caps still resolves. */
+const RUN_ID_CHARS = new Set(RUN_ID_ALPHABET);
+
+/**
+ * Could this string have been minted? Nothing else is a run id.
+ *
+ * The guard is structural rather than a live exploit fix: a run id is `join()`ed into a filesystem
+ * path by `runDir`, so `..` or a separator in one would escape the state directory. Every current
+ * `projectToDisk` caller passes a minted id or an id that already matched a row, so traversal is
+ * not reachable today — which is exactly the kind of precondition a later caller deletes without
+ * noticing. Checking the alphabet costs nothing and does not depend on who calls.
+ */
+export function isValidRunId(id: string): boolean {
+  if (id.length < RUN_ID_MIN_LENGTH || id.length > MAX_ID_LENGTH) return false;
+  for (const ch of id) if (!RUN_ID_CHARS.has(ch)) return false;
+  return true;
+}
+
+/**
+ * Ids are case-normalized on input everywhere — a footer read back in caps still resolves — and
+ * refused outright when they are not ids at all.
+ *
+ * Throwing is right on the WRITE and filesystem paths, where an unmintable id means a caller bug.
+ * Lookups use `resolveRunId` instead: an id that could never have been minted is a MISS, so a typo
+ * in a URL stays a 404 rather than becoming a 500.
+ */
 export function normalizeRunId(id: string): string {
-  return String(id).trim().toLowerCase();
+  const normalized = String(id).trim().toLowerCase();
+  if (!isValidRunId(normalized)) throw new Error(`invalid run id: ${normalized}`);
+  return normalized;
+}
+
+/** The lookup-side normalizer. `undefined` means "no such run", never an error. */
+export function resolveRunId(id: string): string | undefined {
+  const normalized = String(id).trim().toLowerCase();
+  return isValidRunId(normalized) ? normalized : undefined;
 }
 
 /** Where a run's human-readable projection lives (law 11 — local and inspectable). */
@@ -515,7 +547,8 @@ export function appendEvent(db: Database.Database, runId: string, input: RunEven
 }
 
 export function getRun(db: Database.Database, runId: string, opts: ReadRunOptions = {}): Run | undefined {
-  const id = normalizeRunId(runId);
+  const id = resolveRunId(runId);
+  if (id === undefined) return undefined;
   const row = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as RunRow | undefined;
   if (!row) return undefined;
   return projectRun(toFacts(row), readEvents(db, id), opts.now?.() ?? new Date());
@@ -527,12 +560,15 @@ export function getRun(db: Database.Database, runId: string, opts: ReadRunOption
  * of a replay that is careful to page — must not pay an unbounded synchronous read to ask.
  */
 export function runExists(db: Database.Database, runId: string): boolean {
-  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(normalizeRunId(runId));
+  const id = resolveRunId(runId);
+  if (id === undefined) return false;
+  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(id);
   return row !== undefined;
 }
 
 export function eventsSince(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
-  return readEvents(db, normalizeRunId(runId), since, limit);
+  const id = resolveRunId(runId);
+  return id === undefined ? [] : readEvents(db, id, since, limit);
 }
 
 export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
@@ -548,6 +584,11 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
     params.push(opts.spaceId);
   }
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : undefined;
+  // A cursor is opaque, not unchecked. `Buffer.from(x, 'base64url')` never throws — it drops the
+  // characters it cannot read — so a corrupted or truncated cursor used to decode to nothing and be
+  // treated as "no cursor", silently restarting pagination. A client that pages in a loop then
+  // never terminates, or double-processes the first page and calls it the last.
+  if (opts.cursor && !cursor) throw new Error('invalid cursor');
   if (cursor) {
     // Keyset, not offset: a run inserted mid-page cannot shift the rows a client has not seen yet.
     where.push('(created_at < ? OR (created_at = ? AND id < ?))');
@@ -576,9 +617,33 @@ function encodeCursor(createdAt: string, id: string): string {
   return Buffer.from(`${createdAt}\n${id}`, 'utf8').toString('base64url');
 }
 
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Strict, because base64url decoding is not. The round-trip is the load-bearing check: a cursor
+ * with a dropped or flipped character still decodes to *something*, and only re-encoding proves the
+ * bytes we read are the bytes the encoder wrote.
+ */
 function decodeCursor(cursor: string): { createdAt: string; id: string } | undefined {
-  const [createdAt, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('\n');
-  return createdAt && id ? { createdAt, id } : undefined;
+  if (!BASE64URL.test(cursor)) return undefined;
+  const bytes = Buffer.from(cursor, 'base64url');
+  if (bytes.toString('base64url') !== cursor) return undefined;
+  const parts = bytes.toString('utf8').split('\n');
+  if (parts.length !== 2) return undefined;
+  const [createdAt, id] = parts;
+  // Both halves are checked against the shape the ENCODER produces, not merely "non-empty": a
+  // cursor truncated on a byte boundary still splits into two plausible halves, and the only thing
+  // that catches it is that the timestamp is no longer a canonical instant or the id is no longer
+  // a mintable id.
+  if (!createdAt || !id || !isValidRunId(id)) return undefined;
+  const at = Date.parse(createdAt);
+  if (!Number.isFinite(at) || new Date(at).toISOString() !== createdAt) return undefined;
+  return { createdAt, id };
+}
+
+/** The REST seam's pre-check, so a bad cursor is a 400 from the router rather than a thrown 500. */
+export function isValidListCursor(cursor: string): boolean {
+  return decodeCursor(cursor) !== undefined;
 }
 
 function num(value: unknown): number {
