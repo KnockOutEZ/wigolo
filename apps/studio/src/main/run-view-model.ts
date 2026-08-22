@@ -258,7 +258,11 @@ export class RunViewModel {
       () => this.applyVisibility(runId, next, by, surface),
       () => this.applyVisibility(runId, next, by, surface),
     );
-    this.transitions.set(runId, queued.then(() => undefined, () => undefined));
+    const tail = queued.then(
+      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
+      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
+    );
+    this.transitions.set(runId, tail);
     return queued;
   }
 
