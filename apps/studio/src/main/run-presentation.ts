@@ -1,5 +1,5 @@
 import { hiddenWindowPresentation } from './hidden-mode';
-import { isTerminal, type PresentationBy, type PromoteSurface, type RunSummary } from './run-view-model';
+import type { PresentationBy, PromoteSurface, RunSummary } from './run-view-model';
 
 /**
  * Law 2 — headless is the default, not a mode. A run is created without a window, runs to completion
@@ -127,10 +127,5 @@ export class RunPresentationController {
     }
     this.reconciled = true;
     this.apply();
-  }
-
-  /** The runs a visibility surface offers: everything live, plus anything still being watched. */
-  static listable(runs: readonly RunSummary[]): RunSummary[] {
-    return runs.filter((r) => !isTerminal(r.status) || r.visibility === 'visible');
   }
 }

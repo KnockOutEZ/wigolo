@@ -1,4 +1,3 @@
-import { RunPresentationController } from './run-presentation';
 import { isTerminal, type RunSummary } from './run-view-model';
 
 /**
@@ -60,6 +59,10 @@ const MAX_TASK_CHARS = 52;
 
 const live = (runs: readonly RunSummary[]): RunSummary[] => runs.filter((r) => !isTerminal(r.status));
 
+/** What the menu offers: everything live, plus anything still being watched so it can be demoted. */
+const listable = (runs: readonly RunSummary[]): RunSummary[] =>
+  runs.filter((r) => !isTerminal(r.status) || r.visibility === 'visible');
+
 export function needsYouCount(runs: readonly RunSummary[]): number {
   return runs.filter((r) => r.status === 'needs_you').length;
 }
@@ -96,7 +99,7 @@ export function buildTrayMenu(
   runs: readonly RunSummary[],
   toggle: (runId: string, next: 'visible' | 'hidden') => void,
 ): TrayMenuItem[] {
-  const listed = RunPresentationController.listable(runs);
+  const listed = listable(runs);
   if (listed.length === 0) return [{ label: 'No runs', enabled: false }];
   return [
     { label: countPhrase(runs), enabled: false },
