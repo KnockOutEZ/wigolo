@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as http from 'node:http';
+import Database from 'better-sqlite3';
+import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -57,20 +59,36 @@ function close(server: http.Server | undefined): Promise<void> {
   });
 }
 
-/** The daemon side: one route that hands everything to the proxy under test. */
+/**
+ * The daemon side: one route that hands everything to the proxy under test.
+ *
+ * It pre-reads a POST body and passes it as `body`, because that is what `handleRunsRequest` does
+ * and the proxy deliberately never pipes `req` — piping auto-destroys the stream, which breaks the
+ * local handler the no-store fallback hands off to.
+ */
 function startProxyServer(streaming: boolean): Promise<number> {
   proxy = http.createServer((req, res) => {
-    void proxyRunsRequest(req, res, {
-      target: { endpoint: `http://127.0.0.1:${upstreamPort}`, token: 'host-token' },
-      path: req.url ?? '/',
-      method: req.method ?? 'GET',
-      streaming,
-      sendError: (e: HttpError) => {
-        if (res.headersSent) return;
-        res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
-        res.end(JSON.stringify(e.body));
-      },
-    });
+    const run = (body?: Buffer): void => {
+      void proxyRunsRequest(req, res, {
+        target: { endpoint: `http://127.0.0.1:${upstreamPort}`, token: 'host-token' },
+        path: req.url ?? '/',
+        method: req.method ?? 'GET',
+        streaming,
+        ...(body && body.length > 0 ? { body } : {}),
+        sendError: (e: HttpError) => {
+          if (res.headersSent) return;
+          res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
+          res.end(JSON.stringify(e.body));
+        },
+      });
+    };
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => run(Buffer.concat(chunks)));
+    } else {
+      run();
+    }
   });
   return listen(proxy);
 }
@@ -135,8 +153,24 @@ afterEach(async () => {
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
-function publishHandle(instanceId: string, endpoint = `http://127.0.0.1:${upstreamPort}`): void {
-  writeHandle({ id: 'session-1', endpoint, token: 'host-token', pid: 4242, instanceId }, dataDir);
+/**
+ * `pid` defaults to THIS process, which is the only pid a test can be certain is alive. A literal
+ * like 4242 would make every proxy row depend on whether that pid happens to exist on the machine.
+ */
+function publishHandle(
+  instanceId: string,
+  endpoint = `http://127.0.0.1:${upstreamPort}`,
+  pid = process.pid,
+): void {
+  writeHandle({ id: 'session-1', endpoint, token: 'host-token', pid, instanceId }, dataDir);
+}
+
+/** A pid that is definitely gone: spawn something, let it exit, keep the number. */
+async function deadPid(): Promise<number> {
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
+  await new Promise<void>((resolve) => child.on('exit', () => resolve()));
+  return child.pid as number;
 }
 
 describe('resolveRunsOwner — who owns the live run store for this request', () => {
@@ -167,6 +201,27 @@ describe('resolveRunsOwner — who owns the live run store for this request', ()
     publishHandle('host-instance-abc');
     setMyInstanceId('some-other-instance');
     expect(resolveRunsOwner(dataDir).kind).toBe('proxy');
+  });
+
+  it('serves in-process when the handle’s process is gone — a killed host leaves its handle behind', async () => {
+    // Nothing removes the file when a host dies, and the run log outlives it. Without this, a fresh
+    // daemon started after the app was killed 502s every run request against a stale pointer.
+    publishHandle('host-instance-abc', `http://127.0.0.1:${upstreamPort}`, await deadPid());
+    expect(resolveRunsOwner(dataDir)).toEqual({ kind: 'local' });
+  });
+
+  it('still proxies when the handle’s process is alive', () => {
+    publishHandle('host-instance-abc', `http://127.0.0.1:${upstreamPort}`, process.pid);
+    expect(resolveRunsOwner(dataDir).kind).toBe('proxy');
+  });
+
+  it('proxies when the handle carries no usable pid — the check may only ADD a local branch', () => {
+    // Read in the negative direction only. An absent or nonsense pid is not evidence of death, and
+    // treating it as such would let a malformed field quietly take the wheel back from a live host.
+    for (const pid of [0, -1, Number.NaN]) {
+      publishHandle('host-instance-abc', `http://127.0.0.1:${upstreamPort}`, pid);
+      expect(resolveRunsOwner(dataDir).kind).toBe('proxy');
+    }
   });
 
   it('serves in-process when the handle names no usable endpoint rather than guessing one', () => {
@@ -432,5 +487,170 @@ describe('handleRunsRequest — the ownership branch', () => {
     expect(r.status).toBe(404);
     // Shape errors are answered here rather than turned into traffic the owner has to reject too.
     expect(seen).toHaveLength(0);
+  });
+});
+
+/**
+ * WHY THIS BRANCH EXISTS, and why it is not the fall-back A-70-1 forbids.
+ *
+ * A-70-1 refuses to fall back on an UNREACHABLE owner, because a refused connect cannot tell "dead"
+ * from "busy" and guessing wrong splits the live tail. A `503 store_unavailable` is the opposite
+ * kind of signal: a live, authenticated process stating what it is. The app's gateway sends exactly
+ * that today — it has no native store, and it appends through the broker child, so it can neither
+ * serve a run nor fan one out.
+ *
+ * This was not reasoned into existence. The first version of this change had no such branch, and CI
+ * red on seven `apps/studio` e2e rows: the SD1 exit gate runs a daemon child beside the real app,
+ * and every `/v1/runs` call it made started returning the app's 503.
+ */
+describe('an owner that declares it holds no store', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    _resetMigrationGuard();
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, { vecLoaded: false });
+  });
+
+  afterEach(() => db.close());
+
+  function startRunsServer(): Promise<{ port: number; dbOpens: () => number }> {
+    let opens = 0;
+    proxy = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      void handleRunsRequest(req, res, {
+        pathname: url.pathname,
+        method: req.method ?? 'GET',
+        url,
+        respond: (status, body, headers) => {
+          res.writeHead(status, { 'Content-Type': 'application/json', ...(headers ?? {}) });
+          res.end(JSON.stringify(body));
+        },
+        sendError: (e: HttpError) => {
+          if (res.headersSent) return;
+          res.writeHead(e.status, { 'Content-Type': 'application/json', ...e.headers });
+          res.end(JSON.stringify(e.body));
+        },
+        openDb: () => { opens++; return db; },
+        resolveOwner: () => ({ kind: 'proxy', endpoint: `http://127.0.0.1:${upstreamPort}`, token: 'host-token' }),
+      });
+    });
+    return listen(proxy).then((port) => ({ port, dbOpens: () => opens }));
+  }
+
+  function declineWith(reason: string, status = 503): void {
+    upstreamHandler = (_req, res) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'nope', error_reason: reason }));
+    };
+  }
+
+  it('serves the request itself — a process with no store is not an owner', async () => {
+    declineWith('store_unavailable');
+    const { port, dbOpens } = await startRunsServer();
+
+    const r = await call({ path: '/v1/runs', port });
+
+    expect(r.status).toBe(200);
+    expect((JSON.parse(r.body) as { ok: boolean }).ok).toBe(true);
+    expect(dbOpens()).toBe(1);
+    // The hop was still attempted — the fallback is a response to what the owner SAID, never a
+    // shortcut around asking it.
+    expect(seen).toHaveLength(1);
+  });
+
+  it('creates the run locally with the body the caller sent, not an empty one', async () => {
+    declineWith('store_unavailable');
+    const { port } = await startRunsServer();
+
+    const r = await call({
+      method: 'POST',
+      path: '/v1/runs',
+      port,
+      body: JSON.stringify({ task: 'the body has to survive the hop' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(r.status).toBe(201);
+    // A request stream can be consumed once. Without the pre-read, this create reads an empty body
+    // and 400s on a task the caller definitely sent.
+    expect((JSON.parse(r.body) as { run: { task: string } }).run.task).toBe('the body has to survive the hop');
+    // And the owner really did see it, byte-equal in meaning.
+    expect(JSON.parse(seen[0].body)).toEqual({ task: 'the body has to survive the hop' });
+  });
+
+  it('relays any OTHER 503 as the client’s answer rather than taking the wheel', async () => {
+    // "I am temporarily unavailable" is not "I am not a store owner". Treating them alike would let
+    // a busy owner hand this daemon the wheel, which is the split fan-out A-70-1 forbids.
+    declineWith('too_many_requests');
+    const { port, dbOpens } = await startRunsServer();
+
+    const r = await call({ path: '/v1/runs', port });
+    expect(r.status).toBe(503);
+    expect((JSON.parse(r.body) as { error_reason: string }).error_reason).toBe('too_many_requests');
+    expect(dbOpens()).toBe(0);
+  });
+
+  it('relays a non-503 refusal untouched', async () => {
+    declineWith('store_unavailable', 500);
+    const { port, dbOpens } = await startRunsServer();
+
+    const r = await call({ path: '/v1/runs', port });
+    // The reason string is not the trigger on its own — the status is half the predicate.
+    expect(r.status).toBe(500);
+    expect(dbOpens()).toBe(0);
+  });
+
+  it('relays a 503 whose body is not an error envelope', async () => {
+    upstreamHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('gateway is sad');
+    };
+    const { port, dbOpens } = await startRunsServer();
+
+    const r = await call({ path: '/v1/runs', port });
+    expect(r.status).toBe(503);
+    expect(r.body).toBe('gateway is sad');
+    expect(dbOpens()).toBe(0);
+  });
+
+  it('falls back on the SSE tail too, so a tail is never 503ed by a storeless owner', async () => {
+    declineWith('store_unavailable');
+    const { port } = await startRunsServer();
+    const { createRunWithTail } = await import('../../../src/studio/run-bus.js');
+    const run = createRunWithTail(db, { task: 'tail me' });
+
+    // A healthy tail never ends, so this reads until the birth event lands and then hangs up. The
+    // one-shot helper would wait for an 'end' that a working stream is designed never to send —
+    // and an earlier version of this row PASSED its status assertion for exactly that reason: the
+    // response had ended with no headers at all, and `statusCode` reads 200 when nothing wrote one.
+    const seenBytes = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { hostname: '127.0.0.1', port, path: `/v1/runs/${run.id}/events`, headers: { Accept: 'text/event-stream' } },
+        (res) => {
+          let body = '';
+          res.setEncoding('utf-8');
+          res.on('data', (chunk: string) => {
+            body += chunk;
+            if (body.includes('id: 1')) {
+              req.destroy();
+              resolve({ status: res.statusCode ?? 0, headers: res.headers, body });
+            }
+          });
+          res.on('error', () => { /* our own destroy */ });
+        },
+      );
+      req.on('error', (err) => {
+        if ((err as NodeJS.ErrnoException).code !== 'ECONNRESET') reject(err);
+      });
+      req.setTimeout(8000, () => req.destroy(new Error('no SSE frame arrived')));
+      req.end();
+    });
+
+    expect(seenBytes.status).toBe(200);
+    expect(seenBytes.headers['content-type']).toBe('text/event-stream; charset=utf-8');
+    expect(seenBytes.body).toContain('id: 1');
+    expect(seenBytes.body).toContain('event: run.created');
   });
 });

@@ -412,9 +412,46 @@ describe('one live run-store owner across two processes', () => {
 });
 
 describe('the owner goes away', () => {
-  it('answers with structured JSON rather than hanging when the published host is dead', async () => {
+  /**
+   * Two different situations that a single "the host stopped answering" row would have conflated,
+   * and they get opposite answers:
+   *
+   *   - the host PROCESS is gone — a killed app leaves its handle behind, nothing removes it, and
+   *     the run log outlives it. There is no live owner, so this daemon is the owner.
+   *   - the host process is ALIVE but its endpoint does not answer — indistinguishable from busy,
+   *     so taking the wheel would be a guess that splits the live tail. Fail loud instead.
+   */
+  it('takes ownership back when the published host process is gone', async () => {
     child?.kill('SIGKILL');
     await new Promise<void>((resolve) => setTimeout(resolve, 500));
+
+    const r = await postJson(daemonPort, '/v1/runs', { task: 'the daemon is the owner again' });
+    expect(r.status).toBe(201);
+    const id = (r.body as { run: { id: string } }).run.id;
+
+    // Served from the daemon's OWN store, which the separate data dirs make checkable.
+    const listed = await request({ port: daemonPort, path: '/v1/runs' });
+    expect((listed.body as { runs: Array<{ id: string }> }).runs.map((x) => x.id)).toContain(id);
+  }, 30_000);
+
+  it('answers with structured JSON rather than hanging when a LIVE host stops answering', async () => {
+    // The handle now names a process that is definitely alive — this one — at an endpoint nothing
+    // is listening on. That is the case liveness cannot resolve, and the one that must fail loud.
+    const dead = await new Promise<number>((resolve) => {
+      const s = http.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const port = (s.address() as { port: number }).port;
+        s.close(() => resolve(port));
+      });
+    });
+    const { writeHandle } = await import('../../src/studio/handle.js');
+    writeHandle({
+      id: 'integration-session',
+      endpoint: `http://127.0.0.1:${dead}`,
+      token: HOST_TOKEN,
+      pid: process.pid,
+      instanceId: 'a-live-but-silent-host',
+    }, daemonDataDir);
 
     const r = await request({ port: daemonPort, path: '/v1/runs', timeoutMs: 10_000 });
     expect(r.status).toBe(502);
@@ -427,9 +464,6 @@ describe('the owner goes away', () => {
     // here would look to a client exactly like a run that had gone quiet.
     const tail = await request({ port: daemonPort, path: '/v1/runs/c29x/events', timeoutMs: 10_000 });
     expect(tail.status).toBe(502);
-
-    // Deliberately NOT a fall back to the local store. Two live owners is the exact split fan-out
-    // the rule exists to prevent, and a refused connect cannot tell "dead" from "busy".
     expect((tail.body as { error_reason: string }).error_reason).toBe('studio_host_unreachable');
   }, 30_000);
 });

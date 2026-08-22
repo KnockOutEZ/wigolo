@@ -97,7 +97,32 @@ export function resolveRunsOwner(dataDir?: string): RunsOwner {
     return { kind: 'local' };
   }
 
+  // A killed host leaves its handle behind — nothing removes it — and the run log outlives it. Read
+  // ONLY in the negative direction: no process with that pid means the owner is definitely gone, so
+  // this daemon is the owner. It is never read as proof that the host IS alive, because pid reuse
+  // makes that direction worthless; that is exactly why IDENTITY still rests on `instanceId`, and a
+  // reused pid simply proxies and gets the honest `502` a wrong endpoint deserves.
+  if (!processExists(handle.pid)) {
+    log.debug('ignoring studio handle whose process is gone', { pid: handle.pid });
+    return { kind: 'local' };
+  }
+
   return { kind: 'proxy', endpoint: handle.endpoint, token: handle.token };
+}
+
+/**
+ * `signal 0` performs the permission and existence checks without delivering anything. `EPERM` means
+ * the process exists but belongs to someone else — alive, not absent. A handle carrying no usable
+ * pid is treated as alive so this check can only ever ADD a local branch, never remove a proxy one.
+ */
+function processExists(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function isUsableEndpoint(endpoint: string): boolean {
@@ -107,6 +132,16 @@ function isUsableEndpoint(endpoint: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Upstream response headers minus the ones that describe our hop rather than the client's. */
+function relayHeaders(upstreamRes: IncomingMessage): OutgoingHttpHeaders {
+  const out: OutgoingHttpHeaders = {};
+  for (const [name, value] of Object.entries(upstreamRes.headers)) {
+    if (value === undefined || HOP_BY_HOP.has(name.toLowerCase())) continue;
+    out[name] = value;
+  }
+  return out;
 }
 
 function hostUnreachable(): HttpError {
@@ -136,11 +171,36 @@ function proxyLoop(): HttpError {
   };
 }
 
+/**
+ * What the hop settled as.
+ *
+ * `owner_declared_no_store` is the one outcome that is not an answer to the client: the owner
+ * replied, over an authenticated connection, that it holds no run store. See `DECLINED_BY_OWNER`.
+ */
+export type RunsProxyOutcome = 'served' | 'owner_declared_no_store';
+
+/**
+ * The owner's own words for "I am not a store owner". A `503` carrying this reason is a STATEMENT,
+ * not a failure: `runs.ts` sends it when the process has no store to resolve at all.
+ *
+ * It is the only upstream response that does not become the client's response, and the distinction
+ * from the unreachable branch is exactly the one A-70-1 turns on — a refused connect cannot tell
+ * "dead" from "busy", but this is a live, authenticated process telling us what it is.
+ */
+const DECLINED_BY_OWNER = { status: 503, reason: 'store_unavailable' } as const;
+/** The declining body is a small error envelope; anything larger is not one and is relayed. */
+const DECLINE_BODY_CAP_BYTES = 8 * 1024;
+
 export interface RunsProxyOptions {
   target: { endpoint: string; token: string };
   /** Path AND query exactly as they arrived here — the owner parses the same route we did. */
   path: string;
   method: string;
+  /**
+   * A pre-read request body to send instead of piping `req`. Set for `POST /v1/runs`, because the
+   * request stream can only be consumed once and the fallback below needs to create the run itself.
+   */
+  body?: Buffer;
   /**
    * The SSE tail. A stream has no body deadline (a healthy tail is silent for minutes) and the
    * socket timeouts on both sides are cleared, which is the same exemption `runs.ts` takes for the
@@ -154,16 +214,17 @@ export interface RunsProxyOptions {
  * Pipe one `/v1/runs*` request to the live owner and its response back, unchanged.
  *
  * Resolves when the exchange is over — for a stream, that is when the stream dies. The events route
- * runs outside the router's concurrency slot for exactly that reason.
+ * runs outside the router's concurrency slot for exactly that reason. Resolves
+ * `owner_declared_no_store` instead, having written nothing, when the owner says it holds no store.
  */
 export function proxyRunsRequest(
   req: IncomingMessage,
   res: ServerResponse,
   opts: RunsProxyOptions,
-): Promise<void> {
+): Promise<RunsProxyOutcome> {
   if (req.headers[RUNS_PROXY_HOP_HEADER] !== undefined) {
     opts.sendError(proxyLoop());
-    return Promise.resolve();
+    return Promise.resolve('served');
   }
 
   let target: URL;
@@ -172,7 +233,7 @@ export function proxyRunsRequest(
   } catch {
     log.error('studio handle endpoint is not a usable URL', { endpoint: opts.target.endpoint });
     opts.sendError(hostUnreachable());
-    return Promise.resolve();
+    return Promise.resolve('served');
   }
 
   const headers: OutgoingHttpHeaders = {
@@ -183,18 +244,21 @@ export function proxyRunsRequest(
     const value = req.headers[name];
     if (value !== undefined) headers[name] = value;
   }
+  // A re-serialized body is rarely byte-identical to the one that arrived, so the client's own
+  // content-length would describe a body we are not sending.
+  if (opts.body) headers['content-length'] = opts.body.length;
 
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
 
-  return new Promise<void>((resolve) => {
+  return new Promise<RunsProxyOutcome>((resolve) => {
     let settled = false;
     /** Cleared here rather than only on the paths that notice: an aborted tail takes none of them. */
     let headerTimer: NodeJS.Timeout | undefined;
-    const finish = (): void => {
+    const finish = (outcome: RunsProxyOutcome = 'served'): void => {
       if (settled) return;
       settled = true;
       if (headerTimer) clearTimeout(headerTimer);
-      resolve();
+      resolve(outcome);
     };
 
     let upstream: ClientRequest;
@@ -272,12 +336,38 @@ export function proxyRunsRequest(
         return;
       }
 
-      const out: OutgoingHttpHeaders = {};
-      for (const [name, value] of Object.entries(upstreamRes.headers)) {
-        if (value === undefined || HOP_BY_HOP.has(name.toLowerCase())) continue;
-        out[name] = value;
+      // The one response that is not relayed. Buffered rather than piped because it has to be READ
+      // before anything is written to the client — once a status is on the wire the fallback is
+      // impossible. Bounded, and only ever entered on a 503.
+      if (upstreamRes.statusCode === DECLINED_BY_OWNER.status && !res.headersSent) {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        let overflow = false;
+        upstreamRes.on('data', (c: Buffer) => {
+          size += c.length;
+          if (size > DECLINE_BODY_CAP_BYTES) { overflow = true; return; }
+          chunks.push(c);
+        });
+        upstreamRes.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          let reason: unknown;
+          try { reason = (JSON.parse(text) as { error_reason?: unknown }).error_reason; } catch { /* not an envelope */ }
+          if (!overflow && reason === DECLINED_BY_OWNER.reason) {
+            log.debug('run-store owner declares it holds no store; serving in-process', { endpoint: opts.target.endpoint });
+            finish('owner_declared_no_store');
+            return;
+          }
+          // Some other 503 — a real "temporarily unavailable" from the owner. Relay it as its own.
+          if (!res.headersSent) {
+            res.writeHead(503, relayHeaders(upstreamRes));
+            res.end(text);
+          }
+          finish();
+        });
+        return;
       }
-      res.writeHead(upstreamRes.statusCode ?? 502, out);
+
+      res.writeHead(upstreamRes.statusCode ?? 502, relayHeaders(upstreamRes));
       // Without this the first frames sit in Node's buffer until enough body accumulates, which on a
       // tail that emits one event a minute is indistinguishable from a stalled stream.
       res.flushHeaders?.();
@@ -307,8 +397,15 @@ export function proxyRunsRequest(
       upstreamRes.pipe(res);
     });
 
-    // The request body streams too — a `POST /v1/runs` is small, but reading it here would mean
-    // buffering, re-serializing, and owning a second body cap that could disagree with the owner's.
-    req.pipe(upstream);
+    // Never `req.pipe(upstream)`. Node auto-destroys a stream once it ends, so piping a bodyless GET
+    // leaves `req.destroyed` true — and the local handler the no-store fallback hands off to reads
+    // exactly that flag to detect a client that gave up, so it would end the response having written
+    // no headers at all. Measured: it silently broke the fallback on the SSE tail.
+    //
+    // Nothing is lost. `/v1/runs*` allows POST on the collection only, and that is precisely the
+    // route whose body the caller pre-reads, so a proxied request either carries `body` or carries
+    // no body at all.
+    if (opts.body) upstream.end(opts.body);
+    else upstream.end();
   });
 }
