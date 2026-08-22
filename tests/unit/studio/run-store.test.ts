@@ -46,6 +46,42 @@ afterEach(() => {
 
 const opts = () => ({ dataDir: dir });
 
+/**
+ * A handle whose event INSERT fails the way a full disk does — the only way to force the window
+ * between the run row and its birth event deterministically. A SIGKILL cannot be aimed at it.
+ *
+ * Everything else forwards to the real database, including `transaction`, so the rollback under
+ * test is SQLite's own and not the proxy's.
+ */
+function failEventInsert(real: Database.Database): Database.Database {
+  const forward = (target: Database.Database, prop: string | symbol): unknown => {
+    const value = Reflect.get(target, prop) as unknown;
+    return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+  };
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop !== 'prepare') return forward(target, prop);
+      return (sql: string) => {
+        const stmt = target.prepare(sql);
+        if (!/INSERT INTO studio_run_events/i.test(sql)) return stmt;
+        return new Proxy(stmt, {
+          get(s, p) {
+            if (p !== 'run') {
+              const value = Reflect.get(s, p) as unknown;
+              return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(s) : value;
+            }
+            return () => {
+              const err: Error & { code?: string } = new Error('database or disk is full');
+              err.code = 'SQLITE_FULL';
+              throw err;
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
 describe('run-store — short ids (§2)', () => {
   it('mints ids only from the read-aloud alphabet, at the spec length', () => {
     for (let i = 0; i < 200; i++) {
@@ -125,6 +161,33 @@ describe('run-store — create (§1)', () => {
 
   it('refuses a driver outside the law-3 vocabulary', () => {
     expect(() => createRun(db, { task: 't', driver: { kind: 'robot' } as never }, opts())).toThrow(/driver/i);
+  });
+
+  /**
+   * WHY: law 1 says the event log is the single source of truth, so a `studio_runs` row whose
+   * `run.created` never landed is a fact the log does not contain — and it is visible, because
+   * `listRuns` reads the row directly. The mint and the birth event have to commit together or not
+   * at all; otherwise a crash between them leaves an orphan running at last_seq 0, and the caller's
+   * retry mints a SECOND run for one task.
+   */
+  it('leaves no run row behind when the birth event cannot be written', () => {
+    const failing = failEventInsert(db);
+    expect(() => createRun(failing, { task: 'find a monitor' }, { ...opts(), mintId: () => 'aaaa' }))
+      .toThrow(/disk is full/i);
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_runs').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 0 });
+    // The orphan's whole cost was that a surface could see it. Both surfaces stay clean.
+    expect(listRuns(db).runs).toEqual([]);
+    expect(runExists(db, 'aaaa')).toBe(false);
+  });
+
+  it('still mints a fresh id on the retry after a failed create — no half-run to collide with', () => {
+    const failing = failEventInsert(db);
+    expect(() => createRun(failing, { task: 't' }, { ...opts(), mintId: () => 'aaaa' })).toThrow();
+    const run = createRun(db, { task: 't' }, { ...opts(), mintId: () => 'aaaa' });
+    expect(run.id).toBe('aaaa');
+    expect(run.lastSeq).toBe(1);
   });
 });
 

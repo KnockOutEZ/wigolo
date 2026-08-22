@@ -416,6 +416,12 @@ function readEvents(db: Database.Database, runId: string, since = 0, limit?: num
 /**
  * Mint an id, try the INSERT, and let the primary key adjudicate. Racing writers are settled by the
  * same rule as a random collision — there is no read-then-write window to lose.
+ *
+ * The mint and the birth event share ONE transaction. Two of them would leave a window in which a
+ * crash, a full disk or a kill produces a `studio_runs` row with `last_seq = 0` and no events — a
+ * run the log does not contain, which law 1 forbids and `listRuns` (which reads the row directly)
+ * would show. The caller's retry would then mint a second run for the same task. Nested here means
+ * a SAVEPOINT when a caller already holds a transaction, which is what makes this composable.
  */
 export function createRun(db: Database.Database, input: CreateRunInput, opts: RunStoreOptions = {}): Run {
   const task = assertTask(input.task);
@@ -425,27 +431,36 @@ export function createRun(db: Database.Database, input: CreateRunInput, opts: Ru
   const createdAt = now.toISOString();
   const mint = opts.mintId ?? mintRunId;
 
-  const insertRun = db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
-  let id: string | undefined;
-  for (let length = RUN_ID_MIN_LENGTH; length <= MAX_ID_LENGTH && id === undefined; length++) {
-    for (let attempt = 0; attempt < MINT_ATTEMPTS_PER_LENGTH; attempt++) {
-      const candidate = normalizeRunId(mint(length));
-      try {
-        insertRun.run(candidate, task, spaceId, createdAt, 'running', createdAt);
-        id = candidate;
-        break;
-      } catch (err) {
-        if (!isUniqueViolation(err)) throw err;
+  const mintAndBirth = db.transaction((): { id: string; created: RunEvent } => {
+    const insertRun = db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
+    let id: string | undefined;
+    for (let length = RUN_ID_MIN_LENGTH; length <= MAX_ID_LENGTH && id === undefined; length++) {
+      for (let attempt = 0; attempt < MINT_ATTEMPTS_PER_LENGTH; attempt++) {
+        const candidate = normalizeRunId(mint(length));
+        try {
+          // A statement-level constraint failure aborts the statement, not the transaction, so the
+          // collision retry survives being wrapped.
+          insertRun.run(candidate, task, spaceId, createdAt, 'running', createdAt);
+          id = candidate;
+          break;
+        } catch (err) {
+          if (!isUniqueViolation(err)) throw err;
+        }
       }
     }
-  }
-  if (id === undefined) throw new Error('could not mint a unique run id');
+    if (id === undefined) throw new Error('could not mint a unique run id');
 
-  const created = appendWithinTransaction(db, id, {
-    actor: { kind: 'daemon' },
-    type: 'run.created',
-    payload: { task, spaceId, driver, ...(input.sessionId ? { sessionId: input.sessionId } : {}) },
-  }, now);
+    const created = appendWithinTransaction(db, id, {
+      actor: { kind: 'daemon' },
+      type: 'run.created',
+      payload: { task, spaceId, driver, ...(input.sessionId ? { sessionId: input.sessionId } : {}) },
+    }, now);
+    return { id, created };
+  });
+
+  const { id, created } = mintAndBirth.immediate();
+  // Both side effects are post-commit by contract — a disk projection or a live-tail listener must
+  // never be able to unwind, or observe, a write that is still in flight.
   projectToDisk(id, created, opts.dataDir);
   opts.onEvent?.(id, created);
 
