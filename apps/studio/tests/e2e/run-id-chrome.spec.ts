@@ -14,9 +14,6 @@ import { readHandle, DaemonProxy, DaemonHttpServer } from 'wigolo/studio';
 const RUN = !!process.env.RUN_STUDIO_E2E;
 const APP_MAIN = join(import.meta.dirname, '../../out/main/index.js');
 
-interface ToolResult { content: Array<{ type: string; text: string }>; isError: boolean }
-const toolBody = (r: unknown) => JSON.parse((r as ToolResult).content[0].text) as Record<string, unknown>;
-
 /**
  * The run id in the window chrome is the SAME STRING the REST surface reports (law 8's spirit — one
  * shared address space; marks arrive in SD4, the run id starts now).
