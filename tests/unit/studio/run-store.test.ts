@@ -11,6 +11,7 @@ import {
   getRun,
   listRuns,
   eventsSince,
+  runExists,
   projectRun,
   mintRunId,
   normalizeRunId,
@@ -346,6 +347,59 @@ describe('run-store — files on disk (law 11, A-43-3)', () => {
     const unwritable = join(dir, 'no-such-root', '\0bad');
     expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'x' } }, { dataDir: unwritable })).not.toThrow();
     expect(eventsSince(db, run.id, 0)).toHaveLength(2);
+  });
+});
+
+describe('run-store — existence probe (§5.5 precondition)', () => {
+  it('answers existence without reading the log the paged replay exists to avoid', () => {
+    const run = createRun(db, { task: 'exists' }, { dataDir: dir });
+    for (let i = 0; i < 40; i++) {
+      appendEvent(db, run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: `t${i}` } }, { dataDir: dir });
+    }
+
+    expect(runExists(db, run.id)).toBe(true);
+    expect(runExists(db, run.id.toUpperCase())).toBe(true);
+    expect(runExists(db, 'nope')).toBe(false);
+
+    // The point is not the boolean — `getRun` already returns one. It is that asking costs a single
+    // indexed row rather than the whole event log, which is what the SSE route's 404 check needs.
+    let readRows = 0;
+    const realPrepare = db.prepare.bind(db);
+    const spy = ((sql: string) => {
+      if (/FROM studio_run_events/i.test(sql)) readRows++;
+      return realPrepare(sql);
+    }) as typeof db.prepare;
+    Object.defineProperty(db, 'prepare', { value: spy, configurable: true });
+    try {
+      runExists(db, run.id);
+      expect(readRows).toBe(0);
+      getRun(db, run.id);
+      expect(readRows).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(db, 'prepare', { value: realPrepare, configurable: true });
+    }
+  });
+});
+
+describe('run-store — the event-type grammar is what keeps the SSE wire safe', () => {
+  it('refuses an event type that could forge an SSE frame', () => {
+    const run = createRun(db, { task: 'grammar' }, { dataDir: dir });
+    // The SSE writer interpolates `type` straight into an `event:` line. A CR or LF here would let
+    // an event forge `data:`/`event:` fields — so the store, not the writer, is the fence.
+    const forgeries = [
+      'tab.attached\nevent: run.completed',
+      'tab.attached\rdata: {}',
+      'tab.attached\n\ndata: {"seq":999}',
+      'tab attached',
+      'Tab.Attached',
+    ];
+    for (const type of forgeries) {
+      expect(() => appendEvent(db, run.id, { actor: { kind: 'daemon' }, type, payload: {} }, { dataDir: dir }))
+        .toThrow(/invalid event type/);
+    }
+    // And the legal shape still appends, so the guard is not simply refusing everything.
+    expect(() => appendEvent(db, run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: {} }, { dataDir: dir }))
+      .not.toThrow();
   });
 });
 

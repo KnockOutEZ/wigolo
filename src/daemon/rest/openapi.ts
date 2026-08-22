@@ -19,6 +19,7 @@ import {
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
 import { MAX_TASK_CHARS, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '../../studio/run-store.js';
+import { MAX_SPACE_ID_CHARS, MAX_CLIENT_FIELD_CHARS } from './runs.js';
 import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -368,7 +369,10 @@ function driverSchema(): object {
       kind: { type: 'string', enum: ['cli', 'sdk', 'api', 'studio', 'human'], default: 'api' },
       client: {
         type: 'object',
-        properties: { name: { type: 'string' }, version: { type: 'string' } },
+        properties: {
+          name: { type: 'string', maxLength: MAX_CLIENT_FIELD_CHARS },
+          version: { type: 'string', maxLength: MAX_CLIENT_FIELD_CHARS },
+        },
         required: ['name', 'version'],
       },
     },
@@ -424,7 +428,7 @@ function runPaths(): Record<string, object> {
               type: 'object',
               properties: {
                 task: { type: 'string', minLength: 1, maxLength: MAX_TASK_CHARS },
-                spaceId: { type: 'string', default: 'default' },
+                spaceId: { type: 'string', default: 'default', maxLength: MAX_SPACE_ID_CHARS },
                 driver: driverSchema(),
               },
               required: ['task'],

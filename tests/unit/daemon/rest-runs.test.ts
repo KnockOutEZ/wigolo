@@ -119,6 +119,89 @@ describe('resume point resolution', () => {
   });
 });
 
+describe('a client that aborts before the stream is set up', () => {
+  let dir: string;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-rest-runs-abort-'));
+    _resetMigrationGuard();
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, { vecLoaded: false });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * The handler reaches its close handlers across two awaits — the router's dynamic import of this
+   * module and the store resolve. A client that gave up during either has ALREADY emitted 'close',
+   * so those handlers never fire, and `res.write` on a destroyed response emits no 'error' either.
+   *
+   * Every lost race used to be permanent: a leaked connection slot (32 of them and the route 429s
+   * for the life of the process), a bus listener holding a dead response, and a self-re-arming
+   * timer. This drives exactly that shape.
+   */
+  it('leaks no connection slot, no listener and no timer', async () => {
+    const { handleRunsRequest, openRunStreamCount } = await import('../../../src/daemon/rest/runs.js');
+    const run = createRunWithTail(db, { task: 'abort me' }, { dataDir: dir });
+
+    const before = openRunStreamCount();
+    const writes: string[] = [];
+    // A request and response that are already dead by the time the handler gets to them, and whose
+    // 'close' fired while the handler was still awaiting.
+    const req = {
+      headers: {},
+      destroyed: true,
+      socket: { setTimeout: () => {} },
+      on: () => {},
+    } as unknown as import('node:http').IncomingMessage;
+    let ended = false;
+    const res = {
+      destroyed: true,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => { writes.push(chunk); return true; },
+      end: () => { ended = true; },
+      on: () => {},
+      off: () => {},
+    } as unknown as import('node:http').ServerResponse;
+
+    await handleRunsRequest(req, res, {
+      pathname: `/v1/runs/${run.id}/events`,
+      method: 'GET',
+      url: new URL(`http://127.0.0.1/v1/runs/${run.id}/events`),
+      respond: () => {},
+      sendError: () => {},
+      openDb: () => db,
+    });
+
+    expect(openRunStreamCount()).toBe(before);
+    expect(runEventListenerCount(run.id)).toBe(0);
+    expect(ended).toBe(true);
+
+    // Nothing further reaches the dead socket either: appending must not write to it.
+    const writesAfterSetup = writes.length;
+    appendRunEventWithTail(db, run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: {} }, { dataDir: dir });
+    expect(writes.length).toBe(writesAfterSetup);
+  });
+});
+
+describe('input bounds on create', () => {
+  it('caps the fields that get persisted twice, not just the one the spec named', async () => {
+    const { MAX_SPACE_ID_CHARS, MAX_CLIENT_FIELD_CHARS } = await import('../../../src/daemon/rest/runs.js');
+    // `task` had a documented cap; `spaceId` and the client strings did not, and all three are
+    // written into the event log AND the run's events.jsonl. An uncapped one is a disk-fill
+    // primitive bounded only by the 1 MiB body cap.
+    expect(MAX_SPACE_ID_CHARS).toBeLessThanOrEqual(1000);
+    expect(MAX_CLIENT_FIELD_CHARS).toBeLessThanOrEqual(1000);
+  });
+});
+
 describe('the live tail bus', () => {
   let dir: string;
   let db: Database.Database;

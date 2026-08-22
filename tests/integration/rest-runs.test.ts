@@ -249,6 +249,27 @@ describe('REST /v1/runs — create, list, fetch', () => {
     expect(missingStream.body).toMatchObject({ ok: false, error_reason: 'not_found' });
   });
 
+  it('caps spaceId and the client strings, which are persisted to the log AND to disk', async () => {
+    const huge = 'x'.repeat(5000);
+    const bigSpace = await post('/v1/runs', { task: 'bounded', spaceId: huge });
+    expect(bigSpace.status).toBe(400);
+    expect(bigSpace.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+
+    const bigClient = await post('/v1/runs', { task: 'bounded', driver: { kind: 'api', client: { name: huge, version: '1' } } });
+    expect(bigClient.status).toBe(400);
+    expect(bigClient.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+  });
+
+  it('treats a malformed percent-escape in the id as a bad id, not a server fault', async () => {
+    // `new URL` does not decode `pathname`, so a lone `%` reaches decodeURIComponent and throws.
+    // Reporting a caller's typo as a 500 also makes it an error-log amplifier.
+    for (const path of ['/v1/runs/%', '/v1/runs/%/events', '/v1/runs/%E0%A4%A']) {
+      const r = await request({ path });
+      expect(r.status).toBe(404);
+      expect(r.body).toMatchObject({ ok: false, error_reason: 'not_found' });
+    }
+  });
+
   it('refuses a mutation verb the surface does not offer', async () => {
     const r = await request({ method: 'DELETE', path: '/v1/runs' });
     expect(r.status).toBe(405);

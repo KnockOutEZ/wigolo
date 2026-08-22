@@ -27,6 +27,7 @@ import {
 import { bodyCapFor, readJsonBodyCapped, BodyTooLargeError } from './limits.js';
 import {
   getRun,
+  runExists,
   listRuns,
   eventsSince,
   normalizeRunId,
@@ -47,6 +48,10 @@ export const RUNS_ROUTE_LABEL = 'runs';
 
 const RUN_STATUSES = new Set<string>(['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled']);
 const DRIVER_KINDS = new Set<string>(['cli', 'sdk', 'api', 'studio', 'human']);
+
+/** Persisted into the log AND onto disk, so both need a bound the 1 MiB body cap does not give. */
+export const MAX_SPACE_ID_CHARS = 200;
+export const MAX_CLIENT_FIELD_CHARS = 200;
 
 /** SSE frames are long-lived sockets, so they are capped separately from the request slot pool. */
 const DEFAULT_MAX_SSE_CONNECTIONS = 32;
@@ -192,9 +197,19 @@ export async function handleRunsRequest(
   }
 }
 
-/** Store-level validation errors are the caller's fault, not ours — they must not surface as 500s. */
-function invalidInputFrom(err: unknown): HttpError {
-  return invalidInput(err instanceof Error ? err.message : String(err));
+/**
+ * Every caller-supplied field is validated before `createRun` runs, so a throw from the store at
+ * that point is a SERVER condition — a full or locked database, or an exhausted id space. Mapping
+ * those to 400 would blame the caller for something they cannot fix and would put internal SQLite
+ * strings on the wire. Anything the store rejects that we somehow missed is still a 400.
+ */
+const STORE_VALIDATION_MESSAGES = [/^task /, /^unknown driver/, /^unknown actor/, /^payload must be/, /^invalid event type/];
+
+function createFailure(err: unknown): HttpError {
+  const message = err instanceof Error ? err.message : String(err);
+  if (STORE_VALIDATION_MESSAGES.some((re) => re.test(message))) return invalidInput(message);
+  log.error('run create failed', { error: message });
+  return internalError();
 }
 
 async function handleCreate(req: IncomingMessage, opts: RunsRequestOptions, db: Database.Database): Promise<void> {
@@ -223,8 +238,11 @@ async function handleCreate(req: IncomingMessage, opts: RunsRequestOptions, db: 
     return;
   }
 
-  if (input.spaceId !== undefined && typeof input.spaceId !== 'string') {
-    opts.sendError(invalidInput('Field "spaceId" must be a string.'));
+  // Every field here is persisted twice — into the event log and into the run's `events.jsonl` — so
+  // an uncapped string is a disk-fill primitive, not a cosmetic gap. The body cap alone would let
+  // one request write a megabyte of `spaceId`.
+  if (input.spaceId !== undefined && (typeof input.spaceId !== 'string' || input.spaceId.length > MAX_SPACE_ID_CHARS)) {
+    opts.sendError(invalidInput(`Field "spaceId" must be a string of at most ${MAX_SPACE_ID_CHARS} characters.`));
     return;
   }
 
@@ -246,7 +264,7 @@ async function handleCreate(req: IncomingMessage, opts: RunsRequestOptions, db: 
     });
     opts.respond(201, { ok: true, run });
   } catch (err) {
-    opts.sendError(invalidInputFrom(err));
+    opts.sendError(createFailure(err));
   }
 }
 
@@ -264,6 +282,9 @@ function parseDriver(raw: unknown): { ok: true; driver: Driver } | { ok: false; 
     if (client === null || typeof client !== 'object' || Array.isArray(client)
       || typeof client.name !== 'string' || typeof client.version !== 'string') {
       return { ok: false, detail: 'Field "driver.client" must be { name: string, version: string }.' };
+    }
+    if (client.name.length > MAX_CLIENT_FIELD_CHARS || client.version.length > MAX_CLIENT_FIELD_CHARS) {
+      return { ok: false, detail: `Fields "driver.client.name" and "driver.client.version" are capped at ${MAX_CLIENT_FIELD_CHARS} characters.` };
     }
     driver.client = { name: client.name, version: client.version };
   }
@@ -312,8 +333,22 @@ function handleList(opts: RunsRequestOptions, db: Database.Database): void {
   });
 }
 
+/**
+ * `new URL` does not percent-decode `pathname`, so a malformed escape reaches us intact and
+ * `decodeURIComponent` throws a `URIError` on it. That is a caller's bad id, not a server fault —
+ * reporting it as a 500 would also make an un-authenticated typo an error-log amplifier.
+ */
+function decodeRunId(rawId: string): string | null {
+  try {
+    return decodeURIComponent(rawId);
+  } catch {
+    return null;
+  }
+}
+
 function handleGet(opts: RunsRequestOptions, db: Database.Database, rawId: string): void {
-  const run = getRun(db, decodeURIComponent(rawId));
+  const decoded = decodeRunId(rawId);
+  const run = decoded === null ? undefined : getRun(db, decoded);
   if (!run) {
     opts.sendError(runNotFound());
     return;
@@ -356,6 +391,22 @@ export function resolveSince(
  *
  * Together they are why a reconnecting client gets each seq exactly once with no coordination.
  */
+/**
+ * Wait for the socket to accept more, or for the connection to die — whichever comes first.
+ * Waiting on `'drain'` alone would hang the replay forever on a client that vanished mid-page.
+ */
+function waitForDrain(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      res.off('drain', done);
+      res.off('close', done);
+      resolve();
+    };
+    res.on('drain', done);
+    res.on('close', done);
+  });
+}
+
 export interface OrderedEmitter {
   emit(event: RunEvent): void;
   offer(event: RunEvent): void;
@@ -397,8 +448,15 @@ async function handleEvents(
   db: Database.Database,
   rawId: string,
 ): Promise<void> {
-  const id = normalizeRunId(decodeURIComponent(rawId));
-  if (!getRun(db, id)) {
+  const decoded = decodeRunId(rawId);
+  if (decoded === null) {
+    opts.sendError(runNotFound());
+    return;
+  }
+  const id = normalizeRunId(decoded);
+  // Existence only — `getRun` would project the run, reading the whole log synchronously, which is
+  // exactly what the paged replay below exists to avoid.
+  if (!runExists(db, id)) {
     opts.sendError(runNotFound());
     return;
   }
@@ -422,23 +480,29 @@ async function handleEvents(
 
   openSseConnections++;
 
-  let heartbeat: NodeJS.Timeout | undefined;
   let closed = false;
+  let lastWrite = Date.now();
+  let needsDrain = false;
 
-  const armHeartbeat = (): void => {
-    if (heartbeat) clearTimeout(heartbeat);
-    heartbeat = setTimeout(() => {
-      if (closed) return;
-      res.write(': ping\n\n');
-      armHeartbeat();
-    }, SSE_HEARTBEAT_MS);
-    heartbeat.unref?.();
-  };
+  // One repeating timer rather than a clear+set per event: a long replay would otherwise churn two
+  // timer operations per envelope. The heartbeat only has to notice SILENCE, which a timestamp
+  // answers in O(1).
+  const heartbeat = setInterval(() => {
+    if (closed) return;
+    if (Date.now() - lastWrite < SSE_HEARTBEAT_MS) return;
+    res.write(': ping\n\n');
+    lastWrite = Date.now();
+  }, SSE_HEARTBEAT_MS);
+  heartbeat.unref?.();
 
   const emitter = createOrderedEmitter(resume.since, (event) => {
     if (closed) return;
-    res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    armHeartbeat();
+    // Wire safety rests on the store's event-type grammar (`EVENT_TYPE_GRAMMAR`, run-store.ts):
+    // `type` cannot contain CR or LF, so it cannot forge an SSE field line here. `data` is
+    // JSON.stringify, which escapes both. Relax that grammar and this interpolation becomes an
+    // injection point — `refuses an event type that could forge an SSE frame` pins it.
+    needsDrain = !res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    lastWrite = Date.now();
   });
 
   // Step 1 — subscribe BEFORE reading the log, so nothing appended during the replay is missed.
@@ -448,12 +512,23 @@ async function handleEvents(
     if (closed) return;
     closed = true;
     unsubscribe();
-    if (heartbeat) clearTimeout(heartbeat);
+    clearInterval(heartbeat);
     openSseConnections--;
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
   res.on('error', cleanup);
+
+  // The handler reached here across two awaits (the router's dynamic import and the store resolve).
+  // A client that aborted during either one has ALREADY emitted 'close', so the listeners above will
+  // never fire — and `res.write` on a destroyed response emits no 'error' either, so nothing else
+  // would notice. Left unhandled, each lost race permanently leaks a connection slot (the route
+  // 429s forever once 32 accumulate), a bus listener holding a dead response, and a live timer.
+  if (req.destroyed || res.destroyed) {
+    cleanup();
+    res.end();
+    return;
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -464,7 +539,7 @@ async function handleEvents(
   });
   res.flushHeaders?.();
   res.write(`retry: ${SSE_RETRY_MS}\n\n`);
-  armHeartbeat();
+  lastWrite = Date.now();
 
   try {
     // Step 2 — the durable replay, a page at a time. Nothing is dropped here: the backing log is
@@ -478,6 +553,14 @@ async function handleEvents(
       if (page.length === 0) break;
       for (const event of page) emitter.emit(event);
       cursor = page[page.length - 1].seq;
+      // Replay is the only unbounded producer on this stream — the live path is paced by the run
+      // itself. A client that opens a tail and stops reading would otherwise pull the whole log into
+      // the daemon's heap, so wait for the socket to drain instead of racing ahead of it.
+      if (needsDrain) {
+        await waitForDrain(res);
+        needsDrain = false;
+      }
+      if (closed) return;
       if (page.length < pageSize) break;
       await new Promise<void>((resolve) => setImmediate(resolve));
     }

@@ -319,6 +319,16 @@ export function getRun(db: Database.Database, runId: string): Run | undefined {
   return projectRun(toFacts(row), readEvents(db, id));
 }
 
+/**
+ * Does this run exist? Deliberately NOT `getRun(...) !== undefined`: that projects the run, which
+ * reads its entire event log. A caller that only needs existence — the SSE route's 404 check, ahead
+ * of a replay that is careful to page — must not pay an unbounded synchronous read to ask.
+ */
+export function runExists(db: Database.Database, runId: string): boolean {
+  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(normalizeRunId(runId));
+  return row !== undefined;
+}
+
 export function eventsSince(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
   return readEvents(db, normalizeRunId(runId), since, limit);
 }
