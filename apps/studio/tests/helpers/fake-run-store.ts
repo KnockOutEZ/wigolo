@@ -1,5 +1,5 @@
 import type { CreateRunInput, ListRunsResult, Run, RunEvent, RunEventInput } from 'wigolo/studio';
-import type { RunStoreClient } from '../../src/main/run-view-model';
+import type { RunLogEntry, RunStoreClient } from '../../src/main/run-view-model';
 
 /**
  * A faithful in-memory stand-in for the daemon run store: it assigns `seq` and `ts` (callers never
@@ -15,6 +15,12 @@ export class FakeRunStore implements RunStoreClient {
   private n = 0;
   /** Every append that reached the store, so a test can assert what was NOT written. */
   readonly appends: Array<{ runId: string; type: string; payload: Record<string, unknown> }> = [];
+  /**
+   * Every read that reached the store, in order. The broker is one stdio pipe, so a read here is a
+   * round-trip there — which makes this the instrument for "how much does boot cost", a claim no
+   * assertion about the resulting projection can see.
+   */
+  readonly reads: string[] = [];
 
   async createRun(input: CreateRunInput): Promise<Run> {
     const id = `run${++this.n}`;
@@ -55,6 +61,7 @@ export class FakeRunStore implements RunStoreClient {
   }
 
   async getRun(runId: string): Promise<Run | undefined> {
+    this.reads.push('getRun');
     const f = this.facts.get(runId);
     if (!f) return undefined;
     const events = this.log.get(runId)!;
@@ -67,13 +74,33 @@ export class FakeRunStore implements RunStoreClient {
   }
 
   async listRuns(): Promise<ListRunsResult> {
+    this.reads.push('listRuns');
     const runs = await Promise.all([...this.facts.keys()].map((id) => this.getRun(id)));
     return { runs: runs.filter((r): r is Run => r !== undefined) };
   }
 
+  /**
+   * The combined boot read, as the broker serves it: facts and events together, one round-trip for the
+   * page. Deliberately does NOT project — that is what makes it cheaper than `listRuns` + a read per run.
+   */
+  async listRunLogs(): Promise<RunLogEntry[]> {
+    this.reads.push('listRunLogs');
+    return [...this.facts.entries()].map(([id, f]) => ({
+      facts: { id, task: f.task, spaceId: f.spaceId, createdAt: f.createdAt },
+      events: [...(this.log.get(id) ?? [])],
+    }));
+  }
+
   async eventsSince(runId: string, since = 0, limit?: number): Promise<RunEvent[]> {
+    this.reads.push('eventsSince');
     const page = (this.log.get(runId) ?? []).filter((e) => e.seq > since);
     return limit === undefined ? page : page.slice(0, limit);
+  }
+
+  /** A key probe: it never touches the log, which is the whole claim `exists` makes. */
+  async runExists(runId: string): Promise<boolean> {
+    this.reads.push('runExists');
+    return this.facts.has(runId);
   }
 
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void {

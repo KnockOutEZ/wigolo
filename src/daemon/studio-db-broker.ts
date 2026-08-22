@@ -37,6 +37,7 @@ import {
   type Run,
   type RunEvent,
   type RunEventInput,
+  type StoredRunFacts,
 } from '../studio/run-store.js';
 import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
 import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
@@ -170,6 +171,15 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       appendEvent(deps.db, p.runId, p.event, { onEvent: deps.onRunEvent }),
     runGet: async (p: { runId: string }): Promise<Run | undefined> => getRun(deps.db, p.runId),
     runList: async (p: ListRunsOptions = {}): Promise<ListRunsResult> => listRuns(deps.db, p),
+    // The host's boot page in ONE round-trip. The host projects runs itself (it holds the same pure
+    // `projectRun`), so it needs facts+events and not the `Run`s `runList` serializes — asking for both
+    // sent every projection event across the pipe twice, once inside a projection the host recomputes.
+    // Same page `runList` would return, so paging/filters keep one definition.
+    runListLogs: async (p: ListRunsOptions = {}): Promise<Array<{ facts: StoredRunFacts; events: RunEvent[] }>> =>
+      listRuns(deps.db, p).runs.map((run) => ({
+        facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt },
+        events: eventsSince(deps.db, run.id, 0),
+      })),
     runEventsSince: async (p: { runId: string; since?: number; limit?: number }): Promise<RunEvent[]> =>
       eventsSince(deps.db, p.runId, p.since ?? 0, p.limit),
   };

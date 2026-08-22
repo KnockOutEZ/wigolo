@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { RunViewModel, TabOwnedError } from '../../src/main/run-view-model';
+import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
 describe('RunViewModel — tab↔run ownership is the run log, not registry state', () => {
@@ -148,10 +148,10 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
 
     // The listing is a snapshot taken BEFORE the newcomer exists, and it lands after the newcomer is
     // registered — the exact interleaving a boot-time hydrate races a first `studio_open` into.
-    const stale = await slow.listRuns();
+    const stale = await slow.listRunLogs();
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
-    slow.listRuns = async () => { await gate; return stale; };
+    slow.listRunLogs = async () => { await gate; return stale; };
 
     const inFlight = vm2.hydrate();
     const newcomer = await vm2.createRun({ task: 'born mid-replay' });
@@ -238,5 +238,151 @@ describe('RunViewModel — a projection, with nothing of its own to lose', () =>
     expect(store.appends.map((x) => x.type)).toEqual(['tab.attached', 'tab.detached', 'run.completed']);
     expect(vm.ownerOf('tab-1')).toBeUndefined();
     expect(vm.list()[0].status).toBe('done');
+  });
+});
+
+/**
+ * F3 — what a finished run costs this process.
+ *
+ * Runs are never deleted and `hydrate` deliberately keeps a run the listing did not name, so every log
+ * this projection ever replicated stayed replicated for the app's lifetime: an agent that ran a hundred
+ * tasks held a hundred full event arrays it could no longer learn anything from. A terminal run's
+ * projection cannot move, and every reader asks for the projection, so the envelopes are droppable —
+ * the rows below pin that the drop happens AND that dropping changes no answer.
+ */
+describe('RunViewModel — a finished run stops costing its log', () => {
+  let store: FakeRunStore;
+  let vm: RunViewModel;
+
+  beforeEach(async () => {
+    store = new FakeRunStore();
+    vm = new RunViewModel(store);
+    await vm.hydrate();
+  });
+
+  it('drops a terminal run’s envelopes and keeps answering out of the projection they produced', async () => {
+    const done = await vm.createRun({ task: 'a long one' });
+    const live = await vm.createRun({ task: 'still going' });
+    await vm.attachTab(done.id, 'tab-done');
+    await vm.attachTab(live.id, 'tab-live');
+    for (let i = 0; i < 200; i++) {
+      await store.appendEvent(done.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    expect(vm.retainedEventCount(done.id)).toBeGreaterThan(200);
+
+    await vm.endRun(done.id, 'completed');
+
+    // The footprint is the projected summary alone — the 200+ envelopes behind it are gone.
+    expect(vm.retainedEventCount(done.id)).toBe(0);
+    // …and every answer that used to come from those envelopes still comes back identical.
+    expect(vm.snapshot(done.id)?.status).toBe('done');
+    expect(vm.snapshot(done.id)?.task).toBe('a long one');
+    expect(vm.snapshot(done.id)?.cost.browserActions).toBe(200);
+    expect(vm.snapshot(done.id)?.tabIds).toEqual([]); // released by endRun, replayed not remembered
+    expect(vm.list().map((r) => ({ id: r.id, status: r.status }))).toEqual([
+      { id: done.id, status: 'done' },
+      { id: live.id, status: 'running' },
+    ]);
+    expect(vm.ownerOf('tab-live')).toBe(live.id);
+    expect(vm.ownerOf('tab-done')).toBeUndefined();
+    // The bound is on FINISHED runs only. A live run that dropped its log could not fold its next event.
+    expect(vm.retainedEventCount(live.id)).toBeGreaterThan(0);
+  });
+
+  it('still names the session of a run whose envelopes it has dropped', async () => {
+    const run = await vm.createRun({ task: 'session-linked', sessionId: 'sess-7' });
+    await vm.endRun(run.id, 'completed');
+
+    expect(vm.retainedEventCount(run.id)).toBe(0);
+    expect(vm.sessionIdOf(run.id)).toBe('sess-7'); // replayed from `run.created` before the drop
+    expect(vm.runForSession('sess-7')).toBe(run.id);
+  });
+
+  // The store's log is append-only and does not close, so an envelope CAN arrive for a run this
+  // projection has already sealed. There is nothing to fold into, so it replays — and re-seals, which
+  // is what keeps the bound a bound rather than a one-shot.
+  it('replays a sealed run rather than losing an envelope that arrives after it ended', async () => {
+    const run = await vm.createRun({ task: 'ended, then spoke' });
+    await vm.endRun(run.id, 'completed');
+    expect(vm.retainedEventCount(run.id)).toBe(0);
+
+    await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 4 } });
+
+    await vi.waitFor(() => expect(vm.snapshot(run.id)?.cost.browserActions).toBe(4));
+    expect(vm.snapshot(run.id)?.status).toBe('done');
+    expect(vm.retainedEventCount(run.id), 'the replay re-sealed instead of re-retaining the log').toBe(0);
+  });
+
+  // Demoting a finished run is the one write this class makes to a sealed run — it is exactly what a
+  // boot reconcile does to a run that ended while it was being watched. The projection has to be
+  // current when the call resolves, or the caller moves a window on a stale answer.
+  it('has the projection current when a demote of a finished run resolves', async () => {
+    const run = await vm.createRun({ task: 'watched, then over' });
+    await vm.setVisibility(run.id, 'visible', 'human', 'tray');
+    await vm.endRun(run.id, 'completed');
+    expect(vm.snapshot(run.id)?.visibility).toBe('visible');
+
+    await expect(vm.setVisibility(run.id, 'hidden', 'system')).resolves.toBe(true);
+
+    expect(vm.snapshot(run.id)?.visibility).toBe('hidden'); // no waitFor: settled, not eventually
+    expect(vm.retainedEventCount(run.id)).toBe(0);
+  });
+});
+
+/**
+ * F4 — what boot costs. The broker is one stdio pipe, so a store read is a round-trip, and hydrate used
+ * to make one listing call plus one awaited read per run, strictly in series. `reads` is the instrument:
+ * no assertion about the resulting projection can tell 1 hop from 51.
+ */
+describe('RunViewModel — boot hydration is one bounded, concurrent read', () => {
+  it('takes the whole boot page in a single round-trip when the store offers the combined read', async () => {
+    const store = new FakeRunStore();
+    for (let i = 0; i < 5; i++) {
+      const run = await store.createRun({ task: `run ${i}` });
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+
+    const vm = new RunViewModel(store);
+    store.reads.length = 0;
+    await vm.hydrate();
+
+    // One hop for five runs — not one listing plus five reads, and not the same events twice.
+    expect(store.reads).toEqual(['listRunLogs']);
+    expect(vm.list().map((r) => r.task)).toEqual(['run 0', 'run 1', 'run 2', 'run 3', 'run 4']);
+    expect(vm.ownerOf('tab-3')).toBe(vm.list()[3].id);
+  });
+
+  it('reads every run at once, not one after another, against a store with no combined read', async () => {
+    const base = new FakeRunStore();
+    for (let i = 0; i < 4; i++) await base.createRun({ task: `run ${i}` });
+
+    let inFlight = 0;
+    let peak = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    // The minimal port: no `listRunLogs`, so hydrate falls back — and the fallback must still not be
+    // a serial chain. Every read parks on one gate, so a serialized hydrate can never reach peak 4.
+    const minimal: RunStoreClient = {
+      createRun: (input) => base.createRun(input),
+      appendEvent: (runId, event) => base.appendEvent(runId, event),
+      getRun: (runId) => base.getRun(runId),
+      listRuns: () => base.listRuns(),
+      eventsSince: async (runId, since, limit) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await gate;
+        inFlight--;
+        return base.eventsSince(runId, since, limit);
+      },
+      onRunEvent: (handler) => base.onRunEvent(handler),
+    };
+
+    const vm = new RunViewModel(minimal);
+    const booting = vm.hydrate();
+    await vi.waitFor(() => expect(peak).toBe(4));
+    release();
+    await booting;
+
+    expect(vm.list().map((r) => r.task).sort()).toEqual(['run 0', 'run 1', 'run 2', 'run 3']);
   });
 });
