@@ -195,15 +195,28 @@ async function fetchWithRedirects(
         if (!resolved.ok) {
           throw new HttpFetchError(resolved.reason, false);
         }
+        // FAIL CLOSED. `guardResolvedHost` reports ok with no addresses when the host did not
+        // resolve, and the old reasoning was that there is then no IP to connect to. That holds
+        // only if both lookups get the same answer. They are two separate queries, so an attacker
+        // who controls the authority can answer the validation query with NXDOMAIN or an empty
+        // set and the connect query with a private address — which would sail through here
+        // unpinned and reinstate the rebinding path this change exists to close.
+        //
+        // Retryable, because at crawl scale a transient resolver blip is far more common than an
+        // attack, and the retry budget is bounded. Flip to `false` for fail-fast on bad hostnames.
+        if (!resolved.addresses?.length) {
+          throw new HttpFetchError(
+            `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
+            true,
+          );
+        }
         // PIN the socket to what we just validated. Without this the connection resolves DNS a
         // second time, and an attacker controlling the resolver can answer with a public IP for
         // the check above and a private one for the connect (DNS rebinding). Pinning removes the
         // second resolution, so there is no window to race. Literal IPs need no pinning — there
         // is no name to re-resolve.
-        if (resolved.addresses?.length) {
-          pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
-          agents.push(pinnedAgent);
-        }
+        pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
+        agents.push(pinnedAgent);
       }
     }
 

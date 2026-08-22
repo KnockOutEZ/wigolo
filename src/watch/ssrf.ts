@@ -425,8 +425,14 @@ function isResolvedLoopback(address: string): boolean {
  * Fetch-time SSRF re-check for the plain fetch/crawl policy. Resolves the host and runs EVERY
  * resolved address back through `guardFetchUrl` (as an `http://<ip>/` literal), so the resolved-IP
  * policy is identical to the literal-IP one (metadata/RFC-1918 blocked, loopback allowed for the
- * local-dev promise). A host that does not resolve is NOT a bypass — there is no IP to connect to,
- * so we fall through (`ok: true`) and let the real fetch surface the natural DNS error.
+ * local-dev promise).
+ *
+ * A host that does not resolve returns `ok: true` with NO `addresses`. That is not an allow —
+ * it means there was nothing to validate, and therefore nothing to pin to. **Callers that go on to
+ * open a connection MUST fail closed in that case.** The lookup done here and the lookup done by
+ * the socket are two separate queries, so an attacker controlling the authority can answer this
+ * one with NXDOMAIN or an empty set and the connect one with a private address; proceeding
+ * unpinned would hand them exactly the rebinding window pinning is meant to remove.
  */
 export async function guardResolvedHost(
   hostname: string,
