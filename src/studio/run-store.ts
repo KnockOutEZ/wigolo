@@ -198,9 +198,9 @@ export function runEventsFile(id: string, dataDir?: string): string {
 
 interface RunRow { id: string; task: string; space_id: string; created_at: string }
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
-interface StatusRow { type: string; payload: string }
+interface StatusRow { seq: number; type: string; payload: string }
 interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
-interface TailRow { run_id: string; seq: number; ts: string }
+interface TailRow { seq: number; ts: string }
 
 function placeholders(values: readonly unknown[]): string {
   return values.map(() => '?').join(', ');
@@ -348,12 +348,21 @@ function foldStatus(events: readonly Pick<RunEvent, 'type' | 'payload'>[]): RunS
   return pending.size > 0 ? 'needs_you' : 'running';
 }
 
-/** One run's status-relevant rows, and nothing else. This runs inside the write lock — keep it thin. */
+/**
+ * One run's status-relevant rows, and nothing else. This runs inside the write lock — keep it thin.
+ *
+ * The seq order is restored here rather than asked of SQLite: an `ORDER BY seq` makes the planner
+ * prefer the (run_id, seq) primary key, which satisfies the sort but scans every row the run has —
+ * exactly the O(log-depth) read this exists to avoid. Unordered, it seeks (run_id, type) instead,
+ * and a handful of status rows sort for free.
+ */
 function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'type' | 'payload'>[] {
   const rows = db
-    .prepare(`SELECT type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)}) ORDER BY seq ASC`)
+    .prepare(`SELECT seq, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
     .all(runId, ...STATUS_EVENT_TYPES) as StatusRow[];
-  return rows.map((r) => ({ type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+  return rows
+    .sort((a, b) => a.seq - b.seq)
+    .map((r) => ({ type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
 }
 
 /**
@@ -366,27 +375,34 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
   for (const id of runIds) byRun.set(id, []);
   if (runIds.length === 0) return byRun;
   const rows = db
-    .prepare(`SELECT run_id, seq, ts, type, payload FROM studio_run_events WHERE run_id IN (${placeholders(runIds)}) AND type IN (${placeholders(PROJECTION_EVENT_TYPES)}) ORDER BY run_id ASC, seq ASC`)
+    .prepare(`SELECT run_id, seq, ts, type, payload FROM studio_run_events WHERE run_id IN (${placeholders(runIds)}) AND type IN (${placeholders(PROJECTION_EVENT_TYPES)})`)
     .all(...runIds, ...PROJECTION_EVENT_TYPES) as ProjectionRow[];
   for (const r of rows) {
     byRun.get(r.run_id)?.push({ seq: r.seq, ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> });
   }
+  // Ordered here for the same reason as the status read: an ORDER BY would cost the type index.
+  for (const events of byRun.values()) events.sort((a, b) => a.seq - b.seq);
   return byRun;
 }
 
 /**
  * `lastSeq`/`updatedAt` move with EVERY type, including the ones a projection ignores, so they
- * cannot come from the type-filtered read. They come from the log rather than the cached columns so
- * a list row stays a projection of the log alone (law 1) — one groupwise max over the primary key,
- * for the whole page, not a read per row.
+ * cannot come from the type-filtered read. They come from the log rather than the cached columns,
+ * because a list row is a projection of the log and nothing else (law 1).
+ *
+ * One newest-row seek per run, not one page-wide query: every batched form — a correlated max, a
+ * GROUP BY, a row-value IN — makes SQLite walk each run's whole log. Measured at 50 runs × 5000
+ * events, those cost 68 / 22 / 14 ms against 0.05 ms for the seeks, because reversing the primary
+ * key and stopping at the first row is O(log depth) and the rest are not.
  */
 function readEventTails(db: Database.Database, runIds: readonly string[]): Map<string, { seq: number; ts: string }> {
   const tails = new Map<string, { seq: number; ts: string }>();
   if (runIds.length === 0) return tails;
-  const rows = db
-    .prepare(`SELECT run_id, seq, ts FROM studio_run_events AS e WHERE run_id IN (${placeholders(runIds)}) AND seq = (SELECT MAX(seq) FROM studio_run_events WHERE run_id = e.run_id)`)
-    .all(...runIds) as TailRow[];
-  for (const r of rows) tails.set(r.run_id, { seq: r.seq, ts: r.ts });
+  const newest = db.prepare('SELECT seq, ts FROM studio_run_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1');
+  for (const id of runIds) {
+    const row = newest.get(id) as TailRow | undefined;
+    if (row) tails.set(id, { seq: row.seq, ts: row.ts });
+  }
   return tails;
 }
 
