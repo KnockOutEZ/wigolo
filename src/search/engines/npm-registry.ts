@@ -63,10 +63,15 @@ export class NpmRegistryEngine implements SearchEngine {
 
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
-    const data = (await response.json()) as NpmSearchResponse;
-    // Guard against non-array payloads (objects: {} or a string) so the
-    // engine returns [] instead of throwing on .slice.
-    const objects = Array.isArray(data.objects) ? data.objects : [];
+    const data: unknown = await response.json();
+    // Guard against non-object payloads (null, primitive, or missing objects) so the
+    // engine returns [] instead of throwing on property access.
+    const objects =
+      data !== null &&
+      typeof data === 'object' &&
+      Array.isArray((data as NpmSearchResponse).objects)
+        ? (data as NpmSearchResponse).objects
+        : [];
     return this.parseObjects(objects, maxResults);
   }
 

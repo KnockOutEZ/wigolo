@@ -202,6 +202,21 @@ describe('NpmRegistryEngine', () => {
     expect(results).toEqual([]);
   });
 
+  it('returns empty array when top-level JSON response is null', async () => {
+    captureFetch(null);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toEqual([]);
+  });
+
+  it('returns empty array when top-level JSON response is a primitive', async () => {
+    captureFetch('unexpected string');
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toEqual([]);
+    captureFetch(42);
+    const results2 = await new NpmRegistryEngine().search('q');
+    expect(results2).toEqual([]);
+  });
+
   it('propagates fetch errors (timeout/network)', async () => {
     vi.spyOn(global, 'fetch').mockRejectedValueOnce(new Error('aborted'));
     await expect(new NpmRegistryEngine().search('q')).rejects.toThrow(/aborted/);
