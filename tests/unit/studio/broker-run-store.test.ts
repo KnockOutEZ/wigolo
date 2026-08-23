@@ -56,9 +56,9 @@ describe('studio-db-broker — run store methods', () => {
     const run = await handlers.runCreate({ input: { task: 't' } });
     await handlers.runAppend({ runId: run.id, event: { actor: { kind: 'agent', driver: 'cli' }, type: 'tab.attached', payload: { tabId: 'tab-1' } } });
     await handlers.runAppend({ runId: run.id, event: { actor: { kind: 'agent', driver: 'cli' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } } });
-    const log = await handlers.runEventsSince({ runId: run.id });
+    const log = await handlers.runEventsSince({ runId: run.id, limit: 100 });
     expect(log.map((e) => [e.seq, e.type])).toEqual([[1, 'run.created'], [2, 'tab.attached'], [3, 'cost.recorded']]);
-    expect(await handlers.runEventsSince({ runId: run.id, since: 2 })).toHaveLength(1);
+    expect(await handlers.runEventsSince({ runId: run.id, since: 2, limit: 100 })).toHaveLength(1);
     const after = await handlers.runGet({ runId: run.id });
     expect(after!.tabIds).toEqual(['tab-1']);
     expect(after!.cost.browserActions).toBe(1);
@@ -83,9 +83,9 @@ describe('studio-db-broker — run store methods', () => {
     // The append-only guarantee has to hold at the RPC surface too: a host that can call
     // `runUpdate` has a second source of truth no matter what the store module refuses.
     // Still a CLOSED enum, not a "contains no update/delete" predicate: a new mutation method has to
-    // be added here deliberately, which is the point. `runExists` and `runListLogs` are reads.
+    // be added here deliberately, which is the point. `runExists`, `runFacts` and `runListLogs` are reads.
     const names = Object.keys(handlers).filter((n) => n.startsWith('run'));
-    expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runExists', 'runGet', 'runList', 'runListLogs']);
+    expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runExists', 'runFacts', 'runGet', 'runList', 'runListLogs']);
   });
 
   it('surfaces a refusal instead of silently dropping a malformed append', async () => {
@@ -95,6 +95,6 @@ describe('studio-db-broker — run store methods', () => {
     // `missing` is not merely absent — `i` is outside the mint alphabet, so it is refused as an id
     // before anything looks it up, and never reaches the path join in the disk projection.
     await expect(handlers.runAppend({ runId: 'missing', event: { actor: { kind: 'agent' }, type: 'a.b' } })).rejects.toThrow(/invalid run id/i);
-    expect(await handlers.runEventsSince({ runId: run.id })).toHaveLength(1);
+    expect(await handlers.runEventsSince({ runId: run.id, limit: 100 })).toHaveLength(1);
   });
 });

@@ -32,6 +32,7 @@ import {
   runExists,
   listRuns,
   eventsSince,
+  resolveRunId,
   type CreateRunInput,
   type ListRunsOptions,
   type ListRunsResult,
@@ -50,6 +51,76 @@ import type { FindSimilarInput } from '../types.js';
 
 const log = createLogger('studio');
 type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
+
+/**
+ * The boot page's event budget — per run, and across the whole page.
+ *
+ * `runListLogs` answers as ONE newline-delimited stdio frame. The host accumulates that frame as a
+ * single JS string and `JSON.parse`s it synchronously on the Electron main thread, which is also the
+ * thread that paints — so an unbounded answer is an unbounded stall, and at fifty long-lived runs of
+ * tens of thousands of envelopes each it is hundreds of megabytes of stall before the app has drawn
+ * anything. There was no cap of any kind and no fallback.
+ *
+ * The bound is stated in events AND in characters because neither alone bounds a frame: one payload
+ * may be up to `MAX_EVENT_PAYLOAD_CHARS` (64k), so a row count is not a size, and a size alone would
+ * still have to read and parse an arbitrary number of rows to find out what it was.
+ *
+ * A run past either bound is answered with its PROJECTION instead of its envelopes. That is not a
+ * degraded answer: `listRuns` has already computed it by the bounded path, it is field-for-field the
+ * answer REST gives for the same run, and it is a few hundred bytes. The host keeps it exactly the
+ * way it keeps a finished run's projection — every read stays correct — and replays the log in
+ * bounded pages when the run next speaks.
+ */
+export const MAX_BOOT_EVENTS_PER_RUN = 2_000;
+export const MAX_BOOT_EVENTS_TOTAL = 20_000;
+export const MAX_BOOT_FRAME_CHARS = 4_000_000;
+
+/**
+ * The ceiling on ONE `runEventsSince` frame, whatever the caller asks for.
+ *
+ * `limit` is now required — an omitted one used to mean "the whole log", which is how the view-model
+ * replayed every gap — but a required parameter only moves the decision to the caller. A frame the
+ * host cannot survive must not be reachable FROM a caller at all, so the ceiling is enforced here as
+ * well. A client that asks for more gets a short page, which is why the paged reader upstream stops
+ * on an EMPTY page rather than on a short one.
+ */
+const MAX_EVENTS_PAGE = 2_000;
+
+/** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
+export interface BrokerRunLogEntry {
+  facts: StoredRunFacts;
+  events: RunEvent[];
+  /**
+   * The run's true tail seq — ALWAYS, never `events.at(-1).seq`.
+   *
+   * The host rejects a stale envelope, and detects a gap, by comparing `seq` against the highest one
+   * it holds. Deriving that from a capped or condensed read would put it below the store's real tail,
+   * so the very next live envelope would look like a hole and replay a run that missed nothing —
+   * turning a read bound into a replay storm.
+   */
+  lastSeq: number;
+  /** The bounded projection, sent IN PLACE of a log too large for one frame. */
+  projection?: Run;
+  /**
+   * The daemon studio session this run was born from. Normally the host replays it from the
+   * `run.created` envelope; a condensed entry carries no envelopes, and losing it would cost the
+   * host `runForSession` — how a studio session finds the run it is driving.
+   */
+  sessionId?: string;
+}
+
+export interface BrokerRunLogPage {
+  entries: BrokerRunLogEntry[];
+  /** The listing's own cursor, so the host can hydrate PAST the first page. */
+  nextCursor?: string;
+}
+
+/** The session link, as one row. Only read when the entry has no envelopes to replay it from. */
+function sessionLinkOf(db: Database.Database, runId: string): { sessionId?: string } {
+  const [created] = eventsSince(db, runId, 0, 1);
+  const sessionId = created?.type === 'run.created' ? created.payload.sessionId : undefined;
+  return typeof sessionId === 'string' ? { sessionId } : {};
+}
 
 export interface BrokerCaptureParams {
   input: StudioCaptureInput;
@@ -177,17 +248,59 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     // a log that only grows. The daemon's own binding answers it with an index hit; this closes that
     // asymmetry rather than making the host pay for the pipe it sits behind.
     runExists: async (p: { runId: string }): Promise<boolean> => runExists(deps.db, p.runId),
+    /**
+     * A run's four stored facts, with no projection and no log read at all.
+     *
+     * The host's gap replay used to open with `runGet`, whose answer is a projected `Run` — the child
+     * reads the run's projection rows, folds its cost in SQL and seeks its tail — and then threw
+     * every field but these four away, because the projection it wants is the one it computes itself
+     * from the log it is about to read next. So the same log was read twice per gap. This asks the
+     * `studio_runs` row and stops.
+     */
+    runFacts: async (p: { runId: string }): Promise<StoredRunFacts | undefined> => {
+      const id = resolveRunId(p.runId);
+      if (id === undefined) return undefined;
+      const row = deps.db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as
+        { id: string; task: string; space_id: string; created_at: string } | undefined;
+      return row ? { id: row.id, task: row.task, spaceId: row.space_id, createdAt: row.created_at } : undefined;
+    },
     // The host's boot page in ONE round-trip. The host projects runs itself (it holds the same pure
     // `projectRun`), so it needs facts+events and not the `Run`s `runList` serializes — asking for both
     // sent every projection event across the pipe twice, once inside a projection the host recomputes.
     // Same page `runList` would return, so paging/filters keep one definition.
-    runListLogs: async (p: ListRunsOptions = {}): Promise<Array<{ facts: StoredRunFacts; events: RunEvent[] }>> =>
-      listRuns(deps.db, p).runs.map((run) => ({
-        facts: { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt },
-        events: eventsSince(deps.db, run.id, 0),
-      })),
-    runEventsSince: async (p: { runId: string; since?: number; limit?: number }): Promise<RunEvent[]> =>
-      eventsSince(deps.db, p.runId, p.since ?? 0, p.limit),
+    //
+    // Bounded per run and across the page — see MAX_BOOT_*. A run whose log does not fit is answered
+    // with the projection `listRuns` already computed for it, which costs no extra read and is the
+    // same answer REST gives.
+    runListLogs: async (p: ListRunsOptions = {}): Promise<BrokerRunLogPage> => {
+      const { runs, nextCursor } = listRuns(deps.db, p);
+      let eventsLeft = MAX_BOOT_EVENTS_TOTAL;
+      let charsLeft = MAX_BOOT_FRAME_CHARS;
+      const entries = runs.map((run): BrokerRunLogEntry => {
+        const facts: StoredRunFacts = { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt };
+        // `seq` is gap-free and starts at 1, so the tail seq IS the event count: how big a log is, is
+        // known from the listing row before a single event row is read.
+        const budget = Math.min(MAX_BOOT_EVENTS_PER_RUN, eventsLeft);
+        if (run.lastSeq <= budget) {
+          const events = eventsSince(deps.db, run.id, 0, budget);
+          const chars = JSON.stringify(events).length;
+          if (chars <= charsLeft) {
+            eventsLeft -= events.length;
+            charsLeft -= chars;
+            return { facts, events, lastSeq: run.lastSeq };
+          }
+        }
+        return { facts, events: [], lastSeq: run.lastSeq, projection: run, ...sessionLinkOf(deps.db, run.id) };
+      });
+      return { entries, ...(nextCursor ? { nextCursor } : {}) };
+    },
+    // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
+    // and the view-model's gap replay called it exactly that way.
+    runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
+      const limit = Math.floor(Number(p.limit));
+      if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
+      return eventsSince(deps.db, p.runId, p.since ?? 0, Math.min(limit, MAX_EVENTS_PAGE));
+    },
   };
 }
 export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;

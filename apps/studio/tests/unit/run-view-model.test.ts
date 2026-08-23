@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { projectRun } from 'wigolo/studio';
+import { DEFAULT_LIST_LIMIT, projectRun } from 'wigolo/studio';
 import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
@@ -417,6 +417,168 @@ describe('RunViewModel — boot hydration is one bounded, concurrent read', () =
     await booting;
 
     expect(vm.list().map((r) => r.task).sort()).toEqual(['run 0', 'run 1', 'run 2', 'run 3']);
+  });
+});
+
+/**
+ * MED-2 / perf #5 — what boot MOVES, as opposed to how many hops it takes.
+ *
+ * The combined boot read asked each run for its entire log and the store answered literally, in ONE
+ * newline-delimited frame the host accumulates as a single JS string and `JSON.parse`s synchronously
+ * on the thread that paints. Fifty long-lived runs of tens of thousands of envelopes is hundreds of
+ * megabytes of that at startup, with no cap and no fallback.
+ *
+ * A run over the bound now arrives as the projection the store had already computed for it, which is
+ * the same state a finished run is kept in. The two things that have to survive that are the two
+ * things a projection cannot rebuild for itself: the seq the store is actually at, and the session
+ * link that rides on the `run.created` envelope.
+ */
+describe('RunViewModel — a boot read the pipe can carry', () => {
+  const restProjection = (store: FakeRunStore, runId: string) =>
+    projectRun({ id: runId, ...store.facts.get(runId)! }, store.log.get(runId)!);
+
+  /** A store holding one run whose log is past the boot cap, and one that is not. */
+  async function seed(): Promise<{ store: FakeRunStore; longId: string; shortId: string; tail: number }> {
+    const store = new FakeRunStore();
+    const long = await store.createRun({ task: 'a long one', sessionId: 'sess-long' });
+    for (let i = 0; i < 12; i++) {
+      await store.appendEvent(long.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    const short = await store.createRun({ task: 'an ordinary one' });
+    await store.appendEvent(short.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-short' } });
+    store.bootEventCapPerRun = 4;
+    return { store, longId: long.id, shortId: short.id, tail: store.log.get(long.id)!.length };
+  }
+
+  it('keeps the store’s projection for a log too large to send, and still answers every read from it', async () => {
+    const { store, longId, shortId } = await seed();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+
+    // The bound is a property, not a comment: the twelve envelopes never crossed.
+    expect(vm.retainedEventCount(longId), 'the oversize log was sent after all, so this arm proves nothing').toBe(0);
+    // …and nothing a caller can ask changed. Compared against `projectRun` over the WHOLE log — what
+    // REST answers for the same run — rather than against a hand-written expectation.
+    expect(vm.snapshot(longId)).toEqual(restProjection(store, longId));
+    expect(vm.tabsOf(longId)).toEqual(Array.from({ length: 12 }, (_, i) => `tab-${i}`));
+    expect(vm.ownerOf('tab-11')).toBe(longId);
+    // The session link normally comes off `run.created`, which is not in a condensed entry.
+    expect(vm.sessionIdOf(longId)).toBe('sess-long');
+    expect(vm.runForSession('sess-long')).toBe(longId);
+    // The control: the bound applies to the run that is over it, not to the page. A run that fits
+    // still arrives whole, because a live run that dropped its log could not fold its next envelope.
+    expect(vm.retainedEventCount(shortId)).toBeGreaterThan(0);
+  });
+
+  /**
+   * The seq bookkeeping, which is where a naive bound goes wrong.
+   *
+   * A condensed entry holds no envelopes, so a `lastSeq` derived from the ones it was sent would be
+   * zero — and the broker replays its own committed envelopes to a reconnecting tail as a matter of
+   * course. Every one of those would then read as NEW rather than as already-folded, and each would
+   * find a projection with nothing to fold into and replay the whole run: a read bound turned into a
+   * replay storm on exactly the runs that are too big to replay.
+   */
+  it('drops an envelope it has already seen rather than replaying the run it just condensed', async () => {
+    const { store, longId, tail } = await seed();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    store.reads.length = 0;
+
+    // The tail reconnects and re-delivers the run's last three envelopes, as it does on every reconnect.
+    for (const event of store.log.get(longId)!.slice(-3)) vm.applyEvent(longId, event);
+    await Promise.resolve();
+
+    expect(store.reads, 'a re-delivered envelope replayed a run that had missed nothing').toEqual([]);
+    expect(vm.snapshot(longId)).toEqual(restProjection(store, longId));
+
+    // …and the genuinely NEXT envelope is not dropped with them: it replays, once, and lands gapless.
+    await store.appendEvent(longId, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-new' } });
+    await vi.waitFor(() => expect(vm.ownerOf('tab-new')).toBe(longId));
+    expect(vm.snapshot(longId)).toEqual(restProjection(store, longId));
+    expect(vm.snapshot(longId)!.lastSeq).toBe(tail + 1);
+    expect(store.reads.filter((r) => r === 'runFacts'), 'one envelope caused more than one replay').toHaveLength(1);
+  });
+
+  /**
+   * `hydrate` called `loadLogs()` with no options, took the page it got and dropped the `nextCursor`
+   * that came with it — so a machine with more runs than one page booted the app showing one page of
+   * them, and nothing calls `hydrate` again after boot.
+   */
+  it('follows the listing cursor, so a run past the first page is not invisible until it speaks', async () => {
+    const store = new FakeRunStore();
+    store.listLimit = DEFAULT_LIST_LIMIT;
+    for (let i = 0; i <= DEFAULT_LIST_LIMIT; i++) await store.createRun({ task: `run ${i}` });
+
+    const vm = new RunViewModel(store);
+    store.reads.length = 0;
+    await vm.hydrate();
+
+    expect(vm.list()).toHaveLength(DEFAULT_LIST_LIMIT + 1);
+    expect(vm.list().map((r) => r.task)).toContain(`run ${DEFAULT_LIST_LIMIT}`);
+    // Two pages for fifty-one runs, and it stops there: the cursor is followed, not chased forever.
+    expect(store.reads.filter((r) => r === 'listRunLogs')).toHaveLength(2);
+  });
+});
+
+/**
+ * perf #5 (second half) and perf #6 — what a gap replay costs.
+ *
+ * `replay` read the same log twice and read all of it both times: `getRun` made the store PROJECT the
+ * run so that four strings of facts could be kept, and then `eventsSince(id, 0)` asked for every
+ * envelope the run has ever had, in one frame, on the thread that paints — on EVERY seq gap.
+ */
+describe('RunViewModel — a gap replay that pages', () => {
+  it('reads the log in bounded pages and asks for facts without projecting the run', async () => {
+    const store = new FakeRunStore();
+    // The store's own per-frame ceiling, well under what the reader asks for — which is what makes a
+    // SHORT page the ordinary shape here, and stopping on one a silent truncation.
+    store.eventsPageCeiling = 7;
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'a long-running one' });
+    for (let i = 0; i < 30; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    const tail = store.log.get(run.id)!.length;
+
+    const pages: Array<{ since: number; limit: number | undefined }> = [];
+    const read = store.eventsSince.bind(store);
+    store.eventsSince = async (runId, since = 0, limit?: number) => {
+      pages.push({ since, limit });
+      return read(runId, since, limit);
+    };
+    store.reads.length = 0;
+
+    // An envelope from the future, as a tail that dropped the ones before it would deliver: a gap
+    // several pages wide.
+    vm.applyEvent(run.id, {
+      seq: tail + 4, ts: new Date().toISOString(), actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-phantom' },
+    });
+
+    // The settle signal is the replay's own last page, not the projection: the projection already
+    // held all thirty tabs before the gap arrived, so waiting on it would pass without a replay at all.
+    await vi.waitFor(() => expect(pages.at(-1)?.since ?? -1).toBeGreaterThanOrEqual(tail));
+
+    // Multiple reads, every one of them bounded, tiling the log from the start with no overlap.
+    expect(pages.length, 'the whole log came back in one frame').toBeGreaterThan(3);
+    expect(pages.every((p) => typeof p.limit === 'number' && p.limit > 0), 'a read asked for the whole log').toBe(true);
+    expect(pages.map((p) => p.since)).toEqual([...pages.map((p) => p.since)].sort((a, b) => a - b));
+    expect(pages[0]!.since).toBe(0);
+    // …and it did not stop at the first SHORT page, which is what a server-side ceiling looks like.
+    expect(pages.length).toBeGreaterThanOrEqual(Math.ceil(tail / store.eventsPageCeiling));
+
+    // One facts read, no projection: `getRun` would have made the store replay the log to build a
+    // `Run` whose every field but four is discarded here.
+    expect(store.reads.filter((r) => r === 'runFacts')).toHaveLength(1);
+    expect(store.reads.filter((r) => r === 'getRun'), 'the replay projected the run it was about to project itself').toEqual([]);
+
+    // Gapless: every tab is there, the projection matches the store's own, and the phantom envelope
+    // that triggered the replay was not folded in as if nothing were missing.
+    expect(vm.tabsOf(run.id)).toEqual(Array.from({ length: 30 }, (_, i) => `tab-${i}`));
+    expect(vm.snapshot(run.id)).toEqual(projectRun({ id: run.id, ...store.facts.get(run.id)! }, store.log.get(run.id)!));
+    expect(vm.ownerOf('tab-phantom')).toBeUndefined();
+    expect(vm.snapshot(run.id)!.lastSeq).toBe(tail);
   });
 });
 

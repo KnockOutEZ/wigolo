@@ -241,4 +241,4 @@ export type {
   ListRunsResult,
   StoredRunFacts,
 } from './run-store.js';
-export { projectRun, normalizeRunId, RUN_ID_ALPHABET, AUTO_DENY_MS } from './run-store.js';
+export { projectRun, normalizeRunId, RUN_ID_ALPHABET, AUTO_DENY_MS, DEFAULT_LIST_LIMIT } from './run-store.js';

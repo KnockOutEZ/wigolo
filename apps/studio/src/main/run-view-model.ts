@@ -18,10 +18,29 @@ import type { BrokerClient } from './broker-client';
  * one agent another agent's page.
  */
 
-/** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
+/**
+ * One run's stored facts and the envelopes that project it — what a replay needs, and nothing else.
+ *
+ * `events` is a BOUNDED read, so it is not always the whole log. When it is not, the store sends
+ * `projection` in its place — the answer it computed for the same run by its own bounded path — and
+ * this class keeps that instead, the way it keeps a finished run's. `lastSeq` is the store's real
+ * tail either way, which is what stops a capped read from looking like a missed envelope.
+ */
 export interface RunLogEntry {
   facts: StoredRunFacts;
   events: RunEvent[];
+  /** The store's true tail seq. Absent only on a store that predates the bound. */
+  lastSeq?: number;
+  /** A projection sent in place of a log too large for one frame. */
+  projection?: Run;
+  /** The session link `run.created` carries, when no envelope came with it to replay it from. */
+  sessionId?: string;
+}
+
+/** A page of the boot listing, with the cursor that continues it. */
+export interface RunLogPage {
+  entries: RunLogEntry[];
+  nextCursor?: string;
 }
 
 /** The store, as this process reaches it. Broker-backed in the app; the port exists so tests can bind. */
@@ -31,23 +50,34 @@ export interface RunStoreClient {
   getRun(runId: string): Promise<Run | undefined>;
   /**
    * The filter/paging options exist for the REST surface (`GET /v1/runs?status=&limit=&cursor=`),
-   * which this process now serves as the live store owner. The view-model itself always wants the
-   * whole snapshot and passes nothing.
+   * which this process now serves as the live store owner — and for `hydrate`, which pages through
+   * the listing rather than taking its first page and stopping.
    */
   listRuns(opts?: ListRunsOptions): Promise<ListRunsResult>;
-  eventsSince(runId: string, since?: number, limit?: number): Promise<RunEvent[]>;
+  /**
+   * `limit` is REQUIRED, and it is required here rather than merely honoured: the whole point of the
+   * parameter is that no caller can ask this process to accumulate and parse an entire run log in one
+   * frame, and an optional one lets a caller ask by saying nothing.
+   */
+  eventsSince(runId: string, since: number, limit: number): Promise<RunEvent[]>;
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
   /**
    * The whole boot page — facts and events together — in one round-trip, rather than a listing
    * followed by a read per run. Optional because this is a port: a store that does not offer it is
    * still correct, and `hydrate` falls back to the listing plus a concurrent read per run.
    */
-  listRunLogs?(opts?: ListRunsOptions): Promise<RunLogEntry[]>;
+  listRunLogs?(opts?: ListRunsOptions): Promise<RunLogPage>;
   /**
    * Does this run exist, without projecting it? `getRun` replays the whole log to answer, which is
    * what the SSE route's paged replay exists to avoid. Optional for the same reason as `listRunLogs`.
    */
   runExists?(runId: string): Promise<boolean>;
+  /**
+   * The four stored facts, with no projection behind them. A replay wants the facts and then the log;
+   * asking `getRun` for the facts makes the store project the run first and throws the projection
+   * away. Optional for the same reason as `listRunLogs`; `getRun` is the fallback.
+   */
+  runFacts?(runId: string): Promise<StoredRunFacts | undefined>;
 }
 
 export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient {
@@ -56,9 +86,10 @@ export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient
     appendEvent: (runId, event) => broker.call<RunEvent>('runAppend', { runId, event }),
     getRun: (runId) => broker.call<Run | undefined>('runGet', { runId }),
     listRuns: (opts = {}) => broker.call<ListRunsResult>('runList', opts),
-    listRunLogs: (opts = {}) => broker.call<RunLogEntry[]>('runListLogs', opts),
-    eventsSince: (runId, since = 0, limit) => broker.call<RunEvent[]>('runEventsSince', { runId, since, limit }),
+    listRunLogs: (opts = {}) => broker.call<RunLogPage>('runListLogs', opts),
+    eventsSince: (runId, since, limit) => broker.call<RunEvent[]>('runEventsSince', { runId, since, limit }),
     runExists: (runId) => broker.call<boolean>('runExists', { runId }),
+    runFacts: (runId) => broker.call<StoredRunFacts | undefined>('runFacts', { runId }),
     onRunEvent: (handler) => broker.onRunEvent(handler),
   };
 }
@@ -109,6 +140,30 @@ export function isTerminal(status: Run['status']): boolean {
  */
 const EMIT_COALESCE_MS = 16;
 
+/**
+ * How many envelopes one `eventsSince` frame carries.
+ *
+ * A replay used to ask for the whole log — `eventsSince(runId, 0)` with no limit — and the store used
+ * to answer that literally: one stdio frame the size of the run, accumulated here as a single JS
+ * string and `JSON.parse`d in one synchronous bite, on the thread that paints, on EVERY seq gap. The
+ * bound has to be per frame, so a replay pages.
+ *
+ * Well under the store's own per-frame ceiling, so the page this asks for is the page it gets. It
+ * still stops on an EMPTY page rather than a short one, because a short page is exactly what a
+ * server-side ceiling looks like from here and stopping on it would silently truncate a log.
+ */
+const REPLAY_PAGE_SIZE = 500;
+
+/**
+ * How many listing pages boot will follow.
+ *
+ * `hydrate` follows `nextCursor` now, and the loop's exit condition comes from the store, so a
+ * binding that returned a cursor forever would spin on the thread that paints. Reaching this means a
+ * broken store rather than a large one: it is `DEFAULT_LIST_LIMIT` × this, which is far more runs
+ * than any surface here can name.
+ */
+const MAX_HYDRATION_PAGES = 200;
+
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
   run: Run;
@@ -144,17 +199,34 @@ export interface RunSummary {
 
 interface RunLog {
   facts: StoredRunFacts;
-  /** The envelopes this projection is folding. Emptied once `final` is set — see `seal`. */
+  /** The envelopes this projection is folding. Emptied once `kept` is set — see `condense`. */
   events: RunEvent[];
   /**
-   * The highest seq folded in. Tracked beside the events rather than read off their tail, because a
-   * sealed run has no tail left and still has to reject an envelope it has already seen.
+   * The highest seq the STORE holds, not the highest one folded in. Tracked beside the events rather
+   * than read off their tail, because neither a sealed run (whose tail is gone) nor a condensed one
+   * (whose log was too large to send) has a tail that says where the store actually is — and both
+   * still have to recognise the next live envelope as the next one rather than as a hole.
    */
   lastSeq: number;
   /** Replayed from `run.created` once, rather than searched for on every `runForSession` sweep. */
   sessionId?: string;
-  /** A terminal run's last projection, kept in place of the events that produced it. */
-  final?: Run;
+  /**
+   * A projection kept in place of the events that produced it. Two things set it: sealing a terminal
+   * run, whose projection can never move again, and a boot read that found the log too large for one
+   * frame and was handed the store's own projection instead. In both cases every reader — `list`,
+   * `ownerOf`, `snapshot` — is answered correctly and cheaply, and the next envelope replays.
+   */
+  kept?: Run;
+}
+
+/** What the store knows about a log that the log itself cannot say once it has been bounded. */
+interface RetainOptions {
+  /** The store's true tail seq. See `RunLogEntry.lastSeq`. */
+  lastSeq?: number;
+  /** A projection to keep IN PLACE of envelopes too large to have been sent. */
+  projection?: Run;
+  /** The session link, when no `run.created` envelope came with the entry to replay it from. */
+  sessionId?: string;
 }
 
 export class RunViewModel {
@@ -235,7 +307,17 @@ export class RunViewModel {
    * to emit again. Runs are never deleted, so "absent from the listing" only ever means "newer than it".
    */
   async hydrate(): Promise<void> {
-    for (const { facts, events } of await this.loadLogs()) this.retain(facts, events);
+    let cursor: string | undefined;
+    // EVERY page, not the first one. This called `loadLogs()` with no options, which takes
+    // `DEFAULT_LIST_LIMIT` runs and drops the `nextCursor` the store hands back with them — so a
+    // machine with fifty-one runs booted the app showing fifty, and the fifty-first stayed invisible
+    // until it happened to emit, because nothing calls `hydrate` after boot.
+    for (let page = 0; page < MAX_HYDRATION_PAGES; page++) {
+      const { entries, nextCursor } = await this.loadLogs(cursor ? { cursor } : {});
+      for (const entry of entries) this.retain(entry.facts, entry.events, entry);
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
+    }
     this.emit();
   }
 
@@ -248,28 +330,61 @@ export class RunViewModel {
    * events crossed the pipe twice — once inside a projection this class recomputes anyway, once raw.
    * The combined read asks for facts+events and nothing else, in one hop for the whole page.
    */
-  private async loadLogs(): Promise<RunLogEntry[]> {
-    if (this.store.listRunLogs) return this.store.listRunLogs();
-    const { runs } = await this.store.listRuns();
-    return Promise.all(
-      runs.map(async (run) => ({ facts: factsOf(run), events: await this.store.eventsSince(run.id, 0) })),
+  private async loadLogs(opts: ListRunsOptions = {}): Promise<RunLogPage> {
+    if (this.store.listRunLogs) return this.store.listRunLogs(opts);
+    const { runs, nextCursor } = await this.store.listRuns(opts);
+    const entries = await Promise.all(
+      runs.map(async (run) => ({ facts: factsOf(run), events: await this.readLog(run.id), lastSeq: run.lastSeq })),
     );
+    return { entries, ...(nextCursor ? { nextCursor } : {}) };
+  }
+
+  /**
+   * A whole log, in bounded pages.
+   *
+   * The single frame this replaces was the second half of the same defect as the boot read: the store
+   * serialized an entire run log into one line and this process accumulated and parsed it in one go.
+   *
+   * It stops on an EMPTY page rather than a short one on purpose. The store enforces its own per-frame
+   * ceiling regardless of what is asked for, so a short page is the ordinary shape of a capped read,
+   * and treating it as the end would silently drop the rest of a log.
+   */
+  private async readLog(runId: string, since = 0): Promise<RunEvent[]> {
+    const events: RunEvent[] = [];
+    let cursor = since;
+    for (;;) {
+      const page = await this.store.eventsSince(runId, cursor, REPLAY_PAGE_SIZE);
+      if (page.length === 0) return events;
+      for (const event of page) events.push(event);
+      const tail = page[page.length - 1]!.seq;
+      // A store that ignored `since` would hand back the same page forever. Nothing legitimate
+      // produces that; an infinite loop on the thread that paints is what it would cost if anything did.
+      if (tail <= cursor) return events;
+      cursor = tail;
+    }
   }
 
   /**
    * Take a freshly-read log. The single seam every full replay goes through, so the derived facts a
-   * sealed run keeps — its session id, its last seq, its final projection — are computed in exactly
+   * condensed run keeps — its session id, its last seq, its kept projection — are computed in exactly
    * one place rather than at each of the four call sites that read a whole log.
    */
-  private retain(facts: StoredRunFacts, events: RunEvent[]): void {
-    const sessionId = events.find((e) => e.type === 'run.created')?.payload.sessionId;
+  private retain(facts: StoredRunFacts, events: RunEvent[], opts: RetainOptions = {}): void {
+    const sessionId = opts.sessionId ?? events.find((e) => e.type === 'run.created')?.payload.sessionId;
     this.logs.set(facts.id, {
       facts,
       events,
-      lastSeq: events.at(-1)?.seq ?? 0,
+      // The store's tail wins, because a bounded read holds fewer envelopes than the run has and its
+      // last seq would sit BELOW where the store actually is — which would make the next live
+      // envelope look like a hole and replay a run that missed nothing. The max is not belt and
+      // braces: the listing's tail seek and the event read are separate statements, so an append
+      // landing between them puts the newer seq in the events, and taking the older one would let
+      // `applyEvent` fold an envelope this log already holds.
+      lastSeq: Math.max(opts.lastSeq ?? 0, events.at(-1)?.seq ?? 0),
       ...(typeof sessionId === 'string' ? { sessionId } : {}),
     });
     this.projected.delete(facts.id);
+    if (opts.projection) { this.condense(facts.id, opts.projection); return; }
     if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
   }
 
@@ -287,11 +402,25 @@ export class RunViewModel {
    */
   private seal(runId: string): void {
     const log = this.logs.get(runId);
-    if (!log || log.final) return;
+    if (!log || log.kept) return;
     const run = this.snapshot(runId);
     if (!run || !isTerminal(run.status)) return;
+    this.condense(runId, run);
+  }
+
+  /**
+   * Hold a projection in place of envelopes this process does not have.
+   *
+   * Sealing a terminal run is one producer; the boot read is the other, when a run's log is too large
+   * to cross the pipe in one frame and the store sends the projection it had already computed. The
+   * two are the same state — reads answer from the projection, and the next envelope replays, because
+   * there is nothing here to fold it into.
+   */
+  private condense(runId: string, projection: Run): void {
+    const log = this.logs.get(runId);
+    if (!log) return;
     log.events = [];
-    log.final = run;
+    log.kept = projection;
     this.projected.delete(runId);
   }
 
@@ -311,7 +440,7 @@ export class RunViewModel {
     // dropped notify. Appending the newer one anyway would leave a log that silently disagrees with the
     // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail. A sealed run
     // takes the same path for a different reason: its envelopes are gone, so folding is not available.
-    if (event.seq > log.lastSeq + 1 || log.final) { void this.adopt(runId, { replace: true }); return; }
+    if (event.seq > log.lastSeq + 1 || log.kept) { void this.adopt(runId, { replace: true }); return; }
     log.events.push(event);
     log.lastSeq = event.seq;
     this.projected.delete(runId);
@@ -331,7 +460,7 @@ export class RunViewModel {
     // usually already in. Checked BEFORE the sealed branch: an append that seals the run would
     // otherwise replay it immediately afterwards to fold an envelope it has already folded.
     if (log && event.seq <= log.lastSeq) return;
-    if (log?.final) { await this.adopt(runId, { replace: true }); return; }
+    if (log?.kept) { await this.adopt(runId, { replace: true }); return; }
     this.applyEvent(runId, event);
   }
 
@@ -354,28 +483,43 @@ export class RunViewModel {
 
   private async replay(runId: string, opts: { replace?: boolean }): Promise<void> {
     try {
-      const run = await this.store.getRun(runId);
-      if (!run || (this.logs.has(runId) && !opts.replace)) return;
-      const events = await this.store.eventsSince(runId, 0);
+      const facts = await this.readFacts(runId);
+      if (!facts || (this.logs.has(runId) && !opts.replace)) return;
+      const events = await this.readLog(runId);
       if (this.logs.has(runId) && !opts.replace) return;
-      this.retain(factsOf(run), events);
+      this.retain(facts, events);
       this.emit();
     } catch {
       // The store is unreachable; the run is not lost, only unseen. A later event retries.
     }
   }
 
+  /**
+   * The four stored facts a replay needs before it reads the log.
+   *
+   * This was `getRun`, which made the store PROJECT the run — reading its projection rows, folding
+   * its cost, seeking its tail — so that every field but four could be discarded here, immediately
+   * before reading the same log again to build the projection this class actually uses. One gap,
+   * two reads of one log.
+   */
+  private async readFacts(runId: string): Promise<StoredRunFacts | undefined> {
+    if (this.store.runFacts) return this.store.runFacts(runId);
+    const run = await this.store.getRun(runId);
+    return run ? factsOf(run) : undefined;
+  }
+
   async createRun(input: CreateRunInput): Promise<Run> {
     const run = await this.store.createRun(input);
-    const events = await this.store.eventsSince(run.id, 0);
-    this.retain(factsOf(run), events);
+    const events = await this.readLog(run.id);
+    this.retain(factsOf(run), events, { lastSeq: run.lastSeq });
     this.emit();
     return run;
   }
 
   /**
-   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal — the
-   * retention bound is a property callers and tests can actually check, not a comment.
+   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal, and
+   * zero for a run whose log was condensed at boot — the retention bound is a property callers and
+   * tests can actually check, not a comment.
    */
   retainedEventCount(runId: string): number {
     return this.logs.get(runId)?.events.length ?? 0;
@@ -571,7 +715,7 @@ export class RunViewModel {
     const log = this.logs.get(runId);
     if (!log) return undefined;
     const now = this.now();
-    if (log.final) return withoutExpiredDecisions(log.final, now);
+    if (log.kept) return withoutExpiredDecisions(log.kept, now);
     const memo = this.projected.get(runId);
     if (memo && (memo.staleAt === undefined || now.getTime() < memo.staleAt)) return memo.run;
     const run = projectRun(log.facts, log.events, now);

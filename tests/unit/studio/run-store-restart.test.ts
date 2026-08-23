@@ -90,14 +90,14 @@ describe('run store — survives a broker process restart', () => {
       await first.call<RunEvent>('runAppend', { runId: created.id, event });
     }
     const before = await first.call<Run>('runGet', { runId: created.id });
-    const logBefore = await first.call<RunEvent[]>('runEventsSince', { runId: created.id });
+    const logBefore = await first.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
     // The live tail fired for every committed envelope, in order, before the process died.
     expect((first.notifications.filter((n) => n.notify === 'run-event')).map((n) => (n.envelope as RunEvent).seq)).toEqual([1, 2, 3, 4, 5]);
     first.stop();
 
     const second = await startBroker(dir);
     const after = await second.call<Run>('runGet', { runId: created.id });
-    const logAfter = await second.call<RunEvent[]>('runEventsSince', { runId: created.id });
+    const logAfter = await second.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
     second.stop();
 
     expect(after).toEqual(before);
