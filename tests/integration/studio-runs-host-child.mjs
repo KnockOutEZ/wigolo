@@ -29,7 +29,15 @@ import { appendRunEventWithTail } from '../../dist/studio/run-bus.js';
 const HOST_TOKEN = process.env.WIGOLO_TEST_HOST_TOKEN ?? 'host-secret-token';
 const instanceId = `host-${process.pid}-${Date.now()}`;
 
-const rest = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: HOST_TOKEN });
+// THE GATEWAY SHAPE, not the standalone-daemon one — `auth` set, `apiToken` left unset. That is
+// what `startGateway` builds, and it is the only shape in which sd-87's defect exists: with
+// `WIGOLO_API_TOKEN` exported (the parent suite exports a DECOY, deliberately different from
+// HOST_TOKEN), an `apiToken` that defaulted to the environment would give the embedded REST router
+// a different credential from the outer handle gate, and `/v1/runs*` would then accept NEITHER —
+// the handle token 401'd by the router, the env token 401'd by the outer gate. Every row in the
+// parent suite crosses this surface, so they all pin the single-credential rule; the explicit
+// one-credential row states it directly.
+const rest = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: { token: HOST_TOKEN, host: '127.0.0.1' } });
 const restUrl = await rest.start();
 
 // Order is the point: claim the identity, THEN publish the handle. Reversed, there is a window in

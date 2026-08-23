@@ -39,6 +39,13 @@ type HostChild = ChildProcessByStdio<null, Readable, Readable>;
 const HOST_TOKEN = 'host-secret-token';
 
 /**
+ * The environment credential the STANDALONE daemon reads. On the gateway it must be inert: the
+ * per-launch handle token is that surface's one credential, and this value has to be refused
+ * everywhere on it. Different from HOST_TOKEN on purpose — see the note in `beforeAll`.
+ */
+const DECOY_ENV_TOKEN = 'env-token-that-must-not-open-the-gateway';
+
+/**
  * THE TWO DATA DIRS ARE THE INSTRUMENT, and they were arrived at by measurement rather than design.
  *
  * With ONE shared dir — the real topology — deleting the ownership branch entirely left "a run
@@ -245,7 +252,12 @@ beforeAll(async () => {
   daemonDataDir = mkdtempSync(join(tmpdir(), 'wigolo-runs-proxy-daemon-'));
   hostDataDir = mkdtempSync(join(tmpdir(), 'wigolo-runs-proxy-host-'));
   process.env.WIGOLO_DATA_DIR = daemonDataDir;
-  delete process.env.WIGOLO_API_TOKEN;
+  // FORCED, not deleted (sd-87). The child boots in the gateway shape, and this value is inherited
+  // by it — so a build that let the environment reach the gateway's embedded REST router would give
+  // that router a credential the outer handle gate rejects, and every row below would 401. Deleting
+  // it, as this line used to, worked AROUND that interaction instead of pinning it. It is
+  // deliberately NOT equal to HOST_TOKEN: an equal one would pass both gates for the wrong reason.
+  process.env.WIGOLO_API_TOKEN = DECOY_ENV_TOKEN;
   delete process.env.WIGOLO_API_TOKEN_FILE;
 
   const ports = await startHostChild();
@@ -276,6 +288,7 @@ afterAll(async () => {
   await daemon?.stop();
   child?.kill('SIGKILL');
   delete process.env.WIGOLO_DATA_DIR;
+  delete process.env.WIGOLO_API_TOKEN;
   for (const dir of [daemonDataDir, hostDataDir]) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
@@ -322,6 +335,71 @@ describe('one live run-store owner across two processes', () => {
       headers: { Authorization: `Bearer ${HOST_TOKEN}` },
     });
     expect(onHost.status).toBe(200);
+  }, 30_000);
+
+  it('the gateway has ONE credential for /v1/runs* even with WIGOLO_API_TOKEN exported (sd-87)', async () => {
+    // The configuration the defect needs and the suite now forces: the child is the gateway shape
+    // (`auth` set, `apiToken` unset) and inherited a DECOY env token from this process. Two gates
+    // stand on this path — the outer handle gate in `handleRequest` and the REST router's own — and
+    // the fix is that they key on ONE predicate. So the assertion is a partition, not a spot check:
+    // the handle token opens every route, and the env token opens none of them.
+    expect(process.env.WIGOLO_API_TOKEN).toBe(DECOY_ENV_TOKEN);
+    expect(DECOY_ENV_TOKEN).not.toBe(HOST_TOKEN);
+
+    const seed = await postJson(hostRestPort, '/v1/runs', { task: 'one credential' }, { Authorization: `Bearer ${HOST_TOKEN}` });
+    expect(seed.status).toBe(201);
+    const id = (seed.body as { run: { id: string } }).run.id;
+
+    // Every /v1/runs* route, non-SSE half. A 401 anywhere here is the pre-fix build: the router
+    // holding the env token would refuse the handle token the daemon's hop actually sends.
+    const routes: Array<{ method: string; path: string; body?: string; expect: number }> = [
+      { method: 'GET', path: '/v1/runs', expect: 200 },
+      { method: 'GET', path: `/v1/runs/${id}`, expect: 200 },
+      { method: 'POST', path: '/v1/runs', body: JSON.stringify({ task: 'one credential, create' }), expect: 201 },
+    ];
+    for (const route of routes) {
+      const withHandle = await request({
+        method: route.method,
+        path: route.path,
+        port: hostRestPort,
+        headers: { Authorization: `Bearer ${HOST_TOKEN}`, 'Content-Type': 'application/json' },
+        ...(route.body ? { body: route.body } : {}),
+      });
+      expect(`${route.method} ${route.path} handle → ${withHandle.status}`).toBe(`${route.method} ${route.path} handle → ${route.expect}`);
+
+      // The other half of the partition. The env var is the STANDALONE daemon's credential; on the
+      // gateway it must buy nothing, or "one auth decision" would be two credentials wearing one.
+      const withEnv = await request({
+        method: route.method,
+        path: route.path,
+        port: hostRestPort,
+        headers: { Authorization: `Bearer ${DECOY_ENV_TOKEN}`, 'Content-Type': 'application/json' },
+        ...(route.body ? { body: route.body } : {}),
+      });
+      expect(`${route.method} ${route.path} env → ${withEnv.status}`).toBe(`${route.method} ${route.path} env → 401`);
+    }
+
+    // SSE, which is the route the outer gate reaches by a different path (no slot, no deadline) and
+    // therefore the one most likely to be gated differently by accident.
+    const tail = new SseClient();
+    await tail.open(hostRestPort, `/v1/runs/${id}/events`, { Authorization: `Bearer ${HOST_TOKEN}` });
+    await tail.waitForFrames(1);
+    expect(tail.status).toBe(200);
+    tail.kill();
+
+    const refusedTail = await request({
+      port: hostRestPort,
+      path: `/v1/runs/${id}/events`,
+      headers: { Authorization: `Bearer ${DECOY_ENV_TOKEN}` },
+      timeoutMs: 10_000,
+    });
+    expect(refusedTail.status).toBe(401);
+
+    // And the hop itself, which is the point of the whole thing: the daemon sends the handle token
+    // (runs-owner.ts) and must round-trip 200 in exactly this configuration.
+    const throughHop = await request({ port: daemonPort, path: `/v1/runs/${id}` });
+    expect(throughHop.status).toBe(200);
+    expect((throughHop.body as { run: { id: string } }).run.id).toBe(id);
   }, 30_000);
 
   it('an SSE tail on the daemon receives the host’s events LIVE, not on reconnect', async () => {
