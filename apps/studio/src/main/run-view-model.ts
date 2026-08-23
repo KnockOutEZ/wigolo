@@ -748,6 +748,10 @@ export class RunViewModel {
     if (log.kept) {
       const kept = withoutExpiredDecisions(log.kept, now);
       this.trackHorizon(runId, kept);
+      // The narrowing INFERRED a status — see `withoutExpiredDecisions`. A condensed run has the log
+      // that could state it, just not here, so re-read it. Deduped by `adopt`, and a no-op after the
+      // first one lands, because the run is no longer condensed.
+      if (kept !== log.kept) void this.adopt(runId, { replace: true });
       return kept;
     }
     const memo = this.projected.get(runId);
