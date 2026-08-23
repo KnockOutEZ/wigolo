@@ -11,7 +11,7 @@ import {
   VISIBILITY_CLASSES,
   type LivePageReader,
 } from '../../../benchmarks/scrape-quality/live-lane.js';
-import { validateCorpus, CORPUS_TARGETS } from '../../../benchmarks/scrape-quality/corpus-gate.js';
+import { validateCorpus, CORPUS_TARGETS, satisfiedByEmptyExtraction } from '../../../benchmarks/scrape-quality/corpus-gate.js';
 import {
   mutate,
   validateDriftCorpus,
@@ -472,6 +472,101 @@ describe('corpus gate', () => {
     });
     const v = validateCorpus(m, HTML_DIR);
     expect(v.violations.join(' ')).not.toMatch(/suppresses nothing/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K22 — §8-A restated against the measured denominator
+// ---------------------------------------------------------------------------
+
+describe('§8-A go/no-go derivation (K22)', () => {
+  const shipped = (): ScrapeManifest =>
+    JSON.parse(readFileSync(join(FIXTURES, 'manifest.json'), 'utf-8')) as ScrapeManifest;
+
+  it('derives the table sub-gate from the MEASURED 19, not the spec prose 30', () => {
+    // The whole of K22. The spec says "+5 more `table_preservation` assertions (≈ +0.15 at
+    // ~30)". The corpus that exists has 19, where +5 is a 26% swing — and on the 5-assertion
+    // corpus that preceded it, +5 was arithmetically unreachable, so the gate had never once
+    // been meetable as written. The rate is the intent; the count is derived every run.
+    const v = validateCorpus(shipped(), HTML_DIR);
+    const table = v.goNoGoA.find((g) => g.bucket === 'table_preservation')!;
+    expect(table.n).toBe(19);
+    expect(table.specCount).toBe(5);
+    expect(table.count).toBe(3);
+    expect(table.restated).toBe(true);
+    // What the carried-forward count would have MEANT here — the number that makes the drift
+    // legible rather than a matter of taste.
+    expect(table.specCountRateHere).toBeCloseTo(5 / 19, 6);
+    // Never below the intended effect size: rounding is up, so a restatement can only tighten.
+    expect(table.effectiveRate).toBeGreaterThanOrEqual(table.intendedRate);
+  });
+
+  it('re-derives the overall gate too, because 124 is not the 120 the count was computed at', () => {
+    const v = validateCorpus(shipped(), HTML_DIR);
+    const overall = v.goNoGoA.find((g) => g.bucket === 'overall')!;
+    expect(overall.n).toBe(v.assertions.actual);
+    expect(overall.count).toBe(Math.ceil(0.05 * overall.n));
+    expect(overall.effectiveRate).toBeGreaterThanOrEqual(0.05);
+  });
+
+  it('moves the count when the corpus moves — the property a prose number cannot have', () => {
+    // The derivation must track the denominator, or it is just a differently-worded constant.
+    // Halving the bucket must halve the gate.
+    const m = shipped();
+    for (const f of m.fixtures) {
+      f.assertions = f.assertions.filter((a, i) => a.category !== 'table_preservation' || i % 2 === 0);
+    }
+    const v = validateCorpus(m, HTML_DIR);
+    const table = v.goNoGoA.find((g) => g.bucket === 'table_preservation')!;
+    expect(table.n).toBeLessThan(19);
+    expect(table.count).toBe(Math.ceil(0.15 * table.n));
+  });
+
+  it('FAILS the corpus when a go/no-go rate is finer than its bucket can express', () => {
+    // The negative control, and the case that produced K22: at 5 `table_preservation`
+    // assertions the finest step is 0.20, so "+0.15" cannot be spelled at all — it can only be
+    // rounded up to a 20% swing while still reading as 15%. That is a CORPUS defect (the bucket
+    // is too small to carry the verdict), so it fails here rather than being absorbed into a
+    // number someone quotes in a review.
+    const m = shipped();
+    let kept = 0;
+    for (const f of m.fixtures) {
+      f.assertions = f.assertions.filter((a) => a.category !== 'table_preservation' || kept++ < 5);
+    }
+    const v = validateCorpus(m, HTML_DIR);
+    const table = v.goNoGoA.find((g) => g.bucket === 'table_preservation')!;
+    expect(table.n).toBe(5);
+    expect(table.expressible).toBe(false);
+    expect(v.ok).toBe(false);
+    expect(v.violations.join(' ')).toMatch(/not expressible/);
+    expect(v.violations.join(' ')).toMatch(/Needs >= 7 assertions/);
+  });
+
+  it('does NOT fail the shipped corpus, whose buckets are large enough for both rates', () => {
+    // The must-not-fire half. A gate that reddens on the corpus it ships with gets disabled.
+    const v = validateCorpus(shipped(), HTML_DIR);
+    expect(v.goNoGoA.every((g) => g.expressible)).toBe(true);
+    expect(v.violations.join(' ')).not.toMatch(/not expressible/);
+  });
+
+  it('counts the assertions an empty extraction satisfies, per kind (K24 guidance)', () => {
+    // Reported, never gated: any ratio picked here would be a number nobody measured, which is
+    // the failure this file exists to prevent. The count is what a fixture author steers by.
+    const v = validateCorpus(shipped(), HTML_DIR);
+    expect(v.emptySatisfiable.assertions).toBe(v.assertions.actual);
+    expect(v.emptySatisfiable.byKind.absent).toBeGreaterThan(0);
+    expect(v.emptySatisfiable.total).toBeGreaterThan(0);
+    expect(v.emptySatisfiable.total).toBeLessThan(v.assertions.actual);
+  });
+
+  it('classifies a zero-floor count assertion as empty-satisfiable and a real floor as not', () => {
+    // `char count in [0, 400]` is satisfied by producing nothing at all; `[200, 6000]` is not.
+    // The distinction is the whole content of the K24 report — without it the number would just
+    // be "how many absent assertions are there".
+    expect(satisfiedByEmptyExtraction({ kind: 'count', category: 'markdown_fidelity', feature: 'char', min: 0, max: 400, why: 't' })).toBe(true);
+    expect(satisfiedByEmptyExtraction({ kind: 'count', category: 'markdown_fidelity', feature: 'char', min: 200, max: 6000, why: 't' })).toBe(false);
+    expect(satisfiedByEmptyExtraction({ kind: 'contains', category: 'markdown_fidelity', value: 'x', why: 't' })).toBe(false);
+    expect(satisfiedByEmptyExtraction({ kind: 'absent', category: 'boilerplate_noise', value: 'x', why: 't' })).toBe(true);
   });
 });
 
