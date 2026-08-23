@@ -492,8 +492,14 @@ async function createWindow(): Promise<void> {
    * make the app unquittable. A crash is already survivable — the log is append-only and the next boot
    * reads what got there — an app the user cannot close is not. On expiry we leave via `app.exit`,
    * which by contract emits neither `before-quit` nor `will-quit` and so cannot re-enter this handler.
+   *
+   * The bound is a backstop for a WEDGED broker, so it must sit well clear of what a healthy quit
+   * costs — a deadline ordinary use brushes against is not a backstop, it is a truncation with a
+   * timer. Measured: eight live sessions cost ~4.2s here, because `shutdown()` walks them serially and
+   * each detach and append is a broker round trip. 10s leaves that headroom and still sits under the
+   * 15s the e2e lane bounds `close()` at, so a slow quit cannot turn into a red lane either.
    */
-  const SHUTDOWN_DEADLINE_MS = 5_000;
+  const SHUTDOWN_DEADLINE_MS = 10_000;
   let quitState: 'idle' | 'shutting-down' | 'cleared' = 'idle';
   app.on('before-quit', (event) => {
     if (quitState === 'cleared') return; // our own re-quit below: this is the one that must go through
