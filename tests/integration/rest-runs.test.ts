@@ -97,6 +97,8 @@ class SseClient {
   headers: http.IncomingHttpHeaders = {};
   /** Whether the SERVER ended the stream. A tail that ends on its own is a statement to the client. */
   ended = false;
+  /** The reconnect backoff the server opened with, in ms; undefined if it never sent one. */
+  retryMs?: number;
   private buffer = '';
   private req?: http.ClientRequest;
   private waiters: Array<() => void> = [];
@@ -144,6 +146,10 @@ class SseClient {
           if (key === 'id') frame.id = value;
           else if (key === 'event') frame.event = value;
           else if (key === 'data') frame.data = value;
+          // `retry:` arrives as its own field-only block. Recorded rather than dropped, because it
+          // is the reconnect backoff every server-side end hands the client, and a reader that
+          // cannot see it cannot assert it reached the wire.
+          else if (key === 'retry') this.retryMs = Number(value);
         }
         if (frame.id !== undefined || frame.data !== undefined) this.frames.push(frame);
       }
@@ -706,14 +712,26 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
     client.kill();
   }, 20000);
 
-  it('opens the stream with a retry hint and keeps it alive with heartbeats', async () => {
+  /**
+   * WHY: the retry hint is the client's half of every server-side end. `runs.ts` ends the stream on
+   * its own terms at four doors — a stalled reader, a hold-buffer overflow before and during the
+   * go-live flush, and an unhealable seq gap — and each is only lossless because the client comes
+   * back through `Last-Event-ID`. This directive is what sets how long it waits before it does, so
+   * a stream that opened without it would leave a browser client on the user agent's own default.
+   *
+   * The row it replaces asserted `frames.some(f => f.id === undefined) || frames.length >= 1`, whose
+   * right operand `waitForFrames(1)` had already guaranteed — and whose left operand could never be
+   * true, because the reader dropped a field-only `retry:` block on the floor. Deleting the server's
+   * retry write left it green.
+   */
+  it('opens the stream with the reconnect backoff every server-side end depends on', async () => {
     const id = await createRun('stream framing');
     const client = new SseClient();
     await client.open(`/v1/runs/${id}/events`);
     await client.waitForFrames(1);
     expect(client.headers['cache-control']).toContain('no-cache');
-    // `retry:` is parsed as a frame field by our reader; assert it reached the wire.
-    expect(client.frames.some((f) => f.id === undefined) || client.frames.length >= 1).toBe(true);
+    // Not merely present — the value, because it IS the contract a client schedules against.
+    expect(client.retryMs).toBe(3000);
     client.kill();
   }, 20000);
 
