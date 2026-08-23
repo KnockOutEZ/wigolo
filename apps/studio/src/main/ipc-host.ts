@@ -52,7 +52,12 @@ export function registerIpc(win: BrowserWindow, tabs: TabManager, runs: RunViewM
       return runId ? { ...t, runId } : t;
     });
     return {
-      runs: runs.list(),
+      // LIVE runs, never the lifetime listing. This is pushed once per 16 ms coalescing window and
+      // crosses a structured clone, and nothing here is ever forgotten — a finished run keeps its
+      // projection — so `list()` made every broadcast cost every run the machine had ever seen: 253 KB
+      // at 2,000 finished runs, 4.6 MB and 7 ms of the frame at 10,000, on the thread that paints.
+      // A surface that wants history asks for it; it does not get it sixty times a second.
+      runs: runs.listLive(),
       // Derived from the focused tab, never a pointer of its own. A separate "current run" would let
       // the chrome name one run while the window shows another's page — which is what it did.
       // `null` when the human is in their own tab: they are not inside any run.

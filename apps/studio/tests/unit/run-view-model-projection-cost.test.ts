@@ -303,7 +303,7 @@ describe('RunViewModel — a burst with a reader attached', () => {
     };
     createRunTray({
       tray,
-      runs: { list: () => vm.list(), onChange: (cb) => vm.onChange(cb) },
+      runs: { listLive: () => vm.listLive(), onChange: (cb) => vm.onChange(cb) },
       setVisibility: async () => {},
       onError: () => {},
     });

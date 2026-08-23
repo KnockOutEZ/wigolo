@@ -87,7 +87,7 @@ describe('a run event that outlives the menu-bar item', () => {
   const mount = (port: TrayPort): ReturnType<typeof createRunTray> =>
     createRunTray({
       tray: port,
-      runs: { list: () => vm.list(), onChange: (cb) => vm.onChange(cb) },
+      runs: { listLive: () => vm.listLive(), onChange: (cb) => vm.onChange(cb) },
       setVisibility: async () => {},
       onError: () => {},
     });
@@ -170,7 +170,7 @@ describe('without the guard, the same two orderings are the outage', () => {
     item = new DestroyableTray();
     createRunTray({
       tray: rawPort(item),
-      runs: { list: () => vm.list(), onChange: (cb) => vm.onChange(cb) },
+      runs: { listLive: () => vm.listLive(), onChange: (cb) => vm.onChange(cb) },
       setVisibility: async () => {},
       onError: () => {},
     });

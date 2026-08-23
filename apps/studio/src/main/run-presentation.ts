@@ -26,7 +26,12 @@ export interface PresentationWindow {
 
 /** The run projection, narrowed the same way. */
 export interface PresentationRuns {
-  list(): RunSummary[];
+  /**
+   * The LIVE runs. Both questions this controller asks are about runs that are being WATCHED, and a
+   * watched run is listable by definition — so the lifetime listing only ever added finished, unwatched
+   * runs to walk, on a read that happens once per fan-out, at up to 60 Hz.
+   */
+  listLive(): RunSummary[];
   tabsOf(runId: string): string[];
   setVisibility(runId: string, next: 'visible' | 'hidden', by: PresentationBy, surface?: PromoteSurface): Promise<boolean>;
   onChange(cb: () => void): void;
@@ -67,7 +72,7 @@ export class RunPresentationController {
   private wanted(): 'visible' | 'hidden' {
     if (!this.deps.bootHidden) return 'visible';
     if (!this.reconciled) return 'hidden';
-    return this.deps.runs.list().some((r) => r.visibility === 'visible') ? 'visible' : 'hidden';
+    return this.deps.runs.listLive().some((r) => r.visibility === 'visible') ? 'visible' : 'hidden';
   }
 
   /**
@@ -121,7 +126,7 @@ export class RunPresentationController {
    * log stays the only account of what the human could see.
    */
   async reconcile(): Promise<void> {
-    for (const run of this.deps.runs.list()) {
+    for (const run of this.deps.runs.listLive()) {
       if (run.visibility !== 'visible') continue;
       await this.deps.runs.setVisibility(run.id, 'hidden', 'system');
     }
