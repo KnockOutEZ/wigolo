@@ -106,6 +106,38 @@ describe('RunViewModel — the user tab group', () => {
     await vm.attachTab(run.id, 'tab-a');
     expect(vm.agentVisibleTabs('no-such-run', ['tab-a'])).toEqual([]);
   });
+
+  /**
+   * The memo is an implementation detail, and a returned array is the caller's.
+   *
+   * These enumerations read straight off the memoised projection, so before this they handed every
+   * caller the SAME array — the one the cache is holding. Callers treat what they are given as
+   * theirs: `endRun` iterates it while detaching, the tab strip sorts, a consumer splices. Any of
+   * those rewrote the cached projection under everyone else, and the run then appeared to have lost
+   * a tab that no `tab.detached` event ever mentioned — ownership silently disagreeing with the log,
+   * which is the one thing this class exists to prevent.
+   *
+   * Asserted through `ownerOf` as well as through the enumeration, because the corrupted memo is
+   * what law 4's refusal is checked against: a tab dropped out of the cache is a tab another run
+   * would then be allowed to attach.
+   */
+  it('hands out a copy of the tab list, so a mutating caller cannot corrupt the projection', async () => {
+    const run = await vm.createRun({ task: 'a' });
+    await vm.attachTab(run.id, 'tab-a');
+    await vm.attachTab(run.id, 'tab-b');
+
+    vm.tabsOf(run.id).pop();
+    expect(vm.tabsOf(run.id), 'the cached projection lost a tab nobody detached').toEqual(['tab-a', 'tab-b']);
+
+    vm.agentVisibleTabs(run.id).length = 0;
+    expect(vm.tabsOf(run.id), 'the agent-visible enumeration emptied the projection it read from').toEqual(['tab-a', 'tab-b']);
+
+    vm.list()[0]!.tabIds.push('tab-stolen');
+    expect(vm.tabsOf(run.id), 'a summary handed to the chrome was a handle on the projection').toEqual(['tab-a', 'tab-b']);
+
+    expect(vm.ownerOf('tab-b'), 'law 4 would now let another run attach a tab this one still owns').toBe(run.id);
+    expect(vm.snapshot(run.id)?.tabIds).toEqual(['tab-a', 'tab-b']);
+  });
 });
 
 describe('RunViewModel — a projection, with nothing of its own to lose', () => {
