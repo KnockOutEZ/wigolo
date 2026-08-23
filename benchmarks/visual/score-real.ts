@@ -136,14 +136,6 @@ export function realDpr2Identical(corpus: FrozenCorpus, sign: Signer): { exactPc
   return { exactPct: n ? (exact / n) * 100 : NaN, pages: n };
 }
 
-/**
- * A stricter reading of the same arm, and the one that catches what the signature-level comparison
- * cannot: whether the two captures were the same GEOMETRY to begin with.
- *
- * If the browser engine returns identical bounds at both scale factors then every signer — shipped,
- * mutated, or constant — scores 100% on the clause above, and the clause is measuring the capture
- * path rather than the metric. That is a property of the corpus, so it is measured on the corpus.
- */
 export interface Dpr2Attribution {
   pages: number;
   /** Captures whose boxes already differed at the two scale factors, before any signing. */
@@ -193,7 +185,11 @@ export function attributeDpr2(corpus: FrozenCorpus, sign: Signer): Dpr2Attributi
 }
 
 /** Per-seed-group clause-2 verdicts, so a corpus-wide number is never mistaken for a uniform one. */
-export function crossViewportByGroup(corpus: FrozenCorpus, sign: Signer, width: number): Array<{ group: string; inBandPct: number; pages: number }> {
+export function crossViewportByGroup(
+  corpus: FrozenCorpus,
+  sign: Signer,
+  width: number,
+): Array<{ group: string; inBandPct: number; pages: number }> {
   const pages = completePages(corpus);
   // The different-page distribution stays CORPUS-WIDE. Recomputing a 5th percentile inside a
   // six-page group would compare each group against a different threshold, and the columns would
@@ -213,26 +209,4 @@ export function crossViewportByGroup(corpus: FrozenCorpus, sign: Signer, width: 
   return [...byGroup.entries()]
     .map(([group, g]) => ({ group, inBandPct: (g.inBand / g.n) * 100, pages: g.n }))
     .sort((a, b) => a.group.localeCompare(b.group));
-}
-
-export function dpr2GeometryDiffers(corpus: FrozenCorpus): { differing: number; pages: number } {
-  const pages = completePages(corpus);
-  let differing = 0;
-  let n = 0;
-  for (const p of pages) {
-    const ra = renderOf(p, 'ref_a');
-    const rd = renderOf(p, 'dpr2');
-    if (!ra || !rd) continue;
-    n++;
-    if (ra.boxes.length !== rd.boxes.length) {
-      differing++;
-      continue;
-    }
-    const same = ra.boxes.every((b, i) => {
-      const o = rd.boxes[i];
-      return b.x === o.x && b.y === o.y && b.width === o.width && b.height === o.height;
-    });
-    if (!same) differing++;
-  }
-  return { differing, pages: n };
 }
