@@ -35,6 +35,13 @@ import {
   MAX_SIGNATURE_BYTES,
 } from '../../src/studio/layout/signature.js';
 import { signerAt, type Signer } from './score.js';
+import {
+  CLAUSE1_THRESHOLD,
+  CLAUSE2_THRESHOLD,
+  GATE_ALT_WIDTH,
+  HARVEST_ROUND_TRIP_BUDGET,
+  QUANTISER_BUDGET_MS,
+} from './gate-config.js';
 import { constantSigner, noDprSigner, noWidthNormSigner } from './mutants.js';
 import {
   CORPUS_PATH,
@@ -46,30 +53,28 @@ import {
   renderOf,
   type FrozenCorpus,
 } from './corpus.js';
-import { dpr2GeometryDiffers, realCrossViewport, realDpr2Identical, realSeparation } from './score-real.js';
+import { attributeDpr2, crossViewportByGroup, realCrossViewport, realDpr2Identical, realSeparation } from './score-real.js';
 
 /**
- * THE PINNED SECOND VIEWPORT WIDTH — part of the gate definition, not of the implementation.
+ * THE PINNED SECOND VIEWPORT WIDTH lives in `gate-config.ts` so the tests can assert the same number
+ * this report prints. It is chosen on one criterion, from the sweep captured below: the width where
+ * the shipped signer clears clause 2 and the spec's own normalisation mutant does not. A width both
+ * clear is a clause with no power — it would report green for a build whose viewport normalisation
+ * had been deleted; a width both fail measures re-flow rather than normalisation.
  *
- * 1024 is the widest width in the sweep that crosses a real responsive breakpoint on the corpus's
- * rail-and-content group (a documentation site collapses its navigation rail below ~1100px), so it
- * exercises a genuine RE-FLOW rather than a re-wrap, while staying inside the desktop range the
- * clause is about. 1152 was rejected as too easy — on the synthetic corpus it scored 100% precisely
- * because nothing re-flows there — and 720 as a different question: at 720 the page is a phone
- * layout, and "the same page on a phone signs like the same page on a desktop" is not what D3's
- * portability claim asserts.
+ * Measured on the frozen corpus (shipped signer / M2b), clause-2 in-band share at the shipped grid:
  *
- * Reversal condition: if the measured clause-2 verdict at 1024 turns out to be decided by ONE
- * archetype rather than by the corpus, the pin is wrong and the clause needs a per-archetype
- * verdict instead of a corpus-wide one. The per-width table below is what would show that.
+ *   1152 -> 100.0% / 97.4%   both clear 90%: NO POWER. Nothing in this corpus re-flows that early.
+ *   1024 ->  97.4% / 86.8%   shipped clears, mutant reds. <- the only width in the sweep that does
+ *    900 ->  89.5% / 47.4%   the shipped signer already reds: this is failing the metric for re-flow
+ *    720 ->  55.3% /  7.9%   a phone layout, which is a different question from D3's portability claim
+ *
+ * Reversal condition: if a re-capture moves 1024 into either of the other two regimes, the pin is
+ * wrong and is re-derived from the same criterion — never nudged to keep the verdict green. The
+ * per-width table and the PIN POWER line are printed on every run so that stays visible.
  */
-export const GATE_ALT_WIDTH = 1024;
 
 const GRIDS: Array<[number, number]> = [[4, 6], [6, 8], [8, 10], [10, 12], [12, 16], [16, 20]];
-const CLAUSE1_THRESHOLD = 95;
-const CLAUSE2_THRESHOLD = 90;
-const HARVEST_ROUND_TRIP_BUDGET = 1;
-const QUANTISER_BUDGET_MS = 250;
 
 const out = (s: string) => process.stdout.write(s);
 const pct = (n: number) => `${n.toFixed(1)}%`;
@@ -152,25 +157,44 @@ function clause2(corpus: FrozenCorpus): void {
     `\n  verdict at the PINNED second width ${GATE_ALT_WIDTH}px: ` +
     `${pinned.inBandPct >= CLAUSE2_THRESHOLD ? 'PASS' : 'FAIL'} (${pct(pinned.inBandPct)} over ${pinned.pages} pages)\n`,
   );
-  out('  the width is part of the gate, not of this file — see GATE_ALT_WIDTH above for why 1024 and not 1152 or 720.\n');
+  out('  the width is part of the gate, not of this file — see the pin note at the top of this file for why 1024 and not 1152 or 720.\n');
+
+  // A corpus-wide 97% can be 100% everywhere and 50% in one group, and the pin would then be an
+  // artefact of the seed mix rather than a property of the width. Split it.
+  out('\n  by seed group (the same corpus-wide 5th percentile for every column, so the columns compare):\n');
+  const groups = widths.map((w) => ({ w, rows: crossViewportByGroup(corpus, signerAt(), w) }));
+  const names = [...new Set(groups.flatMap((g) => g.rows.map((r) => r.group)))].sort();
+  out(`    ${'group'.padEnd(20)}${widths.map((w) => String(w).padEnd(9)).join('')}\n`);
+  for (const name of names) {
+    const cells = groups.map((g) => pct(g.rows.find((r) => r.group === name)?.inBandPct ?? NaN).padEnd(9)).join('');
+    const n = groups[0].rows.find((r) => r.group === name)?.pages ?? 0;
+    out(`    ${`${name} (${n})`.padEnd(20)}${cells}\n`);
+  }
 }
 
 function dprArm(corpus: FrozenCorpus): void {
   const adequacy = measureAdequacy(corpus);
   const judgeable = dprClauseJudgeable(adequacy);
   const exact = realDpr2Identical(corpus, signerAt());
-  const geom = dpr2GeometryDiffers(corpus);
+  const attr = attributeDpr2(corpus, signerAt());
   out('\nL-DET DEVICE-RATIO ARM — the same page captured at a device scale factor of 2\n\n');
-  out(`  signs identically      ${pct(exact.exactPct)} of ${exact.pages} pages\n`);
-  out(`  captures that DIFFER   ${geom.differing} of ${geom.pages} pages, before any signing\n`);
-  out(`  clause judgeable       ${judgeable.judgeable ? 'YES' : 'NO'} — ${judgeable.reason}\n`);
+  out(`  signs identically            ${pct(exact.exactPct)} of ${exact.pages} pages\n`);
+  out(`  captures that already DIFFER ${attr.geometryDiffers} of ${attr.pages} pages, before any signing\n`);
+  out(`  signatures that differ       ${attr.signatureDiffers}\n`);
+  out(`  differences the METRIC introduced (identical capture, different signature) ${attr.metricIntroduced} — must be 0\n`);
+  out(`  capture differences the normalisation ABSORBED ${attr.absorbed}\n`);
+  out(`  clause judgeable             ${judgeable.judgeable ? 'YES' : 'NO'} — ${judgeable.reason}\n`);
   if (!judgeable.judgeable) {
     out(
-      '\n  So the 100% above is a TAUTOLOGY, not a pass, and it is printed as one. On this capture path\n' +
-      '  the harvest reports a ratio of 1 for every page by construction (`harvest.ts:131-135`, and the\n' +
-      '  reasoning at `:104-127`), so the ratio division is the identity and removing it changes nothing.\n' +
-      '  What this arm DOES establish is the property the product actually depends on: a scale-factor\n' +
-      '  change does not move the captured geometry, so it cannot move the signature.\n',
+      '\n  So the exactness figure is NOT a pass for the ratio handling, and it is not printed as one.\n' +
+      '  On this capture path the harvest reports a ratio of 1 for every page by construction\n' +
+      '  (`harvest.ts:131-135`, reasoning at `:104-127`), so the ratio division is the identity and\n' +
+      '  removing it cannot change any number here.\n' +
+      '  What the arm DOES establish is the property the product depends on, and it is the stronger\n' +
+      '  of the two: every page whose signature moved had ALREADY moved in the capture, so the metric\n' +
+      '  introduced no scale-factor error of its own. Real pages do render differently at a scale\n' +
+      '  factor of 2 — responsive image selection changes intrinsic sizes, and the layout follows —\n' +
+      '  and reporting that as a signature difference is the metric being right, not wrong.\n',
     );
   }
 }
@@ -236,14 +260,13 @@ function inversion(corpus: FrozenCorpus): void {
     ['M2a no ratio divide ', noDprSigner()],
     ['M2b no width norm.  ', noWidthNormSigner()],
   ];
+  const widths = corpus.provenance.altWidthSweep ?? [corpus.provenance.altWidth];
   out(`\nINVERSION PROBES on the REAL corpus at the shipped grid ${LAYOUT_GRID_X}x${LAYOUT_GRID_Y}\n\n`);
-  out('signer                clause1   c2@1152  c2@1024  c2@720   dpr2exact\n');
+  out(`signer                clause1   ${widths.map((w) => `c2@${w}`.padEnd(9)).join('')}dpr2exact\n`);
   for (const [label, sign] of rows) {
     out(
       `${label}  ${pct(realSeparation(corpus, sign).separatedPct).padEnd(9)}` +
-      `${pct(realCrossViewport(corpus, sign, 1152).inBandPct).padEnd(9)}` +
-      `${pct(realCrossViewport(corpus, sign, 1024).inBandPct).padEnd(9)}` +
-      `${pct(realCrossViewport(corpus, sign, 720).inBandPct).padEnd(9)}` +
+      widths.map((w) => pct(realCrossViewport(corpus, sign, w).inBandPct).padEnd(9)).join('') +
       `${pct(realDpr2Identical(corpus, sign).exactPct)}\n`,
     );
   }
@@ -261,6 +284,23 @@ function inversion(corpus: FrozenCorpus): void {
     '  clamp is the identity on every box a real page produces, so no corpus score can detect its\n' +
     '  removal. Only the D5 unit assertions can.\n',
   );
+
+  // THE PIN'S POWER, re-measured rather than argued. A second width where the mutant also clears the
+  // threshold is a clause that would report green for a build with the normalisation deleted, and
+  // that is exactly the failure the width pin exists to prevent — so it is checked, every run.
+  const realAtPin = realCrossViewport(corpus, real, GATE_ALT_WIDTH).inBandPct;
+  const mutantAtPin = realCrossViewport(corpus, noWidthNormSigner(), GATE_ALT_WIDTH).inBandPct;
+  const hasPower = realAtPin >= CLAUSE2_THRESHOLD && mutantAtPin < CLAUSE2_THRESHOLD;
+  out(
+    `\n  PIN POWER at the pinned width ${GATE_ALT_WIDTH}px: real ${pct(realAtPin)} vs M2b ${pct(mutantAtPin)} ` +
+    `against the ${CLAUSE2_THRESHOLD}% threshold — ${hasPower ? 'the clause DISCRIMINATES' : 'THE CLAUSE HAS NO POWER AT THIS WIDTH'}\n`,
+  );
+  if (!hasPower) {
+    out(
+      '  Re-derive the pin from the sweep on the criterion in `gate-config.ts`. Do NOT move it to keep\n' +
+      '  the verdict green: a clause both signers clear is not evidence about either of them.\n',
+    );
+  }
 }
 
 function main(): void {

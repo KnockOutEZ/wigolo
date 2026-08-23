@@ -144,6 +144,77 @@ export function realDpr2Identical(corpus: FrozenCorpus, sign: Signer): { exactPc
  * mutated, or constant — scores 100% on the clause above, and the clause is measuring the capture
  * path rather than the metric. That is a property of the corpus, so it is measured on the corpus.
  */
+export interface Dpr2Attribution {
+  pages: number;
+  /** Captures whose boxes already differed at the two scale factors, before any signing. */
+  geometryDiffers: number;
+  /** Pages whose signature differs. */
+  signatureDiffers: number;
+  /**
+   * Pages where the capture was byte-identical and the signature is NOT. Any page here is a defect
+   * in the metric: identical input signing differently is non-determinism, and the count must be 0.
+   */
+  metricIntroduced: number;
+  /** Pages whose capture differed and whose signature survived it — the normalisation absorbing real noise. */
+  absorbed: number;
+}
+
+/**
+ * WHERE a device-ratio difference comes from. The bare exactness percentage cannot distinguish "the
+ * signature mishandles the ratio" from "the page genuinely renders differently at that ratio", and
+ * those are opposite findings — one is a bug in the metric, the other is a fact about the web that
+ * the metric is correctly reporting. So the two are separated by comparing the CAPTURES first.
+ */
+export function attributeDpr2(corpus: FrozenCorpus, sign: Signer): Dpr2Attribution {
+  const pages = completePages(corpus);
+  let geometryDiffers = 0;
+  let signatureDiffers = 0;
+  let metricIntroduced = 0;
+  let absorbed = 0;
+  let n = 0;
+  for (const p of pages) {
+    const ra = renderOf(p, 'ref_a');
+    const rd = renderOf(p, 'dpr2');
+    if (!ra || !rd) continue;
+    n++;
+    const geomSame =
+      ra.boxes.length === rd.boxes.length &&
+      ra.boxes.every((b, i) => {
+        const o = rd.boxes[i];
+        return b.x === o.x && b.y === o.y && b.width === o.width && b.height === o.height;
+      });
+    const sigSame = layoutDistance(sign(ra), sign(rd)) === 0;
+    if (!geomSame) geometryDiffers++;
+    if (!sigSame) signatureDiffers++;
+    if (geomSame && !sigSame) metricIntroduced++;
+    if (!geomSame && sigSame) absorbed++;
+  }
+  return { pages: n, geometryDiffers, signatureDiffers, metricIntroduced, absorbed };
+}
+
+/** Per-seed-group clause-2 verdicts, so a corpus-wide number is never mistaken for a uniform one. */
+export function crossViewportByGroup(corpus: FrozenCorpus, sign: Signer, width: number): Array<{ group: string; inBandPct: number; pages: number }> {
+  const pages = completePages(corpus);
+  // The different-page distribution stays CORPUS-WIDE. Recomputing a 5th percentile inside a
+  // six-page group would compare each group against a different threshold, and the columns would
+  // stop being comparable — which is the whole point of splitting them out.
+  const all = pages.map((p) => sign(renderOf(p, 'ref_a')!));
+  const cross = crossPairs(all);
+  const p5 = percentile(cross, 5);
+  const byGroup = new Map<string, { inBand: number; n: number }>();
+  pages.forEach((p, i) => {
+    const alt = renderOf(p, 'alt_width', width);
+    if (!alt) return;
+    const g = byGroup.get(p.group) ?? { inBand: 0, n: 0 };
+    g.n++;
+    if (layoutDistance(all[i], sign(alt)) < p5) g.inBand++;
+    byGroup.set(p.group, g);
+  });
+  return [...byGroup.entries()]
+    .map(([group, g]) => ({ group, inBandPct: (g.inBand / g.n) * 100, pages: g.n }))
+    .sort((a, b) => a.group.localeCompare(b.group));
+}
+
 export function dpr2GeometryDiffers(corpus: FrozenCorpus): { differing: number; pages: number } {
   const pages = completePages(corpus);
   let differing = 0;

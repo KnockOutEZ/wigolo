@@ -8,23 +8,36 @@
  * mutant scoring a PERFECT gate on a corpus with one archetype removed. Those assertions stay; this
  * file adds the check that stops that state being reported as a pass.
  *
- * Every corpus here is BUILT IN THE TEST, so these assertions do not depend on the network, on the
- * frozen capture, or on which pages happened to load on the day.
+ * Two kinds of assertion live here and the difference matters. The composition checks build their
+ * corpus IN THE TEST, so they depend on no capture and no network — they are about the gate's own
+ * logic. The G-S11a block scores the FROZEN corpus, because the spec's §5 dependency table makes
+ * S11b/c/d conditional on the gate having passed, and a verdict that was true once on the day it was
+ * measured is not that. Freezing the corpus is what lets the verdict be re-checked instead of
+ * re-captured against a web that has moved on.
  */
 import { describe, it, expect } from 'vitest';
-import type { LayoutInput } from '../../src/studio/layout/signature.js';
+import {
+  MAX_SIGNATURE_BYTES,
+  computeLayoutSignature,
+  serializeLayoutSignature,
+  type LayoutInput,
+} from '../../src/studio/layout/signature.js';
 import {
   MIN_CORPUS_PAGES,
   MIN_FLOOR_BINDING_PAGES,
   completePages,
   dprClauseJudgeable,
   floorBinds,
+  loadCorpus,
   measureAdequacy,
+  renderOf,
   type CapturedPage,
   type FrozenCorpus,
 } from '../../benchmarks/visual/corpus.js';
 import { layoutPage, buildCorpus } from '../../benchmarks/visual/synth.js';
-import { realSeparation } from '../../benchmarks/visual/score-real.js';
+import { attributeDpr2, realCrossViewport, realSeparation } from '../../benchmarks/visual/score-real.js';
+import { noWidthNormSigner } from '../../benchmarks/visual/mutants.js';
+import { GATE_ALT_WIDTH } from '../../benchmarks/visual/gate-config.js';
 import { scoreSeparation, signerAt, DESKTOP_WIDTH } from '../../benchmarks/visual/score.js';
 import { mulberry32 } from '../../benchmarks/visual/synth.js';
 
@@ -194,6 +207,65 @@ describe('completePages — a clause is never scored over a different subset tha
       ['dpr2', 1280, 2, fullBleed(1280, 2)],
     ]);
     expect(completePages(corpusOf([missingOneWidth]))).toHaveLength(0);
+  });
+});
+
+describe('G-S11a on the FROZEN corpus — the measured verdict, as an assertion that can red', () => {
+  // `gate.ts` PRINTS these numbers and a printed number cannot fail a build. The spec's §5
+  // dependency table makes S11b/c/d conditional on "G-S11a-1/2/3 all passed and recorded", so the
+  // verdict has to keep holding rather than have held once on the day it was measured. These
+  // assertions are what turns it into a standing gate: change the quantiser and they red.
+  const corpus = loadCorpus();
+  const pages = completePages(corpus);
+
+  it('is scored on a corpus L-DET permits a verdict from: real pages, at or above the mandated size', () => {
+    expect(pages.length).toBeGreaterThanOrEqual(MIN_CORPUS_PAGES);
+    // Real pages, not generated ones — the property `synth.ts:14-18` says the synthetic runner lacks.
+    expect(pages.every((p) => p.url.startsWith('http'))).toBe(true);
+    expect(corpus.provenance.browserEngine).toBe('chromium');
+  });
+
+  it('G-S11a-1 clause 1: two renders of one page separate from different pages on >= 95% of the corpus', () => {
+    const s = realSeparation(corpus, signerAt());
+    expect(s.pages).toBe(pages.length);
+    expect(s.separatedPct).toBeGreaterThanOrEqual(95);
+  });
+
+  it('G-S11a-1 clause 2: >= 90% stay in the same-page band across the width change, AT THE PINNED WIDTH', () => {
+    expect(corpus.provenance.altWidthSweep).toContain(GATE_ALT_WIDTH);
+    expect(realCrossViewport(corpus, signerAt(), GATE_ALT_WIDTH).inBandPct).toBeGreaterThanOrEqual(90);
+  });
+
+  it('and the pinned width is one where the clause HAS POWER: the normalisation mutant reds where the shipped signer passes', () => {
+    // Without this, a green clause 2 is compatible with the viewport normalisation having been
+    // deleted — at 1152 both signers clear the threshold. The pin is only meaningful if the mutant
+    // the spec mandates (`:475-478`, "skip the DPR/viewport normalisation") actually fails here.
+    expect(realCrossViewport(corpus, noWidthNormSigner(), GATE_ALT_WIDTH).inBandPct).toBeLessThan(90);
+  });
+
+  it('G-S11a-2: every capture cost exactly one round trip, counted on the injected transport at capture time', () => {
+    const sends = new Set(pages.flatMap((p) => p.renders.map((r) => r.sends)));
+    expect([...sends]).toEqual([1]);
+  });
+
+  it('G-S11a-3: the serialised signature stays inside 2 KB on the heaviest real page in the corpus', () => {
+    const largest = Math.max(
+      ...pages.map((p) => {
+        const r = renderOf(p, 'ref_a');
+        return r ? Buffer.byteLength(serializeLayoutSignature(computeLayoutSignature(r)), 'utf8') : 0;
+      }),
+    );
+    expect(largest).toBeGreaterThan(0);
+    expect(largest).toBeLessThanOrEqual(MAX_SIGNATURE_BYTES);
+  });
+
+  it('the device-ratio arm introduced no error of its own: every signature that moved had a capture that moved first', () => {
+    // This is the assertion the bare exactness percentage cannot make. 76% exact reads like a
+    // failure and is not one: real pages genuinely re-layout at a scale factor of 2 (responsive
+    // image selection changes intrinsic sizes). What would be a defect is an IDENTICAL capture
+    // signing differently, and that count must be zero.
+    const attr = attributeDpr2(corpus, signerAt());
+    expect(attr.metricIntroduced).toBe(0);
   });
 });
 
