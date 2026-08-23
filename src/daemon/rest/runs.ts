@@ -870,8 +870,15 @@ async function handleEvents(
     stalledBytes += bytes;
     if (stalledBytes > maxStalledBytes) endStalled('live');
   }, {
-    // A hole on the live stream is healed in place — see `heal`.
-    onGap: (from, arrivedAt) => { void heal(from, arrivedAt); },
+    /**
+     * A hole on the live stream is healed in place — see `heal`.
+     *
+     * Deferred a turn on purpose: the door fires inside `publishRunEvent`, which runs on the
+     * WRITER's stack, and the heal's first act is a store read. Starting it here would put that read
+     * in the middle of somebody's append. Nothing is racing it — the emitter went back to holding
+     * before this was called, so the events arriving in the gap queue up behind the missing seqs.
+     */
+    onGap: (from, arrivedAt) => { setImmediate(() => { void heal(from, arrivedAt); }); },
   });
 
   // Step 1 — subscribe BEFORE reading the log, so nothing appended during the replay is missed.
