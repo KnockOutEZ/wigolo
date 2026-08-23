@@ -7,7 +7,7 @@ import {
   type RunEvent,
   type RunEventInput,
 } from 'wigolo/studio';
-import { EMIT_COALESCE_MS, RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
+import { EMIT_COALESCE_MS, REMATERIALIZE_MAX_EVENTS, RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
 describe('RunViewModel — tab↔run ownership is the run log, not registry state', () => {
@@ -577,6 +577,114 @@ describe('RunViewModel — a boot read the pipe can carry', () => {
     expect(vm.list().map((r) => r.task)).toContain(`run ${DEFAULT_LIST_LIMIT}`);
     // Two pages for fifty-one runs, and it stops there: the cursor is followed, not chased forever.
     expect(store.reads.filter((r) => r === 'listRunLogs')).toHaveLength(2);
+  });
+});
+
+/**
+ * perf SD1 exit-7 — what the FIRST live envelope after boot costs a condensed run.
+ *
+ * A run is condensed because it is long, and a live long run is exactly the one that emits next — so
+ * this is the expected path, not the corner. It used to route through `adopt(replace)` → `replay` →
+ * `readLog` from seq 0 with no total cap, and then retain with no projection, so nothing condensed it
+ * again: one envelope after boot handed back the entire bound. At a hundred thousand envelopes that is
+ * two hundred sequential broker round-trips and a hundred thousand `JSON.parse`s on the thread that
+ * paints, and then the envelopes stay for the rest of the run's life.
+ *
+ * The instrument is the READ, not the resulting projection: the projection is identical either way,
+ * which is precisely why this was invisible to every other arm in this file.
+ */
+describe('RunViewModel — a condensed live run stays condensed', () => {
+  const restProjection = (store: FakeRunStore, runId: string) =>
+    projectRun({ id: runId, ...store.facts.get(runId)! }, store.log.get(runId)!);
+
+  /** A run past the re-materialization bound, condensed at boot, with a view-model watching it. */
+  async function seedLong(): Promise<{ store: FakeRunStore; vm: RunViewModel; runId: string; tail: number }> {
+    const store = new FakeRunStore();
+    const run = await store.createRun({ task: 'a very long one', sessionId: 'sess-long' });
+    for (let i = 0; i < REMATERIALIZE_MAX_EVENTS + 1; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    store.bootEventCapPerRun = 4;
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    return { store, vm, runId: run.id, tail: store.log.get(run.id)!.length };
+  }
+
+  it('answers one live envelope with a re-read of the projection, not of the log', async () => {
+    const { store, vm, runId, tail } = await seedLong();
+    expect(vm.retainedEventCount(runId), 'the oversize log was sent whole, so this arm proves nothing').toBe(0);
+    expect(tail).toBeGreaterThan(REMATERIALIZE_MAX_EVENTS);
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    // The production path: the store commits and fans the envelope out to the live tail.
+    await store.appendEvent(runId, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-live' } });
+    await vi.waitFor(() => expect(vm.ownerOf('tab-live')).toBe(runId));
+
+    // Nothing re-read the log at all — and if a future implementation does read it, it must start at
+    // or after the tail this projection already had, never from envelope zero.
+    expect(store.eventReads.filter((r) => r.runId === runId), 'the log was paged back in').toHaveLength(0);
+    for (const read of store.eventReads) {
+      expect(read.since, 'the whole log was re-materialized from seq 0 by one live envelope').toBeGreaterThanOrEqual(tail);
+    }
+    // One round-trip for the whole thing, and it is the one that asks for the projection.
+    expect(store.reads).toEqual(['getRun']);
+
+    // The kept state survives the replay: still condensed, still the answer REST gives for this run.
+    expect(vm.retainedEventCount(runId), 'the run was re-materialized and now holds its whole log').toBe(0);
+    expect(vm.snapshot(runId)).toEqual(restProjection(store, runId));
+    expect(vm.snapshot(runId)!.lastSeq).toBe(tail + 1);
+    // The two facts a projection cannot rebuild for itself have to survive it too.
+    expect(vm.sessionIdOf(runId)).toBe('sess-long');
+    expect(vm.runForSession('sess-long')).toBe(runId);
+  });
+
+  it('never pages the log back in, however long the burst', async () => {
+    const { store, vm, runId } = await seedLong();
+    const burst = 20;
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    for (let i = 0; i < burst; i++) {
+      await store.appendEvent(runId, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.cost.browserActions).toBe(REMATERIALIZE_MAX_EVENTS + burst + 1));
+
+    // Every envelope costs at most one bounded round-trip — `adopt` coalesces whatever lands while one
+    // is in flight — and NONE of them is a walk of the log. On the shipped code the first envelope
+    // alone paged the whole run back in and the nineteen behind it folded into what it left retained.
+    expect(store.eventReads, 'a burst paged the log back in').toHaveLength(0);
+    expect(store.reads.length, 'a burst cost more than a round-trip per envelope').toBeLessThanOrEqual(burst);
+    expect(store.reads.every((r) => r === 'getRun'), 'a burst read something other than the projection').toBe(true);
+    expect(vm.retainedEventCount(runId)).toBe(0);
+  });
+
+  /**
+   * The control, and the reason the bound is on LENGTH rather than on "was it condensed".
+   *
+   * Condensing is not only about one run's size: a short run at the end of a full boot page is
+   * condensed by the page's budget. That one is far better off holding its envelopes and folding the
+   * next one for free, so it is materialized — which is also what keeps the clock-driven status
+   * re-read of a short condensed run working the way the auto-deny arms below pin it.
+   */
+  it('still materializes a condensed run whose log is under the bound', async () => {
+    const store = new FakeRunStore();
+    const run = await store.createRun({ task: 'an ordinary one' });
+    for (let i = 0; i < 12; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    store.bootEventCapPerRun = 4;
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    expect(vm.retainedEventCount(run.id)).toBe(0);
+    store.eventReads.length = 0;
+
+    await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-new' } });
+    await vi.waitFor(() => expect(vm.ownerOf('tab-new')).toBe(run.id));
+
+    expect(vm.retainedEventCount(run.id), 'a short condensed run was left unable to fold its next envelope').toBeGreaterThan(0);
+    expect(store.eventReads.some((r) => r.since === 0), 'the short log was never actually read back').toBe(true);
+    expect(vm.snapshot(run.id)).toEqual(restProjection(store, run.id));
   });
 });
 

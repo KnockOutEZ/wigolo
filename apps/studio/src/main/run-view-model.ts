@@ -165,6 +165,27 @@ const REPLAY_PAGE_SIZE = 500;
  */
 const MAX_HYDRATION_PAGES = 200;
 
+/**
+ * How long a log may be before a condensed run is RE-condensed rather than materialized.
+ *
+ * A run is condensed at boot precisely because it is long, and a live long run is exactly the one
+ * that emits next — so the first live envelope used to route through `adopt(replace)` → `replay` →
+ * `readLog(runId)` from seq 0, with no total cap, and then `retain` with no projection so nothing
+ * condensed it again. One envelope after boot bought back the whole cost the bound had just removed:
+ * a hundred sequential broker round-trips, a `JSON.parse` per envelope on the thread that paints, and
+ * every envelope retained for the rest of the run's life.
+ *
+ * So the bound is re-applied here, on the same quantity the store decides it on — `seq` is gap-free
+ * and starts at 1, so the tail seq IS the event count — and a run still over it is answered the way
+ * boot answered it: with the store's own projection, for one round-trip and a few hundred bytes.
+ *
+ * A run UNDER it is materialized, because condensing is not only about length: a short run at the end
+ * of a full boot page is condensed by the page's budget rather than by its own size, and that one is
+ * far better off holding its envelopes and folding the next one for free. Pinned to the store's
+ * per-run boot budget so the two decisions cannot drift into disagreeing about the same run.
+ */
+export const REMATERIALIZE_MAX_EVENTS = 2_000;
+
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
   run: Run;
@@ -257,6 +278,27 @@ export class RunViewModel {
   private readonly logs = new Map<string, RunLog>();
   /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
   private readonly projected = new Map<string, ProjectionMemo>();
+  /**
+   * Law 4's index: which run owns each tab, maintained on the fold rather than searched for.
+   *
+   * `ownerOf` used to walk every run and project it, and it is asked once per TAB per state push —
+   * `ipc-host`'s `state()` labels every tab with its run — so a broadcast cost tabs × runs × the tabs
+   * each run holds, on the thread that paints, every time anything moved. The map is not a second
+   * source of truth: it is derived from the same envelopes `projectRun` folds, by the same two rules
+   * (`tab.attached` adds, `tab.detached` removes only from the run that holds it), and it is rebuilt
+   * wholesale from the projection whenever a run's log is replaced.
+   */
+  private readonly tabOwners = new Map<string, string>();
+  /**
+   * The tail seq at which each condensed run last had a CLOCK-driven re-read issued for it.
+   *
+   * `withoutExpiredDecisions` infers a status, and a condensed run asks the store for the real one
+   * rather than letting the guess stand. Once a run stays condensed across that re-read, asking again
+   * at the same tail cannot learn anything the last answer did not carry — and, if the store's clock
+   * disagrees about the card by a hair, each answer would narrow again and ask again forever. The
+   * tail moving is what makes a new answer possible, so the tail is what re-opens the question.
+   */
+  private readonly statusRereads = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   /** True while a fan-out window is open — see `emit`. */
   private coalescing = false;
@@ -453,8 +495,42 @@ export class RunViewModel {
       ...(typeof sessionId === 'string' ? { sessionId } : {}),
     });
     this.projected.delete(facts.id);
-    if (opts.projection) { this.condense(facts.id, opts.projection); return; }
-    if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
+    if (opts.projection) this.condense(facts.id, opts.projection);
+    else if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
+    // After the log is in its final shape, never before: a replaced log is a wholesale change of
+    // which tabs this run owns, and the projection that answers it is the condensed one when there is
+    // one. Cheap here in a way it is not on the fold — a replay is rare, and the projection it costs
+    // is memoised for the read that follows it.
+    this.indexTabs(facts.id);
+  }
+
+  /**
+   * Rebuild one run's entries in the tab index from its projection.
+   *
+   * Every entry this run owns is dropped first, because a replayed log can have LOST a tab — a detach
+   * that landed while the read was on the wire — and an index that only ever added would leave the
+   * run owning a tab its own projection no longer lists, which is law 4's refusal firing on a fact
+   * that is not in the log.
+   */
+  private indexTabs(runId: string): void {
+    for (const [tabId, owner] of this.tabOwners) if (owner === runId) this.tabOwners.delete(tabId);
+    const log = this.logs.get(runId);
+    if (!log) return;
+    for (const tabId of log.kept?.tabIds ?? this.project(runId)?.tabIds ?? []) this.tabOwners.set(tabId, runId);
+  }
+
+  /**
+   * The index moved by ONE envelope, which is the whole reason `ownerOf` can stop scanning.
+   *
+   * The two rules are `projectRun`'s own: an attach adds the tab, a detach removes it only from the
+   * run that holds it — a detach naming a tab this run does not own is a no-op there and has to be one
+   * here, or one run's stale detach would silently unown another run's live tab.
+   */
+  private trackTabOwnership(runId: string, event: RunEvent): void {
+    const tabId = event.payload.tabId;
+    if (typeof tabId !== 'string' || tabId.length === 0) return;
+    if (event.type === 'tab.attached') this.tabOwners.set(tabId, runId);
+    else if (event.type === 'tab.detached' && this.tabOwners.get(tabId) === runId) this.tabOwners.delete(tabId);
   }
 
   /**
@@ -512,6 +588,7 @@ export class RunViewModel {
     if (event.seq > log.lastSeq + 1 || log.kept) { void this.adopt(runId, { replace: true }); return; }
     log.events.push(event);
     log.lastSeq = event.seq;
+    this.trackTabOwnership(runId, event);
     this.projected.delete(runId);
     if (TERMINAL_EVENT_TYPES.has(event.type)) this.seal(runId);
     this.emit();
@@ -575,6 +652,7 @@ export class RunViewModel {
 
   private async replay(runId: string, opts: { replace?: boolean }): Promise<void> {
     try {
+      if (opts.replace && this.overBound(runId)) { await this.recondense(runId); return; }
       const facts = await this.readFacts(runId);
       if (!facts || (this.logs.has(runId) && !opts.replace)) return;
       const events = await this.readLog(runId);
@@ -584,6 +662,37 @@ export class RunViewModel {
     } catch {
       // The store is unreachable; the run is not lost, only unseen. A later event retries.
     }
+  }
+
+  /**
+   * Is this run condensed AND still too long to materialize? Answered from `lastSeq`, which the store
+   * has already told us, so deciding costs no read at all — the read is what the decision is about.
+   */
+  private overBound(runId: string): boolean {
+    const log = this.logs.get(runId);
+    return log?.kept !== undefined && log.lastSeq > REMATERIALIZE_MAX_EVENTS;
+  }
+
+  /**
+   * Replace a condensed run's kept projection with the store's current one, and stay condensed.
+   *
+   * One round-trip, and `getRun` is the read that WANTS the projection — the objection that made
+   * `readFacts` stop using it (projecting to throw the projection away) does not apply here, because
+   * the projection is the answer. Every reader is served from it exactly as it was before the
+   * envelope arrived, `lastSeq` comes back as the store's real tail so the next envelope is still
+   * recognised as the next one, and the session link is carried over because a projection cannot
+   * rebuild it and no envelope is coming to replay it from.
+   */
+  private async recondense(runId: string): Promise<void> {
+    const held = this.logs.get(runId);
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    this.retain(factsOf(run), [], {
+      lastSeq: run.lastSeq,
+      projection: run,
+      ...(held?.sessionId ? { sessionId: held.sessionId } : {}),
+    });
+    this.emit();
   }
 
   /**
@@ -804,9 +913,13 @@ export class RunViewModel {
     await this.fold(runId, event);
   }
 
+  /**
+   * Law 4's question, answered from the index rather than by searching for it. See `tabOwners` for
+   * why: this is asked once per tab per state push, and the scan it replaces was the only reason a
+   * broadcast's cost grew with how many runs the machine had ever seen.
+   */
   ownerOf(tabId: string): string | undefined {
-    for (const runId of this.logs.keys()) if (this.snapshot(runId)!.tabIds.includes(tabId)) return runId;
-    return undefined;
+    return this.tabOwners.get(tabId);
   }
 
   isUserTab(tabId: string): boolean {
@@ -867,22 +980,39 @@ export class RunViewModel {
   snapshot(runId: string): Run | undefined {
     const log = this.logs.get(runId);
     if (!log) return undefined;
-    const now = this.now();
     if (log.kept) {
-      const kept = withoutExpiredDecisions(log.kept, now);
+      const kept = withoutExpiredDecisions(log.kept, this.now());
       this.trackHorizon(runId, kept);
       // The narrowing INFERRED a status — see `withoutExpiredDecisions`. A condensed run has the log
       // that could state it, just not here, so re-read it. Deduped by `adopt`, and a no-op after the
-      // first one lands, because the run is no longer condensed.
-      if (kept !== log.kept) void this.adopt(runId, { replace: true });
+      // first one lands for a run the re-read materializes, because it is no longer condensed.
+      if (kept !== log.kept) this.rereadCondensed(runId);
       return kept;
     }
+    return this.project(runId);
+  }
+
+  /** The memoised projection of a log this process still holds. `snapshot` minus the condensed arm. */
+  private project(runId: string): Run | undefined {
+    const log = this.logs.get(runId);
+    if (!log) return undefined;
+    const now = this.now();
     const memo = this.projected.get(runId);
     if (memo && (memo.staleAt === undefined || now.getTime() < memo.staleAt)) return memo.run;
     const run = projectRun(log.facts, log.events, now);
     this.projected.set(runId, { run, staleAt: autoDenyHorizonOf(run) });
     this.trackHorizon(runId, run);
     return run;
+  }
+
+  /**
+   * Ask the store for a condensed run's real status, at most once per tail. See `statusRereads`.
+   */
+  private rereadCondensed(runId: string): void {
+    const log = this.logs.get(runId);
+    if (!log?.kept || this.statusRereads.get(runId) === log.lastSeq) return;
+    this.statusRereads.set(runId, log.lastSeq);
+    void this.adopt(runId, { replace: true });
   }
 
   /**
@@ -910,7 +1040,7 @@ export class RunViewModel {
       this.projected.delete(runId);
       // A condensed run has no envelopes left to re-project, so `withoutExpiredDecisions` is guessing
       // at a status the store can state: replay it rather than let the guess stand.
-      if (this.logs.get(runId)?.kept) void this.adopt(runId, { replace: true });
+      this.rereadCondensed(runId);
       this.emit();
     }, Math.max(0, at - this.now().getTime()));
     this.horizons.set(runId, { at, stop });

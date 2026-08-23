@@ -47,6 +47,12 @@ export class FakeRunStore implements RunStoreClient {
    */
   readonly reads: string[] = [];
   /**
+   * Every log read, with the seq it started from. `reads` says a read happened; only the `since` says
+   * whether it was a tail or a re-materialization of the whole run — which is the difference between
+   * folding a live long run and paying for it again from envelope zero.
+   */
+  readonly eventReads: Array<{ runId: string; since: number; limit: number | undefined }> = [];
+  /**
    * The store's own bounds, mirrored so a test can FORCE them instead of building a log big enough
    * to trip the shipped ones. The broker's real numbers are two and four orders of magnitude larger;
    * what a test has to exercise is the behaviour at the boundary, which is identical either side of
@@ -170,6 +176,7 @@ export class FakeRunStore implements RunStoreClient {
 
   async eventsSince(runId: string, since = 0, limit?: number): Promise<RunEvent[]> {
     this.reads.push('eventsSince');
+    this.eventReads.push({ runId, since, limit });
     const page = (this.log.get(runId) ?? []).filter((e) => e.seq > since);
     return page.slice(0, Math.min(limit ?? this.eventsPageCeiling, this.eventsPageCeiling));
   }

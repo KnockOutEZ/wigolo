@@ -72,6 +72,72 @@ describe('RunViewModel — folding an envelope does not replay the log', () => {
   });
 });
 
+/**
+ * The same class of defect one seam over: `ownerOf` used to WALK every run and project it to ask
+ * whether that run held the tab. It is asked once per TAB per state push — `ipc-host`'s `state()`
+ * labels every tab with the run that owns it — so a single broadcast cost tabs × runs × the tabs each
+ * run holds, on the thread that paints, and it grew with every run the machine had ever seen rather
+ * than with anything the human is looking at.
+ *
+ * `snapshot` is the instrument for the same reason `projectRun` is above: the ANSWER is identical
+ * whether it came from an index or from a scan, so nothing about the answer can see the difference.
+ */
+describe('RunViewModel — a broadcast does not scan the runs to label a tab', () => {
+  it('answers ownership from a fold-maintained index', async () => {
+    const store = new FakeRunStore();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+
+    const owners = new Map<string, string>();
+    for (let i = 0; i < 50; i++) {
+      const run = await vm.createRun({ task: `run ${i}` });
+      await vm.attachTab(run.id, `tab-${i}`);
+      owners.set(`tab-${i}`, run.id);
+    }
+    // Two tabs the human opened and no run has ever attached — law 4's separate group.
+    const universe = [...owners.keys(), 'human-1', 'human-2'];
+
+    const projections = vi.spyOn(vm, 'snapshot');
+    // One state push, exactly as `ipc-host` assembles it: every tab labelled with its run.
+    const labelled = universe.map((tabId) => [tabId, vm.ownerOf(tabId)] as const);
+    const mine = vm.userTabs(universe);
+
+    expect(projections, 'labelling the tabs replayed every run once per tab').not.toHaveBeenCalled();
+    projections.mockRestore();
+
+    // The control: a bound is worth nothing if the answer moved. Every tab is still labelled with the
+    // run that attached it, and the human's own tabs are still nobody's.
+    for (const [tabId, runId] of labelled) expect(runId).toBe(owners.get(tabId));
+    expect(mine).toEqual(['human-1', 'human-2']);
+  });
+
+  it('keeps the index in step with the log through detach, reattach and a replay', async () => {
+    const store = new FakeRunStore();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    const a = await vm.createRun({ task: 'first' });
+    const b = await vm.createRun({ task: 'second' });
+    await vm.attachTab(a.id, 'tab-x');
+
+    expect(vm.ownerOf('tab-x')).toBe(a.id);
+    expect(vm.isUserTab('tab-x')).toBe(false);
+
+    // Released, so it becomes the human's again — and another run may now legally take it.
+    await vm.detachTab('tab-x', 'closed');
+    expect(vm.ownerOf('tab-x')).toBeUndefined();
+    expect(vm.isUserTab('tab-x')).toBe(true);
+    await vm.attachTab(b.id, 'tab-x');
+    expect(vm.ownerOf('tab-x')).toBe(b.id);
+
+    // A replay REPLACES a log rather than folding into it, so the index has to be rebuilt from the
+    // projection there — a run that lost a tab while the read was on the wire must lose it here too.
+    const fresh = new RunViewModel(store);
+    await fresh.hydrate();
+    expect(fresh.ownerOf('tab-x')).toBe(b.id);
+    expect(fresh.tabsOf(a.id)).toEqual([]);
+  });
+});
+
 describe('RunViewModel — a burst with a reader attached', () => {
   let store: FakeRunStore;
   let vm: RunViewModel;
