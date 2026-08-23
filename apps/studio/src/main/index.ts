@@ -480,7 +480,44 @@ async function createWindow(): Promise<void> {
     // gone one of those would announce a transition into destroyed surfaces.
     runs.dispose();
   };
-  app.on('before-quit', () => { void shutdown(); });
+  /**
+   * Law 1: the log IS the run, so a quit that races its own terminal appends leaves the log and every
+   * projection of it permanently disagreeing — a run stuck `running` forever (boot `reconcile()`
+   * rewrites visibility, never status) and a `decision.requested` that no surface can ever resolve.
+   * `before-quit` is fire-and-forget by default and Electron tears the process down while `shutdown()`
+   * is still awaiting its `endRun` appends, on the most ordinary path in the product: Cmd-Q, or the
+   * last window closing. So the first quit is CANCELLED and re-issued once shutdown has actually landed.
+   *
+   * Bounded, because the opposite failure is the worse one: a wedged broker child must not be able to
+   * make the app unquittable. A crash is already survivable — the log is append-only and the next boot
+   * reads what got there — an app the user cannot close is not. On expiry we leave via `app.exit`,
+   * which by contract emits neither `before-quit` nor `will-quit` and so cannot re-enter this handler.
+   */
+  const SHUTDOWN_DEADLINE_MS = 5_000;
+  let quitState: 'idle' | 'shutting-down' | 'cleared' = 'idle';
+  app.on('before-quit', (event) => {
+    if (quitState === 'cleared') return; // our own re-quit below: this is the one that must go through
+    event.preventDefault();
+    // An impatient second Cmd-Q lands here mid-shutdown. Swallowing it is deliberate: the deadline
+    // already bounds the wait, and honouring it would reintroduce exactly the truncated append above.
+    if (quitState === 'shutting-down') return;
+    quitState = 'shutting-down';
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<'expired'>((resolve) => {
+      timer = setTimeout(() => resolve('expired'), SHUTDOWN_DEADLINE_MS);
+    });
+    const landed = shutdown().catch(() => undefined).then(() => 'landed' as const);
+    void Promise.race([landed, expired]).then((outcome) => {
+      clearTimeout(timer);
+      quitState = 'cleared';
+      if (outcome === 'expired') {
+        process.stderr.write(`[studio] shutdown did not finish within ${SHUTDOWN_DEADLINE_MS}ms; exiting anyway\n`);
+        app.exit(0);
+        return;
+      }
+      app.quit();
+    });
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     await win.loadURL(process.env.ELECTRON_RENDERER_URL);
