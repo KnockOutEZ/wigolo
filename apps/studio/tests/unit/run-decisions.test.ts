@@ -118,3 +118,97 @@ describe('the approval card, mirrored into the run log', () => {
     expect(store.appends).toEqual([]);
   });
 });
+
+/**
+ * The same auto-deny, on a clock that has actually REACHED the deadline.
+ *
+ * The rows above fire the timer callback with the wall clock still at parking time, and that is the
+ * one ordering under which the shipped code worked: `settle` asked `runForDecision`, which asks the
+ * PROJECTION, and a projection drops a card the instant the clock passes `autoDenyAt` — the same
+ * instant the two-minute timer runs. In the app the two always coincide, so `runForDecision`
+ * answered `undefined`, `settle` returned, and `decision.resolved {outcome: auto_denied}` was never
+ * written for any card that reached its deadline. The badge then stayed lit forever, because the
+ * only event that could clear it was the one nothing wrote.
+ *
+ * So these rows advance the clock FIRST and fire second. That is the real ordering, and it is the
+ * ordering the fixture above could not produce.
+ */
+describe('the auto-deny, at the moment the clock actually reaches it', () => {
+  let store: FakeRunStore;
+  let vm: RunViewModel;
+  let mirror: DecisionMirror;
+  let timers: Array<{ ms: number; fire: () => void }>;
+  let vmTimers: Array<{ ms: number; fire: () => void }>;
+  let runId: string;
+  let nowMs: number;
+
+  const collect = (into: Array<{ ms: number; fire: () => void }>) => (cb: () => void, ms: number): (() => void) => {
+    const t = { ms, fire: cb };
+    into.push(t);
+    return () => { const at = into.indexOf(t); if (at >= 0) into.splice(at, 1); };
+  };
+
+  beforeEach(async () => {
+    nowMs = Date.now();
+    store = new FakeRunStore();
+    timers = [];
+    vmTimers = [];
+    vm = new RunViewModel(store, () => new Date(nowMs), collect(vmTimers));
+    await vm.hydrate();
+    mirror = createDecisionMirror({ runs: vm, onError: () => {}, setTimer: collect(timers) });
+    runId = (await vm.createRun({ task: 'buy the thing', sessionId: 'sess-1' })).id;
+    store.appends.length = 0;
+  });
+
+  /** Advance past the deadline, then fire what the deadline was for — in that order. */
+  const reachTheDeadline = async (): Promise<void> => {
+    nowMs += 120_000 + 1_000;
+    for (const t of [...timers]) t.fire();
+    await new Promise((r) => setImmediate(r));
+  };
+
+  it('writes the resolution, on a projection that has already dropped the card', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    expect(vm.snapshot(runId)!.status).toBe('needs_you');
+    store.appends.length = 0;
+
+    await reachTheDeadline();
+
+    // Not "the status reads running" — that was already true from the clock alone. The claim is that
+    // the LOG says so, which is what every other surface and every later replay reads.
+    expect(store.appends).toEqual([
+      { runId, type: 'decision.resolved', payload: { decisionId: 'ap-1', outcome: 'auto_denied', by: 'system' } },
+    ]);
+    expect(vm.snapshot(runId)!.status).toBe('running');
+  });
+
+  it('fans that resolution out to a subscribed listener, with no other event landing', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+    const seen: string[] = [];
+    vm.onChange(() => seen.push(vm.snapshot(runId)!.status));
+
+    await reachTheDeadline();
+
+    // The tray, the dock badge and the presentation controller all redraw off this callback and
+    // nothing else; a transition nobody announced is a transition they never make.
+    expect(seen).toContain('running');
+    expect(store.appends.map((a) => a.type)).toEqual(['decision.resolved']);
+  });
+
+  it('re-parking one approval id leaves exactly one timer, and writes exactly one resolution', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+
+    // The stale timer used to survive its replacement, on its own earlier clock, and auto-deny a card
+    // the log had already resolved — a second resolution for one decision.
+    expect(timers).toHaveLength(1);
+
+    await reachTheDeadline();
+
+    expect(store.appends).toEqual([
+      { runId, type: 'decision.resolved', payload: { decisionId: 'ap-1', outcome: 'auto_denied', by: 'system' } },
+    ]);
+  });
+});

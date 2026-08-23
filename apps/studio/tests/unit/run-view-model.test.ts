@@ -659,3 +659,163 @@ describe('RunViewModel — a memo the clock can invalidate', () => {
     expect(vm.snapshot(run.id)!.status, 'narrowing the kept projection moved something other than the card').toBe('done');
   });
 });
+
+/**
+ * The other half of the same defect: being right when asked is not the same as saying so.
+ *
+ * The memo above expires on the clock, which makes every READ correct. But `emit` fires on events,
+ * and the `needs_you → running` transition at `autoDenyAt` arrives without one — that is the whole
+ * point of a deadline. Nothing reads a quiet run, so nothing recomputed: the tray label, the dock
+ * badge and the presentation controller went on showing "needs you" indefinitely, while REST —
+ * which projects fresh on every request — said the run was running. Two surfaces, one log, two
+ * answers, which is exactly what the memo's own comment claimed to have removed.
+ *
+ * So the projection schedules the fan-out at the deadline. Every arm here drives that timer, because
+ * a test that only reads after moving the clock cannot tell a fan-out from a memo.
+ */
+describe('RunViewModel — the deadline announces itself', () => {
+  const collect = (into: Array<{ ms: number; fire: () => void }>) => (cb: () => void, ms: number): (() => void) => {
+    const t = { ms, fire: cb };
+    into.push(t);
+    return () => { const at = into.indexOf(t); if (at >= 0) into.splice(at, 1); };
+  };
+
+  it('fans the expiry out to its subscribers without any envelope landing', async () => {
+    const store = new FakeRunStore();
+    let now = new Date();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => now, collect(timers));
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+
+    // The read the tray does on every redraw, which is also what registers the deadline.
+    expect(vm.list()[0]!.status).toBe('needs_you');
+    const card = vm.snapshot(run.id)!.pendingDecisions[0]!;
+    expect(timers, 'nothing was scheduled for a deadline the run is holding').toHaveLength(1);
+
+    const seen: string[] = [];
+    vm.onChange(() => seen.push(vm.list()[0]!.status));
+    store.appends.length = 0;
+
+    now = new Date(Date.parse(card.autoDenyAt));
+    timers[0]!.fire();
+
+    // The claim is the callback, not the value: every attention surface redraws off this and nothing
+    // else, so a transition nobody announced is a transition they never make.
+    expect(seen, 'the deadline passed in silence — the badge stays lit until something else happens').toEqual(['running']);
+    expect(store.appends, 'the fan-out was bought by writing to the log').toEqual([]);
+  });
+
+  it('schedules nothing for a run with no card, and lets the deadline go when one is answered', async () => {
+    // The control. Scheduling unconditionally would satisfy the arm above and put a timer behind
+    // every run the app has ever seen.
+    const store = new FakeRunStore();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => new Date(), collect(timers));
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+
+    expect(vm.list()[0]!.status).toBe('running');
+    expect(timers).toHaveLength(0);
+
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+    expect(vm.list()[0]!.status).toBe('needs_you');
+    expect(timers).toHaveLength(1);
+
+    await vm.resolveDecision(run.id, 'd1', 'approved', 'human');
+    expect(vm.list()[0]!.status).toBe('running');
+    expect(timers, 'a deadline outlived the card it was for').toHaveLength(0);
+  });
+
+  it('lets go of every scheduled deadline when it is disposed', async () => {
+    const store = new FakeRunStore();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => new Date(), collect(timers));
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+    vm.list();
+    expect(timers).toHaveLength(1);
+
+    vm.dispose();
+
+    // A timer that outlives the app would announce a transition into destroyed surfaces.
+    expect(timers).toHaveLength(0);
+  });
+
+  /**
+   * A condensed run is the sharpest version of the same disagreement. It bypasses the memo entirely
+   * — its answer is the kept projection — so stripping the expired card while leaving `status` alone
+   * left one projection contradicting ITSELF: `status: needs_you` beside `pendingDecisions: []`, for
+   * the rest of a live run's life.
+   */
+  it('moves a condensed run’s status with the card it can no longer project, and then re-reads the log', async () => {
+    const store = new FakeRunStore();
+    const seeded = await store.createRun({ task: 'a long one', sessionId: 'sess-long' });
+    for (let i = 0; i < 12; i++) {
+      await store.appendEvent(seeded.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    await store.appendEvent(seeded.id, {
+      actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' },
+    });
+    store.bootEventCapPerRun = 4;
+
+    let now = new Date();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => now, collect(timers));
+    await vm.hydrate();
+
+    expect(vm.retainedEventCount(seeded.id), 'the log was sent whole, so this arm proves nothing').toBe(0);
+    expect(vm.snapshot(seeded.id)!.status).toBe('needs_you');
+    const card = vm.snapshot(seeded.id)!.pendingDecisions[0]!;
+    expect(timers).toHaveLength(1);
+
+    now = new Date(Date.parse(card.autoDenyAt));
+
+    const narrowed = vm.snapshot(seeded.id)!;
+    expect(narrowed.pendingDecisions).toEqual([]);
+    expect(narrowed.status, 'a condensed run answered needs_you beside an empty card list').toBe('running');
+
+    // …and the narrowing is only the answer until the log speaks. `needs_you` can also come from a
+    // pause the kept projection no longer records, so a narrowed read replays the run rather than
+    // leaving the app on a status it inferred. The deadline timer does the same for a run nobody
+    // happens to read.
+    await new Promise((r) => setImmediate(r));
+
+    expect(vm.retainedEventCount(seeded.id), 'the condensed run was never re-read').toBeGreaterThan(0);
+    expect(vm.snapshot(seeded.id)).toEqual(
+      projectRun({ id: seeded.id, ...store.facts.get(seeded.id)! }, store.log.get(seeded.id)!, now),
+    );
+  });
+
+  it('re-reads a condensed run at the deadline even when nobody read it first', async () => {
+    // The unwatched case, which is the one the whole fix is about: a quiet run is exactly the run
+    // no surface asks about, so the narrowing-on-read path never runs for it.
+    const store = new FakeRunStore();
+    const seeded = await store.createRun({ task: 'a long one' });
+    for (let i = 0; i < 12; i++) {
+      await store.appendEvent(seeded.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    await store.appendEvent(seeded.id, {
+      actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' },
+    });
+    store.bootEventCapPerRun = 4;
+
+    let now = new Date();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => now, collect(timers));
+    await vm.hydrate();
+    const card = vm.snapshot(seeded.id)!.pendingDecisions[0]!;
+    expect(vm.retainedEventCount(seeded.id)).toBe(0);
+    expect(timers).toHaveLength(1);
+
+    // Nothing reads. The clock moves, and the deadline is all that happens.
+    now = new Date(Date.parse(card.autoDenyAt));
+    timers[0]!.fire();
+    await new Promise((r) => setImmediate(r));
+
+    expect(vm.retainedEventCount(seeded.id), 'a run nobody read stayed on its condensed guess').toBeGreaterThan(0);
+    expect(vm.snapshot(seeded.id)!.status).toBe('running');
+  });
+});
