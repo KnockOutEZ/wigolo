@@ -314,6 +314,200 @@ describe('the live tail detects a seq gap and refuses to write a hole', () => {
 });
 
 /**
+ * WHY: the live door above is exposed BY an arrival, and the flush is the phase where no arrival can
+ * expose anything — `replaying` is still true for the whole of `goLive`, so a hold buffer that itself
+ * has a hole in it (a notify lost in the window between the replay's last page and the flush) was
+ * written out whole, hole and all, by the one path whose entire job is ordering.
+ *
+ * Two things make this its own door rather than a term dropped from `emit`'s:
+ *
+ *  - Dropping `!replaying` OOMs the process. `emit`'s door RE-HOLDS the event that tripped it, and
+ *    `goLive`'s drain-to-empty loop re-splices and re-emits that same event forever.
+ *  - `seq > last + 1` is not the predicate here. During the flush `last` may still be the resume
+ *    point rather than a seq this stream delivered, so a pruned log — `?since=0` against a log whose
+ *    first row is seq 5 — would read as a hole and end a perfectly healthy stream.
+ */
+describe('the go-live flush refuses to write a hole that is inside the hold buffer', () => {
+  interface Gap { from: number; arrivedAt: number }
+
+  function tail(since = 0, opts: { maxHeld?: number } = {}): {
+    emitter: ReturnType<typeof createOrderedEmitter>;
+    written: number[];
+    gaps: Gap[];
+  } {
+    const written: number[] = [];
+    const gaps: Gap[] = [];
+    const emitter = createOrderedEmitter(since, (e) => written.push(e.seq), {
+      onGap: (from, arrivedAt) => gaps.push({ from, arrivedAt }),
+      ...opts,
+    });
+    return { emitter, written, gaps };
+  }
+
+  it('stops at the hole instead of flushing across it, and reports where it is', async () => {
+    const { emitter, written, gaps } = tail();
+    // The replay delivered seq 1. Seq 2's notify was lost in the window before the flush, so what is
+    // held is 3 and 4 — a buffer with a hole at its head.
+    emitter.emit(ev(1));
+    emitter.offer(ev(3));
+    emitter.offer(ev(4));
+
+    await emitter.goLive();
+
+    expect(written).toEqual([1]);
+    expect(gaps).toEqual([{ from: 1, arrivedAt: 3 }]);
+    expect(emitter.lastEmitted()).toBe(1);
+  });
+
+  it('finds a hole in the MIDDLE of the buffer, after flushing the part that is contiguous', async () => {
+    const { emitter, written, gaps } = tail();
+    emitter.emit(ev(1));
+    emitter.offer(ev(2));
+    emitter.offer(ev(3));
+    emitter.offer(ev(6)); // 4 and 5 lost their notifies
+
+    await emitter.goLive();
+
+    expect(written).toEqual([1, 2, 3]);
+    expect(gaps).toEqual([{ from: 3, arrivedAt: 6 }]);
+  });
+
+  it('hands the healer the same state the live door does — everything from the hole is still held', async () => {
+    const { emitter, written, gaps } = tail();
+    emitter.emit(ev(1));
+    emitter.offer(ev(3));
+    emitter.offer(ev(4));
+    await emitter.goLive();
+    expect(gaps).toHaveLength(1);
+    expect(emitter.overflowed()).toBe(false);
+
+    // What the healer does: re-read the durable log from `from` through the same door, then flush.
+    // Seqs 3 and 4 are in that read AND still in the buffer; the monotone guard is what stops the
+    // re-held copies being delivered a second time.
+    for (const seq of [2, 3, 4]) emitter.emit(ev(seq));
+    await emitter.goLive();
+
+    expect(written).toEqual([1, 2, 3, 4]);
+    // Live again afterwards, with no second alarm for a hole that has been filled.
+    emitter.offer(ev(5));
+    expect(written).toEqual([1, 2, 3, 4, 5]);
+    expect(gaps).toHaveLength(1);
+  });
+
+  /**
+   * The OOM regression, pinned. `emit`'s door re-holds; this one must NOT go back round the
+   * drain-to-empty loop and look at the same event again. `pace` counts the passes: the door fires
+   * before anything is emitted, so a single hand-off spends zero of them.
+   */
+  it('hands off once and returns — it does not re-splice the event that tripped it', async () => {
+    const { emitter, written, gaps } = tail();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+    emitter.suspend();
+    for (const seq of [3, 4, 5, 6]) emitter.offer(ev(seq));
+
+    let passes = 0;
+    await emitter.goLive(() => { passes += 1; return true; });
+
+    expect(passes).toBe(0);
+    expect(written).toEqual([1]);
+    expect(gaps).toEqual([{ from: 1, arrivedAt: 3 }]);
+  });
+
+  /**
+   * The pruned-log shape, and the reason the predicate is `hasDelivered()` rather than a seq
+   * comparison alone. `?since=0` against a log whose first row is seq 5 replays nothing, so `last`
+   * is still 0 when the flush starts — and 5 is not a hole, it is the beginning.
+   */
+  it('does not read the first event of a pruned log as a hole', async () => {
+    const { emitter, written, gaps } = tail(0);
+    expect(emitter.hasDelivered()).toBe(false);
+
+    emitter.offer(ev(5));
+    emitter.offer(ev(6));
+    await emitter.goLive();
+
+    expect(written).toEqual([5, 6]);
+    expect(gaps).toEqual([]);
+  });
+
+  /**
+   * Same predicate, the other shape it protects: a reconnect whose next event has not committed yet,
+   * so the replay delivers nothing and `last` is the client's resume point. That first held event is
+   * deliberately let through — and the live door picks the stream up from there, which is what makes
+   * letting it through safe rather than a second hole.
+   */
+  it('does not read a resumed stream\'s first held event as a hole, and the live door covers it after', async () => {
+    const { emitter, written, gaps } = tail(4);
+    expect(emitter.lastEmitted()).toBe(4);
+    expect(emitter.hasDelivered()).toBe(false);
+
+    emitter.offer(ev(9));
+    await emitter.goLive();
+    expect(written).toEqual([9]);
+    expect(gaps).toEqual([]);
+    expect(emitter.hasDelivered()).toBe(true);
+
+    emitter.offer(ev(11));
+    expect(written).toEqual([9]);
+    expect(gaps).toEqual([{ from: 9, arrivedAt: 11 }]);
+  });
+
+  /**
+   * Re-holding can blow the ceiling — the buffer grew while the flush was running. Overflow is the
+   * existing door and it answers the same way: dropped whole, and the caller ends the stream.
+   */
+  it('overflowing while it re-holds is the existing overflow door, not a partial flush', async () => {
+    const { emitter, written, gaps } = tail(0, { maxHeld: 4 });
+    emitter.emit(ev(1));
+    // Contiguous up to 3, then a hole. The run keeps appending DURING the flush — that is what makes
+    // the buffer too full to take the tail of itself back, and it is the only way here is reachable.
+    for (const seq of [2, 3, 6, 7]) emitter.offer(ev(seq));
+
+    let storm = 8;
+    await emitter.goLive(() => {
+      for (let i = 0; i < 2; i++) emitter.offer(ev(storm++));
+      return true;
+    });
+
+    expect(written).toEqual([1, 2, 3]);
+    expect(gaps).toEqual([{ from: 3, arrivedAt: 6 }]);
+    // Dropped whole. The caller's `goLiveOrEnd` sees this and ends the stream, so the client resumes
+    // from `Last-Event-ID` — never half a buffer delivered with a hole where the rest was.
+    expect(emitter.overflowed()).toBe(true);
+  });
+
+  /**
+   * `suspend` is what the silence reconcile uses to put a LIVE emitter back into holding before it
+   * reads the log — the gap door does the same thing from inside `emit`, but a reconcile has no
+   * arriving event to do it from.
+   */
+  it('suspend puts a live emitter back into holding, and is a no-op on one that already is', async () => {
+    const { emitter, written } = tail();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+    emitter.offer(ev(2));
+    expect(written).toEqual([1, 2]); // live: offered events go straight out
+
+    emitter.suspend();
+    emitter.suspend(); // idempotent — a caller need not know which phase it is in
+    emitter.offer(ev(3));
+    expect(written).toEqual([1, 2]);
+
+    await emitter.goLive();
+    expect(written).toEqual([1, 2, 3]);
+  });
+
+  it('reports delivery separately from the resume point — lastEmitted cannot answer it', () => {
+    const { emitter } = tail(4);
+    expect(emitter.lastEmitted()).toBe(4);
+    expect(emitter.hasDelivered()).toBe(false);
+    emitter.emit(ev(5));
+    expect(emitter.hasDelivered()).toBe(true);
+  });
+});
+
+/**
  * WHY: a byte budget beside the count is not belt-and-braces — the count bounds the wrong quantity.
  * An event payload is capped at 64k characters, so 2048 held events is a ~128 MB hold buffer per
  * tail that the count is perfectly happy with, and a tail is opened by anyone who can authenticate.
@@ -963,5 +1157,187 @@ describe('SSE writes are bounded in bytes on every path, not only between replay
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * WHY: every other door on this route is exposed BY an arrival — a seq lands, and its distance from
+ * the last one delivered says a notify was lost. A run whose LAST event loses its notify is never
+ * followed by another live event, so nothing ever asks the question. The stream stays open, the
+ * heartbeat keeps it alive, and every consumer goes on believing a finished run is still running,
+ * forever. That is the `run.completed` shape, and it is the one that matters most.
+ *
+ * So the check has to be driven by SILENCE instead. The heartbeat already fires only when nothing
+ * has been written for a full interval, which is exactly the state the hole hides in.
+ *
+ * These rows drive the route with a fake store because the assertion is about the READ: that an idle
+ * tail issues exactly one single-row probe per interval and writes nothing when it comes back empty,
+ * and that it issues none at all while a durable read already owns the stream.
+ */
+describe('the silence reconcile — a lost notify on a run\'s last event', () => {
+  const HEARTBEAT = 'WIGOLO_STUDIO_SSE_HEARTBEAT_MS';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[HEARTBEAT];
+    // Short enough that a row is a test rather than a wait. The interval is the stream's only clock,
+    // so this is the knob that makes the silence path observable at all.
+    process.env[HEARTBEAT] = '30';
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[HEARTBEAT];
+    else process.env[HEARTBEAT] = saved;
+  });
+
+  interface Read { from: number; limit: number | undefined }
+
+  /** A response that takes every byte, so nothing here is confused with back-pressure. */
+  function openExchange(): {
+    req: IncomingMessage;
+    res: ServerResponse;
+    frames: () => string[];
+    pings: () => number;
+    ended: () => boolean;
+    close: () => void;
+  } {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const written: string[] = [];
+    let ended = false;
+    const on = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      const list = listeners.get(event) ?? [];
+      list.push(fn);
+      listeners.set(event, list);
+      return undefined;
+    };
+    const off = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      listeners.set(event, (listeners.get(event) ?? []).filter((f) => f !== fn));
+      return undefined;
+    };
+    const req = { headers: {}, destroyed: false, socket: { setTimeout: () => {} }, on, off } as unknown as IncomingMessage;
+    const res = {
+      destroyed: false,
+      headersSent: false,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => { written.push(chunk); return true; },
+      end: () => { ended = true; },
+      on,
+      off,
+    } as unknown as ServerResponse;
+    return {
+      req,
+      res,
+      frames: () => written.filter((c) => c.startsWith('id: ')),
+      pings: () => written.filter((c) => c.startsWith(': ping')).length,
+      ended: () => ended,
+      close: () => { for (const fn of [...(listeners.get('close') ?? [])]) fn(); },
+    };
+  }
+
+  /** An in-memory durable log, so a row can append WITHOUT publishing — the lost-notify shape. */
+  function fakeStore(log: RunEvent[], reads: Read[], gate?: () => Promise<void>): RunsStore {
+    return {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async (_id: string, cursor: number, limit?: number) => {
+        reads.push({ from: cursor, limit });
+        if (gate !== undefined) await gate();
+        const after = log.filter((e) => e.seq > cursor);
+        return limit === undefined ? after : after.slice(0, limit);
+      },
+    };
+  }
+
+  function tail(ex: { req: IncomingMessage; res: ServerResponse }, store: RunsStore, id: string): Promise<void> {
+    return import('../../../src/daemon/rest/runs.js').then(({ handleRunsRequest }) =>
+      handleRunsRequest(ex.req, ex.res, {
+        pathname: `/v1/runs/${id}/events`,
+        method: 'GET',
+        url: new URL(`http://127.0.0.1/v1/runs/${id}/events`),
+        respond: () => {},
+        sendError: () => {},
+        store,
+      }));
+  }
+
+  async function until(what: () => boolean, ms = 3000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!what()) {
+      if (Date.now() > deadline) throw new Error('condition never held');
+      await new Promise<void>((r) => setTimeout(r, 10));
+    }
+  }
+
+  it('delivers a terminal event whose notify was lost, on a stream nothing else would ever wake', async () => {
+    const log = [ev(1, 'run.created')];
+    const reads: Read[] = [];
+    const ex = openExchange();
+    await tail(ex, fakeStore(log, reads), '7fq6');
+    await until(() => ex.frames().length === 1);
+
+    // Committed and durable, and NOBODY is told — the broker-crash-between-commit-and-notify shape.
+    // Nothing follows it, because it is the run's last event. On the tip behaviour this stream sits
+    // at [1] with heartbeats keeping it alive and every watcher believing the run is still going.
+    log.push(ev(2, 'run.completed'));
+
+    await until(() => ex.frames().length === 2);
+    expect(ex.frames()[1]).toContain('event: run.completed');
+    // Healed IN the stream: the client is not asked to reconnect for an event the daemon can read.
+    expect(ex.ended()).toBe(false);
+    ex.close();
+  });
+
+  it('writes nothing when the log has nothing — an idle run with a watcher is the ordinary case', async () => {
+    const log = [ev(1, 'run.created')];
+    const reads: Read[] = [];
+    const ex = openExchange();
+    await tail(ex, fakeStore(log, reads), '7fq7');
+    await until(() => ex.frames().length === 1);
+    const afterReplay = reads.length;
+
+    // Several intervals of nothing happening. The heartbeat proves the clock actually ticked, so
+    // "no frame was written" is a statement about the reconcile rather than about a timer that never
+    // fired — and the probes prove it looked.
+    await until(() => ex.pings() >= 3);
+
+    const probes = reads.slice(afterReplay);
+    expect(probes.length).toBeGreaterThanOrEqual(3);
+    // One row, from exactly where this stream got to. Not a page, not a projection of the run.
+    for (const probe of probes) expect(probe).toEqual({ from: 1, limit: 1 });
+    // The whole assertion: it looked, found nothing, and left the wire alone.
+    expect(ex.frames().length).toBe(1);
+    expect(ex.ended()).toBe(false);
+    ex.close();
+  });
+
+  it('does not probe while a durable read already owns the stream', async () => {
+    const log = [ev(1, 'run.created')];
+    const reads: Read[] = [];
+    let release = (): void => {};
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    const gate = async (): Promise<void> => {
+      if (!first) return;
+      first = false;
+      await parked;
+    };
+
+    const ex = openExchange();
+    const done = tail(ex, fakeStore(log, reads, gate), '7fq8');
+    // The replay is parked mid-read. Heartbeats go on firing — that is the point — and each one
+    // reaches the reconcile, which must decline: a second read across a running one would race the
+    // same seqs onto the wire from two places.
+    await until(() => ex.pings() >= 3);
+    expect(reads.length).toBe(1);
+
+    release();
+    await done;
+    // And it is a deferral, not a disable: the probe resumes the moment the replay lets go.
+    await until(() => reads.length > 1);
+    ex.close();
   });
 });

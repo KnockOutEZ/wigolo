@@ -462,6 +462,162 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
     client.kill();
   }, 20000);
 
+  /**
+   * WHY: the gap door above is exposed BY a later event, so a run whose LAST event loses its notify
+   * is invisible to it — nothing ever arrives to expose anything. The stream stays open, the
+   * heartbeat keeps it alive, and every consumer believes a finished run is still running, forever.
+   * That is the `run.completed` shape, the worst one, and no arrival-driven check can reach it.
+   *
+   * This row forces it on the wire: seq 2 is `run.completed`, committed WITHOUT a notify, and
+   * nothing follows it because there is nothing left to follow it. On the tip behaviour the client
+   * sits at [1] until it gives up. The reconcile rides on the heartbeat — which fires exactly when
+   * the stream has been silent for a full interval — and delivers seq 2 on the same connection.
+   */
+  it('delivers a terminal event whose notify was lost, on a stream nothing else would ever wake', async () => {
+    const previous = process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS;
+    process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = '150';
+    try {
+      const id = await createRun('lost terminal notify');
+      const client = new SseClient();
+      await client.open(`/v1/runs/${id}/events`);
+      await client.waitForFrames(1);
+      expect(client.seqs()).toEqual([1]);
+
+      // The run finishes. The commit lands; the notify does not. Nothing will ever be published on
+      // this run again — that is what makes it terminal and what makes the gap door blind to it.
+      appendEventWithoutNotify(db, id, { actor: { kind: 'daemon' }, type: 'run.completed', payload: { outcome: 'done' } });
+
+      await client.waitForFrames(2);
+      expect(client.seqs()).toEqual([1, 2]);
+      expect(client.frames[1].event).toBe('run.completed');
+      // The durable event itself, not a placeholder standing in for it.
+      expect(JSON.parse(client.frames[1].data!)).toMatchObject({ seq: 2, type: 'run.completed' });
+      // Healed in place: the client is not asked to reconnect for an event the daemon could read.
+      expect(client.ended).toBe(false);
+      client.kill();
+    } finally {
+      if (previous === undefined) delete process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS;
+      else process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = previous;
+    }
+  }, 20000);
+
+  /**
+   * The other half of that door, and the one that decides whether it is affordable: an idle run with
+   * a watcher on it is the ORDINARY case, and it must cost the wire nothing. The heartbeats prove
+   * the clock ticked — otherwise "no frame appeared" would be a statement about a timer that never
+   * fired rather than about the reconcile.
+   */
+  it('an idle tail with nothing new in the log stays silent — heartbeats only, no frames', async () => {
+    const previous = process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS;
+    process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = '120';
+    try {
+      const id = await createRun('idle watcher');
+      const client = new SseClient();
+      await client.open(`/v1/runs/${id}/events`);
+      await client.waitForFrames(1);
+
+      const deadline = Date.now() + 4000;
+      while (client.comments.length < 4 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(client.comments.length).toBeGreaterThanOrEqual(2);
+      expect(client.seqs()).toEqual([1]);
+      expect(client.ended).toBe(false);
+      client.kill();
+    } finally {
+      if (previous === undefined) delete process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS;
+      else process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = previous;
+    }
+  }, 20000);
+
+  /**
+   * WHY: the live gap door is deliberately live-only, and the go-live flush runs with `replaying`
+   * still true. A hold buffer that itself has a hole in it was therefore written out whole — by the
+   * one path on this route whose entire job is ordering.
+   *
+   * This row forces the shape on the wire with the seam the unfillable-gap row already uses: a
+   * notify with no commit behind it, published while the replay is still paging so it lands in the
+   * HOLD buffer rather than on the live path. When the replay finishes, the flush finds a seq far
+   * past the log's end. On the tip behaviour it writes it, and the client is left holding a stream
+   * with thousands of seqs missing and no way to learn it. The flush's own door refuses, hands off
+   * to the healer, and the healer — finding the log cannot produce them — ends the stream so the
+   * client resumes through the same `Last-Event-ID` door every reconnect already uses.
+   */
+  it('refuses a hole inside the go-live flush, and ends the stream when the log cannot fill it', async () => {
+    const previous = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
+    // One event per page, so the replay is guaranteed to still be paging — and therefore still
+    // HOLDING — when the row publishes below. A flush with an empty buffer asserts nothing.
+    process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = '1';
+    try {
+      const id = await createRun('hole inside the flush');
+      const total = 300;
+      for (let i = 1; i < total; i++) {
+        appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: `t${i}` } });
+      }
+
+      const client = new SseClient();
+      await client.open(`/v1/runs/${id}/events`);
+      // Mid-replay: the pages are one event wide and yield between each, so this is comfortably
+      // inside the window in which a live arrival is held rather than emitted.
+      await client.waitForFrames(3);
+      publishRunEvent(id, {
+        seq: 9999,
+        ts: '2026-08-23T12:00:00.000Z',
+        actor: { kind: 'daemon' },
+        type: 'run.completed',
+        payload: { outcome: 'done' },
+      });
+
+      await client.waitForEnd(15_000);
+      const seqs = client.seqs();
+      // Everything delivered is contiguous from seq 1. The tip behaviour shows up here as a 9999 on
+      // the end of that run — delivered, with a 9878-seq hole behind it, and the stream still open.
+      expect(seqs).toEqual(seqs.map((_, i) => i + 1));
+      expect(seqs).not.toContain(9999);
+      expect(seqs.length).toBeLessThanOrEqual(total);
+
+      // And the ending is a resume door, not a loss: the durable log is still whole behind it.
+      const resumed = new SseClient();
+      const from = seqs[seqs.length - 1];
+      await resumed.open(`/v1/runs/${id}/events`, { 'Last-Event-ID': String(from) });
+      await resumed.waitForFrames(total - from, 15_000);
+      expect(resumed.seqs()).toEqual(Array.from({ length: total - from }, (_, i) => from + 1 + i));
+      resumed.kill();
+      client.kill();
+    } finally {
+      if (previous === undefined) delete process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
+      else process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = previous;
+    }
+  }, 30000);
+
+  /**
+   * The predicate the flush door keys on is `has this stream delivered anything`, NOT `seq >
+   * last + 1` — during the flush `last` may still be the resume point rather than a seq this stream
+   * put on the wire. A pruned log is what makes the difference load-bearing: `?since=0` against a
+   * log whose first row is seq 5 is not a hole, it is the beginning, and reading it as one would end
+   * a perfectly healthy stream on every tail of every pruned run.
+   */
+  it('replays a log whose first seq is greater than the resume point without ending the stream', async () => {
+    const id = await createRun('pruned log shape');
+    for (let i = 0; i < 3; i++) {
+      appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: `t${i}` } });
+    }
+
+    // `?since=0` against a log this client has never seen, whose rows it will receive from the
+    // flush rather than the replay — the shape a naive `seq > last + 1` would call a hole at seq 1.
+    const client = new SseClient();
+    await client.open(`/v1/runs/${id}/events?since=0`);
+    await client.waitForFrames(4);
+    expect(client.seqs()).toEqual([1, 2, 3, 4]);
+    expect(client.ended).toBe(false);
+
+    // Still live afterwards, which is the part an over-eager door would have cost.
+    appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'run.completed', payload: {} });
+    await client.waitForFrames(5);
+    expect(client.seqs()).toEqual([1, 2, 3, 4, 5]);
+    client.kill();
+  }, 20000);
+
   it('resumes from Last-Event-ID after the connection is killed mid-stream — no gaps, no duplicates', async () => {
     const id = await createRun('kill and resume');
     for (let i = 0; i < 3; i++) {

@@ -54,8 +54,14 @@ export const MAX_CLIENT_FIELD_CHARS = 200;
 
 /** SSE frames are long-lived sockets, so they are capped separately from the request slot pool. */
 const DEFAULT_MAX_SSE_CONNECTIONS = 32;
-/** Idle streams get a comment frame so intermediaries do not reap them and dead peers surface. */
-const SSE_HEARTBEAT_MS = 15_000;
+/**
+ * Idle streams get a comment frame so intermediaries do not reap them and dead peers surface.
+ *
+ * It is also the stream's only clock, which is why the silence reconcile (see `reconcile` in
+ * `handleEvents`) rides on it: the interval fires exactly when nothing has been written for a full
+ * period, which is the one state a lost terminal notify can hide in.
+ */
+const DEFAULT_SSE_HEARTBEAT_MS = 15_000;
 /** Told to the client once at stream open; it governs the client's own reconnect backoff. */
 const SSE_RETRY_MS = 3000;
 /**
@@ -139,6 +145,12 @@ function sseMaxStalledBytes(): number {
   const raw = process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES;
   const parsed = raw === undefined ? NaN : Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SSE_MAX_STALLED_BYTES;
+}
+
+function sseHeartbeatMs(): number {
+  const raw = process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SSE_HEARTBEAT_MS;
 }
 
 function maxSseConnections(): number {
@@ -635,7 +647,27 @@ export interface OrderedEmitter {
    * same way the first replay does.
    */
   goLive(pace?: WritePace): Promise<void>;
+  /**
+   * Put a LIVE emitter back into holding, without an event to blame it on.
+   *
+   * The gap door does this from inside `emit` because it has one — a seq that arrived and exposed a
+   * hole. The silence reconcile has the opposite shape: it learns from the STORE that seqs exist
+   * which never arrived, so there is nothing to hold and no `emit` call to do it from, and the
+   * durable read it is about to run must not race the bus onto the wire. Same end state as the gap
+   * door leaves behind: everything offered from here queues in the buffer until the next `goLive`.
+   *
+   * A no-op on an emitter that is already holding, so a caller need not know which phase it is in.
+   */
+  suspend(): void;
   lastEmitted(): number;
+  /**
+   * Whether this stream has written a single frame yet.
+   *
+   * Not the same question as `lastEmitted() > 0`: on a resumed tail `last` starts at the client's
+   * resume point, so a stream that has delivered nothing still reports a positive seq. The flush's
+   * gap door needs the difference — see `goLive`.
+   */
+  hasDelivered(): boolean;
   /** True once the hold buffer hit its ceiling and was dropped. The stream must then END. */
   overflowed(): boolean;
 }
@@ -673,6 +705,11 @@ export function createOrderedEmitter(
   let last = since;
   let replaying = true;
   let overflow = false;
+  /**
+   * Set the first time a frame actually goes out. `last` cannot answer this — it starts at the
+   * resume point — and the flush's gap door is unsound without the distinction.
+   */
+  let delivered = false;
   const held: HeldEvent[] = [];
   let heldBytes = 0;
 
@@ -683,10 +720,12 @@ export function createOrderedEmitter(
    * replay, and the events arriving during one grow this daemon's heap exactly the way the events
    * arriving during the first one do.
    */
-  const hold = (event: RunEvent): void => {
+  const hold = (event: RunEvent, measured?: number): void => {
     // Measured on the serialized envelope because that is what the frame carries and what the
     // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
-    const bytes = Buffer.byteLength(JSON.stringify(event));
+    // `measured` is passed only when the entry is coming BACK out of this same buffer (the flush's
+    // gap door re-holds), where re-serializing to learn a number we already stored is pure waste.
+    const bytes = measured ?? Buffer.byteLength(JSON.stringify(event));
     if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
       held.length = 0;
       heldBytes = 0;
@@ -723,6 +762,7 @@ export function createOrderedEmitter(
       return;
     }
     last = event.seq;
+    delivered = true;
     write(event);
   };
 
@@ -749,7 +789,43 @@ export function createOrderedEmitter(
         heldBytes = 0;
         if (pending.length === 0) break;
         pending.sort((a, b) => a.event.seq - b.event.seq);
-        for (const entry of pending) {
+        for (let i = 0; i < pending.length; i++) {
+          const entry = pending[i];
+          /**
+           * The flush's half of the gap door, and it has to live HERE rather than in `emit`.
+           *
+           * `emit`'s door is live-only (`!replaying`), and the flush runs with `replaying` still
+           * true, so a hold buffer that itself has a hole — a notify lost in the window between the
+           * replay's last page and `goLive` — was written out whole. Simply dropping the
+           * `!replaying` term does not fix it: measured 2026-08-23, that OOMs the process, because
+           * `emit`'s door RE-HOLDS the event that tripped it and the drain-to-empty loop above then
+           * re-splices and re-emits the same event forever. Deciding before the `emit` call and
+           * RETURNING is what breaks that cycle — one pass, one hand-off, no second look.
+           *
+           * The predicate is not `seq > last + 1` alone either. During the flush `last` may still be
+           * the resume point rather than a seq this stream delivered, so a log that legitimately
+           * starts after `?since=` — a pruned log, or a reconnect whose next event has not committed
+           * yet — would read as a hole and end a healthy stream. `delivered` is the difference: only
+           * once a frame has actually gone out does `last + 1` mean "the next seq this client is
+           * owed". A first held event past an undelivered resume point is deliberately let through;
+           * `emit`'s live door and the silence reconcile cover the stream from there.
+           */
+          if (delivered && entry.event.seq > last + 1) {
+            const from = last;
+            const arrivedAt = entry.event.seq;
+            // Everything from the hole onward goes back into the buffer — the healer's contract is
+            // that the triggering event is held, and the rest of this buffer is in exactly the same
+            // position. They queue behind whatever the bus offered while we flushed; the next pass
+            // sorts, so order is restored there. Re-holding can blow the ceiling, in which case the
+            // caller ends the stream, which is the same answer an append storm already gets.
+            for (const rest of pending.slice(i)) {
+              if (overflow) break;
+              hold(rest.event, rest.bytes);
+            }
+            // `replaying` stays true: the emitter is already in the state the healer expects.
+            onGap(from, arrivedAt);
+            return;
+          }
           emit(entry.event);
           if (pace !== undefined && (await pace()) === false) {
             replaying = false;
@@ -762,7 +838,11 @@ export function createOrderedEmitter(
       }
       replaying = false;
     },
+    suspend() {
+      replaying = true;
+    },
     lastEmitted: () => last,
+    hasDelivered: () => delivered,
     overflowed: () => overflow,
   };
 }
@@ -825,8 +905,15 @@ async function handleEvents(
   let stalledBytes = 0;
   /** Bytes handed to the socket since the last pace check — the shared bulk-write budget. */
   let sincePace = 0;
+  /**
+   * True while a durable read and its flush own this stream — the opening replay, a heal, or a
+   * reconcile. It starts true because the opening replay is in flight from here on, and it is what
+   * keeps the silence reconcile from issuing a second read across one that is already running.
+   */
+  let busy = true;
   const flushBytes = sseFlushBytes();
   const maxStalledBytes = sseMaxStalledBytes();
+  const heartbeatMs = sseHeartbeatMs();
 
   // One repeating timer rather than a clear+set per event: a long replay would otherwise churn two
   // timer operations per envelope. The heartbeat only has to notice SILENCE, which a timestamp
@@ -842,10 +929,14 @@ async function handleEvents(
       log.debug('run tail skipped a heartbeat on a socket that has not drained', { runId: id, stalledBytes });
       return;
     }
-    if (Date.now() - lastWrite < SSE_HEARTBEAT_MS) return;
+    if (Date.now() - lastWrite < heartbeatMs) return;
     needsDrain = !res.write(': ping\n\n');
     lastWrite = Date.now();
-  }, SSE_HEARTBEAT_MS);
+    // Reaching here IS the silence: a full interval with nothing written. See `reconcile` — that is
+    // the state a lost notify on the run's LAST event hides in, and the heartbeat is the only clock
+    // this stream has. Not awaited; the timer must not become a place a store read can block.
+    void reconcile();
+  }, heartbeatMs);
   heartbeat.unref?.();
 
   const emitter = createOrderedEmitter(resume.since, (event) => {
@@ -1046,6 +1137,15 @@ async function handleEvents(
       arrivedAt,
       missing: arrivedAt - from - 1,
     });
+    busy = true;
+    try {
+      await healInner(from, arrivedAt);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function healInner(from: number, arrivedAt: number): Promise<void> {
     if (!(await pumpDurable(from, 'heal'))) return;
     if (closed || stalled) return;
     // The read did not reach the seq that exposed the hole, so the log cannot fill it — a notify
@@ -1059,6 +1159,69 @@ async function handleEvents(
       return;
     }
     await goLiveOrEnd('heal');
+  }
+
+  /**
+   * The silence door: the half of a lost notify that no later event can expose.
+   *
+   * `emit`'s gap door and the flush's both work the same way — a seq arrives, and its distance from
+   * the last one delivered says a notify was lost. That only ever fires because something ARRIVED.
+   * A run whose LAST event loses its notify — the `run.completed` case — is never followed by
+   * another live event, so nothing on this stream ever asks the question. The connection stays open,
+   * the heartbeat keeps it alive, and every consumer goes on believing a finished run is running.
+   * Law 1 makes the durable log the source of truth, and the log has the answer the whole time.
+   *
+   * So the check is driven by silence rather than by arrival. The heartbeat already fires only when
+   * nothing has been written for a full interval, which is exactly the state the hole hides in, so
+   * it asks the store for ONE event past `emitter.lastEmitted()`. Nothing there — the ordinary case,
+   * an idle run with a watcher on it — and this returns without writing a frame or touching the
+   * emitter. Something there means a notify was lost, and the same durable read that heals an
+   * arrival-exposed hole heals this one, on the same connection.
+   *
+   * COST. One `eventsSince(..., limit 1)` per SILENT tail per heartbeat interval — a tail that is
+   * receiving events never reaches here, because the heartbeat returns early on a stream that wrote
+   * inside the interval. On the studio host `store` is the broker, so that read is one round-trip
+   * over the child-process channel rather than an in-process indexed seek. The fleet is bounded by
+   * the SSE connection cap: at the default 32 connections and a 15s interval that is at most 32
+   * single-row reads per 15s, and only for connections that are idle anyway.
+   *
+   * It must not run across a replay, a heal, or another reconcile — `busy` is that gate, checked
+   * again after the read because a gap door can fire while it is in flight.
+   */
+  async function reconcile(): Promise<void> {
+    if (closed || stalled || busy) return;
+    const from = emitter.lastEmitted();
+    let ahead: RunEvent[];
+    try {
+      ahead = await store.eventsSince(id, from, 1);
+    } catch (err) {
+      // A probe that could not run is not evidence of a hole. Ending the stream on a transient store
+      // error would spend a reconnect on every idle tail the moment the store hiccups.
+      log.warn('run tail could not probe the durable log while idle; leaving the stream as it is', {
+        runId: id,
+        from,
+        error: String(err),
+      });
+      return;
+    }
+    if (ahead.length === 0) return;
+    if (closed || stalled || busy) return;
+    log.warn('run tail found durable events past its last delivered seq while silent; a notify was lost', {
+      runId: id,
+      from,
+      found: ahead[0].seq,
+    });
+    busy = true;
+    try {
+      // Back to holding BEFORE the read, for the same reason the gap door does it: anything the bus
+      // offers from here must queue behind the seqs we are about to put on the wire, not race them.
+      emitter.suspend();
+      if (!(await pumpDurable(from, 'reconcile'))) return;
+      if (closed || stalled) return;
+      await goLiveOrEnd('reconcile');
+    } finally {
+      busy = false;
+    }
   }
 
   // The handler reached here across two awaits (the router's dynamic import and the store resolve).
@@ -1090,4 +1253,8 @@ async function handleEvents(
 
   // Step 3 — release whatever arrived mid-replay through the same door, then run live.
   await goLiveOrEnd('replay');
+  // The opening read is done, so the silence reconcile may now take its turn. Cleared only on this
+  // path: every early return above leaves a stream that is closing, and a reconcile on one of those
+  // has nothing to do that its own `closed` check does not already refuse.
+  busy = false;
 }
