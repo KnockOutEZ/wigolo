@@ -916,10 +916,12 @@ describe('run-store — listing a page is bounded work (F2)', () => {
     // happened to hit the number once; the differential is what says "not O(events)".
     expect(deep.seen.queries).toBe(shallow.seen.queries);
     expect(deep.seen.rows).toBe(shallow.seen.rows);
-    // One projection read for the whole page, plus one newest-row seek per run for lastSeq — never
-    // the unbounded full-log read per row this replaced, and no longer a cost aggregate either: the
-    // counters are columns on the row the page already selected.
-    expect(deep.seen.queries).toBe(1 + deep.ids.length);
+    // One projection read for the whole page, plus three bounded per-run reads: the newest-row
+    // seeks, the pending anti-join and the tail seek. Never the unbounded full-log read per row this
+    // replaced, and no cost aggregate either — the counters are columns on the row the page already
+    // selected. Three statements against one is the trade: each is O(log depth) or bounded to its
+    // own answer, where the types they replaced made one read O(everything the run has done).
+    expect(deep.seen.queries).toBe(1 + 3 * deep.ids.length);
     // Per run: `run.created` from the projection read, and the tail row. The 200 marks each are
     // what used to be read, parsed and thrown away, synchronously, before the router could yield.
     expect(deep.seen.rows).toBe(deep.ids.length * 2);
@@ -1022,10 +1024,12 @@ describe('run-store — reading ONE run is bounded work too (SD1 exit review, pe
     // at 682 ms of blocked event loop per request at 400k events.
     expect(deep.queries).toBe(shallow.queries);
     expect(deep.rows).toBe(shallow.rows);
-    // The projection read and the newest-row tail seek. Nothing per event, and nothing for cost.
-    expect(deep.queries).toBe(2);
-    // `run.created` from the projection read and the tail row. The 400 marks are what the old path
-    // read, JSON-parsed and threw away, synchronously, before the router could yield.
+    // The projection read, the two bounded seeds and the newest-row tail seek. Nothing per event,
+    // and nothing for cost.
+    expect(deep.queries).toBe(4);
+    // `run.created` from the projection read and the tail row — the other two answer with nothing,
+    // because this run has no status row and no card. The 400 marks are what the old path read,
+    // JSON-parsed and threw away, synchronously, before the router could yield.
     expect(deep.rows).toBe(2);
     // ...and the answer is the one a full replay gives.
     expect(deep.result!.lastSeq).toBe(401);
@@ -1220,6 +1224,241 @@ describe('run-store — a projected field is validated, never cast (SD1 exit rev
       .run(JSON.stringify({ task: run.task, spaceId: run.spaceId, driver: { kind: 'cli', client: { name: 'h', version: '1', token: 'nope' } } }), run.id);
 
     expect(getRun(db, run.id)!.driver).toEqual({ kind: 'cli', client: { name: 'h', version: '1' } });
+  });
+});
+
+describe('run-store — a projection costs its answer, not its history (SD1 exit-5, perf #4)', () => {
+  /**
+   * WHY: the type filter bounded the projection read to a SET of types, not to a number of ROWS,
+   * and three of them are writer-driven with no cap — the decision pair, the pause pair and
+   * `presentation.*`. The file said as much at the decision pair and then claimed the filter bounded
+   * the read anyway. Measured on the tip at 50 runs x 5001 events, as blocked daemon event loop per
+   * `GET /v1/runs`: 3004 ms of decision pairs, 458 ms of pause pairs, 382 ms of `presentation.*`,
+   * against 0.4 ms for a class the filter excludes. The work is synchronous, so the router's
+   * per-route deadline cannot fire during it — every SSE tail, every heartbeat and the MCP server
+   * wait behind it. In the decision case the pending set came out EMPTY: 250k rows parsed, discarded.
+   */
+  function accumulated(n: number, pair: (i: number) => Array<[string, Record<string, unknown>?]>): string {
+    // Back-dated, because that is what "accumulated" means for the decision pair: raised and
+    // answered long enough ago that no clock could still be counting down on one.
+    const r = createRun(db, { task: 'accumulating' }, opts());
+    for (let i = 0; i < n; i++) {
+      const at = new Date(Date.UTC(2026, 7, 22, 1, 0, 0) + i * 1000);
+      for (const [type, payload] of pair(i)) {
+        appendEvent(db, r.id, { actor: { kind: 'human' }, type, payload }, { ...opts(), now: () => at });
+      }
+    }
+    return r.id;
+  }
+
+  const CLASSES: Array<[string, (i: number) => Array<[string, Record<string, unknown>?]>]> = [
+    ['decision pair', (i) => [['decision.requested', { decisionId: `d${i}`, prompt: 'ok?' }], ['decision.resolved', { decisionId: `d${i}`, outcome: 'approved' }]]],
+    ['pause pair', () => [['run.paused', { reason: 'agent' }], ['run.resumed', { by: 'human' }]]],
+    ['presentation pair', () => [['presentation.promoted', { by: 'human' }], ['presentation.demoted', { by: 'human' }]]],
+  ];
+
+  for (const [name, pair] of CLASSES) {
+    it(`reads the same rows at 400 accumulated ${name}s as at 4`, () => {
+      const shallow = (() => {
+        const id = accumulated(4, pair);
+        return { item: spyEventReads(db, () => getRun(db, id)), page: spyEventReads(db, () => listRuns(db, {})) };
+      })();
+      db = freshDb();
+      const deep = (() => {
+        const id = accumulated(400, pair);
+        return { item: spyEventReads(db, () => getRun(db, id)), page: spyEventReads(db, () => listRuns(db, {})) };
+      })();
+
+      // A hundred times the history, identical work — on both the item route and the page route. A
+      // fixed expectation could be met by a path that happened to hit the number once; the
+      // differential is what says "not O(events accumulated)".
+      expect(deep.item.queries).toBe(shallow.item.queries);
+      expect(deep.item.rows).toBe(shallow.item.rows);
+      expect(deep.page.queries).toBe(shallow.page.queries);
+      expect(deep.page.rows).toBe(shallow.page.rows);
+      // `run.created` and the tail row, and — for the pause and presentation classes — the ONE
+      // newest row of each type that the seeks stop at. Never the 800 rows the run accumulated.
+      expect(deep.item.rows).toBeLessThanOrEqual(4);
+      expect(deep.item.result).toEqual(deep.page.result.runs[0]);
+    });
+  }
+
+  it('reaches every seed read through an index rather than walking the run', () => {
+    const id = accumulated(60, CLASSES[0][1]);
+    appendEvent(db, id, { actor: { kind: 'agent' }, type: 'run.paused', payload: { reason: 'agent' } }, opts());
+    appendEvent(db, id, { actor: { kind: 'agent' }, type: 'presentation.promoted', payload: { by: 'human' } }, opts());
+    const seen = spyEventReads(db, () => getRun(db, id));
+
+    // Row counts cannot see a scan that returns the right rows — see the append-path test.
+    const heads = seen.reads.find((r) => /UNION ALL/i.test(r.sql));
+    const pending = seen.reads.find((r) => /NOT EXISTS/i.test(r.sql));
+    expect(heads, seen.reads.map((r) => r.sql).join(' ;; ')).toBeDefined();
+    expect(pending, seen.reads.map((r) => r.sql).join(' ;; ')).toBeDefined();
+
+    // Seven arms now — the five status heads plus the presentation pair — and every one of them
+    // stops at the first entry of its own (run_id, type, seq) slice. A sort here would mean SQLite
+    // walked the slice to find its newest row, which is the regression.
+    expect(queryPlan(heads!), queryPlan(heads!)).toContain('idx_studio_run_events_type_seq');
+    expect(queryPlan(heads!), queryPlan(heads!)).not.toContain('SCAN studio_run_events');
+    expect(queryPlan(heads!), queryPlan(heads!)).not.toContain('TEMP B-TREE');
+    // The two bounds on the pending read, each visible as an index term — the same statement the
+    // append path uses, so the projection inherits its `ts` window rather than growing one of its own.
+    expect(queryPlan(pending!), queryPlan(pending!)).toContain('idx_studio_run_events_type_ts (run_id=? AND type=? AND ts>?)');
+    expect(queryPlan(pending!), queryPlan(pending!)).toContain('idx_studio_run_events_type_seq (run_id=? AND type=? AND seq>?)');
+    expect(queryPlan(pending!), queryPlan(pending!)).not.toContain('SCAN studio_run_events');
+    expect(queryPlan(pending!), queryPlan(pending!)).not.toContain('TEMP B-TREE');
+    // No read on this path may be a bare per-run log read — that is the regression itself.
+    const unbounded = seen.reads.filter((r) => !/type IN|type = |type =\n|ORDER BY seq DESC/i.test(r.sql));
+    expect(unbounded.map((r) => r.sql)).toEqual([]);
+  });
+
+  /**
+   * The base-vs-tip differential. `projectRun` over the FULL log is the implementation the seeded
+   * path replaced, unchanged and still exercised by the replay and the app's view model — so
+   * pinning the two equal over generated logs is the old path and the new one run side by side.
+   *
+   * Generated rather than hand-picked, because the revealing shapes are the ones nobody thought of:
+   * a re-requested decision id, an expiry that lands between two events, a promote with no demote.
+   */
+  it('projects exactly what a full-log replay projects, over generated logs of every seeded class', () => {
+    const NOW = new Date(Date.UTC(2026, 7, 22, 12, 0, 0));
+    let seed = 93;
+    const next = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+
+    for (let trial = 0; trial < 40; trial++) {
+      db = freshDb();
+      const run = createRun(db, { task: `trial ${trial}` }, opts());
+      let live = 0;
+      for (let i = 0; i < 60; i++) {
+        // Spread over the auto-deny window and well past it, so some cards expire and some do not.
+        const at = new Date(NOW.getTime() - 300_000 + i * 5_000);
+        const o = { ...opts(), now: () => at };
+        const a = (type: string, payload?: Record<string, unknown>): void => {
+          appendEvent(db, run.id, { actor: { kind: 'human' }, type, payload }, o);
+        };
+        switch (next(9)) {
+          case 0: a('decision.requested', { decisionId: `d${next(5)}`, kind: 'approval', prompt: 'ok?', anchor: { tabId: `t${next(3)}`, mark: next(9) } }); live++; break;
+          case 1: a('decision.resolved', { decisionId: `d${next(5)}`, outcome: 'approved' }); break;
+          // A re-request of an id that may still be live: newest wins, at the first card's position.
+          case 2: a('decision.requested', { decisionId: `d${next(2)}`, prompt: 're-asked' }); live++; break;
+          case 3: a('tab.attached', { tabId: `t${next(4)}` }); break;
+          case 4: a('tab.detached', { tabId: `t${next(4)}` }); break;
+          case 5: a('presentation.promoted', { by: 'human' }); break;
+          case 6: a('presentation.demoted', { by: 'human' }); break;
+          case 7: a('run.paused', { reason: next(2) ? 'agent' : 'cost_cap' }); break;
+          default: a('run.resumed', { by: 'human' }); break;
+        }
+      }
+      const replayed = projectRun(
+        { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt },
+        eventsSince(db, run.id, 0),
+        NOW,
+      );
+      const item = getRun(db, run.id, { now: () => NOW })!;
+      expect(item, `trial ${trial}`).toEqual(replayed);
+      expect(listRuns(db, { now: () => NOW }).runs[0], `trial ${trial}`).toEqual(replayed);
+      // Control: the generator actually raised cards, so an equal-projections result is evidence.
+      expect(live).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps a re-requested decision newest-wins, at the position the first request took', () => {
+    const run = createRun(db, { task: 'reasked' }, opts());
+    const a = (type: string, payload: Record<string, unknown>) =>
+      appendEvent(db, run.id, { actor: { kind: 'human' }, type, payload }, opts());
+    a('decision.requested', { decisionId: 'd1', prompt: 'first ask' });
+    a('decision.requested', { decisionId: 'd2', prompt: 'other' });
+    a('decision.requested', { decisionId: 'd1', prompt: 'asked again' });
+
+    const cards = getRun(db, run.id)!.pendingDecisions;
+    // The bounded read returns both `d1` rows — nothing resolved either — so the seed has to replay
+    // them in `seq` order through the same map the fold uses, or the older prompt wins.
+    expect(cards.map((d) => d.decisionId)).toEqual(['d1', 'd2']);
+    expect(cards[0].prompt).toBe('asked again');
+  });
+
+  it('lists an unanswered card on a run that has already finished, and drops it when it expires', () => {
+    const raised = new Date(Date.UTC(2026, 7, 22, 12, 0, 0));
+    const run = createRun(db, { task: 'terminal' }, { ...opts(), now: () => raised });
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'ok?' } }, { ...opts(), now: () => raised });
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, { ...opts(), now: () => raised });
+
+    // A terminal event outranks a card for STATUS (§1) — it does not delete the card. The seed reads
+    // the cards whatever the status says, which is the one place the status seek is allowed to skip
+    // the question and a projection is not.
+    const during = getRun(db, run.id, { now: () => new Date(raised.getTime() + 60_000) })!;
+    expect(during.status).toBe('done');
+    expect(during.pendingDecisions.map((d) => d.decisionId)).toEqual(['d1']);
+    // Past the deadline the card is gone — the `ts` window in SQL cannot reach it, and `hasAutoDenied`
+    // would drop it anyway. Both, because the window is a superset and never the rule.
+    const after = getRun(db, run.id, { now: () => new Date(raised.getTime() + AUTO_DENY_MS + 1) })!;
+    expect(after.pendingDecisions).toEqual([]);
+  });
+});
+
+describe('run-store — the tab fold is a set question, not a walk (SD1 exit-5, perf #3)', () => {
+  /**
+   * WHY: `tabIds.includes` is O(held) per `tab.attached`, so a run holding many tabs at once paid
+   * O(held squared) to project — measured 112 ms of blocked event loop at 16k attach-only events.
+   * A Set answers membership in constant time; the array stays because law 4's order is the answer.
+   *
+   * A counter cannot see the difference and a wall-clock constant is a flake, so what is pinned here
+   * is that the cheaper structure folds IDENTICALLY — every shape the O(n squared) walk could reach.
+   */
+  const fold = (events: Array<[string, Record<string, unknown>?]>): string[] => {
+    const run = createRun(db, { task: 'tabs' }, opts());
+    for (const [type, payload] of events) appendEvent(db, run.id, { actor: { kind: 'agent' }, type, payload }, opts());
+    const listed = listRuns(db, {}).runs.find((r) => r.id === run.id)!;
+    const item = getRun(db, run.id)!;
+    const replayed = projectRun({ id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, eventsSince(db, run.id, 0));
+    // One answer or a bug: the seeded page row, the seeded item read and the full-log replay.
+    expect(listed.tabIds).toEqual(replayed.tabIds);
+    expect(item.tabIds).toEqual(replayed.tabIds);
+    return replayed.tabIds;
+  };
+  const att = (tabId: unknown): [string, Record<string, unknown>] => ['tab.attached', { tabId }];
+  const det = (tabId: unknown): [string, Record<string, unknown>] => ['tab.detached', { tabId }];
+
+  it('keeps attach order, and a second attach of a held tab does not move it', () => {
+    expect(fold([att('a'), att('b'), att('a'), att('c')])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('drops a detached tab and re-appends it at the end when it comes back', () => {
+    expect(fold([att('a'), att('b'), det('a'), att('a')])).toEqual(['b', 'a']);
+    expect(fold([att('a'), att('b'), att('c'), det('b')])).toEqual(['a', 'c']);
+  });
+
+  it('detaching a tab the run never held changes nothing', () => {
+    expect(fold([att('a'), det('zz'), det('a'), det('a'), att('a')])).toEqual(['a']);
+  });
+
+  it('refuses a tab id that is not one, on both halves of the pair', () => {
+    // `str` is the rule: a non-string, an empty string and a missing key are all "no tab", and a
+    // detach carrying one must not remove the tab that happens to sit at index 0.
+    expect(fold([att('a'), att(''), att(7), att(null), ['tab.attached']])).toEqual(['a']);
+    expect(fold([att('a'), det(''), det(7), det(null), ['tab.detached']])).toEqual(['a']);
+  });
+
+  it('folds a long generated attach/detach log exactly as a linear replay does', () => {
+    // The differential the structure change is really about: 600 events of mixed attach, re-attach,
+    // detach and detach-of-unheld, folded against an independent reference implementation.
+    const script: Array<[string, Record<string, unknown>?]> = [];
+    const expected: string[] = [];
+    let seed = 20260823;
+    const next = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (let i = 0; i < 600; i++) {
+      const tabId = `t${next(24)}`;
+      if (next(3) === 0) {
+        script.push(det(tabId));
+        const at = expected.indexOf(tabId);
+        if (at >= 0) expected.splice(at, 1);
+      } else {
+        script.push(att(tabId));
+        if (!expected.includes(tabId)) expected.push(tabId);
+      }
+    }
+    expect(expected.length).toBeGreaterThan(1); // control: the script actually holds tabs
+    expect(fold(script)).toEqual(expected);
   });
 });
 
