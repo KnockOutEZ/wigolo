@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { applyMigrations, MIGRATIONS, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
 
 describe('applyMigrations', () => {
@@ -338,5 +338,163 @@ describe('applyMigrations', () => {
     expect(applied).toContain('009-content-completeness');
     expect(applied).toContain('011-tool-audit');
     db.close();
+  });
+});
+
+const NAME_017 = '017-studio-run-cost';
+const COST_COLUMNS = ['cost_browser_actions', 'cost_tokens_in', 'cost_tokens_out', 'cost_spend_usd'];
+
+function columnsOf(db: Database.Database, table: string): Set<string> {
+  return new Set((db.pragma(`table_info(${table})`) as Array<{ name: string }>).map((c) => c.name));
+}
+
+function indexNames(db: Database.Database, table: string): Set<string> {
+  return new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ?").all(table) as Array<{ name: string }>)
+      .map((r) => r.name),
+  );
+}
+
+/**
+ * A database sitting at the schema every migration BEFORE 017 leaves behind — the same replay the
+ * runner does, in the same order, with the same bookkeeping. This is what an existing user's file
+ * looks like the moment before it is upgraded, and the only way the backfill assertions below can
+ * be about pre-existing rows rather than rows the new code wrote.
+ */
+function seedThrough016(db: Database.Database): void {
+  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  for (const m of MIGRATIONS) {
+    if (m.name === NAME_017 || m.requiresVec) continue;
+    db.transaction(() => {
+      db.exec(m.sql);
+      m.postStep?.(db);
+      db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(m.name, 1);
+    })();
+  }
+}
+
+describe('017-studio-run-cost', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    _resetMigrationGuard();
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-mig-017-'));
+    dbPath = join(dir, 'cache.db');
+  });
+
+  afterEach(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('is registered exactly once, under a name no earlier migration already used', () => {
+    const names = MIGRATIONS.map((m) => m.name);
+    expect(names.filter((n) => n === NAME_017)).toHaveLength(1);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('forward-applies over a DB that already carries every prior migration', () => {
+    const db = openMigrationTestDb(dbPath);
+    seedThrough016(db);
+    expect(columnsOf(db, 'studio_runs').has('cost_browser_actions')).toBe(false);
+
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+
+    const cols = columnsOf(db, 'studio_runs');
+    for (const c of COST_COLUMNS) expect(cols.has(c), `missing column ${c}`).toBe(true);
+    expect(db.prepare('SELECT name FROM schema_migrations WHERE name = ?').all(NAME_017)).toHaveLength(1);
+    db.close();
+  });
+
+  it('backfills the counters of runs that predate the columns, exactly as a replay folds them', () => {
+    const db = openMigrationTestDb(dbPath);
+    seedThrough016(db);
+    db.prepare('INSERT INTO studio_runs (id, task, created_at, last_seq) VALUES (?, ?, ?, ?)').run('7fq2', 'old', 'T', 0);
+    db.prepare('INSERT INTO studio_runs (id, task, created_at, last_seq) VALUES (?, ?, ?, ?)').run('a9kw', 'quiet', 'T', 0);
+    const insert = db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)');
+    // The same payload zoo the store's fold-parity test uses: the arithmetic in the backfill is the
+    // store's, restated in SQL, so every shape it must REFUSE has to be here too.
+    const zoo: Array<Record<string, unknown>> = [
+      { kind: 'browser_action', amount: 2 },
+      { kind: 'browser_action', amount: '3' },   // a string is not an amount
+      { kind: 'browser_action', amount: true },  // nor is a boolean — SQLite would read it as 1
+      { kind: 'tokens_in', amount: 10 },
+      { kind: 'tokens_out' },                    // no amount at all
+      { kind: 'spend_usd', amount: 0.25 },
+      { kind: 'spend_usd', amount: -1 },         // a refund is a legal counter
+      { kind: 'wat', amount: 99 },               // an unknown kind lands in no bucket
+      { amount: 5 },                             // ...and neither does no kind
+    ];
+    zoo.forEach((payload, i) => insert.run('7fq2', i + 1, 'T', '{"kind":"agent"}', 'cost.recorded', JSON.stringify(payload)));
+    // A type that is not a counter must contribute nothing, even carrying a plausible payload.
+    insert.run('7fq2', zoo.length + 1, 'T', '{"kind":"agent"}', 'mark.placed', JSON.stringify({ kind: 'browser_action', amount: 1000 }));
+
+    applyMigrations(db, { vecLoaded: false });
+
+    expect(db.prepare(`SELECT ${COST_COLUMNS.join(', ')} FROM studio_runs WHERE id = ?`).get('7fq2')).toEqual({
+      cost_browser_actions: 2, cost_tokens_in: 10, cost_tokens_out: 0, cost_spend_usd: -0.75,
+    });
+    // A run with no counter events keeps the column default rather than a NULL the store would
+    // then have to defend against on every projection.
+    expect(db.prepare(`SELECT ${COST_COLUMNS.join(', ')} FROM studio_runs WHERE id = ?`).get('a9kw')).toEqual({
+      cost_browser_actions: 0, cost_tokens_in: 0, cost_tokens_out: 0, cost_spend_usd: 0,
+    });
+    db.close();
+  });
+
+  it('swaps the type index for the two the append and list paths seek', () => {
+    const db = openMigrationTestDb(dbPath);
+    seedThrough016(db);
+    expect(indexNames(db, 'studio_run_events').has('idx_studio_run_events_type')).toBe(true);
+
+    applyMigrations(db, { vecLoaded: false });
+
+    const idx = indexNames(db, 'studio_run_events');
+    expect(idx.has('idx_studio_run_events_type_seq')).toBe(true);
+    expect(idx.has('idx_studio_run_events_type_ts')).toBe(true);
+    // Dropped, not kept alongside: (run_id, type) is a strict prefix of both, so it answers nothing
+    // new and still costs a b-tree write on the append path this migration exists to make cheaper.
+    expect(idx.has('idx_studio_run_events_type')).toBe(false);
+    db.close();
+  });
+
+  it('is a no-op on a runner DB whose studio tables were never created', () => {
+    // The runner-only harness skips whatever creates a table inline, so an absent studio_runs must
+    // not abort the pass and take its neighbours down with it — the 012/015 guard, same shape.
+    const db = openMigrationTestDb(dbPath);
+    db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+    for (const m of MIGRATIONS) {
+      if (m.name === NAME_017 || m.requiresVec) continue;
+      db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(m.name, 1);
+    }
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    expect(db.prepare('SELECT name FROM schema_migrations WHERE name = ?').all(NAME_017)).toHaveLength(1);
+    db.close();
+  });
+
+  it('is idempotent — a second pass adds nothing and re-counts nothing', () => {
+    const db = openMigrationTestDb(dbPath);
+    applyMigrations(db, { vecLoaded: false });
+    db.prepare('INSERT INTO studio_runs (id, task, created_at, last_seq, cost_browser_actions) VALUES (?, ?, ?, ?, ?)').run('7fq2', 'a', 'T', 1, 7);
+    db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('7fq2', 1, 'T', '{"kind":"agent"}', 'cost.recorded', '{"kind":"browser_action","amount":7}');
+
+    _resetMigrationGuard();
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    // A re-run that backfilled again would double this to 14 — the guard is the column check, and
+    // the number is what says the guard fired rather than the migration merely not throwing.
+    expect((db.prepare('SELECT cost_browser_actions AS a FROM studio_runs WHERE id = ?').get('7fq2') as { a: number }).a).toBe(7);
+    db.close();
+  });
+
+  it('keeps the .sql grep-mirror in step with the TS constant', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const mirror = await readFile(new URL('../../../src/cache/migrations/017-studio-run-cost.sql', import.meta.url), 'utf8');
+    const entry = MIGRATIONS.find((m) => m.name === NAME_017);
+    expect(mirror.replace(/^--.*$/gm, '').trim()).toBe(entry!.sql.replace(/^--.*$/gm, '').trim());
+    // ...and this migration's statements live in the postStep, so the mirror carries them as prose.
+    // A reviewer who greps for the index by name must land in this file.
+    expect(mirror).toContain('idx_studio_run_events_type_seq');
+    expect(mirror).toContain('cost_browser_actions');
   });
 });

@@ -1,0 +1,26 @@
+-- 017-studio-run-cost
+-- Mirror of MIGRATION_017_STUDIO_RUN_COST in runner.ts (grep-ability + review). Keep in step.
+--
+-- SD1 exit-2 perf HIGH-1/HIGH-2. Two halves of one change: an append should cost its status, not its
+-- history, and a list page should cost its rows, not their counters.
+--
+-- Every statement is applied by the guarded postStep in runner.ts rather than from here, for the
+-- reason the 012 and 015 postSteps exist: SQLite has no ADD COLUMN IF NOT EXISTS, and an unguarded
+-- CREATE INDEX in this file would make the migration require 016 to have run first. What it does,
+-- in order, and grep-able from this file:
+--
+--   CREATE INDEX IF NOT EXISTS idx_studio_run_events_type_seq ON studio_run_events(run_id, type, seq);
+--   CREATE INDEX IF NOT EXISTS idx_studio_run_events_type_ts  ON studio_run_events(run_id, type, ts);
+--   DROP INDEX IF EXISTS idx_studio_run_events_type;
+--
+--   ALTER TABLE studio_runs ADD COLUMN cost_browser_actions REAL NOT NULL DEFAULT 0;
+--   ALTER TABLE studio_runs ADD COLUMN cost_tokens_in       REAL NOT NULL DEFAULT 0;
+--   ALTER TABLE studio_runs ADD COLUMN cost_tokens_out      REAL NOT NULL DEFAULT 0;
+--   ALTER TABLE studio_runs ADD COLUMN cost_spend_usd       REAL NOT NULL DEFAULT 0;
+--   UPDATE studio_runs SET <each column> = <that kind's SUM over cost.recorded>;
+--
+-- (run_id, type) answers "which rows of this type" but not "the newest one", so seq on the tail
+-- turns the append's status recompute into a seek; ts on the tail bounds the pending-decision read
+-- to the auto-deny window. The four columns are a rebuildable cache of a fold over `cost.recorded`,
+-- exactly as status/last_seq are a cache of a fold over the status class — the log stays the source
+-- of truth (law 1), and a full-log caller still folds it for itself.
