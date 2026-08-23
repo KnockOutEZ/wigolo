@@ -623,10 +623,10 @@ describe('RunViewModel — a condensed live run stays condensed', () => {
 
     // Nothing re-read the log at all — and if a future implementation does read it, it must start at
     // or after the tail this projection already had, never from envelope zero.
+    expect(store.eventReads.filter((r) => r.runId === runId), 'the log was paged back in').toHaveLength(0);
     for (const read of store.eventReads) {
       expect(read.since, 'the whole log was re-materialized from seq 0 by one live envelope').toBeGreaterThanOrEqual(tail);
     }
-    expect(store.eventReads.filter((r) => r.runId === runId), 'the log was paged back in').toHaveLength(0);
     // One round-trip for the whole thing, and it is the one that asks for the projection.
     expect(store.reads).toEqual(['getRun']);
 
