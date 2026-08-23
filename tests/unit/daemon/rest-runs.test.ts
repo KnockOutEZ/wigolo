@@ -1537,3 +1537,144 @@ describe('the silence reconcile — a lost notify on a run\'s last event', () =>
     ex.close();
   });
 });
+
+/**
+ * WHY: `publishRunEvent` is the post-commit hook of `appendEvent`, so the fan-out runs on the
+ * WRITER's stack — every listener callback completes before the append returns. Building the SSE
+ * frame inside that per-subscriber callback therefore charged whoever appended one full
+ * `JSON.stringify` per open tail, for a frame in which nothing whatsoever varies by subscriber, and
+ * the hold buffer then stringified the same envelope again just to learn its size. At the
+ * 32-connection cap and the 64 KB payload ceiling that is milliseconds of blocking per event, paid
+ * by the writer rather than by the readers who asked for it.
+ *
+ * These rows FORCE the count rather than timing it. A wall-clock assertion on a serialization is a
+ * flake, and it would go on passing on a machine fast enough to do the work N times anyway — so
+ * they count the calls, keyed on the envelope's own identity so nothing else's stringify can be
+ * mistaken for the frame's. And they pin the wire byte-for-byte, because the only acceptable
+ * version of this fix is one the SSE contract cannot tell apart from the old path.
+ */
+describe('the SSE fan-out serializes an event once, not once per subscriber', () => {
+  /** A response that takes every byte and keeps the frames — nothing here is about back-pressure. */
+  function openExchange(): { req: IncomingMessage; res: ServerResponse; frames: () => string[] } {
+    const written: string[] = [];
+    const noop = (): unknown => undefined;
+    const req = { headers: {}, destroyed: false, socket: { setTimeout: () => {} }, on: noop, off: noop } as unknown as IncomingMessage;
+    const res = {
+      destroyed: false,
+      headersSent: false,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => { written.push(chunk); return true; },
+      end: () => {},
+      on: noop,
+      off: noop,
+    } as unknown as ServerResponse;
+    return { req, res, frames: () => written.filter((c) => c.startsWith('id: ')) };
+  }
+
+  function emptyStore(eventsSince: RunsStore['eventsSince']): RunsStore {
+    return {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince,
+    };
+  }
+
+  function tail(ex: { req: IncomingMessage; res: ServerResponse }, store: RunsStore, id: string): Promise<void> {
+    return import('../../../src/daemon/rest/runs.js').then(({ handleRunsRequest }) =>
+      handleRunsRequest(ex.req, ex.res, {
+        pathname: `/v1/runs/${id}/events`,
+        method: 'GET',
+        url: new URL(`http://127.0.0.1/v1/runs/${id}/events`),
+        respond: () => {},
+        sendError: () => {},
+        store,
+      }));
+  }
+
+  async function until(what: () => boolean, ms = 3000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!what()) {
+      if (Date.now() > deadline) throw new Error('condition never held');
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+  }
+
+  /**
+   * Only the envelope's own serializations. `JSON.stringify` is called all over a request, so the
+   * spy is filtered on object IDENTITY — `publishRunEvent` hands every listener the same envelope,
+   * which is exactly the property that makes one serialization enough.
+   */
+  function envelopeStringifies(spy: { mock: { calls: unknown[][] } }, event: RunEvent): number {
+    return spy.mock.calls.filter((call) => call[0] === event).length;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('serializes a published event once however many subscribers are watching', async () => {
+    const id = '7fqb';
+    const tails = [openExchange(), openExchange(), openExchange()];
+    await Promise.all(tails.map((ex) => tail(ex, emptyStore(async () => []), id)));
+    // All three are live and holding nothing — the replay was empty, so the next frame each of them
+    // writes is the one the publish below produces.
+    await until(() => runEventListenerCount(id) === tails.length);
+
+    const event = ev(1);
+    const spy = vi.spyOn(JSON, 'stringify');
+    publishRunEvent(id, event);
+
+    // The load-bearing assertion. On tip this is 3 — one per subscriber, all on the writer's stack.
+    expect(envelopeStringifies(spy, event)).toBe(1);
+    // And it really did fan out, so the 1 above is one serialization SHARED rather than two tails
+    // that never received anything.
+    expect(tails.map((ex) => ex.frames().length)).toEqual([1, 1, 1]);
+  });
+
+  it('writes the same bytes to every subscriber as the per-subscriber build did', async () => {
+    const id = '7fqc';
+    const tails = [openExchange(), openExchange()];
+    await Promise.all(tails.map((ex) => tail(ex, emptyStore(async () => []), id)));
+    await until(() => runEventListenerCount(id) === tails.length);
+
+    const event = ev(1, 'tab.attached');
+    publishRunEvent(id, event);
+
+    // Byte-for-byte against the frame the old inline interpolation built. The SSE contract rows —
+    // the id line the client resumes from, the event name it dispatches on, the JSON it parses —
+    // all read this string, so a shared build that changed one byte of it would be a wire change.
+    const expected = `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    for (const ex of tails) expect(ex.frames()).toEqual([expected]);
+  });
+
+  it('measures the hold buffer on the serialization the frame is built from, not a second one', async () => {
+    const id = '7fqd';
+    let open = (): void => {};
+    const parked = new Promise<void>((resolve) => { open = resolve; });
+    // Every tail stays inside its replay read, which is what puts the emitter in HOLDING when the
+    // event arrives — the path where the byte measure, not the frame, is the first thing to touch
+    // the envelope. On tip that measure is its own `JSON.stringify`.
+    const store = emptyStore(async () => { await parked; return []; });
+
+    const tails = [openExchange(), openExchange(), openExchange()];
+    const pending = tails.map((ex) => tail(ex, store, id));
+    await until(() => runEventListenerCount(id) === tails.length);
+
+    const event = ev(1);
+    const spy = vi.spyOn(JSON, 'stringify');
+    publishRunEvent(id, event);
+    // Three holds, three byte measures, and still one pass over the envelope.
+    expect(envelopeStringifies(spy, event)).toBe(1);
+
+    open();
+    await Promise.all(pending);
+    // The flush then writes the held event from the same record — the count does not move, and the
+    // frame still reaches every tail.
+    expect(envelopeStringifies(spy, event)).toBe(1);
+    expect(tails.map((ex) => ex.frames().length)).toEqual([1, 1, 1]);
+  });
+});
