@@ -776,6 +776,13 @@ const serializedEvents = new WeakMap<RunEvent, SerializedEvent>();
  * A fan-out that handed each listener its own copy would simply miss and pay what it paid before;
  * `serializes a published event once however many subscribers are watching` is the row that goes red
  * if that ever becomes the live path.
+ *
+ * What it trades: a frame is now retained for as long as its envelope is reachable, where before it
+ * was garbage the moment `res.write` returned. Both places that hold an envelope are already bounded
+ * and both drop it soon — the hold buffer by `DEFAULT_MAX_HELD_BYTES`, and the replay by its page,
+ * whose events go out of scope at the page boundary — so the added retention is one page's frames at
+ * worst, the same ~32 MB figure `DEFAULT_SSE_FLUSH_BYTES` already reasons about. It is shared across
+ * tails rather than per-tail: N tails hold the SAME envelope objects, because the bus publishes one.
  */
 function serializeRunEvent(event: RunEvent): SerializedEvent {
   const cached = serializedEvents.get(event);
