@@ -29,6 +29,14 @@ let daemon: import('../../src/daemon/http-server.js').DaemonHttpServer;
 let port: number;
 let db: import('better-sqlite3').Database;
 let appendRunEventWithTail: typeof import('../../src/studio/run-bus.js').appendRunEventWithTail;
+/**
+ * The store's own writer — it commits and projects to disk, and publishes NOTHING. That is exactly
+ * the shape a broker that dies between its commit and its stdout notify leaves behind, so it is how
+ * this file forces a lost notify without mocking anything the daemon actually runs.
+ */
+let appendEventWithoutNotify: typeof import('../../src/studio/run-store.js').appendEvent;
+/** The other half of the chain: a notify with no commit behind it. */
+let publishRunEvent: typeof import('../../src/studio/run-bus.js').publishRunEvent;
 
 interface Resp {
   status: number;
@@ -195,7 +203,8 @@ beforeAll(async () => {
   // daemon logic that will append events during a real run (SD2 owns those producers).
   const { getDatabase } = await import('../../src/cache/db.js');
   db = getDatabase();
-  ({ appendRunEventWithTail } = await import('../../src/studio/run-bus.js'));
+  ({ appendRunEventWithTail, publishRunEvent } = await import('../../src/studio/run-bus.js'));
+  ({ appendEvent: appendEventWithoutNotify } = await import('../../src/studio/run-store.js'));
 }, 60000);
 
 afterAll(async () => {
@@ -352,6 +361,103 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
     await client.waitForFrames(3);
     expect(client.seqs()).toEqual([1, 2, 3]);
     expect(JSON.parse(client.frames[2].data!)).toMatchObject({ seq: 3, type: 'cost.recorded' });
+
+    client.kill();
+  }, 20000);
+
+  /**
+   * WHY: the tail's header promises exactly-once per seq with NO holes, and the publish chain it
+   * rests on is not atomic — the commit and the notify are two steps, and a writer that dies between
+   * them loses the notify for an event that is durably in the log. The stream then jumps from N to
+   * N+2 and heartbeats keep it alive, so the client never reconnects and never heals. Nothing on the
+   * wire says a seq was skipped, which makes a lost `run.completed` a run that watchers believe is
+   * still going, forever.
+   *
+   * This row forces exactly that: seq 2 is committed WITHOUT a notify, seq 3 is committed with one.
+   * On the tip behaviour the client receives `[1, 3]` and sits there. The healed behaviour re-reads
+   * the durable log the moment the gap shows and delivers `[1, 2, 3]` on the same connection.
+   */
+  it('heals a lost notify — a live seq gap re-reads the durable log instead of writing a hole', async () => {
+    const id = await createRun('lost notify');
+
+    const client = new SseClient();
+    await client.open(`/v1/runs/${id}/events`);
+    await client.waitForFrames(1);
+    expect(client.seqs()).toEqual([1]);
+
+    // Committed and durable, but nobody is told: the broker-crash-between-commit-and-notify shape.
+    appendEventWithoutNotify(db, id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'lost' } });
+    // The next event's notify DOES arrive, so the live tail sees seq 3 land on top of seq 1.
+    appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'run.completed', payload: { outcome: 'done' } });
+
+    await client.waitForFrames(3);
+    expect(client.seqs()).toEqual([1, 2, 3]);
+    expect(client.frames.map((f) => f.event)).toEqual(['run.created', 'tab.attached', 'run.completed']);
+    // The healed event is the durable one, not a placeholder standing in for it.
+    expect(JSON.parse(client.frames[1].data!)).toMatchObject({ seq: 2, type: 'tab.attached', payload: { tabId: 'lost' } });
+    // Healing happens IN the stream: the client is not asked to reconnect for an event the daemon
+    // could read itself, and the connection stays open for whatever the run does next.
+    expect(client.ended).toBe(false);
+
+    client.kill();
+  }, 20000);
+
+  /**
+   * The heal must not become a second delivery path. A gap re-reads from the last seq the client
+   * actually saw, so every event after the hole is already on the wire — re-sending them would break
+   * the same exactly-once promise the hole breaks, in the other direction.
+   */
+  it('heals without re-sending anything the client already has', async () => {
+    const id = await createRun('heal is not a replay');
+    for (let i = 0; i < 2; i++) {
+      appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: `t${i}` } });
+    }
+
+    const client = new SseClient();
+    await client.open(`/v1/runs/${id}/events`);
+    await client.waitForFrames(3);
+    expect(client.seqs()).toEqual([1, 2, 3]);
+
+    // Two consecutive notifies lost, then one delivered — the hole is wider than a single seq.
+    appendEventWithoutNotify(db, id, { actor: { kind: 'daemon' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    appendEventWithoutNotify(db, id, { actor: { kind: 'daemon' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'presentation.promoted', payload: { by: 'human', surface: 'tray' } });
+
+    await client.waitForFrames(6);
+    // Give a duplicate a chance to show up after the heal settles.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(client.seqs()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(client.ended).toBe(false);
+
+    client.kill();
+  }, 20000);
+
+  /**
+   * The heal reads the log; the log is the source of truth (law 1). When it does not carry the
+   * missing seqs — a notify that overtook its own commit — there is nothing to deliver and the only
+   * honest moves are to end the stream or to write the hole. It ends the stream, which is the door
+   * every reconnect already uses, rather than quietly doing the thing this issue exists to stop.
+   */
+  it('ends the stream when the durable log cannot fill the hole, so the client resumes instead', async () => {
+    const id = await createRun('unfillable gap');
+
+    const client = new SseClient();
+    await client.open(`/v1/runs/${id}/events`);
+    await client.waitForFrames(1);
+    expect(client.seqs()).toEqual([1]);
+
+    // A notify with no commit behind it: seq 3 is announced, and seqs 2 and 3 are both absent
+    // from the log. The daemon cannot produce them and must not pretend it can.
+    publishRunEvent(id, {
+      seq: 3,
+      ts: '2026-08-23T12:00:00.000Z',
+      actor: { kind: 'daemon' },
+      type: 'tab.attached',
+      payload: { tabId: 'never-committed' },
+    });
+
+    await client.waitForEnd();
+    expect(client.seqs()).toEqual([1]);
 
     client.kill();
   }, 20000);

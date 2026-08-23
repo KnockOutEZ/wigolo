@@ -33,10 +33,19 @@ function ev(seq: number, type = 'tab.attached'): RunEvent {
   return { seq, ts: `2026-08-22T14:00:0${seq % 10}.000Z`, actor: { kind: 'daemon' }, type, payload: {} };
 }
 
+/**
+ * Every emitter has to state a gap policy — there is no default, because a default is what let the
+ * live tail write `seq` N+2 straight after N. The rows below have no holes in them, so theirs is to
+ * shout: a gap here would mean one of these fixtures grew one, not that the row under test passed.
+ */
+const noGaps = (from: number, arrivedAt: number): never => {
+  throw new Error(`unexpected seq gap on an in-order row: ${from} -> ${arrivedAt}`);
+};
+
 describe('run stream ordering — the exactly-once door', () => {
   it('holds a live event that arrives mid-replay until the replay is done', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps });
 
     emitter.emit(ev(1));
     // A live append lands while the replay is still paging — it must NOT go out ahead of seq 2.
@@ -50,7 +59,7 @@ describe('run stream ordering — the exactly-once door', () => {
 
   it('drops a held event the replay already covered — the overlap is a no-op, not a duplicate', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps });
 
     emitter.emit(ev(1));
     // The classic race: appended during the yield, so it is BOTH published to us and picked up by
@@ -65,7 +74,7 @@ describe('run stream ordering — the exactly-once door', () => {
 
   it('never re-sends anything at or below the resume point', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(4, (e) => written.push(e.seq));
+    const emitter = createOrderedEmitter(4, (e) => written.push(e.seq), { onGap: noGaps });
 
     for (const seq of [2, 3, 4]) emitter.emit(ev(seq));
     expect(written).toEqual([]);
@@ -88,7 +97,7 @@ describe('run stream ordering — the exactly-once door', () => {
    */
   it('holds up to the ceiling and no further — the buffer cannot grow with the run', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 4 });
 
     for (const seq of [2, 3, 4, 5]) emitter.offer(ev(seq));
     expect(emitter.overflowed()).toBe(false);
@@ -99,7 +108,7 @@ describe('run stream ordering — the exactly-once door', () => {
 
   it('drops the whole hold buffer past the ceiling rather than delivering it with a hole in it', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 4 });
     emitter.emit(ev(1));
 
     for (let seq = 2; seq <= 40; seq++) emitter.offer(ev(seq));
@@ -114,7 +123,7 @@ describe('run stream ordering — the exactly-once door', () => {
 
   it('does not spend the ceiling on events the replay has already covered', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 2);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 2 });
 
     // The overlap window, at volume: every one of these is both published to us and visible to the
     // next page's query. Holding them would burn the ceiling on events `goLive` drops anyway — so a
@@ -131,11 +140,176 @@ describe('run stream ordering — the exactly-once door', () => {
 
   it('flushes held events in sequence order even if they were offered out of order', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps });
     emitter.offer(ev(3));
     emitter.offer(ev(2));
     await emitter.goLive();
     expect(written).toEqual([2, 3]);
+  });
+});
+
+/**
+ * WHY: the tail's header promises exactly-once per seq with no holes, and until this door existed it
+ * kept only half of that. `emit` accepted ANY `seq > last`, so a live event landing at N+2 after N
+ * went straight out and the skipped seq was gone — silently, permanently, with the heartbeat keeping
+ * the connection alive so the client never reconnected and never resumed from `Last-Event-ID`.
+ *
+ * The hole is reachable because the publish chain is not atomic: an event is committed and THEN
+ * notified, so a writer that dies between the two — or a client-side buffer drop — loses the notify
+ * for an event that is durably in the log. A lost `run.completed` is the worst shape of it: every
+ * consumer of that stream believes the run is still going, forever.
+ *
+ * These rows drive the emitter directly because the interleave is what matters and a live-wire test
+ * cannot force which notify goes missing.
+ */
+describe('the live tail detects a seq gap and refuses to write a hole', () => {
+  interface Gap { from: number; arrivedAt: number }
+
+  function live(since = 0, opts: { maxHeld?: number; maxBytes?: number } = {}): {
+    emitter: ReturnType<typeof createOrderedEmitter>;
+    written: number[];
+    gaps: Gap[];
+  } {
+    const written: number[] = [];
+    const gaps: Gap[] = [];
+    const emitter = createOrderedEmitter(since, (e) => written.push(e.seq), {
+      onGap: (from, arrivedAt) => gaps.push({ from, arrivedAt }),
+      ...opts,
+    });
+    return { emitter, written, gaps };
+  }
+
+  it('does not write a live event that skips a seq, and reports where the hole is', async () => {
+    const { emitter, written, gaps } = live();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+
+    // The notify for seq 2 never arrived. Seq 3 is the first anyone hears about it.
+    emitter.offer(ev(3));
+
+    expect(written).toEqual([1]);
+    expect(gaps).toEqual([{ from: 1, arrivedAt: 3 }]);
+    expect(emitter.lastEmitted()).toBe(1);
+  });
+
+  it('holds everything behind the hole instead of racing the healer onto the wire', async () => {
+    const { emitter, written, gaps } = live();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+
+    emitter.offer(ev(3));
+    // The run keeps working while the heal reads the log. None of this may overtake seq 2.
+    emitter.offer(ev(4));
+    emitter.offer(ev(5));
+
+    expect(written).toEqual([1]);
+    // One hole, one report: the events behind it are queued, not four more alarms.
+    expect(gaps).toHaveLength(1);
+  });
+
+  it('fills the hole from the durable log and then continues in order, exactly once per seq', async () => {
+    const { emitter, written, gaps } = live();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+
+    emitter.offer(ev(3));
+    emitter.offer(ev(4));
+    expect(gaps).toEqual([{ from: 1, arrivedAt: 3 }]);
+
+    // What the healer does: re-read the durable log from `from`, through the same door. Seqs 3 and 4
+    // are in that read too, and the monotone guard is what stops them being delivered twice.
+    for (const seq of [2, 3, 4]) emitter.emit(ev(seq));
+    await emitter.goLive();
+
+    expect(written).toEqual([1, 2, 3, 4]);
+    expect(emitter.lastEmitted()).toBe(4);
+    // Live again afterwards, with no second alarm for a hole that has been filled.
+    emitter.offer(ev(5));
+    expect(written).toEqual([1, 2, 3, 4, 5]);
+    expect(gaps).toHaveLength(1);
+  });
+
+  it('reports the whole hole, not just its first seq — a crashed writer can lose several notifies', async () => {
+    const { emitter, gaps } = live();
+    emitter.emit(ev(4));
+    await emitter.goLive();
+
+    emitter.offer(ev(9));
+
+    expect(gaps).toEqual([{ from: 4, arrivedAt: 9 }]);
+  });
+
+  it('a second hole after a heal is its own alarm', async () => {
+    const { emitter, written, gaps } = live();
+    emitter.emit(ev(1));
+    await emitter.goLive();
+
+    emitter.offer(ev(3));
+    emitter.emit(ev(2));
+    emitter.emit(ev(3));
+    await emitter.goLive();
+    expect(written).toEqual([1, 2, 3]);
+
+    emitter.offer(ev(7));
+    expect(written).toEqual([1, 2, 3]);
+    expect(gaps).toEqual([{ from: 1, arrivedAt: 3 }, { from: 3, arrivedAt: 7 }]);
+  });
+
+  /**
+   * The in-order path is the one every healthy tail is on. A door that fires on it would turn every
+   * run into a stream of unnecessary store reads, so it is pinned as tightly as the hole is.
+   */
+  it('never fires on the in-order path, on a duplicate, or below the resume point', async () => {
+    const { emitter, written, gaps } = live(4);
+
+    for (const seq of [2, 3, 4]) emitter.emit(ev(seq)); // at or below the resume point
+    emitter.emit(ev(5));
+    emitter.emit(ev(6));
+    await emitter.goLive();
+    emitter.offer(ev(6)); // the reconnect overlap, replayed and published
+    emitter.offer(ev(7));
+    emitter.offer(ev(8));
+
+    expect(written).toEqual([5, 6, 7, 8]);
+    expect(gaps).toEqual([]);
+  });
+
+  /**
+   * The replay pages the durable log in seq order by construction, so a gap there is the store's
+   * own, not a lost notify — and a heal would re-read the same rows, find the same gap and end a
+   * healthy stream. The door is the LIVE phase's, and the hold buffer is where a replay-window
+   * arrival waits.
+   */
+  it('stays out of the replay and its flush — a held event is not a live one', async () => {
+    const { emitter, written, gaps } = live();
+
+    emitter.emit(ev(1));
+    emitter.offer(ev(3)); // arrived while the replay was still paging: held, not judged
+    emitter.emit(ev(2));
+    await emitter.goLive();
+
+    expect(written).toEqual([1, 2, 3]);
+    expect(gaps).toEqual([]);
+  });
+
+  /**
+   * A heal is a second replay, and the events arriving during one grow this daemon's heap the way
+   * the events arriving during the first one do. It spends the SAME ceiling, and overflows the same
+   * way — dropped whole, so the caller ends the stream rather than delivering a buffer with a second
+   * hole in it.
+   */
+  it('spends the hold ceiling while it waits, and overflows into the existing door', async () => {
+    const { emitter, written } = live(0, { maxHeld: 3 });
+    emitter.emit(ev(1));
+    await emitter.goLive();
+
+    emitter.offer(ev(3));
+    expect(emitter.overflowed()).toBe(false);
+    for (let seq = 4; seq <= 40; seq++) emitter.offer(ev(seq));
+
+    expect(emitter.overflowed()).toBe(true);
+    await emitter.goLive();
+    expect(written).toEqual([1]);
   });
 });
 
@@ -158,7 +332,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
   it('drops the buffer on bytes even when the event count is nowhere near its ceiling', async () => {
     const written: number[] = [];
     // A count ceiling this high can never trip in this row: only the byte budget can end it.
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
     emitter.emit(ev(1));
 
     for (let seq = 2; seq <= 6; seq++) emitter.offer(big(seq));
@@ -173,7 +347,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
 
   it('delivers a buffer that fits the budget — the bound is a ceiling, not a tax on every tail', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
 
     emitter.offer(big(2));
     emitter.offer(big(3));
@@ -185,7 +359,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
 
   it('starts each replay window from zero bytes, so a delivered buffer is not charged twice', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
 
     emitter.offer(big(2));
     await emitter.goLive();

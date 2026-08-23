@@ -630,6 +630,9 @@ export interface OrderedEmitter {
    * replay loop has, so it takes the same gate. The emitter stays in `replaying` for the whole
    * flush: anything the bus offers while a pace awaits is HELD and picked up by the next pass,
    * which is what stops a late arrival overtaking the tail of the buffer.
+   *
+   * Callable more than once: the gap door puts the emitter back into `replaying`, so a heal ends the
+   * same way the first replay does.
    */
   goLive(pace?: WritePace): Promise<void>;
   lastEmitted(): number;
@@ -643,20 +646,82 @@ interface HeldEvent {
   bytes: number;
 }
 
+export interface OrderedEmitterOptions {
+  /**
+   * What to do about a hole. Required, deliberately: an emitter with no gap policy is one that
+   * writes `seq` N+2 straight after N and calls it delivery, which is the defect this door exists
+   * to remove, so there is no default for a caller to inherit by omission.
+   *
+   * Called at most once per hole, with the last seq actually delivered and the seq that exposed the
+   * hole. The emitter has already gone back to HOLDING by the time it fires — the triggering event
+   * is in the buffer, and everything the bus offers next joins it — so the healer's job is to put
+   * the missing seqs on the wire (or end the stream) and then call `goLive` again.
+   */
+  onGap: (from: number, arrivedAt: number) => void;
+  maxHeld?: number;
+  maxBytes?: number;
+}
+
 export function createOrderedEmitter(
   since: number,
   write: (event: RunEvent) => void,
-  maxHeld: number = maxHeldEvents(),
-  maxBytes: number = maxHeldBytes(),
+  options: OrderedEmitterOptions,
 ): OrderedEmitter {
+  const { onGap } = options;
+  const maxHeld = options.maxHeld ?? maxHeldEvents();
+  const maxBytes = options.maxBytes ?? maxHeldBytes();
   let last = since;
   let replaying = true;
   let overflow = false;
   const held: HeldEvent[] = [];
   let heldBytes = 0;
 
+  /**
+   * Take an event into the hold buffer, or blow the ceiling and drop the lot.
+   *
+   * Shared by `offer` and the gap door below so both spend the same ceiling: a heal is a second
+   * replay, and the events arriving during one grow this daemon's heap exactly the way the events
+   * arriving during the first one do.
+   */
+  const hold = (event: RunEvent): void => {
+    // Measured on the serialized envelope because that is what the frame carries and what the
+    // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
+    const bytes = Buffer.byteLength(JSON.stringify(event));
+    if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
+      held.length = 0;
+      heldBytes = 0;
+      overflow = true;
+      return;
+    }
+    held.push({ event, bytes });
+    heldBytes += bytes;
+  };
+
   const emit = (event: RunEvent): void => {
     if (event.seq <= last) return;
+    /**
+     * The gap door — the live phase's half of the exactly-once promise.
+     *
+     * `seq > last + 1` while live means a seq that IS in the durable log never reached this stream:
+     * the publish chain is a commit followed by a separate notify, so a writer that dies between
+     * them, or a client-side buffer drop, loses one for an event that happened. Writing the newer
+     * event anyway puts a permanent hole in a stream whose header promises none, and nothing
+     * downstream can see it — heartbeats keep the connection alive, so the client never reconnects
+     * and never resumes from `Last-Event-ID`. A lost `run.completed` is then a run every watcher
+     * believes is still going.
+     *
+     * Only the LIVE phase. The replay pages the log in seq order by construction, and a gap there
+     * would be the store's own, not a lost notify.
+     */
+    if (!replaying && event.seq > last + 1) {
+      const from = last;
+      // Back to holding BEFORE the healer is told, so everything the bus offers while it works
+      // queues behind the missing seqs instead of racing them onto the wire.
+      replaying = true;
+      hold(event);
+      onGap(from, event.seq);
+      return;
+    }
     last = event.seq;
     write(event);
   };
@@ -674,17 +739,7 @@ export function createOrderedEmitter(
       // drop it anyway. Not holding it is what keeps an append storm the replay is KEEPING UP with
       // from spending the ceiling on events nobody would ever have written.
       if (event.seq <= last) return;
-      // Measured on the serialized envelope because that is what the frame carries and what the
-      // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
-      const bytes = Buffer.byteLength(JSON.stringify(event));
-      if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
-        held.length = 0;
-        heldBytes = 0;
-        overflow = true;
-        return;
-      }
-      held.push({ event, bytes });
-      heldBytes += bytes;
+      hold(event);
     },
     async goLive(pace) {
       // Drains to empty, not to "the buffer as it stood when we started": a pace that awaits gives
@@ -728,12 +783,15 @@ async function handleEvents(
   }
   // An id outside the mint alphabet is a 404, not a 500: it is a typo in a URL, and the whole point
   // of the read-aloud alphabet is that people type these by hand.
-  const id = resolveRunId(decoded);
-  if (id === undefined) {
+  const resolved = resolveRunId(decoded);
+  if (resolved === undefined) {
     slot?.release();
     opts.sendError(runNotFound());
     return;
   }
+  // Bound as its own const rather than used through the narrowing above: the hoisted helpers further
+  // down run after this function has returned to the event loop, where a narrowing does not reach.
+  const id: string = resolved;
   // Existence only — `get` would project the run, reading the whole log, which is exactly what the
   // paged replay below exists to avoid doing in one burst. It runs INSIDE the connection cap: on the
   // studio host it is a broker round-trip, and a 404 that was reached without a slot let a caller
@@ -811,6 +869,16 @@ async function handleEvents(
     }
     stalledBytes += bytes;
     if (stalledBytes > maxStalledBytes) endStalled('live');
+  }, {
+    /**
+     * A hole on the live stream is healed in place — see `heal`.
+     *
+     * Deferred a turn on purpose: the door fires inside `publishRunEvent`, which runs on the
+     * WRITER's stack, and the heal's first act is a store read. Starting it here would put that read
+     * in the middle of somebody's append. Nothing is racing it — the emitter went back to holding
+     * before this was called, so the events arriving in the gap queue up behind the missing seqs.
+     */
+    onGap: (from, arrivedAt) => { setImmediate(() => { void heal(from, arrivedAt); }); },
   });
 
   // Step 1 — subscribe BEFORE reading the log, so nothing appended during the replay is missed.
@@ -875,6 +943,124 @@ async function handleEvents(
     return !closed && !stalled;
   };
 
+  /** End the stream on our own terms. Every "the client must resume from here" door goes through it. */
+  function endStream(why: string, fields: Record<string, unknown> = {}): void {
+    if (closed) return;
+    log.warn(why, { runId: id, lastEmitted: emitter.lastEmitted(), ...fields });
+    cleanup();
+    res.end();
+  }
+
+  /**
+   * Read the durable log forward from `from` and put it on the wire, a page at a time.
+   *
+   * The initial replay and a heal are the same read against the same source of truth — one is at
+   * stream open, the other is the moment a lost notify shows up as a hole — so they share this, and
+   * with it the byte budget, the between-pages drain check and the yield that keeps a long log from
+   * freezing the daemon. Returns false when the caller must stop: the connection is gone, the stream
+   * has ended, or the read itself failed.
+   */
+  async function pumpDurable(from: number, where: string): Promise<boolean> {
+    const pageSize = replayPageSize();
+    let cursor = from;
+    try {
+      for (;;) {
+        if (closed || stalled) return false;
+        const page = await store.eventsSince(id, cursor, pageSize);
+        if (page.length === 0) return true;
+        // Replay is the only unbounded producer on this stream — the live path is paced by the run
+        // itself. A client that opens a tail and stops reading would otherwise pull the whole log
+        // into the daemon's heap, so the gate is INSIDE the page: a page is 500 events at up to 64k
+        // of payload each, and checking once per page is a count bounding a byte problem.
+        for (const event of page) {
+          emitter.emit(event);
+          if (!(await pace())) return false;
+        }
+        cursor = page[page.length - 1].seq;
+        // A page that never reached the byte budget still leaves the socket back-pressured, so the
+        // between-pages check stays: it is the one that covers a log of small events.
+        if (needsDrain) {
+          await waitForDrain(res);
+          needsDrain = false;
+          stalledBytes = 0;
+          sincePace = 0;
+        }
+        if (closed || stalled) return false;
+        if (page.length < pageSize) return true;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } catch (err) {
+      log.error('run event durable read failed', { runId: id, where, from, error: String(err) });
+      if (!closed) {
+        cleanup();
+        res.end();
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Release whatever arrived while the durable read was running, then run live.
+   *
+   * Unless the run out-appended the hold buffer, in which case the events it dropped are still in
+   * the durable log and the honest move is to end the stream: the client reconnects with the last
+   * seq it actually saw and replays the gap. Going live over a dropped buffer would skip those seqs
+   * silently, which is the one thing this route promises never to do.
+   */
+  async function goLiveOrEnd(where: string): Promise<void> {
+    if (emitter.overflowed()) {
+      endStream('run tail dropped its hold buffer under an append storm; ending the stream so the client resumes', { where, when: 'before flush' });
+      return;
+    }
+    // The flush takes the same gate as the replay. It is up to a full hold buffer — 2048 events /
+    // 8 MB — handed over in one burst at the moment the socket is most likely already full, so an
+    // ungated one is the largest single write on this route.
+    await emitter.goLive(pace);
+    if (closed || stalled) return;
+    // Out-appended DURING the flush: same door, for the same reason.
+    if (emitter.overflowed()) {
+      endStream('run tail dropped its hold buffer under an append storm; ending the stream so the client resumes', { where, when: 'during flush' });
+    }
+  }
+
+  /**
+   * A hole on the live stream: `seq` jumped from `from` to `arrivedAt` because at least one notify
+   * for a DURABLE event never arrived (see the gap door in `createOrderedEmitter`).
+   *
+   * Healing re-reads the log rather than ending the stream (**A-89-1**). Both close the hole — the
+   * client could resume from `Last-Event-ID` — but the log is right here and the stream is healthy,
+   * so ending it would spend a reconnect and `SSE_RETRY_MS` of blindness on an event this daemon can
+   * read in one indexed seek, and would tell a client with no reconnect logic nothing at all. It is
+   * also what the app-side projection already does with the same gap (`run-view-model.ts`), so the
+   * two surfaces heal the same way. The cost is that a tail can now issue an unasked-for store read;
+   * it is bounded by the rate of LOST notifies, which is the rate of writer crashes.
+   *
+   * Ending is still the fallback, for the one case the re-read cannot answer: if the log does not
+   * carry the missing seqs, we do not have them and must not pretend otherwise.
+   */
+  async function heal(from: number, arrivedAt: number): Promise<void> {
+    if (closed || stalled) return;
+    log.warn('run tail saw a seq gap on the live stream; re-reading the durable log to fill it', {
+      runId: id,
+      from,
+      arrivedAt,
+      missing: arrivedAt - from - 1,
+    });
+    if (!(await pumpDurable(from, 'heal'))) return;
+    if (closed || stalled) return;
+    // The read did not reach the seq that exposed the hole, so the log cannot fill it — a notify
+    // that overtook its own commit, or a log this daemon no longer has. Ending sends the client
+    // back through the reconnect door instead of writing the hole we just refused to write.
+    if (emitter.lastEmitted() < arrivedAt - 1) {
+      endStream('run tail could not fill a seq gap from the durable log; ending the stream so the client resumes', {
+        from,
+        arrivedAt,
+      });
+      return;
+    }
+    await goLiveOrEnd('heal');
+  }
+
   // The handler reached here across two awaits (the router's dynamic import and the store resolve).
   // A client that aborted during either one has ALREADY emitted 'close', so the listeners above will
   // never fire — and `res.write` on a destroyed response emits no 'error' either, so nothing else
@@ -897,71 +1083,11 @@ async function handleEvents(
   res.write(`retry: ${SSE_RETRY_MS}\n\n`);
   lastWrite = Date.now();
 
-  try {
-    // Step 2 — the durable replay, a page at a time. Nothing is dropped here: the backing log is
-    // the DB, not a ring. The yield between pages is what keeps a long log from freezing the daemon,
-    // and is also what makes the emitter's overlap window real.
-    const pageSize = replayPageSize();
-    let cursor = resume.since;
-    for (;;) {
-      if (closed || stalled) return;
-      const page = await store.eventsSince(id, cursor, pageSize);
-      if (page.length === 0) break;
-      // Replay is the only unbounded producer on this stream — the live path is paced by the run
-      // itself. A client that opens a tail and stops reading would otherwise pull the whole log into
-      // the daemon's heap, so the gate is INSIDE the page: a page is 500 events at up to 64k of
-      // payload each, and checking once per page is a count bounding a byte problem.
-      for (const event of page) {
-        emitter.emit(event);
-        if (!(await pace())) return;
-      }
-      cursor = page[page.length - 1].seq;
-      // A page that never reached the byte budget still leaves the socket back-pressured, so the
-      // between-pages check stays: it is the one that covers a log of small events.
-      if (needsDrain) {
-        await waitForDrain(res);
-        needsDrain = false;
-        stalledBytes = 0;
-        sincePace = 0;
-      }
-      if (closed || stalled) return;
-      if (page.length < pageSize) break;
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-  } catch (err) {
-    log.error('run event replay failed', { runId: id, error: String(err) });
-    cleanup();
-    res.end();
-    return;
-  }
+  // Step 2 — the durable replay, a page at a time. Nothing is dropped here: the backing log is the
+  // DB, not a ring. The yield between pages is what keeps a long log from freezing the daemon, and
+  // is also what makes the emitter's overlap window real.
+  if (!(await pumpDurable(resume.since, 'replay'))) return;
 
   // Step 3 — release whatever arrived mid-replay through the same door, then run live.
-  //
-  // Unless the run out-appended the hold buffer, in which case the events it dropped are still in
-  // the durable log and the honest move is to end the stream: the client reconnects with the last
-  // seq it actually saw and replays the gap. Going live over a dropped buffer would skip those seqs
-  // silently, which is the one thing this route promises never to do.
-  if (emitter.overflowed()) {
-    log.warn('run tail dropped its replay hold buffer under an append storm; ending the stream so the client resumes', {
-      runId: id,
-      lastEmitted: emitter.lastEmitted(),
-    });
-    cleanup();
-    res.end();
-    return;
-  }
-  // The flush takes the same gate as the replay. It is up to a full hold buffer — 2048 events / 8 MB
-  // — handed over in one burst at the moment the socket is most likely already full, so an ungated
-  // one is the largest single write on this route.
-  await emitter.goLive(pace);
-  if (closed || stalled) return;
-  // Out-appended DURING the flush: same door as an overflow before it, for the same reason.
-  if (emitter.overflowed()) {
-    log.warn('run tail dropped its hold buffer during the go-live flush; ending the stream so the client resumes', {
-      runId: id,
-      lastEmitted: emitter.lastEmitted(),
-    });
-    cleanup();
-    res.end();
-  }
+  await goLiveOrEnd('replay');
 }
