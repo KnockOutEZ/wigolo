@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { DEFAULT_LIST_LIMIT, projectRun } from 'wigolo/studio';
+import {
+  DEFAULT_LIST_LIMIT,
+  projectRun,
+  type CreateRunInput,
+  type ListRunsOptions,
+  type RunEvent,
+  type RunEventInput,
+} from 'wigolo/studio';
 import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
@@ -817,5 +824,119 @@ describe('RunViewModel — the deadline announces itself', () => {
 
     expect(vm.retainedEventCount(seeded.id), 'a run nobody read stayed on its condensed guess').toBeGreaterThan(0);
     expect(vm.snapshot(seeded.id)!.status).toBe('running');
+  });
+});
+
+/**
+ * A store whose answers can be held in flight, and whose live tail can drop one.
+ *
+ * Every read here computes its answer WHEN ASKED and delivers it WHEN RELEASED, because that is what
+ * a round-trip through the broker child actually is: the page the child read is the page it read,
+ * however long the pipe takes to hand it over. Both races below are about what this projection did
+ * while a read was still on the wire, and neither is reachable from a store that answers instantly —
+ * which is why they survived a suite of otherwise thorough arms.
+ */
+class ParkableStore implements RunStoreClient {
+  private readonly handlers: Array<(runId: string, event: RunEvent) => void> = [];
+  private readonly parked = new Map<string, Promise<void>>();
+  private drops = 0;
+
+  constructor(private readonly inner: FakeRunStore) {
+    this.inner.onRunEvent((runId, event) => {
+      if (this.drops > 0) { this.drops--; return; }
+      for (const h of this.handlers) h(runId, event);
+    });
+  }
+
+  /** The next `n` committed envelopes never reach the live tail — the dropped notify a gap means. */
+  dropNextNotify(n = 1): void { this.drops = n; }
+
+  /** Hold the next call to `method` AFTER it has computed its answer. Returns the release. */
+  park(method: 'runFacts' | 'listRunLogs' | 'eventsSince'): () => void {
+    let release!: () => void;
+    this.parked.set(method, new Promise<void>((resolve) => { release = () => resolve(); }));
+    return release;
+  }
+
+  private async hold<T>(method: string, answer: T): Promise<T> {
+    const gate = this.parked.get(method);
+    if (!gate) return answer;
+    this.parked.delete(method);
+    await gate;
+    return answer;
+  }
+
+  createRun(input: CreateRunInput) { return this.inner.createRun(input); }
+  appendEvent(runId: string, event: RunEventInput) { return this.inner.appendEvent(runId, event); }
+  getRun(runId: string) { return this.inner.getRun(runId); }
+  listRuns(opts?: ListRunsOptions) { return this.inner.listRuns(opts); }
+  runExists(runId: string) { return this.inner.runExists(runId); }
+  async listRunLogs(opts?: ListRunsOptions) { return this.hold('listRunLogs', await this.inner.listRunLogs(opts)); }
+  async eventsSince(runId: string, since: number, limit: number) {
+    return this.hold('eventsSince', await this.inner.eventsSince(runId, since, limit));
+  }
+  async runFacts(runId: string) { return this.hold('runFacts', await this.inner.runFacts(runId)); }
+  onRunEvent(handler: (runId: string, event: RunEvent) => void): void { this.handlers.push(handler); }
+}
+
+/**
+ * SD1 exit-6 findings 4 and 5 — two replays racing each other, each of which leaves the app's
+ * projection permanently behind the store with no next envelope to correct it.
+ *
+ * Both matter for the same reason: the envelope they lose is usually the LAST one. A run whose
+ * `run.completed` never lands here is `running` in the tray, in the dock badge and in the window the
+ * presentation controller is deciding about, while REST — projecting from the store — says it is
+ * done. One log, two answers, for as long as the app stays open.
+ */
+describe('RunViewModel — replays that race each other', () => {
+  it('heals a gap even when the replay it deduped against was a non-replace one', async () => {
+    const inner = new FakeRunStore();
+    const store = new ParkableStore(inner);
+    const vm = new RunViewModel(store);
+
+    // The waking envelope for a run this projection has never seen starts a NON-replace adopt, and
+    // this parks it mid-read — on the wire, exactly where a slow broker leaves it.
+    const deliverFacts = store.park('runFacts');
+    const run = await inner.createRun({ task: 'pay the invoice' });
+
+    // …and meanwhile the log gets registered by a shorter path, which is what turns that parked
+    // replay into a no-op when it finally resumes: it exits on `logs.has(runId) && !replace`.
+    await vm.hydrate();
+    expect(vm.snapshot(run.id)?.status).toBe('running');
+
+    // A dropped notify opens the hole, and the envelope that reveals it is the run's LAST one.
+    store.dropNextNotify();
+    await inner.appendEvent(run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-2' } });
+    await inner.appendEvent(run.id, { actor: { kind: 'system' }, type: 'run.completed', payload: {} });
+
+    // The gap asked for a REPLACE replay; it was handed the parked non-replace one instead.
+    deliverFacts();
+
+    await vi.waitFor(() => expect(vm.snapshot(run.id)?.status, 'the run stayed running forever').toBe('done'));
+    expect(vm.ownerOf('tab-2'), 'the heal replayed the tail, not the whole log').toBe(run.id);
+  });
+
+  it('does not let an older boot page rewind a log that has already folded a newer envelope', async () => {
+    const inner = new FakeRunStore();
+    const store = new ParkableStore(inner);
+    const vm = new RunViewModel(store);
+
+    const run = await inner.createRun({ task: 'file the return' });
+    await vi.waitFor(() => expect(vm.list().map((r) => r.id)).toEqual([run.id]));
+
+    // The boot page is read HERE — one envelope behind where the run is about to be.
+    const deliverBootPage = store.park('listRunLogs');
+    const booting = vm.hydrate();
+
+    await inner.appendEvent(run.id, { actor: { kind: 'system' }, type: 'run.completed', payload: {} });
+    expect(vm.snapshot(run.id)?.status, 'the terminal envelope never folded, so this arm proves nothing').toBe('done');
+
+    // …and lands after it. A retain that simply overwrites rewinds `lastSeq` below the folded
+    // envelope, and a terminal envelope lost this way has no successor to open a gap and heal it.
+    deliverBootPage();
+    await booting;
+
+    expect(vm.snapshot(run.id)?.status, 'a stale boot page rewound a fresher log').toBe('done');
+    expect(vm.retainedEventCount(run.id), 'the rewound log kept envelopes a sealed run has already dropped').toBe(0);
   });
 });
