@@ -851,6 +851,13 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
 }
 
 /**
+ * A row's seeds, with its status made non-optional. The status a filter is decided on and the status
+ * the row carries are then the same value in the same object, not two calls that could drift — the
+ * whole of what K7 bought, restated as a type.
+ */
+type RunSeed = ProjectRunOptions & { status: RunStatus };
+
+/**
  * Everything a projection would otherwise have folded from unbounded rows, asked of SQLite instead —
  * two bounded reads per run, neither of which can grow with how long the run has been going.
  *
@@ -859,7 +866,7 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
  * depth. Two statements rather than one compound because each has its own plan to keep green, and a
  * plan nobody can read is a plan nobody notices regressing.
  */
-function readSeeds(db: Database.Database, runId: string, now: Date): ProjectRunOptions {
+function readSeeds(db: Database.Database, runId: string, now: Date): RunSeed {
   const { terminal, pausedReason, visibility } = foldHeads(readHeads(db, NEWEST_PROJECTION_ROWS_SQL, SEEKABLE_PROJECTION_TYPES, runId));
   // The cards are read whatever the status says, because a finished or paused run still LISTS the
   // ones nobody answered — only the status question gets to stop early, and it does not here: the
@@ -903,12 +910,13 @@ function readEventTails(db: Database.Database, runIds: readonly string[]): Map<s
  * Sharing the path is also what keeps the two agreeing: a list row and an item read cannot drift
  * when neither owns a query.
  */
-function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date): Run[] {
+function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date, seeds?: readonly RunSeed[]): Run[] {
   const ids = rows.map((r) => r.id);
   const byRun = readProjectionEvents(db, ids);
   const tails = readEventTails(db, ids);
-  return rows.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costOf(r), ...readSeeds(db, r.id, now) });
+  return rows.map((r, i) => {
+    const seed = seeds ? seeds[i] : readSeeds(db, r.id, now);
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costOf(r), ...seed });
     const tail = tails.get(r.id);
     return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
   });
@@ -1033,8 +1041,14 @@ function readRunPage(
   }
   if (after) {
     // Keyset, not offset: a run inserted mid-page cannot shift the rows a client has not seen yet.
-    where.push('(created_at < ? OR (created_at = ? AND id < ?))');
-    params.push(after.createdAt, after.createdAt, after.id);
+    //
+    // A row value and not the `created_at < ? OR (created_at = ? AND id < ?)` it is equivalent to.
+    // The two select the same rows, but only this form is an index RANGE: against the OR SQLite
+    // declined the constraint and planned `SCAN ... USING INDEX`, walking the index from the newest
+    // row on every page, where the row value plans `SEARCH ... ((created_at,id)<(?,?))` and seeks
+    // straight to the cursor.
+    where.push('(created_at, id) < (?, ?)');
+    params.push(after.createdAt, after.id);
   }
   // Four texts rather than one, built from which filters the caller passed — outside the statement
   // cache for the same reason as the projection read, and off the append path either way.
@@ -1045,11 +1059,22 @@ function readRunPage(
 /**
  * How many reads one call will do before it hands the rest back as a cursor. A status filter cannot
  * be pushed into SQL (below), so a filter matching nothing would otherwise walk the whole table
- * synchronously. Bounded as a multiple of the page the caller ALREADY asked to have projected, so
- * the ceiling scales with the request rather than with the table. A short page plus a cursor is the
- * honest answer; a short page and no cursor would read as "that was all".
+ * synchronously. A short page plus a cursor is the honest answer; a short page and no cursor would
+ * read as "that was all".
  */
 export const MAX_LIST_SCAN_PAGES = 8;
+
+/**
+ * ...and the rows those reads share, which is the bound that actually holds.
+ *
+ * A page count alone is not a bound on work, because the page is the caller's: at `MAX_LIST_LIMIT`
+ * the same eight reads looked at 1608 rows rather than 408, and nothing in `listRuns` awaits, so all
+ * of it is one uninterruptible block of event loop. Measured at `?limit=200&status=cancelled` with
+ * no matches: 123-288 ms. Sharing one row ceiling makes the pages get SHORTER as the caller's page
+ * gets longer, so the ceiling belongs to the store and not to the request — while the first read is
+ * still always the full `limit + 1`, so an unfiltered call is exactly the one read it always was.
+ */
+export const MAX_LIST_SCAN_ROWS = MAX_LIST_SCAN_PAGES * (DEFAULT_LIST_LIMIT + 1);
 
 /**
  * K7: the status filter is decided on the PROJECTION, never on the cached `status` column.
@@ -1066,12 +1091,23 @@ export const MAX_LIST_SCAN_PAGES = 8;
  * the same value by construction and there is no second predicate left to drift. The cost is that
  * the filter can no longer bound the SQL read, so the page is filled by scanning forward — one read
  * when nothing is filtered out, more when matches are sparse, never more than `MAX_LIST_SCAN_PAGES`
- * reads before yielding a cursor.
+ * reads, or `MAX_LIST_SCAN_ROWS` rows, before yielding a cursor.
  *
- * The look-ahead row is now projected rather than merely counted, because under a filter it is a
- * candidate rather than a lookahead. That is one extra row of bounded seeks per call — 2% at the
- * default page size — and it is the whole of what the projection-side filter costs on the hot
- * unfiltered path.
+ * What a scanned row COSTS is the other half, and the half that first shipped wrong: every row the
+ * scan looked at was fully projected, so a sparse filter paid up to eight pages of projections to
+ * return one page. It is two-phase now. A row's status comes from its seeds — bounded newest-row
+ * seeks plus the auto-deny-windowed decision read — and only the survivors are projected, which is
+ * what costs the unbounded per-run reads: `readProjectionEvents` over every tab and cost event a run
+ * ever wrote, plus a tail seek each. Rows fully projected per call is therefore `limit + 1`,
+ * filtered or not, rather than `MAX_LIST_SCAN_PAGES` times that.
+ *
+ * The seeds are computed once and handed to the projection rather than re-read inside it. Re-reading
+ * would put a second status answer back in front of the row it admitted, which is the exact defect
+ * K7 deleted — so the filter and the row it lets through are one `RunSeed`, not two calls that
+ * happen to agree today.
+ *
+ * The look-ahead row is a candidate rather than a lookahead under a filter, so it is decided like
+ * every other row, and projected only if it survives.
  */
 export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT), MAX_LIST_LIMIT);
@@ -1088,21 +1124,33 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   let after = cursor;
   let lastScanned: RunRow | undefined;
   let reads = 0;
+  let scanned = 0;
   let exhausted = false;
 
   // One row past the page, so "is there more" costs no second query. With no status filter every
   // scanned row matches and this loop runs exactly once, as the unfiltered path always did.
-  while (matched.length <= limit && !exhausted && reads < MAX_LIST_SCAN_PAGES) {
-    const rows = readRunPage(db, opts.spaceId, after, limit + 1);
-    if (rows.length < limit + 1) exhausted = true;
+  while (matched.length <= limit && !exhausted && reads < MAX_LIST_SCAN_PAGES && scanned < MAX_LIST_SCAN_ROWS) {
+    // Never more than the caller's page, never more than the budget has left. The first read always
+    // gets the full `limit + 1` because nothing has been spent yet.
+    const want = Math.min(limit + 1, MAX_LIST_SCAN_ROWS - scanned);
+    const rows = readRunPage(db, opts.spaceId, after, want);
+    // Short of what was ASKED for, not short of a page: a read trimmed by the budget is not the end
+    // of the table, and calling it one would drop the cursor and end pagination early.
+    if (rows.length < want) exhausted = true;
     if (rows.length === 0) break;
     reads++;
-    // Bounded queries for the chunk, not one unbounded full-log read per row.
-    const runs = projectRows(db, rows, now);
+    scanned += rows.length;
+    // Phase one: the cheap answer for every scanned row. Bounded seeks per row and nothing per event.
+    const seeds = rows.map((row) => readSeeds(db, row.id, now));
+    const survivors: RunRow[] = [];
+    const survivorSeeds: RunSeed[] = [];
     rows.forEach((row, i) => {
-      const run = runs[i];
-      if (!wanted || wanted.has(run.status)) matched.push({ row, run });
+      if (!wanted || wanted.has(seeds[i].status)) { survivors.push(row); survivorSeeds.push(seeds[i]); }
     });
+    // Phase two: the expensive one, over survivors only. Bounded queries for the chunk, not one
+    // unbounded full-log read per row.
+    const runs = projectRows(db, survivors, now, survivorSeeds);
+    survivors.forEach((row, i) => matched.push({ row, run: runs[i] }));
     lastScanned = rows[rows.length - 1];
     after = { createdAt: lastScanned.created_at, id: lastScanned.id };
   }

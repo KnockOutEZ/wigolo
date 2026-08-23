@@ -21,6 +21,8 @@ import {
   AUTO_DENY_MS,
   MAX_LIST_LIMIT,
   MAX_LIST_SCAN_PAGES,
+  MAX_LIST_SCAN_ROWS,
+  DEFAULT_SPACE_ID,
   isValidListCursor,
   MAX_EVENT_PAYLOAD_CHARS,
   runDir,
@@ -607,6 +609,96 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
   });
 
   /**
+   * WHY: bounding the READS was never a bound on the WORK. Every scanned row was fully projected,
+   * so a filter matching nothing paid up to eight pages of projections — the unbounded per-run
+   * reads over every event a run ever wrote — to return an empty page, synchronously, on the
+   * daemon's event loop. Measured at 2000 runs x 122 events: 164 ms of blocked loop.
+   *
+   * A row that does not survive the filter must therefore cost its status and nothing else.
+   */
+  it('projects only the rows a filter admits, not every row it scans', () => {
+    const limit = 2;
+    for (let i = 0; i < MAX_LIST_SCAN_PAGES * (limit + 1) + 10; i++) {
+      const run = createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, i)) });
+      // Events the PROJECTION reads and the status seeds do not, so the two phases are separable in
+      // the read log: if a scanned row were still projected, these would show up.
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 't1' } }, opts());
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } }, opts());
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, opts());
+    }
+
+    const seen = spyEventReads(db, () => listRuns(db, { status: ['cancelled'], limit }));
+    expect(seen.result.runs).toEqual([]);
+    // It really did walk to its bound — otherwise "no projections" would be true for trivial reasons.
+    expect(seen.result.nextCursor).toBeTruthy();
+    const statusHeads = seen.reads.filter((r) => /UNION ALL/i.test(r.sql));
+    expect(statusHeads).toHaveLength(MAX_LIST_SCAN_PAGES * (limit + 1));
+
+    // Not one projection read, and not one tail seek: both are per-survivor work and nothing survived.
+    expect(seen.reads.filter((r) => /type IN/i.test(r.sql))).toHaveLength(0);
+    expect(seen.reads.filter((r) => TAIL_READ.test(r.sql))).toHaveLength(0);
+  });
+
+  /**
+   * WHY: a page COUNT is not a bound on work when the page is the caller's. At `MAX_LIST_LIMIT` the
+   * same eight reads looked at 1608 rows rather than 408, so the ceiling belonged to the request
+   * instead of to the store — and `listRuns` has no await in it, so all of it is one uninterruptible
+   * block. The pages have to get shorter as the caller's page gets longer.
+   */
+  it('bounds the rows one call scans however large a page the caller asks for', () => {
+    for (let i = 0; i < MAX_LIST_SCAN_ROWS + 12; i++) {
+      const run = createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, i)) });
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, opts());
+    }
+
+    const seen = spyEventReads(db, () => listRuns(db, { status: ['cancelled'], limit: MAX_LIST_LIMIT }), /\bFROM studio_runs\b/i);
+    const scanned = seen.reads.reduce((n, r) => n + r.rows, 0);
+    expect(scanned).toBeLessThanOrEqual(MAX_LIST_SCAN_ROWS);
+    // ...and it is a BOUND, not a short read: the scan went past the caller's own page.
+    expect(scanned).toBeGreaterThan(MAX_LIST_LIMIT);
+    expect(seen.reads.length).toBeLessThan(MAX_LIST_SCAN_PAGES);
+
+    // The budget must not be paid for by pretending the table ended: a trimmed read still hands back
+    // a cursor, and following it terminates rather than restarting.
+    let cursor = seen.result.nextCursor;
+    expect(cursor).toBeTruthy();
+    let pages = 1;
+    while (cursor && pages < 40) {
+      const next = listRuns(db, { status: ['cancelled'], limit: MAX_LIST_LIMIT, cursor });
+      expect(next.runs).toEqual([]);
+      cursor = next.nextCursor;
+      pages++;
+    }
+    expect(cursor).toBeUndefined();
+  });
+
+  /**
+   * WHY: K7's guarantee is that the filter and the row it admits are ONE value. Deciding the filter
+   * cheaply and projecting the survivor is only safe while both come from the same read — a second
+   * status answer in front of the row is the exact defect K7 deleted. And a survivor must still be
+   * whole: a row admitted by phase one and never projected would list with no tabs and no cost.
+   */
+  it('projects a survivor in full, with the status that admitted it', () => {
+    let wanted = '';
+    for (let i = 0; i < 20; i++) {
+      const run = createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, i)) });
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } }, opts());
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 4 } }, opts());
+      // One match, and deliberately not on the first page, so it is found by the scan and not by luck.
+      if (i === 3) { appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.cancelled' }, opts()); wanted = run.id; }
+      else appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, opts());
+    }
+
+    const page = listRuns(db, { status: ['cancelled'], limit: 2 });
+    expect(page.runs.map((r) => r.id)).toEqual([wanted]);
+    expect(page.runs[0].status).toBe('cancelled');
+    expect(page.runs[0].tabIds).toEqual(['tab-3']);
+    expect(page.runs[0].cost.browserActions).toBe(4);
+    // The one read every surface is measured against: a listed row equals the item read, filter or not.
+    expect(page.runs[0]).toEqual(getRun(db, wanted));
+  });
+
+  /**
    * WHY: the clamp is the only thing in front of `SELECT ... LIMIT ?` on the list route, and the
    * broker path reaches the store with no REST layer to reject a limit first. The test that stood
    * here created THREE runs and asserted the page was at most 200 — true whether the clamp existed
@@ -1051,7 +1143,7 @@ describe('run-store — listing a page is bounded work (F2)', () => {
 
     // Row counts cannot see a scan that returns the right rows — see the append-path test.
     const projection = seen.reads.find((r) => /type IN/i.test(r.sql));
-    const tail = seen.reads.find((r) => /ORDER BY seq DESC/i.test(r.sql));
+    const tail = seen.reads.find((r) => TAIL_READ.test(r.sql));
     expect(projection).toBeDefined();
     expect(tail).toBeDefined();
     expect(queryPlan(projection!), queryPlan(projection!)).toContain('idx_studio_run_events_type');
@@ -1060,6 +1152,68 @@ describe('run-store — listing a page is bounded work (F2)', () => {
     // measured 250x worse at depth because each walks the run.
     expect(queryPlan(tail!), queryPlan(tail!)).toContain('SEARCH');
     expect(queryPlan(tail!), queryPlan(tail!)).not.toContain('TEMP B-TREE');
+  });
+
+  /**
+   * WHY: the run TABLE was the unindexed half. `ORDER BY created_at DESC, id DESC` over no matching
+   * index planned `SCAN studio_runs` + `USE TEMP B-TREE FOR ORDER BY` — the whole table read and the
+   * whole table sorted, per page read, on a table that grows forever by design. The keyset predicate
+   * that makes pagination stable was doing nothing for the plan, because the columns it names were
+   * not in an index.
+   *
+   * Both shapes are asserted because neither index can serve the other's: a read that does not
+   * constrain `space_id` cannot use an index led by it, and a space-scoped read cannot seek without
+   * one.
+   */
+  it('reads the run table through an index rather than scanning and sorting it', () => {
+    for (let i = 0; i < 6; i++) {
+      createRun(db, { task: `t${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, i)) });
+    }
+    const runTable = /\bFROM studio_runs\b/i;
+
+    const first = spyEventReads(db, () => listRuns(db, { limit: 2 }), runTable);
+    const firstPlan = queryPlan(first.reads[0]);
+    // Ordered index traversal that stops at LIMIT, so there is no sort step left to pay for.
+    expect(firstPlan, firstPlan).toContain('idx_studio_runs_created_at');
+    expect(firstPlan, firstPlan).not.toContain('TEMP B-TREE');
+
+    // The keyset read — every page after the first — seeks straight to the cursor.
+    const keyset = spyEventReads(db, () => listRuns(db, { limit: 2, cursor: first.result.nextCursor }), runTable);
+    const keysetPlan = queryPlan(keyset.reads[0]);
+    expect(keysetPlan, keysetPlan).toContain('SEARCH');
+    expect(keysetPlan, keysetPlan).toContain('idx_studio_runs_created_at');
+    expect(keysetPlan, keysetPlan).not.toContain('TEMP B-TREE');
+
+    const scoped = spyEventReads(db, () => listRuns(db, { limit: 2, spaceId: DEFAULT_SPACE_ID }), runTable);
+    const scopedPlan = queryPlan(scoped.reads[0]);
+    expect(scopedPlan, scopedPlan).toContain('SEARCH');
+    expect(scopedPlan, scopedPlan).toContain('idx_studio_runs_space_created_at');
+    expect(scopedPlan, scopedPlan).not.toContain('TEMP B-TREE');
+  });
+
+  /**
+   * WHY: an index that answers nothing still costs a b-tree write on every write that touches its
+   * columns. `idx_studio_runs_status` was rewritten by the status UPDATE every single append made,
+   * and since the status filter moved onto the projection nothing selects `studio_runs` by status at
+   * all. The migration that drops it also has to survive being re-run: the postStep is the only
+   * place these statements live, so an un-guarded one would fail a replayed migration table.
+   */
+  it('drops the index nothing queries, idempotently', () => {
+    const indexes = (): string[] =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'studio_runs' AND name LIKE 'idx_%'").all() as { name: string }[])
+        .map((r) => r.name)
+        .sort();
+    const expected = ['idx_studio_runs_created_at', 'idx_studio_runs_space_created_at'];
+    expect(indexes()).toEqual(expected);
+
+    // Replay the migration over a database it has already run on — the shape an upgrade actually has.
+    db.prepare("DELETE FROM schema_migrations WHERE name = '018-studio-runs-list-index'").run();
+    _resetMigrationGuard();
+    applyMigrations(db, { vecLoaded: false });
+    expect(indexes()).toEqual(expected);
+
+    // And nothing in the store went looking for the dropped index on the way past.
+    expect(listRuns(db, {}).runs).toEqual([]);
   });
 
   it('projects each list row exactly as getRun does, marks and unknown types included', () => {
@@ -1686,12 +1840,18 @@ interface EventRead { sql: string; params: unknown[]; rows: number }
  * compiles itself: the cache is dropped on the way in so every read inside `fn` goes through the
  * spy, and again on the way out so no wrapped statement outlives the array it reports into.
  */
-function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: number; rows: number; reads: EventRead[]; result: T } {
+function spyEventReads<T>(
+  database: Database.Database,
+  fn: () => T,
+  // The run TABLE is the other half of the list's cost, and it is read by a statement built fresh
+  // per filter shape — so its plan has to be caught in flight, exactly as the log's reads are.
+  table: RegExp = /\bFROM studio_run_events\b/i,
+): { queries: number; rows: number; reads: EventRead[]; result: T } {
   const reads: EventRead[] = [];
   const realPrepare = database.prepare.bind(database);
   const spy = ((sql: string) => {
     const stmt = realPrepare(sql);
-    if (!/\bFROM studio_run_events\b/i.test(sql)) return stmt;
+    if (!table.test(sql)) return stmt;
     const wrap = (name: 'all' | 'get', count: (out: unknown) => number): void => {
       const real = stmt[name].bind(stmt) as (...args: unknown[]) => unknown;
       Object.defineProperty(stmt, name, {
@@ -1717,6 +1877,13 @@ function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: 
     _resetPreparedStatements(database);
   }
 }
+
+/**
+ * The tail seek, and nothing else. `ORDER BY seq DESC` alone no longer names it: the status seeds'
+ * head read is a UNION of per-type subselects that each carry the same clause, and it now runs
+ * FIRST — so the loose pattern silently picked the wrong statement to make claims about.
+ */
+const TAIL_READ = /SELECT seq, ts FROM studio_run_events WHERE run_id = \? ORDER BY seq DESC/i;
 
 /** What SQLite actually does with a read, as one string. */
 function queryPlan(read: EventRead): string {
