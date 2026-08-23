@@ -62,8 +62,13 @@ type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
  * anything. There was no cap of any kind and no fallback.
  *
  * The bound is stated in events AND in characters because neither alone bounds a frame: one payload
- * may be up to `MAX_EVENT_PAYLOAD_CHARS` (64k), so a row count is not a size, and a size alone would
- * still have to read and parse an arbitrary number of rows to find out what it was.
+ * may be up to `MAX_EVENT_PAYLOAD_CHARS` (64k), so a row count is not a size, and a size says nothing
+ * about how many rows the page had to move to reach it.
+ *
+ * Neither is learned by materializing the log. The row count is the listing row's `lastSeq`, and the
+ * size is a `SUM(LENGTH(payload))` that under-states the serialized frame by construction — see
+ * `storedPayloadChars`. A run the estimate cannot rule out is read, and is charged for that read
+ * whether or not its envelopes ship, so one overrun cannot be repeated by every run behind it.
  *
  * A run past either bound is answered with its PROJECTION instead of its envelopes. That is not a
  * degraded answer: `listRuns` has already computed it by the bounded path, it is field-for-field the
