@@ -212,3 +212,139 @@ describe('the auto-deny, at the moment the clock actually reaches it', () => {
     ]);
   });
 });
+
+/**
+ * Every check this module makes is against state that only settles after an await, and the rows above
+ * cannot see that: `FakeRunStore` commits the instant it is asked, so no second caller ever arrives
+ * while an append is in flight. The app's do — `IPC.approvalDecide` fires per click, and the renderer
+ * is told about a parked card on a different turn from the one that records it.
+ *
+ * So this fixture PARKS the append. `gate()` holds the next store write open until the test releases
+ * it, which is the one window in which the shipped code wrote a durable log contradicting what
+ * actually happened: a second `decision.resolved` for one card, or none at all for a card the human
+ * answered.
+ */
+describe('the decision mirror, with an append still in flight', () => {
+  let store: GatedRunStore;
+  let vm: RunViewModel;
+  let mirror: DecisionMirror;
+  let timers: Array<{ ms: number; fire: () => void }>;
+  let runId: string;
+  let nowMs: number;
+
+  /** A store whose next N appends park until released, so a second caller lands mid-round-trip. */
+  class GatedRunStore extends FakeRunStore {
+    private held: Array<() => void> = [];
+    private gated = 0;
+    /** Park the next `n` appends. */
+    gate(n: number): void { this.gated = n; }
+    /** Let every parked append through, and let their folds land. */
+    async release(): Promise<void> {
+      const held = this.held;
+      this.held = [];
+      for (const go of held) go();
+      await new Promise((r) => setImmediate(r));
+    }
+    override async appendEvent(runId: string, event: Parameters<FakeRunStore['appendEvent']>[1]): ReturnType<FakeRunStore['appendEvent']> {
+      if (this.gated > 0) {
+        this.gated -= 1;
+        await new Promise<void>((resolve) => this.held.push(resolve));
+      }
+      return super.appendEvent(runId, event);
+    }
+  }
+
+  const collect = (into: Array<{ ms: number; fire: () => void }>) => (cb: () => void, ms: number): (() => void) => {
+    const t = { ms, fire: cb };
+    into.push(t);
+    return () => { const at = into.indexOf(t); if (at >= 0) into.splice(at, 1); };
+  };
+
+  beforeEach(async () => {
+    nowMs = Date.now();
+    store = new GatedRunStore();
+    timers = [];
+    vm = new RunViewModel(store, () => new Date(nowMs), collect([]));
+    await vm.hydrate();
+    mirror = createDecisionMirror({ runs: vm, onError: () => {}, setTimer: collect(timers) });
+    runId = (await vm.createRun({ task: 'buy the thing', sessionId: 'sess-1' })).id;
+    store.appends.length = 0;
+  });
+
+  const settled = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  /**
+   * A human double-submit, with the first answer's append still open.
+   *
+   * `settle` dropped the `runOf` link and THEN awaited the append, so the second click missed the link
+   * — and the `runForDecision` fallback still found the card pending, because the first fold had not
+   * landed. `resolveDecision` appends unconditionally, so the log ended up with two resolutions for
+   * one card and nothing downstream deduped them.
+   */
+  it('writes exactly one resolution when the human submits twice into one open append', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+
+    store.gate(1);
+    const first = mirror.resolved('ap-1', 'approved');
+    await settled(); // the first append is now parked, mid-round-trip
+    const second = mirror.resolved('ap-1', 'approved');
+    await store.release();
+    await Promise.all([first, second]);
+
+    expect(store.appends).toEqual([
+      { runId, type: 'decision.resolved', payload: { decisionId: 'ap-1', outcome: 'approved', by: 'human' } },
+    ]);
+    expect(vm.snapshot(runId)!.status).toBe('running');
+  });
+
+  /**
+   * The answer that arrives while the card is still being recorded.
+   *
+   * `runOf` is set only after `requestDecision`'s round-trip, and the renderer used to be told about
+   * the card BEFORE `parked` ran at all — so a fast click found neither the link nor a projection
+   * entry, returned without writing, and two minutes later the log recorded `auto_denied` for a card
+   * the broker had approved.
+   */
+  it('applies an answer that lands while the card is still being recorded, rather than dropping it', async () => {
+    store.gate(1);
+    const parked = mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    await settled(); // `decision.requested` is parked, mid-round-trip
+    const answer = mirror.resolved('ap-1', 'approved');
+    await store.release();
+    await Promise.all([parked, answer]);
+
+    expect(store.appends).toEqual([
+      { runId, type: 'decision.requested', payload: { decisionId: 'ap-1', kind: 'money', prompt: 'pay $40' } },
+      { runId, type: 'decision.resolved', payload: { decisionId: 'ap-1', outcome: 'approved', by: 'human' } },
+    ]);
+
+    // And the auto-deny it would otherwise have been left to: the answer took the card's turn, so the
+    // timer is gone and the deadline writes nothing.
+    nowMs += 120_000 + 1_000;
+    for (const t of [...timers]) t.fire();
+    await settled();
+    expect(store.appends.map((a) => a.payload.outcome)).toEqual([undefined, 'approved']);
+  });
+
+  /**
+   * A card that outlived its run.
+   *
+   * `endRun` has no channel into the mirror, so the two-minute timer of a card parked when the run
+   * ended still fired — appending `decision.resolved` AFTER `run.completed`. That is an out-of-order
+   * fact in an append-only log, and on a condensed run it forces a full re-read to absorb an event
+   * that should not exist.
+   */
+  it('writes nothing at the deadline for a card whose run has already ended', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    await vm.endRun(runId, 'completed');
+    store.appends.length = 0;
+
+    nowMs += 120_000 + 1_000;
+    for (const t of [...timers]) t.fire();
+    await settled();
+
+    expect(store.appends).toEqual([]);
+    expect(vm.snapshot(runId)!.status).toBe('done');
+  });
+});

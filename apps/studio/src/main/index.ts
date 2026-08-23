@@ -263,10 +263,16 @@ async function createWindow(): Promise<void> {
     approvalSurfaceAttached: () => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
-      win.webContents.send(IPC.approvalParked, dto);
-      // …and onto the run, so a run with a card waiting reads `needs_you` everywhere — including the
+      // Onto the run FIRST, so a run with a card waiting reads `needs_you` everywhere — including the
       // dock badge, which is the only attention affordance a withheld window has.
+      //
+      // Before the renderer is told, not after, and the order is the whole point: `parked` claims the
+      // card's turn synchronously, and the answer to a card the human has not been shown yet cannot
+      // arrive before that claim. Told first, a fast click landed while `parked` was still mid
+      // round-trip, found no link and no pending card, and was dropped — and two minutes later the log
+      // recorded `auto_denied` for a card the broker had approved.
       void decisions.parked(notice).catch(onDecisionError);
+      win.webContents.send(IPC.approvalParked, dto);
     },
     // P4: the agent posted a chat message (studio_say) → the chat rail. Agent-authored text; the renderer
     // renders it as an inert text node.
