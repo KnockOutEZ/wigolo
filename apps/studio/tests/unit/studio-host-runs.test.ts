@@ -92,6 +92,20 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(runs.sessionIdOf(runId!)).toBe(session_id);
   });
 
+  // SD1 exit-7. `studio_open`'s startUrl is agent-supplied and lands in an append-only log that has no
+  // prune path by design and is served over `GET /v1/runs/{id}/events` plus the SSE tail. Hand the agent a
+  // magic link and the whole secret is stored forever and readable by every client past the REST gate. The
+  // assertion is on the STORED row, not on the input, because the input is what the leak travels in.
+  it('stores the startUrl’s origin only, so a magic link’s token never enters the run log', async () => {
+    const { host, store } = makeHost();
+    await host.handlers.spawn({ startUrl: 'https://mail.example.com/login/verify?token=s3cr3t-reset&uid=42#inbox' });
+
+    const attached = store.appends.find((a) => a.type === 'tab.attached');
+    expect(attached, 'the session recorded no attach at all').toBeTruthy();
+    expect(attached!.payload.url).toBe('https://mail.example.com');
+    expect(JSON.stringify(store.appends), 'the token reached the durable run log').not.toContain('s3cr3t-reset');
+  });
+
   it('gives two concurrent sessions two runs with disjoint tab groups', async () => {
     const { host, runs } = makeHost();
     const a = await host.handlers.spawn({}) as { session_id: string };
