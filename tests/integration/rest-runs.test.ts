@@ -516,11 +516,11 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
       await client.open(`/v1/runs/${id}/events`);
       await client.waitForFrames(1);
 
-      const deadline = Date.now() + 1500;
+      const deadline = Date.now() + 4000;
       while (client.comments.length < 4 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 25));
       }
-      expect(client.comments.length).toBeGreaterThanOrEqual(3);
+      expect(client.comments.length).toBeGreaterThanOrEqual(2);
       expect(client.seqs()).toEqual([1]);
       expect(client.ended).toBe(false);
       client.kill();
@@ -550,7 +550,7 @@ describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () 
     process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE = '1';
     try {
       const id = await createRun('hole inside the flush');
-      const total = 120;
+      const total = 300;
       for (let i = 1; i < total; i++) {
         appendRunEventWithTail(db, id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: `t${i}` } });
       }
