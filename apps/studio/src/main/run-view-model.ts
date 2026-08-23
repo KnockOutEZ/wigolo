@@ -138,7 +138,7 @@ export function isTerminal(status: Run['status']): boolean {
  * badge and the renderer all redraw at the display's rate at best. Coalescing to it makes the cost of
  * watching a run a function of how long the burst lasts rather than of how many envelopes it carries.
  */
-const EMIT_COALESCE_MS = 16;
+export const EMIT_COALESCE_MS = 16;
 
 /**
  * How many envelopes one `eventsSince` frame carries.
@@ -268,10 +268,12 @@ export class RunViewModel {
   private readonly adopting = new Map<string, AdoptState>();
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
-  /** One attach at a time per TAB — see `attachTab`. */
-  private readonly attaching = new Map<string, Promise<void>>();
+  /** One ownership change at a time per TAB — see `queueForTab`. */
+  private readonly tabOps = new Map<string, Promise<unknown>>();
   /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
   private readonly horizons = new Map<string, { at: number; stop: () => void }>();
+  /** How to cancel the open coalescing window, while one is open — see `emit` and `dispose`. */
+  private closeWindow: (() => void) | undefined;
 
   /**
    * `now` is injectable for the same reason `projectRun` takes one: the projection depends on the
@@ -288,10 +290,23 @@ export class RunViewModel {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
   }
 
-  /** Let go of every scheduled horizon. A timer that outlives the app would fan out into a dead window. */
+  /**
+   * Let go of every scheduled timer. One that outlives the app would fan out into a dead window.
+   *
+   * The coalescing window counts, and it is the likelier of the two: shutdown ENDS every live run, so
+   * the last thing that happens before this call is a burst of terminal appends, and whichever of them
+   * lands in the final 16 ms is owed a trailing fan-out. The tray is destroyed one line earlier, so
+   * that fan-out would reach a destroyed OS item — the same failure the ordering above exists to avoid,
+   * arriving a frame late. A horizon is on the injected timer and was already released here; the window
+   * was on a raw `setTimeout` that nothing held a handle to, so it could not be.
+   */
   dispose(): void {
     for (const { stop } of this.horizons.values()) stop();
     this.horizons.clear();
+    this.closeWindow?.();
+    this.closeWindow = undefined;
+    this.coalescing = false;
+    this.coalesced = false;
   }
 
   /**
@@ -325,7 +340,11 @@ export class RunViewModel {
     if (this.coalescing) { this.coalesced = true; return; }
     this.coalescing = true;
     this.fanOut();
-    setTimeout(() => {
+    // The INJECTED timer, and a handle kept for `dispose`. A raw `setTimeout` here was neither: it
+    // could not be cancelled at shutdown, so a change landing in the last frame fanned out into
+    // mid-teardown listeners, and it kept a ref on the loop that no test could drive either.
+    this.closeWindow = this.setTimer(() => {
+      this.closeWindow = undefined;
       this.coalescing = false;
       if (!this.coalesced) return;
       this.coalesced = false;
@@ -624,27 +643,43 @@ export class RunViewModel {
   }
 
   /**
+   * Run one ownership change for a tab after every change already queued for THAT tab, and hand back
+   * its result.
+   *
+   * Every operation here is a check-then-act across an await: the check reads the PROJECTION and the
+   * append is a round-trip, so two of them issued in the same turn both decide against a projection
+   * neither has moved yet, and both commit. That is law 4 broken in the DURABLE record, where no
+   * replay repairs it and nothing detects it — every surface that reads the log afterwards, here or
+   * over REST or in a replay, sees the contradiction, and an agent drives another agent's page.
+   *
+   * Attach and detach share ONE queue rather than having one each, because the pairs that race are
+   * mixed: an attach whose append is still on the wire against the human closing the same tab, and a
+   * human close against the release `endRun` writes for the same tab. Two queues would serialise each
+   * kind against itself and leave both of those exactly as unserialised as no queue at all.
+   *
+   * Per TAB rather than globally, so a slow append for one tab never holds up an ownership change to
+   * another — the tab is the thing law 4 is about, and the broker's appends can take seconds.
+   * `setVisibility` serialises per run against the same shape of race.
+   *
+   * The rejection handler is the same call as the fulfilment one: a queued operation runs whether the
+   * one before it committed or refused, because a refusal changed nothing for it to be behind.
+   */
+  private queueForTab<T>(tabId: string, op: () => Promise<T>): Promise<T> {
+    const queued = (this.tabOps.get(tabId) ?? Promise.resolve()).then(op, op);
+    const tail = queued.then(
+      () => { if (this.tabOps.get(tabId) === tail) this.tabOps.delete(tabId); },
+      () => { if (this.tabOps.get(tabId) === tail) this.tabOps.delete(tabId); },
+    );
+    this.tabOps.set(tabId, tail);
+    return queued;
+  }
+
+  /**
    * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
    * owner is a no-op rather than a duplicate fact.
    */
   attachTab(runId: string, tabId: string, url?: string): Promise<void> {
-    // Serialised per TAB, because the check is against the PROJECTION and the append is a round-trip:
-    // two runs reaching for one tab in the same turn both read "nobody owns it", both commit, and the
-    // append-only log then records two owners for one tab. That is law 4 broken in the DURABLE
-    // record, where no replay can repair it and nothing detects it — every surface that reads the log
-    // afterwards, here or over REST or in a replay, sees one tab owned by two runs, and one agent is
-    // driving another agent's page. `setVisibility` serialises per run against the same shape of
-    // race. Per tab rather than globally, so a slow append never holds up an attach to another tab.
-    const queued = (this.attaching.get(tabId) ?? Promise.resolve()).then(
-      () => this.applyAttach(runId, tabId, url),
-      () => this.applyAttach(runId, tabId, url),
-    );
-    const tail = queued.then(
-      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
-      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
-    );
-    this.attaching.set(tabId, tail);
-    return queued;
+    return this.queueForTab(tabId, () => this.applyAttach(runId, tabId, url));
   }
 
   private async applyAttach(runId: string, tabId: string, url?: string): Promise<void> {
@@ -659,8 +694,22 @@ export class RunViewModel {
     await this.fold(runId, event);
   }
 
-  /** A tab nobody owns is the human's, and closing it is not a run fact. */
-  async detachTab(tabId: string, reason: TabDetachReason): Promise<void> {
+  /**
+   * A tab nobody owns is the human's, and closing it is not a run fact.
+   *
+   * Queued on the same per-tab lane as `attachTab`, and that is what makes the ownership read below
+   * true rather than merely likely. Unqueued it read `ownerOf` the instant it was called, which two
+   * ordinary sequences broke. A human closes a tab while its attach is still on the wire — the broker
+   * can take seconds — so this read finds no owner, returns, and the attach then commits: the run
+   * durably owns a destroyed tab forever, `agentVisibleTabs` lists it and `promote()` focuses a dead
+   * id. And a human close racing `endRun`'s `run_ended` release: both read the owner before either
+   * folds, and the append-only log takes two `tab.detached` facts for one detachment.
+   */
+  detachTab(tabId: string, reason: TabDetachReason): Promise<void> {
+    return this.queueForTab(tabId, () => this.applyDetach(tabId, reason));
+  }
+
+  private async applyDetach(tabId: string, reason: TabDetachReason): Promise<void> {
     const runId = this.ownerOf(tabId);
     if (runId === undefined) return;
     const event = await this.store.appendEvent(runId, {
@@ -671,7 +720,13 @@ export class RunViewModel {
     await this.fold(runId, event);
   }
 
-  /** Terminal transition: release the run's tabs first, so the log never ends owning a dead tab. */
+  /**
+   * Terminal transition: release the run's tabs first, so the log never ends owning a dead tab.
+   *
+   * The membership read is deliberately taken here and not inside the lane: it names the tabs to TRY,
+   * and `applyDetach` decides per tab, on the queue, whether there is still anything to release. A tab
+   * a human closed in the meantime is folded to a no-op there rather than written twice here.
+   */
   async endRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
     for (const tabId of this.tabsOf(runId)) await this.detachTab(tabId, 'run_ended');
     const payload: Record<string, unknown> =
