@@ -92,6 +92,47 @@ export function isTerminal(status: Run['status']): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
+/**
+ * How long a burst of envelopes may be folded into one fan-out — one frame at 60 Hz.
+ *
+ * The fan-out is what makes folding expensive, not the fold. Every listener answers by PROJECTING:
+ * `ipc-host` pushes `runs.list()` at the renderer, `run-tray` rebuilds a native menu template and
+ * hands it to the OS item, `run-presentation` reads `list()` to decide what the window wants. Each of
+ * those refills the memo the fold just dropped, so an un-coalesced fan-out replays the whole log once
+ * per envelope: measured on the shipped code at 3k envelopes = 44 ms against 6 ms with nobody
+ * watching, and at 20k = 1135 ms against 14 ms — doubling the log roughly quadrupled the cost, on the
+ * Electron main thread, which is also the thread that paints.
+ *
+ * A frame is the bound because nothing downstream can use anything finer: the menu bar, the dock
+ * badge and the renderer all redraw at the display's rate at best. Coalescing to it makes the cost of
+ * watching a run a function of how long the burst lasts rather than of how many envelopes it carries.
+ */
+const EMIT_COALESCE_MS = 16;
+
+/** A memoised projection, plus the moment the clock alone stops it being true. */
+interface ProjectionMemo {
+  run: Run;
+  /**
+   * When the earliest pending decision auto-denies, in ms since the epoch — `undefined` when nothing
+   * about this projection can move without an event. `projectRun` is a pure function of the log AND
+   * the clock, and this is the only field the clock touches, so it is the only thing a memo has to
+   * expire on.
+   */
+  staleAt: number | undefined;
+}
+
+/**
+ * A sealed run's projection cannot be recomputed — its envelopes are gone by design — but the clock
+ * can still move one of its fields. Expiry only ever REMOVES a card and never adds one, so it can be
+ * applied to the kept projection directly. Returns the projection unchanged when nothing has expired,
+ * so the ordinary read stays free and keeps its identity.
+ */
+function withoutExpiredDecisions(run: Run, now: Date): Run {
+  const at = now.getTime();
+  if (!run.pendingDecisions.some((d) => Date.parse(d.autoDenyAt) <= at)) return run;
+  return { ...run, pendingDecisions: run.pendingDecisions.filter((d) => Date.parse(d.autoDenyAt) > at) };
+}
+
 /** What a surface needs to name a run. Everything on it is projected; nothing is stored here. */
 export interface RunSummary {
   id: string;
@@ -120,8 +161,12 @@ export class RunViewModel {
   /** A replica of each live run's log, refillable at any time from the store. Not a second source of truth. */
   private readonly logs = new Map<string, RunLog>();
   /** Memoised `projectRun` output, dropped whenever a run's events change. A pure function's cache. */
-  private readonly projected = new Map<string, Run>();
+  private readonly projected = new Map<string, ProjectionMemo>();
   private readonly listeners = new Set<() => void>();
+  /** True while a fan-out window is open — see `emit`. */
+  private coalescing = false;
+  /** A change that arrived inside an open window and is owed the fan-out that closes it. */
+  private coalesced = false;
   /**
    * Replays in flight, so a burst of events for one run causes a single replay — and so a caller that
    * needs the projection current before it resolves can await the replay somebody else started.
@@ -130,7 +175,12 @@ export class RunViewModel {
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
 
-  constructor(private readonly store: RunStoreClient) {
+  /**
+   * `now` is injectable for the same reason `projectRun` takes one: the projection depends on the
+   * wall clock through `autoDenyAt`, so a test that cannot move the clock cannot reach the state
+   * where a pending decision has expired without any event arriving to say so.
+   */
+  constructor(private readonly store: RunStoreClient, private readonly now: () => Date = () => new Date()) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
   }
 
@@ -143,7 +193,37 @@ export class RunViewModel {
     this.listeners.add(cb);
   }
 
+  /**
+   * Announce that the projection moved, at most once per frame.
+   *
+   * Leading edge FIRST, then a closed window: a single change still reaches the menu bar and the
+   * renderer in the same turn it happened — latency is the reason a chat surface exists — while
+   * everything that lands inside the window is folded into the one fan-out that closes it. A
+   * trailing-only debounce would have bought the same bound at the price of making every isolated
+   * change a frame late, which is a worse trade for a surface a human is looking at.
+   *
+   * A microtask debounce was not enough: the store fans each committed envelope out before its own
+   * append resolves, so a stream of appends puts a promise turn between every fold and drains a
+   * microtask queue between each one. The window has to be a real one.
+   *
+   * A change with NO listener is dropped rather than remembered, because it is not observable and
+   * nothing can have missed it: every subscriber seeds itself where it subscribes — the tray redraws
+   * on mount, the presentation controller applies on reconcile, the renderer pulls `getState`.
+   */
   private emit(): void {
+    if (this.listeners.size === 0) return;
+    if (this.coalescing) { this.coalesced = true; return; }
+    this.coalescing = true;
+    this.fanOut();
+    setTimeout(() => {
+      this.coalescing = false;
+      if (!this.coalesced) return;
+      this.coalesced = false;
+      this.emit();
+    }, EMIT_COALESCE_MS);
+  }
+
+  private fanOut(): void {
     for (const cb of this.listeners) cb();
   }
 
@@ -436,13 +516,24 @@ export class RunViewModel {
     return this.ownerOf(tabId) === undefined;
   }
 
+  /**
+   * A COPY, always. `snapshot` hands back the memoised projection itself, so its `tabIds` is one
+   * array shared by every caller for as long as the memo lives — and callers treat what they are
+   * given as theirs: `endRun` iterates it while detaching, and any consumer is free to sort, splice
+   * or reverse it. One of those would rewrite the cached projection under everyone else, and the run
+   * would appear to have lost a tab that was never detached. The copy is what makes the memo an
+   * implementation detail rather than a contract every caller has to know about.
+   */
   tabsOf(runId: string): string[] {
-    return this.snapshot(runId)?.tabIds ?? [];
+    return this.snapshot(runId)?.tabIds.slice() ?? [];
   }
 
   /**
    * The agent-visible tab enumeration. Built from what the run owns and then narrowed to what still
    * exists — never from the tab universe filtered down, so a tab the human opened has no path into it.
+   *
+   * Both arms return a fresh array: `filter` builds one, and the unfiltered arm is already `tabsOf`'s
+   * copy rather than the memo's own.
    */
   agentVisibleTabs(runId: string, universe?: readonly string[]): string[] {
     const owned = this.tabsOf(runId);
@@ -457,19 +548,44 @@ export class RunViewModel {
   list(): RunSummary[] {
     return [...this.logs.keys()].map((id) => {
       const run = this.snapshot(id)!;
-      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds, visibility: run.visibility };
+      // `tabIds` copied for the same reason `tabsOf` copies: this summary is handed to the tray, to
+      // the renderer's state push and to the presentation controller, and it must not be a handle on
+      // the memo. This one crosses an IPC boundary as well, and the structured clone would only hide
+      // the aliasing from the renderer, never from main.
+      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds.slice(), visibility: run.visibility };
     });
   }
 
+  /**
+   * The projection, memoised — and expired on the clock as well as on the log.
+   *
+   * The memo used to be keyed on the log alone, which made it wrong for the one field `projectRun`
+   * derives from the wall clock. A run holding a pending decision projects as `needs_you` until the
+   * card auto-denies two minutes later, and that transition arrives WITHOUT an event: nothing drops
+   * the memo, so the tray and the dock badge went on saying "needs you" indefinitely while the REST
+   * surface — projecting fresh, with its own clock — said the run was running. Two surfaces
+   * disagreeing about one log is the class of defect law 1 exists to remove, so the memo carries the
+   * deadline that can invalidate it.
+   */
   snapshot(runId: string): Run | undefined {
     const log = this.logs.get(runId);
     if (!log) return undefined;
-    if (log.final) return log.final;
-    let run = this.projected.get(runId);
-    if (!run) {
-      run = projectRun(log.facts, log.events);
-      this.projected.set(runId, run);
-    }
+    const now = this.now();
+    if (log.final) return withoutExpiredDecisions(log.final, now);
+    const memo = this.projected.get(runId);
+    if (memo && (memo.staleAt === undefined || now.getTime() < memo.staleAt)) return memo.run;
+    const run = projectRun(log.facts, log.events, now);
+    this.projected.set(runId, { run, staleAt: autoDenyHorizonOf(run) });
     return run;
   }
+}
+
+/** The first moment the clock alone can change this projection: the earliest pending auto-deny. */
+function autoDenyHorizonOf(run: Run): number | undefined {
+  let earliest: number | undefined;
+  for (const decision of run.pendingDecisions) {
+    const at = Date.parse(decision.autoDenyAt);
+    if (Number.isFinite(at) && (earliest === undefined || at < earliest)) earliest = at;
+  }
+  return earliest;
 }
