@@ -37,6 +37,8 @@ export interface BrokerClientOptions {
   callTimeoutMs?: number;
   bootTimeoutMs?: number;
   probeTimeoutMs?: number;
+  /** See `DEFAULT_MAX_FRAME_CHARS`. Injectable so a test can force the bound rather than allocate it. */
+  maxFrameChars?: number;
 }
 
 /**
@@ -239,6 +241,18 @@ function describeNoRuntime(rejected: readonly NodeRuntimeRejection[]): string {
   return `studio local database service cannot start: no usable Node runtime.\nTried:\n${tried}\n${remedy}`;
 }
 
+/**
+ * The most one answer may occupy in this process before it is treated as a protocol failure.
+ *
+ * The reads that could produce an unbounded frame are bounded at the source now, which is where a
+ * policy bound belongs — this is not that. It is the backstop for the case the source bound cannot
+ * cover: a child that is broken, wedged mid-write, or newer than this host. Deliberately far above
+ * any legitimate answer (a synthesized brief, a page of artifacts with their bodies), because the
+ * cost of cutting a real answer short is a failed call and the cost of not cutting a runaway one is
+ * the window.
+ */
+const DEFAULT_MAX_FRAME_CHARS = 64 * 1024 * 1024;
+
 /** A client that only ever reports why it is dead. Loud (the reason travels to every caller), not fatal. */
 function deadClient(reason: string): BrokerClient {
   return {
@@ -278,6 +292,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
 
   const callTimeoutMs = opts.callTimeoutMs ?? 15_000;
   const bootTimeoutMs = opts.bootTimeoutMs ?? 20_000;
+  const maxFrameChars = opts.maxFrameChars ?? DEFAULT_MAX_FRAME_CHARS;
 
   let child: ChildProcess | null = null;
   let nextId = 1;
@@ -348,6 +363,16 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
       buf += chunk;
       let nl: number;
       while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); onLine(line); }
+      // Every legitimate answer is bounded at the source, so a partial line past this is a broken or
+      // runaway child rather than a large one — and this buffer is a JS string on the Electron main
+      // thread, the one that paints. Left unbounded it grows until the process is killed for memory,
+      // taking the window with it; cut here, the caller gets an error and the child is respawned.
+      if (buf.length > maxFrameChars) {
+        warn(`[studio] background service frame exceeded ${maxFrameChars} characters; restarting it\n`);
+        buf = '';
+        onGone('studio background service sent an oversized frame');
+        child?.kill();
+      }
     });
     child.on('error', (err: unknown) => {
       warn(`[studio] background service failed to start on ${nodePath}: ${err instanceof Error ? err.message : String(err)}\n`);
