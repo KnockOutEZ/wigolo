@@ -118,13 +118,20 @@ export interface ReadRunOptions {
 }
 
 /**
- * What a projection can be handed instead of reading it. `cost` is the SQL-folded total for the
- * types in `AGGREGATED_EVENT_TYPES`; supplying it and ALSO passing `cost.recorded` rows would double
- * count, which is why the store's filtered read and this seed are mutually exclusive by
- * construction. A caller with a full log (a replay, the app's view model) simply omits it.
+ * What a projection can be handed instead of reading it — one field per type in
+ * `AGGREGATED_EVENT_TYPES`, each already folded by SQLite. Supplying a seed and ALSO passing that
+ * type's rows would double count, which is why the store's filtered read and these seeds are
+ * mutually exclusive by construction. A caller with a full log (a replay, the app's view model)
+ * simply omits them and gets the identical answer from the `case` arms.
  */
 export interface ProjectRunOptions {
   cost?: RunCost;
+  /** The newest `presentation.*` row's verdict — `hidden` when the run has never been promoted. */
+  visibility?: 'hidden' | 'visible';
+  /** The unanswered, unexpired cards — `PENDING_DECISION_SQL`, replayed newest-wins. */
+  pendingDecisions?: readonly PendingDecision[];
+  /** §1's answer from the seek path, which `readStatusHead` and `foldStatus` are pinned to share. */
+  status?: RunStatus;
 }
 
 export interface ListRunsOptions extends ReadRunOptions {
@@ -177,6 +184,10 @@ const TERMINAL_EVENT_TYPES: readonly string[] = Object.keys(TERMINAL_STATUS_BY_T
 const PAUSE_EVENT_TYPES: readonly string[] = ['run.paused', 'run.resumed'];
 /** The pair with no natural bound: a run can raise and answer decisions all day (A-43-6). */
 const DECISION_EVENT_TYPES: readonly string[] = ['decision.requested', 'decision.resolved'];
+/** The other pair with no natural bound: a run can take and give back tabs for as long as it lives. */
+const TAB_EVENT_TYPES: readonly string[] = ['tab.attached', 'tab.detached'];
+/** Single-valued, and writer-driven: promote/demote can be flipped all day (law 2). Newest wins. */
+const PRESENTATION_EVENT_TYPES: readonly string[] = ['presentation.promoted', 'presentation.demoted'];
 
 /**
  * The only types `foldStatus` can be moved by. The append path recomputes the `studio_runs.status`
@@ -195,41 +206,57 @@ export const STATUS_EVENT_TYPES: readonly string[] = [
 ];
 
 /**
- * Every type `projectRun`'s switch reads AS A ROW. A read projects a whole run from these alone:
- * the `default: break` arm is the proof that no other type can change a projected field, and
+ * Every type `projectRun`'s switch reads AS A ROW. A type filter bounds a read to a SET OF TYPES,
+ * never to a number of ROWS, so what earns a place here is a type whose ROWS are bounded — or one
+ * whose SQL answer measured worse than reading them.
+ *
+ * `run.created` happens once per run by construction. The tab pair does not: a run can take and
+ * give tabs back for as long as it lives. It is read anyway, because the anti-join that would answer
+ * it — the shape `PENDING_DECISION_SQL` uses — has no `ts` bound available to it (a tab attached at
+ * the start of a run can still be held at the end), and without one it degrades to a walk of the
+ * detach slice PER attach row. Measured at 10 runs × 2000 tab events: 7.8 ms when each detach
+ * immediately follows its attach, 1052 ms when a run attaches a batch and gives it back later,
+ * against a flat 18–21 ms for reading the rows. Both classes are folded in JS by
+ * `AGGREGATED_EVENT_TYPES`' standard, and only one of them is cheaper for it. See `known-issues.md`:
+ * making the tab fold bounded needs a maintained column, which is an append-path change.
+ *
  * `lastSeq` / `updatedAt` — which DO move with any type — come from a separate bounded tail read.
  *
  * Adding a `case` to `projectRun` means adding its type here OR to `AGGREGATED_EVENT_TYPES`. A
  * source guard in the run-store tests enforces that, because a case added to neither would silently
  * drop from every projected row.
  */
-export const PROJECTION_EVENT_TYPES: readonly string[] = [
-  'run.created',
-  'tab.attached',
-  'tab.detached',
-  'presentation.promoted',
-  'presentation.demoted',
-  ...STATUS_EVENT_TYPES,
-];
+export const PROJECTION_EVENT_TYPES: readonly string[] = ['run.created', ...TAB_EVENT_TYPES];
 
 /**
- * The types a projection folds in SQL instead of reading row by row, and the reason the type filter
- * above is a real bound rather than a shape.
+ * The types a projection folds in SQL instead of reading row by row, and the reason the filter above
+ * is a real bound rather than a shape.
  *
- * Every other projected type is a state transition a run emits a handful of times — tabs, driver,
- * visibility, status. `cost.recorded` is a COUNTER: one per browser action by design, so its
- * cardinality tracks how much work a run did and nothing caps it. Reading it per row put the whole
- * log back inside the type filter (measured on the tip: 200k `mark.placed` → 0.3 ms to project;
- * 200k `cost.recorded` → 244 ms, all of it JSON-parsing rows whose only use is to be added up).
+ * None of these has a natural bound. `cost.recorded` is a COUNTER: one per browser action by
+ * design, so its cardinality tracks how much work a run did. The decision pair and the pause pair
+ * are writer-driven — the store polices envelope mechanics only (A-43-6), so nothing caps how many a
+ * run accumulates — and `presentation.*` flips as often as anyone promotes and demotes the run
+ * (law 2). Reading any of them per row put the whole log back inside the type filter. Measured on
+ * the tip at 50 runs × 5001 events, as blocked daemon event loop per `GET /v1/runs`: 3004 ms of
+ * decision pairs, 458 ms of pause pairs, 382 ms of `presentation.*` — against 0.4 ms for a class the
+ * filter excludes. In the decision case the projected set came out EMPTY: a quarter of a million
+ * rows parsed to produce nothing.
  *
- * A counter does not have to be folded at read time at all. The four totals are columns on
- * `studio_runs`, incremented in the same transaction as the event that moves them, so a projection
- * receives them without touching the log — a rebuildable cache of this fold, exactly as `status` is
- * a cache of the status fold. `projectRun` keeps its `cost.recorded` case for the callers that hand
- * it a full log (a replay, the app's view model) — with the seed and the case mutually exclusive,
- * because a type in this list is never in the filtered read.
+ * None of these answers needs the history that produced it:
+ *   - the counters are columns on `studio_runs`, moved in the same transaction as the event;
+ *   - the pause pair, the terminals and `presentation.*` are single-valued, so the NEWEST row of
+ *     each is the whole answer — five plus two seeks in one statement, O(log depth) each;
+ *   - a pending decision is the anti-join in `PENDING_DECISION_SQL`, bounded twice over.
+ *
+ * `projectRun` keeps a `case` for each of them, for the callers that hand it a full log (a replay,
+ * the app's view model) — with the seed and the case mutually exclusive, because a type in this list
+ * is never in the filtered read.
  */
-export const AGGREGATED_EVENT_TYPES: readonly string[] = ['cost.recorded'];
+export const AGGREGATED_EVENT_TYPES: readonly string[] = [
+  'cost.recorded',
+  ...PRESENTATION_EVENT_TYPES,
+  ...STATUS_EVENT_TYPES,
+];
 
 const EVENT_TYPE_GRAMMAR = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 const ACTOR_KINDS = new Set<string>(['agent', 'human', 'daemon', 'system']);
@@ -336,6 +363,7 @@ function costOf(row: RunRow): RunCost {
 
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
 interface StatusRow { seq: number; ts: string; type: string; payload: string }
+interface PendingRow { seq: number; ts: string; payload: string }
 interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
 interface TailRow { seq: number; ts: string }
 
@@ -614,17 +642,23 @@ function statusFrom(terminal: RunStatus | undefined, pausedReason: string | unde
 
 /** The types whose newest row is the whole answer: three terminals and the pause pair. */
 const SEEKABLE_STATUS_TYPES: readonly string[] = [...TERMINAL_EVENT_TYPES, ...PAUSE_EVENT_TYPES];
+/** ...and the same for a projection, which also wants the newest verdict on visibility. */
+const SEEKABLE_PROJECTION_TYPES: readonly string[] = [...SEEKABLE_STATUS_TYPES, ...PRESENTATION_EVENT_TYPES];
 
 /**
- * Five newest-row seeks in ONE statement. Each arm stops at the first entry of its own
- * (run_id, type, seq) slice, so the read is O(log depth) per type and returns at most five rows no
- * matter how many times a run paused and resumed.
+ * One newest-row seek per type, in ONE statement. Each arm stops at the first entry of its own
+ * (run_id, type, seq) slice, so the read is O(log depth) per type and returns at most one row per
+ * type no matter how many times a run paused, resumed, or was promoted and demoted again.
  *
  * The arms are wrapped subselects because a compound SELECT cannot carry a per-arm ORDER BY/LIMIT.
  */
-const NEWEST_STATUS_ROWS_SQL = SEEKABLE_STATUS_TYPES.map(
-  () => 'SELECT * FROM (SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type = ? ORDER BY seq DESC LIMIT 1)',
-).join(' UNION ALL ');
+function newestRowsSql(types: readonly string[]): string {
+  return types
+    .map(() => 'SELECT * FROM (SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type = ? ORDER BY seq DESC LIMIT 1)')
+    .join(' UNION ALL ');
+}
+const NEWEST_STATUS_ROWS_SQL = newestRowsSql(SEEKABLE_STATUS_TYPES);
+const NEWEST_PROJECTION_ROWS_SQL = newestRowsSql(SEEKABLE_PROJECTION_TYPES);
 
 /**
  * The requests that could still be pending, and no others.
@@ -635,9 +669,14 @@ const NEWEST_STATUS_ROWS_SQL = SEEKABLE_STATUS_TYPES.map(
  * an effective request time LATER than the envelope's own `ts`, so a row older than the auto-deny
  * window cannot be pending whatever its payload claims. The window is a superset, never a filter —
  * expiry itself is decided in JS by the same `hasAutoDenied` a replay uses.
+ *
+ * `seq` rides along so the rows can be replayed in log order: one decision id can be re-requested
+ * with no answer in between, and a fold keeps the NEWEST card at the FIRST card's position. Sorting
+ * in JS rather than in SQL for the same reason the other reads do — an `ORDER BY seq` here would
+ * cost the `ts` index that makes the read constant.
  */
 const PENDING_DECISION_SQL = `
-  SELECT req.ts AS ts, req.payload AS payload
+  SELECT req.seq AS seq, req.ts AS ts, req.payload AS payload
     FROM studio_run_events req
    WHERE req.run_id = ? AND req.type = 'decision.requested' AND req.ts >= ?
      AND NOT EXISTS (
@@ -654,18 +693,36 @@ const PENDING_DECISION_SQL = `
  * pinned equal by replaying one log both ways.
  */
 function readStatusHead(db: Database.Database, runId: string, now: Date): RunStatus {
-  const params: unknown[] = [];
-  for (const type of SEEKABLE_STATUS_TYPES) params.push(runId, type);
-  const heads = db.prepare(NEWEST_STATUS_ROWS_SQL).all(...params) as StatusRow[];
+  const { terminal, pausedReason } = foldHeads(readHeads(db, NEWEST_STATUS_ROWS_SQL, SEEKABLE_STATUS_TYPES, runId));
+  // Neither of the cheap answers settled it, so the expensive question gets asked — and only then.
+  if (terminal || pausedReason !== undefined) return statusFrom(terminal, pausedReason, false);
+  return statusFrom(undefined, undefined, hasPendingDecision(db, runId, now));
+}
 
+function readHeads(db: Database.Database, sql: string, types: readonly string[], runId: string): StatusRow[] {
+  const params: unknown[] = [];
+  for (const type of types) params.push(runId, type);
+  return db.prepare(sql).all(...params) as StatusRow[];
+}
+
+/**
+ * The newest row of each single-valued class, reduced to the three facts a projection wants. One
+ * copy for both callers: the append path's status recompute reads the five status arms, a projection
+ * reads those plus the presentation pair, and neither owns the precedence.
+ */
+function foldHeads(heads: readonly StatusRow[]): { terminal?: RunStatus; pausedReason?: string; visibility?: 'hidden' | 'visible' } {
   let terminalAt = -1;
   let terminal: RunStatus | undefined;
   let pauseAt = -1;
   let pause: StatusRow | undefined;
+  let presentedAt = -1;
+  let visibility: 'hidden' | 'visible' | undefined;
   for (const row of heads) {
     const asTerminal = TERMINAL_STATUS_BY_TYPE[row.type];
     if (asTerminal !== undefined) {
       if (row.seq > terminalAt) { terminalAt = row.seq; terminal = asTerminal; }
+    } else if (PRESENTATION_EVENT_TYPES.includes(row.type)) {
+      if (row.seq > presentedAt) { presentedAt = row.seq; visibility = row.type === 'presentation.promoted' ? 'visible' : 'hidden'; }
     } else if (row.seq > pauseAt) { pauseAt = row.seq; pause = row; }
   }
 
@@ -673,24 +730,55 @@ function readStatusHead(db: Database.Database, runId: string, now: Date): RunSta
   if (pause && pause.type === 'run.paused') {
     pausedReason = str((JSON.parse(pause.payload) as Record<string, unknown>).reason) ?? 'agent';
   }
-
-  // Neither of the cheap answers settled it, so the expensive question gets asked — and only then.
-  if (terminal || pausedReason !== undefined) return statusFrom(terminal, pausedReason, false);
-  return statusFrom(undefined, undefined, hasPendingDecision(db, runId, now));
+  return { terminal, pausedReason, visibility };
 }
 
 /** Does one unanswered, unexpired decision survive? The count never matters, only the existence. */
 function hasPendingDecision(db: Database.Database, runId: string, now: Date): boolean {
-  const since = new Date(now.getTime() - AUTO_DENY_MS).toISOString();
-  const rows = db.prepare(PENDING_DECISION_SQL).all(runId, since) as { ts: string; payload: string }[];
-  for (const row of rows) {
-    const payload = JSON.parse(row.payload) as Record<string, unknown>;
-    // A request with no decisionId can never be answered and never counted — same rule as the fold.
-    if (!str(payload.decisionId)) continue;
-    if (!hasAutoDenied(requestedAtOf({ ts: row.ts, payload }), now)) return true;
-  }
-  return false;
+  return readPendingDecisions(db, runId, now).length > 0;
 }
+
+/**
+ * The cards a projection lists, from the bounded read rather than from the log. Replayed in `seq`
+ * order through the same map `projectRun` folds into, so a re-requested decision id lands with the
+ * newest card's content at the first card's position — the fold's rule, not an approximation of it.
+ */
+function readPendingDecisions(db: Database.Database, runId: string, now: Date): PendingDecision[] {
+  const since = new Date(now.getTime() - AUTO_DENY_MS).toISOString();
+  const rows = db.prepare(PENDING_DECISION_SQL).all(runId, since) as PendingRow[];
+  rows.sort((a, b) => a.seq - b.seq);
+  const pending = new Map<string, PendingDecision>();
+  for (const row of rows) {
+    const card = pendingCardOf({ ts: row.ts, payload: JSON.parse(row.payload) as Record<string, unknown> }, now);
+    if (card) pending.set(card.decisionId, card);
+  }
+  return [...pending.values()];
+}
+
+/**
+ * One decision.requested row, as the card a projection serves — or nothing, when it is not one.
+ *
+ * A request with no `decisionId` can never be answered, and an expired one is gone (pin 3): both are
+ * "no card" rather than "a card to filter out later", which is what keeps a LATER re-request of the
+ * same id able to overwrite an earlier one without an expired one deleting it.
+ */
+function pendingCardOf(event: Pick<RunEvent, 'ts' | 'payload'>, now: Date): PendingDecision | undefined {
+  const p = event.payload;
+  const decisionId = str(p.decisionId);
+  if (!decisionId) return undefined;
+  const requestedAt = requestedAtOf(event);
+  if (hasAutoDenied(requestedAt, now)) return undefined;
+  const anchor = anchorOf(p.anchor);
+  return {
+    decisionId,
+    kind: str(p.kind) ?? 'approval',
+    prompt: str(p.prompt) ?? '',
+    ...(anchor ? { anchor } : {}),
+    requestedAt,
+    autoDenyAt: autoDenyAtOf(requestedAt),
+  };
+}
+
 
 /**
  * A whole page's projectable rows in ONE query. The old list path issued an unbounded full-log read
@@ -710,6 +798,28 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
   // Ordered here for the same reason as the status read: an ORDER BY would cost the type index.
   for (const events of byRun.values()) events.sort((a, b) => a.seq - b.seq);
   return byRun;
+}
+
+/**
+ * Everything a projection would otherwise have folded from unbounded rows, asked of SQLite instead —
+ * two bounded reads per run, neither of which can grow with how long the run has been going.
+ *
+ * Per run and not per page, for the reason `readEventTails` is: every batched form of a per-run
+ * newest-row question makes SQLite walk each run's whole log, and the seeks measured 250x better at
+ * depth. Two statements rather than one compound because each has its own plan to keep green, and a
+ * plan nobody can read is a plan nobody notices regressing.
+ */
+function readSeeds(db: Database.Database, runId: string, now: Date): ProjectRunOptions {
+  const { terminal, pausedReason, visibility } = foldHeads(readHeads(db, NEWEST_PROJECTION_ROWS_SQL, SEEKABLE_PROJECTION_TYPES, runId));
+  // The cards are read whatever the status says, because a finished or paused run still LISTS the
+  // ones nobody answered — only the status question gets to stop early, and it does not here: the
+  // count is already in hand.
+  const pendingDecisions = readPendingDecisions(db, runId, now);
+  return {
+    visibility: visibility ?? 'hidden',
+    pendingDecisions,
+    status: statusFrom(terminal, pausedReason, pendingDecisions.length > 0),
+  };
 }
 
 /**
@@ -748,7 +858,7 @@ function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date):
   const byRun = readProjectionEvents(db, ids);
   const tails = readEventTails(db, ids);
   return rows.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costOf(r) });
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costOf(r), ...readSeeds(db, r.id, now) });
     const tail = tails.get(r.id);
     return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
   });
@@ -944,14 +1054,14 @@ export function projectRun(
   opts: ProjectRunOptions = {},
 ): Run {
   let driver: Driver = { kind: 'api' };
-  let visibility: 'hidden' | 'visible' = 'hidden';
+  let visibility: 'hidden' | 'visible' = opts.visibility ?? 'hidden';
   // The array is the answer — law 4's tabs in the order the run took them. The Set is only the
   // membership question the array cannot answer cheaply: `includes` is O(held) per attach, so a run
   // holding many tabs at once paid O(held squared) to project (measured 112 ms at 16k attach-only).
   // A detach that names a tab the run does not hold now costs nothing rather than a full walk.
   const tabIds: string[] = [];
   const held = new Set<string>();
-  const pending = new Map<string, PendingDecision>();
+  const pending = new Map<string, PendingDecision>((opts.pendingDecisions ?? []).map((d) => [d.decisionId, d]));
   const cost: RunCost = { ...(opts.cost ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 }) };
 
   for (const event of events) {
@@ -982,22 +1092,11 @@ export function projectRun(
       case 'presentation.promoted': visibility = 'visible'; break;
       case 'presentation.demoted': visibility = 'hidden'; break;
       case 'decision.requested': {
-        const decisionId = str(p.decisionId);
-        if (!decisionId) break;
-        const requestedAt = requestedAtOf(event);
-        // Same rule as `foldStatus`: an expired card is gone, so it can neither be listed nor hold
-        // the run at needs_you. Skipping it here rather than filtering afterwards keeps a LATER
-        // re-request of the same decisionId able to overwrite it.
-        if (hasAutoDenied(requestedAt, now)) break;
-        const anchor = anchorOf(p.anchor);
-        pending.set(decisionId, {
-          decisionId,
-          kind: str(p.kind) ?? 'approval',
-          prompt: str(p.prompt) ?? '',
-          ...(anchor ? { anchor } : {}),
-          requestedAt,
-          autoDenyAt: autoDenyAtOf(requestedAt),
-        });
+        // `pendingCardOf` is the rule, shared with the bounded read: an expired card is gone, so it
+        // can neither be listed nor hold the run at needs_you, and producing no card rather than
+        // filtering afterwards is what keeps a LATER re-request of the same id able to overwrite it.
+        const card = pendingCardOf(event, now);
+        if (card) pending.set(card.decisionId, card);
         break;
       }
       case 'decision.resolved': {
@@ -1019,7 +1118,9 @@ export function projectRun(
 
   const newest = events[events.length - 1];
   const pendingDecisions = [...pending.values()];
-  const projected = foldStatus(events, now);
+  // The seed comes from `readStatusHead`'s rules, which a test replays one log both ways to pin
+  // equal to this fold. A caller with a full log omits it and gets the fold.
+  const projected = opts.status ?? foldStatus(events, now);
 
   return {
     id: facts.id,
