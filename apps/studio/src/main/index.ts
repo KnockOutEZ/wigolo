@@ -476,6 +476,9 @@ async function createWindow(): Promise<void> {
     // rest of this sequence with it and left the app unable to quit at all.
     try { runTray?.destroy(); } catch { /* best-effort */ }
     decisions.dispose();
+    // The projection schedules its own fan-out at each run's auto-deny deadline; after the tray is
+    // gone one of those would announce a transition into destroyed surfaces.
+    runs.dispose();
   };
   app.on('before-quit', () => { void shutdown(); });
 
