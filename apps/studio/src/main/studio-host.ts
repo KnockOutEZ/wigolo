@@ -91,6 +91,7 @@ import {
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
 import { TabOwnedError } from './run-view-model';
+import { originOnly } from './url-policy';
 import type { QuoteMsg, RegionMsg, CaptureDto, KnowledgeHit, AuditDto } from '../shared/ipc';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
@@ -107,11 +108,6 @@ const DEFAULT_SESSION_CAP = 8;
 const APPROVAL_TIMEOUT_MS = 120_000;
 
 export type ApprovalRisk = 'money' | 'credential' | 'destructive';
-
-/** Origin (scheme+host+port) of a URL — drops path/query/hash so no query-string secret rides the wire. */
-function originOnly(url: string): string {
-  try { return new URL(url).origin; } catch { return url; }
-}
 
 /**
  * P6 F4: host-derived, page-text-FREE summary of one audit entry for the live timeline broadcast (M3).

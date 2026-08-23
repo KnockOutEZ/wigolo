@@ -25,10 +25,62 @@ describe('RunViewModel — tab↔run ownership is the run log, not registry stat
     await vm.attachTab(run.id, 'tab-a', 'https://example.com/');
 
     expect(store.appends).toEqual([
-      { runId: run.id, type: 'tab.attached', payload: { tabId: 'tab-a', url: 'https://example.com/' } },
+      { runId: run.id, type: 'tab.attached', payload: { tabId: 'tab-a', url: 'https://example.com' } },
     ]);
     expect(vm.ownerOf('tab-a')).toBe(run.id);
     expect(vm.tabsOf(run.id)).toEqual(['tab-a']);
+  });
+
+  // The run log is durable, append-only by design (no prune path), and served to any client that clears
+  // the REST gate — over `GET /v1/runs/{id}/events` and the SSE tail. So a query string that rides in on
+  // an attach url is a secret stored FOREVER and handed out on request: a magic link, an SSO callback, a
+  // password-reset token, a pre-signed URL. None of those pages look credential-bearing to a classifier,
+  // which is exactly why the audit path strips the query UNCONDITIONALLY rather than deciding per page.
+  // The run log gets the same rule: forensics and replay need the origin, never what follows it.
+  it('stores only the origin of an attach url — query and fragment never reach the durable log', async () => {
+    const run = await vm.createRun({ task: 'open a magic link' });
+    await vm.attachTab(run.id, 'tab-a', 'https://mail.example.com/login/verify?token=s3cr3t-reset&uid=42#inbox');
+
+    expect(store.appends).toEqual([
+      { runId: run.id, type: 'tab.attached', payload: { tabId: 'tab-a', url: 'https://mail.example.com' } },
+    ]);
+    const stored = JSON.stringify(store.appends);
+    expect(stored, 'the reset token reached the append-only log').not.toContain('s3cr3t-reset');
+    expect(stored, 'the fragment reached the append-only log').not.toContain('inbox');
+  });
+
+  // "Unparseable" is not "harmless". `originOnly`'s catch used to hand the string back WHOLE, so a url the
+  // URL parser rejects for a reason unrelated to its query — a bad port, a stray space — would have carried
+  // its token into the same durable row the parseable case is protected from.
+  it('cuts a url the parser rejects at its query rather than storing it whole', async () => {
+    const run = await vm.createRun({ task: 'malformed' });
+    await vm.attachTab(run.id, 'tab-a', 'https://host:notaport/reset?token=s3cr3t-reset');
+
+    expect(store.appends[0]!.payload.url).toBe('https://host:notaport/reset');
+    expect(JSON.stringify(store.appends)).not.toContain('s3cr3t-reset');
+  });
+
+  // The sweep, as an executable invariant rather than a one-time grep: drive EVERY event constructor the
+  // view-model owns and assert that any payload carrying a `url` carries an origin and nothing else. A new
+  // constructor that starts recording a full url fails here without anyone remembering to re-run the grep.
+  it('lets no run-event payload carry more of a url than its origin', async () => {
+    const secret = 'https://app.example.com/a/b?token=s3cr3t-reset&x=1#frag';
+    const run = await vm.createRun({ task: 'every constructor' });
+    await vm.attachTab(run.id, 'tab-a', secret);
+    await vm.setVisibility(run.id, 'visible', 'human', 'panel');
+    await vm.setVisibility(run.id, 'hidden', 'human');
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'nav', prompt: 'open it?' });
+    await vm.resolveDecision(run.id, 'd1', 'approved', 'human');
+    await vm.detachTab('tab-a', 'closed');
+    await vm.endRun(run.id, 'completed', 'finished');
+
+    const withUrl = store.appends.filter((a) => typeof a.payload.url === 'string');
+    expect(withUrl.length, 'no constructor recorded a url at all — the sweep proved nothing').toBeGreaterThan(0);
+    for (const a of withUrl) {
+      const url = a.payload.url as string;
+      expect(url, `${a.type} recorded more than an origin`).toBe(new URL(url).origin);
+    }
+    expect(JSON.stringify(store.appends)).not.toContain('s3cr3t-reset');
   });
 
   // Law 4: a tab belongs to exactly ONE run. Two agents never share a tab. Enforced at this seam so no

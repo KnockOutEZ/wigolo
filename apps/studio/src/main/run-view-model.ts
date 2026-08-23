@@ -1,5 +1,6 @@
 import { projectRun, type CreateRunInput, type ListRunsOptions, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
 import type { BrokerClient } from './broker-client';
+import { originOnly } from './url-policy';
 
 /**
  * SD1 spine 1 — the run store is authoritative and this is a projection of it.
@@ -686,10 +687,15 @@ export class RunViewModel {
     const owner = this.ownerOf(tabId);
     if (owner === runId) return;
     if (owner !== undefined) throw new TabOwnedError(tabId, owner);
+    // The url is narrowed to its ORIGIN here, at the constructor, rather than at any call site: the run
+    // log is append-only with no prune path by design, and is served over `GET /v1/runs/{id}/events` and
+    // the SSE tail, so a query string that gets in is a secret stored forever and handed to every client
+    // past the REST gate. The agent supplies this url (`studio_open`'s startUrl), and an agent handed a
+    // magic link is the ordinary case, not the adversarial one. Same rule the audit path already applies.
     const event = await this.store.appendEvent(runId, {
       actor: { kind: 'agent', driver: 'studio' },
       type: 'tab.attached',
-      payload: { tabId, ...(url ? { url } : {}) },
+      payload: { tabId, ...(url ? { url: originOnly(url) } : {}) },
     });
     await this.fold(runId, event);
   }
