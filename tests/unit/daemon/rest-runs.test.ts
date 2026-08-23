@@ -34,7 +34,7 @@ function ev(seq: number, type = 'tab.attached'): RunEvent {
 }
 
 describe('run stream ordering — the exactly-once door', () => {
-  it('holds a live event that arrives mid-replay until the replay is done', () => {
+  it('holds a live event that arrives mid-replay until the replay is done', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
 
@@ -44,11 +44,11 @@ describe('run stream ordering — the exactly-once door', () => {
     expect(written).toEqual([1]);
 
     emitter.emit(ev(2));
-    emitter.goLive();
+    await emitter.goLive();
     expect(written).toEqual([1, 2, 3]);
   });
 
-  it('drops a held event the replay already covered — the overlap is a no-op, not a duplicate', () => {
+  it('drops a held event the replay already covered — the overlap is a no-op, not a duplicate', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
 
@@ -57,13 +57,13 @@ describe('run stream ordering — the exactly-once door', () => {
     // the next page's query.
     emitter.offer(ev(2));
     emitter.emit(ev(2));
-    emitter.goLive();
+    await emitter.goLive();
 
     expect(written).toEqual([1, 2]);
     expect(emitter.lastEmitted()).toBe(2);
   });
 
-  it('never re-sends anything at or below the resume point', () => {
+  it('never re-sends anything at or below the resume point', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(4, (e) => written.push(e.seq));
 
@@ -71,7 +71,7 @@ describe('run stream ordering — the exactly-once door', () => {
     expect(written).toEqual([]);
 
     emitter.emit(ev(5));
-    emitter.goLive();
+    await emitter.goLive();
     emitter.offer(ev(5));
     emitter.offer(ev(6));
 
@@ -86,18 +86,18 @@ describe('run stream ordering — the exactly-once door', () => {
    * middle of the stream and calls it delivery, a dropped one ends the stream and sends the client
    * back through the reconnect door it already has.
    */
-  it('holds up to the ceiling and no further — the buffer cannot grow with the run', () => {
+  it('holds up to the ceiling and no further — the buffer cannot grow with the run', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
 
     for (const seq of [2, 3, 4, 5]) emitter.offer(ev(seq));
     expect(emitter.overflowed()).toBe(false);
-    emitter.goLive();
+    await emitter.goLive();
     // Exactly at the ceiling is still a delivery, not a drop.
     expect(written).toEqual([2, 3, 4, 5]);
   });
 
-  it('drops the whole hold buffer past the ceiling rather than delivering it with a hole in it', () => {
+  it('drops the whole hold buffer past the ceiling rather than delivering it with a hole in it', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 4);
     emitter.emit(ev(1));
@@ -105,14 +105,14 @@ describe('run stream ordering — the exactly-once door', () => {
     for (let seq = 2; seq <= 40; seq++) emitter.offer(ev(seq));
 
     expect(emitter.overflowed()).toBe(true);
-    emitter.goLive();
+    await emitter.goLive();
     // Nothing from the storm goes out: whatever the buffer was holding is gone, and the caller's
     // answer to `overflowed()` is to end the stream so the client replays the gap from the log.
     expect(written).toEqual([1]);
     expect(emitter.lastEmitted()).toBe(1);
   });
 
-  it('does not spend the ceiling on events the replay has already covered', () => {
+  it('does not spend the ceiling on events the replay has already covered', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 2);
 
@@ -125,16 +125,16 @@ describe('run stream ordering — the exactly-once door', () => {
     }
 
     expect(emitter.overflowed()).toBe(false);
-    emitter.goLive();
+    await emitter.goLive();
     expect(written).toHaveLength(50);
   });
 
-  it('flushes held events in sequence order even if they were offered out of order', () => {
+  it('flushes held events in sequence order even if they were offered out of order', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq));
     emitter.offer(ev(3));
     emitter.offer(ev(2));
-    emitter.goLive();
+    await emitter.goLive();
     expect(written).toEqual([2, 3]);
   });
 });
@@ -155,7 +155,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
     payload: { text: 'x'.repeat(4000) },
   });
 
-  it('drops the buffer on bytes even when the event count is nowhere near its ceiling', () => {
+  it('drops the buffer on bytes even when the event count is nowhere near its ceiling', async () => {
     const written: number[] = [];
     // A count ceiling this high can never trip in this row: only the byte budget can end it.
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
@@ -164,14 +164,14 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
     for (let seq = 2; seq <= 6; seq++) emitter.offer(big(seq));
 
     expect(emitter.overflowed()).toBe(true);
-    emitter.goLive();
+    await emitter.goLive();
     // Identical to the count overflow: nothing partial goes out, and the caller ends the stream so
     // the client resumes from the durable log.
     expect(written).toEqual([1]);
     expect(emitter.lastEmitted()).toBe(1);
   });
 
-  it('delivers a buffer that fits the budget — the bound is a ceiling, not a tax on every tail', () => {
+  it('delivers a buffer that fits the budget — the bound is a ceiling, not a tax on every tail', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
 
@@ -179,16 +179,16 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
     emitter.offer(big(3));
 
     expect(emitter.overflowed()).toBe(false);
-    emitter.goLive();
+    await emitter.goLive();
     expect(written).toEqual([2, 3]);
   });
 
-  it('starts each replay window from zero bytes, so a delivered buffer is not charged twice', () => {
+  it('starts each replay window from zero bytes, so a delivered buffer is not charged twice', async () => {
     const written: number[] = [];
     const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), 10_000, 10_000);
 
     emitter.offer(big(2));
-    emitter.goLive();
+    await emitter.goLive();
     // Live now: nothing is held, so a long-lived tail cannot accumulate its way into a false
     // overflow on events it already wrote.
     for (let seq = 3; seq <= 20; seq++) emitter.offer(big(seq));
@@ -355,14 +355,14 @@ describe('the SSE connection cap meters the whole request, not just the establis
 });
 
 describe('run route parsing', () => {
-  it('recognizes exactly the three run shapes', () => {
+  it('recognizes exactly the three run shapes', async () => {
     expect(parseRunsPath('/v1/runs')).toEqual({ kind: 'collection' });
     expect(parseRunsPath('/v1/runs/')).toEqual({ kind: 'collection' });
     expect(parseRunsPath('/v1/runs/7fq2')).toEqual({ kind: 'item', id: '7fq2' });
     expect(parseRunsPath('/v1/runs/7fq2/events')).toEqual({ kind: 'events', id: '7fq2' });
   });
 
-  it('refuses anything else rather than coercing it to the nearest match', () => {
+  it('refuses anything else rather than coercing it to the nearest match', async () => {
     expect(parseRunsPath('/v1/runs//events')).toBeNull();
     expect(parseRunsPath('/v1/runs/7fq2/events/extra')).toBeNull();
     expect(parseRunsPath('/v1/runs/7fq2/cancel')).toBeNull();
@@ -371,7 +371,7 @@ describe('run route parsing', () => {
 });
 
 describe('resume point resolution', () => {
-  it('prefers Last-Event-ID over ?since= — the header is what a reconnect re-sends by itself', () => {
+  it('prefers Last-Event-ID over ?since= — the header is what a reconnect re-sends by itself', async () => {
     expect(resolveSince('7', '2')).toEqual({ ok: true, since: 7 });
     expect(resolveSince(undefined, '2')).toEqual({ ok: true, since: 2 });
     expect(resolveSince('', '2')).toEqual({ ok: true, since: 2 });
@@ -379,7 +379,7 @@ describe('resume point resolution', () => {
     expect(resolveSince(['9', '1'], null)).toEqual({ ok: true, since: 9 });
   });
 
-  it('refuses a resume point that is not a non-negative integer', () => {
+  it('refuses a resume point that is not a non-negative integer', async () => {
     expect(resolveSince(undefined, '-1').ok).toBe(false);
     expect(resolveSince(undefined, '1.5').ok).toBe(false);
     expect(resolveSince('banana', null).ok).toBe(false);
@@ -491,7 +491,7 @@ describe('the live tail bus', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('puts every committed envelope on the tail, and stops the moment a subscriber leaves', () => {
+  it('puts every committed envelope on the tail, and stops the moment a subscriber leaves', async () => {
     const seen: RunEvent[] = [];
     const run = createRunWithTail(db, { task: 'tail me' }, { dataDir: dir });
 
@@ -505,7 +505,7 @@ describe('the live tail bus', () => {
     expect(seen.map((e) => e.seq)).toEqual([2]);
   });
 
-  it('subscribes case-insensitively, so a tail opened on an id read aloud still receives', () => {
+  it('subscribes case-insensitively, so a tail opened on an id read aloud still receives', async () => {
     const seen: number[] = [];
     const run = createRunWithTail(db, { task: 'case' }, { dataDir: dir });
     const off = subscribeRunEvents(run.id.toUpperCase(), (e) => seen.push(e.seq));
@@ -514,7 +514,7 @@ describe('the live tail bus', () => {
     off();
   });
 
-  it('one subscriber throwing does not cost the others their event', () => {
+  it('one subscriber throwing does not cost the others their event', async () => {
     const seen: number[] = [];
     const run = createRunWithTail(db, { task: 'isolate' }, { dataDir: dir });
     const offBad = subscribeRunEvents(run.id, () => { throw new Error('listener blew up'); });
@@ -526,11 +526,11 @@ describe('the live tail bus', () => {
     offGood();
   });
 
-  it('publishing to a run nobody is watching is a no-op, not a crash', () => {
+  it('publishing to a run nobody is watching is a no-op, not a crash', async () => {
     expect(() => publishRunEvent('nobody', ev(1))).not.toThrow();
   });
 
-  it('preserves a caller-supplied onEvent hook instead of replacing it', () => {
+  it('preserves a caller-supplied onEvent hook instead of replacing it', async () => {
     const viaHook: number[] = [];
     const viaBus: number[] = [];
     const run = createRunWithTail(db, { task: 'both hooks' }, { dataDir: dir, onEvent: (_id, e) => viaHook.push(e.seq) });
