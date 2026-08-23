@@ -88,6 +88,7 @@ export type RunsOwner =
 interface HandleCacheEntry {
   path: string;
   ino: bigint;
+  birthtimeNs: bigint;
   mtimeNs: bigint;
   size: bigint;
   handle: SessionHandle | null;
@@ -120,7 +121,7 @@ export function _resetRunsOwnerHandleCache(): void {
  */
 function readHandleCached(dataDir?: string): SessionHandle | null {
   const path = studioHandlePath(dataDir);
-  let stat: { ino: bigint; mtimeNs: bigint; size: bigint };
+  let stat: { ino: bigint; birthtimeNs: bigint; mtimeNs: bigint; size: bigint };
   try {
     stat = statSync(path, { bigint: true });
   } catch {
@@ -129,17 +130,24 @@ function readHandleCached(dataDir?: string): SessionHandle | null {
     return null;
   }
 
+  // Four fields rather than one, because each is allowed to be useless on SOME platform: `ino` can
+  // be 0 where a filesystem has no stable index, `birthtimeNs` 0 where the kernel does not report
+  // it, and mtime resolution varies. A rename-into-place gives a new inode on every filesystem
+  // wigolo supports, so the residual — a republish that keeps the byte count, lands inside one mtime
+  // tick, AND reuses the inode — is one request served from the previous handle, on a file that in
+  // production is written once per studio launch.
   const cached = handleCache;
   if (cached
     && cached.path === path
     && cached.ino === stat.ino
+    && cached.birthtimeNs === stat.birthtimeNs
     && cached.mtimeNs === stat.mtimeNs
     && cached.size === stat.size) {
     return cached.handle;
   }
 
   const handle = readHandle(dataDir);
-  handleCache = { path, ino: stat.ino, mtimeNs: stat.mtimeNs, size: stat.size, handle };
+  handleCache = { path, ino: stat.ino, birthtimeNs: stat.birthtimeNs, mtimeNs: stat.mtimeNs, size: stat.size, handle };
   return handle;
 }
 
