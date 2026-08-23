@@ -472,9 +472,21 @@ async function handleCreate(
   // Every field here is persisted twice — into the event log and into the run's `events.jsonl` — so
   // an uncapped string is a disk-fill primitive, not a cosmetic gap. The body cap alone would let
   // one request write a megabyte of `spaceId`.
-  if (input.spaceId !== undefined && (typeof input.spaceId !== 'string' || input.spaceId.length > MAX_SPACE_ID_CHARS)) {
-    opts.sendError(invalidInput(`Field "spaceId" must be a string of at most ${MAX_SPACE_ID_CHARS} characters.`));
-    return;
+  if (input.spaceId !== undefined) {
+    if (typeof input.spaceId !== 'string' || input.spaceId.length > MAX_SPACE_ID_CHARS) {
+      opts.sendError(invalidInput(`Field "spaceId" must be a string of at most ${MAX_SPACE_ID_CHARS} characters.`));
+      return;
+    }
+    // An empty or whitespace-only space is not a smaller version of a valid one, it is a run nobody
+    // can find. The `?? DEFAULT_SPACE_ID` substitution downstream fires only on `undefined`, so `""`
+    // is persisted verbatim and the run is then invisible to `?spaceId=default` — the filter every
+    // surface lists with — while still being a live run holding tabs. Validated on the trimmed value
+    // and persisted verbatim, which is exactly what `task` above already does: trimming here would
+    // quietly rewrite a caller's identifier, and the durable log is the wrong place to be clever.
+    if (input.spaceId.trim().length === 0) {
+      opts.sendError(invalidInput('Field "spaceId" must not be empty or whitespace-only. Omit it to use the default space.'));
+      return;
+    }
   }
 
   let driver: Driver | undefined;
@@ -516,6 +528,14 @@ function parseDriver(raw: unknown): { ok: true; driver: Driver } | { ok: false; 
     }
     if (client.name.length > MAX_CLIENT_FIELD_CHARS || client.version.length > MAX_CLIENT_FIELD_CHARS) {
       return { ok: false, detail: `Fields "driver.client.name" and "driver.client.version" are capped at ${MAX_CLIENT_FIELD_CHARS} characters.` };
+    }
+    // Accepted on write and erased on read is worse than either answer alone: the store rebuilds the
+    // badge with `name && version` (`clientOf`, run-store.ts), so an empty string drops the WHOLE
+    // client — the caller is told 201 for a badge that no surface will ever show. Law 3 makes the
+    // driver shown identically everywhere; a field that silently evaporates between write and read
+    // is the one shape that cannot be.
+    if (client.name.trim().length === 0 || client.version.trim().length === 0) {
+      return { ok: false, detail: 'Fields "driver.client.name" and "driver.client.version" must not be empty or whitespace-only. Omit "driver.client" instead.' };
     }
     driver.client = { name: client.name, version: client.version };
   }
