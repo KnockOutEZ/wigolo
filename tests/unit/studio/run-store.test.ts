@@ -756,9 +756,9 @@ describe('run-store — listing a page is bounded work (F2)', () => {
     // happened to hit the number once; the differential is what says "not O(events)".
     expect(deep.seen.queries).toBe(shallow.seen.queries);
     expect(deep.seen.rows).toBe(shallow.seen.rows);
-    // One projection read for the whole page, plus one newest-row seek per run for lastSeq —
-    // never the unbounded full-log read per row this replaced.
-    expect(deep.seen.queries).toBe(1 + deep.ids.length);
+    // One projection read and one cost aggregate for the whole page, plus one newest-row seek per
+    // run for lastSeq — never the unbounded full-log read per row this replaced.
+    expect(deep.seen.queries).toBe(2 + deep.ids.length);
     // Per run: `run.created` from the projection read, and the tail row. The 200 marks each are
     // what used to be read, parsed and thrown away, synchronously, before the router could yield.
     expect(deep.seen.rows).toBe(deep.ids.length * 2);
@@ -825,9 +825,14 @@ describe('run-store — listing a page is bounded work (F2)', () => {
     };
 
     expect(new Set(caseTypes(body('foldStatus')))).toEqual(new Set(store.STATUS_EVENT_TYPES));
-    expect(new Set([...caseTypes(body('foldStatus')), ...caseTypes(body('projectRun'))])).toEqual(new Set(store.PROJECTION_EVENT_TYPES));
+    // A projected type is read as a ROW or folded in SQL — one list or the other, never neither and
+    // never both: a type in both would be counted twice, once from the seed and once from the case.
+    expect(new Set([...caseTypes(body('foldStatus')), ...caseTypes(body('projectRun'))]))
+      .toEqual(new Set([...store.PROJECTION_EVENT_TYPES, ...store.AGGREGATED_EVENT_TYPES]));
+    expect(store.PROJECTION_EVENT_TYPES.filter((t) => store.AGGREGATED_EVENT_TYPES.includes(t))).toEqual([]);
     // Control: the scan really does find cases, so an equal-sets result is evidence.
     expect(caseTypes(body('projectRun')).length).toBeGreaterThan(0);
+    expect(store.AGGREGATED_EVENT_TYPES.length).toBeGreaterThan(0);
   });
 });
 
