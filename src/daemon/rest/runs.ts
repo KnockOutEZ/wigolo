@@ -87,6 +87,29 @@ const DEFAULT_MAX_HELD_EVENTS = 2048;
  * the middle of the stream.
  */
 const DEFAULT_MAX_HELD_BYTES = 8 * 1024 * 1024;
+/**
+ * How many bytes any bulk write path may hand the socket before it stops and asks how the socket is
+ * doing.
+ *
+ * The hold buffer already wrote down that a count bounds the wrong thing (see `DEFAULT_MAX_HELD_BYTES`)
+ * and then applied it only to itself. Every other bulk writer on this route counted ITEMS: replay
+ * checked drain once per PAGE, and a page is 500 events whose payloads are capped at 64k each, so
+ * "one page" is up to ~32 MB handed to a socket that already said it was full. The budget below is
+ * the same reasoning in the same unit, shared by the replay loop and the `goLive` flush so neither
+ * can drift from the other.
+ */
+const DEFAULT_SSE_FLUSH_BYTES = 256 * 1024;
+/**
+ * How much a reader that has stopped reading may accumulate in this process before its tail ENDS.
+ *
+ * `res.write` returning false means the socket has not taken the frame; the bytes live in Node's
+ * userland buffer until the peer reads. Live frames are paced by the run, not by us, so there is no
+ * drain we could await that does not mean "hold the rest of the run in heap for as long as it runs".
+ * Past this budget the honest move is the one the hold-buffer overflow already takes: end the stream
+ * and let the client resume from `Last-Event-ID` against the durable log. Nothing is lost — the log
+ * is the source of truth and the resume door is the same one every reconnect uses. See A-88-1.
+ */
+const DEFAULT_SSE_MAX_STALLED_BYTES = 4 * 1024 * 1024;
 
 function replayPageSize(): number {
   const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
@@ -104,6 +127,18 @@ function maxHeldBytes(): number {
   const raw = process.env.WIGOLO_STUDIO_SSE_MAX_HELD_BYTES;
   const parsed = raw === undefined ? NaN : Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_HELD_BYTES;
+}
+
+function sseFlushBytes(): number {
+  const raw = process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SSE_FLUSH_BYTES;
+}
+
+function sseMaxStalledBytes(): number {
+  const raw = process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SSE_MAX_STALLED_BYTES;
 }
 
 function maxSseConnections(): number {
@@ -575,13 +610,37 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   });
 }
 
+/**
+ * Called by every bulk write path after each event, and awaited.
+ *
+ * It is where "how is the socket doing" lives, so the replay loop and the `goLive` flush share one
+ * budget and one drain gate instead of each inventing its own. Returning `false` means stop — the
+ * connection is gone, or the caller has decided to end the stream.
+ */
+export type WritePace = () => Promise<boolean> | boolean;
+
 export interface OrderedEmitter {
   emit(event: RunEvent): void;
   offer(event: RunEvent): void;
-  goLive(): void;
+  /**
+   * Release the held events in seq order, then switch to live.
+   *
+   * Paced, because the flush is up to `maxHeld` events / `maxBytes` bytes handed to the socket in
+   * one burst at the exact moment that socket is most likely already full — the same shape the
+   * replay loop has, so it takes the same gate. The emitter stays in `replaying` for the whole
+   * flush: anything the bus offers while a pace awaits is HELD and picked up by the next pass,
+   * which is what stops a late arrival overtaking the tail of the buffer.
+   */
+  goLive(pace?: WritePace): Promise<void>;
   lastEmitted(): number;
   /** True once the hold buffer hit its ceiling and was dropped. The stream must then END. */
   overflowed(): boolean;
+}
+
+interface HeldEvent {
+  event: RunEvent;
+  /** Measured once, at offer time — the flush pages on the same number the ceiling was taken on. */
+  bytes: number;
 }
 
 export function createOrderedEmitter(
@@ -593,7 +652,7 @@ export function createOrderedEmitter(
   let last = since;
   let replaying = true;
   let overflow = false;
-  const held: RunEvent[] = [];
+  const held: HeldEvent[] = [];
   let heldBytes = 0;
 
   const emit = (event: RunEvent): void => {
@@ -624,15 +683,29 @@ export function createOrderedEmitter(
         overflow = true;
         return;
       }
-      held.push(event);
+      held.push({ event, bytes });
       heldBytes += bytes;
     },
-    goLive() {
+    async goLive(pace) {
+      // Drains to empty, not to "the buffer as it stood when we started": a pace that awaits gives
+      // the bus a turn, and whatever it offered in that turn is still held behind us.
+      for (;;) {
+        const pending = held.splice(0);
+        heldBytes = 0;
+        if (pending.length === 0) break;
+        pending.sort((a, b) => a.event.seq - b.event.seq);
+        for (const entry of pending) {
+          emit(entry.event);
+          if (pace !== undefined && (await pace()) === false) {
+            replaying = false;
+            return;
+          }
+        }
+        // Out-appended mid-flush. The dropped seqs are still in the durable log, so the caller ends
+        // the stream and the client resumes — flushing the rest would put a hole in the middle.
+        if (overflow) break;
+      }
       replaying = false;
-      heldBytes = 0;
-      const pending = held.splice(0);
-      pending.sort((a, b) => a.seq - b.seq);
-      for (const event of pending) emit(event);
     },
     lastEmitted: () => last,
     overflowed: () => overflow,
@@ -688,41 +761,119 @@ async function handleEvents(
   let closed = false;
   let lastWrite = Date.now();
   let needsDrain = false;
+  /** Set once the byte budget below has been spent on a socket that stopped taking bytes. */
+  let stalled = false;
+  /** Bytes handed to the socket since it last said it was full. Reset by a real 'drain'. */
+  let stalledBytes = 0;
+  /** Bytes handed to the socket since the last pace check — the shared bulk-write budget. */
+  let sincePace = 0;
+  const flushBytes = sseFlushBytes();
+  const maxStalledBytes = sseMaxStalledBytes();
 
   // One repeating timer rather than a clear+set per event: a long replay would otherwise churn two
   // timer operations per envelope. The heartbeat only has to notice SILENCE, which a timestamp
   // answers in O(1).
   const heartbeat = setInterval(() => {
     if (closed) return;
+    // A socket that has not accepted the last frame does not need a keepalive comment, and on a
+    // stalled reader the heartbeat is the LAST writer left: a silent run stops emitting, the replay
+    // has finished, and this timer would go on adding one frame per interval to a buffer nobody is
+    // draining, forever. The comment exists to stop an intermediary reaping an IDLE stream; a socket
+    // with unsent bytes on it is not idle.
+    if (needsDrain) {
+      log.debug('run tail skipped a heartbeat on a socket that has not drained', { runId: id, stalledBytes });
+      return;
+    }
     if (Date.now() - lastWrite < SSE_HEARTBEAT_MS) return;
-    res.write(': ping\n\n');
+    needsDrain = !res.write(': ping\n\n');
     lastWrite = Date.now();
   }, SSE_HEARTBEAT_MS);
   heartbeat.unref?.();
 
   const emitter = createOrderedEmitter(resume.since, (event) => {
-    if (closed) return;
+    if (closed || stalled) return;
     // Wire safety rests on the store's event-type grammar (`EVENT_TYPE_GRAMMAR`, run-store.ts):
     // `type` cannot contain CR or LF, so it cannot forge an SSE field line here. `data` is
     // JSON.stringify, which escapes both. Relax that grammar and this interpolation becomes an
     // injection point — `refuses an event type that could forge an SSE frame` pins it.
-    needsDrain = !res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    const frame = `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    const accepted = res.write(frame);
+    needsDrain = !accepted;
+    const bytes = Buffer.byteLength(frame);
+    sincePace += bytes;
     lastWrite = Date.now();
+    // Only bytes written to a socket that ALREADY said it was full count against the stall budget,
+    // so a healthy reader — whose writes return true, or whose 'drain' fires below — never spends
+    // any of it however fast the run appends.
+    if (accepted) {
+      stalledBytes = 0;
+      return;
+    }
+    stalledBytes += bytes;
+    if (stalledBytes > maxStalledBytes) endStalled('live');
   });
 
   // Step 1 — subscribe BEFORE reading the log, so nothing appended during the replay is missed.
   const unsubscribe = subscribeRunEvents(id, (event) => emitter.offer(event));
+
+  const onDrain = (): void => {
+    needsDrain = false;
+    stalledBytes = 0;
+  };
+  res.on('drain', onDrain);
 
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
     unsubscribe();
     clearInterval(heartbeat);
+    res.off?.('drain', onDrain);
     slot?.release();
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
   res.on('error', cleanup);
+
+  /**
+   * A reader that stopped reading, past its budget. Hoisted because the emitter's write callback is
+   * built above `cleanup` and calls this from inside it.
+   *
+   * Ending is the answer rather than waiting: law 1 makes the durable log the source of truth, so
+   * the client resumes from `Last-Event-ID` and misses nothing — where waiting would mean holding
+   * the rest of the run in this daemon's heap, per tail, for as long as the run emits.
+   */
+  function endStalled(where: string): void {
+    if (stalled || closed) return;
+    stalled = true;
+    log.warn('run tail reader stopped reading past its byte budget; ending the stream so it resumes from Last-Event-ID', {
+      runId: id,
+      where,
+      stalledBytes,
+      budget: maxStalledBytes,
+      lastEmitted: emitter.lastEmitted(),
+    });
+    cleanup();
+    res.end();
+  }
+
+  /**
+   * The shared gate every bulk write path checks — the replay pages and the `goLive` flush both.
+   *
+   * It is called per EVENT and costs a microtask; the drain wait only happens once the budget has
+   * actually been handed over, which is what makes "a page" stop being the unit the socket is
+   * measured in.
+   */
+  const pace = async (): Promise<boolean> => {
+    if (closed || stalled) return false;
+    if (sincePace < flushBytes) return true;
+    sincePace = 0;
+    if (needsDrain) {
+      await waitForDrain(res);
+      needsDrain = false;
+      stalledBytes = 0;
+    }
+    return !closed && !stalled;
+  };
 
   // The handler reached here across two awaits (the router's dynamic import and the store resolve).
   // A client that aborted during either one has ALREADY emitted 'close', so the listeners above will
@@ -753,19 +904,27 @@ async function handleEvents(
     const pageSize = replayPageSize();
     let cursor = resume.since;
     for (;;) {
-      if (closed) return;
+      if (closed || stalled) return;
       const page = await store.eventsSince(id, cursor, pageSize);
       if (page.length === 0) break;
-      for (const event of page) emitter.emit(event);
-      cursor = page[page.length - 1].seq;
       // Replay is the only unbounded producer on this stream — the live path is paced by the run
       // itself. A client that opens a tail and stops reading would otherwise pull the whole log into
-      // the daemon's heap, so wait for the socket to drain instead of racing ahead of it.
+      // the daemon's heap, so the gate is INSIDE the page: a page is 500 events at up to 64k of
+      // payload each, and checking once per page is a count bounding a byte problem.
+      for (const event of page) {
+        emitter.emit(event);
+        if (!(await pace())) return;
+      }
+      cursor = page[page.length - 1].seq;
+      // A page that never reached the byte budget still leaves the socket back-pressured, so the
+      // between-pages check stays: it is the one that covers a log of small events.
       if (needsDrain) {
         await waitForDrain(res);
         needsDrain = false;
+        stalledBytes = 0;
+        sincePace = 0;
       }
-      if (closed) return;
+      if (closed || stalled) return;
       if (page.length < pageSize) break;
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -791,5 +950,18 @@ async function handleEvents(
     res.end();
     return;
   }
-  emitter.goLive();
+  // The flush takes the same gate as the replay. It is up to a full hold buffer — 2048 events / 8 MB
+  // — handed over in one burst at the moment the socket is most likely already full, so an ungated
+  // one is the largest single write on this route.
+  await emitter.goLive(pace);
+  if (closed || stalled) return;
+  // Out-appended DURING the flush: same door as an overflow before it, for the same reason.
+  if (emitter.overflowed()) {
+    log.warn('run tail dropped its hold buffer during the go-live flush; ending the stream so the client resumes', {
+      runId: id,
+      lastEmitted: emitter.lastEmitted(),
+    });
+    cleanup();
+    res.end();
+  }
 }

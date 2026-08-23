@@ -315,6 +315,29 @@ function proxyLoop(): HttpError {
 }
 
 /**
+ * What we say when the owner's 503 body was too large to buffer.
+ *
+ * Deliberately OUR envelope rather than the owner's bytes: past the cap we hold a prefix, and a
+ * prefix of a JSON body is not a smaller body — it is a malformed one. The status stays 503 because
+ * that is what the owner said; only the body becomes ours, and it says so.
+ */
+function ownerDeclineOversized(): HttpError {
+  return {
+    status: 503,
+    body: errorEnvelope(
+      'studio_host_unavailable',
+      'The live run-store owner reported it is unavailable.',
+      {
+        hint: 'The owner returned a 503 whose body was larger than this daemon buffers, so its body was '
+          + 'not relayed. Re-launch the studio app if this persists; with the app closed this daemon owns '
+          + 'the run store.',
+      },
+    ),
+    headers: {},
+  };
+}
+
+/**
  * What the hop settled as.
  *
  * `owner_declared_no_store` is the one outcome that is not an answer to the client: the owner
@@ -521,10 +544,30 @@ export function proxyRunsRequest(
         });
         upstreamRes.on('end', () => {
           clearTimeout(declineTimer);
+          // Overflowed the cap, so `chunks` is a PREFIX of what the owner sent — the bytes before
+          // the cap tripped, and nothing after. Relaying that prefix relays a body that is not the
+          // owner's, almost certainly truncated mid-token, and a client that parses a 503 body gets
+          // malformed JSON attributed to this daemon. The cap's job is to stop us buffering an
+          // unbounded body, not to invent a shorter one: past it we say what happened in our own
+          // envelope. See A-88-2.
+          if (overflow) {
+            log.warn('run-store owner 503 body exceeded the decline cap; synthesizing a decline envelope', {
+              endpoint: opts.target.endpoint,
+              cap: DECLINE_BODY_CAP_BYTES,
+              received: size,
+            });
+            if (!res.headersSent) {
+              const envelope = ownerDeclineOversized();
+              res.writeHead(envelope.status, { ...relayHeaders(upstreamRes), 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify(envelope.body));
+            }
+            finish();
+            return;
+          }
           const body = Buffer.concat(chunks);
           let reason: unknown;
           try { reason = (JSON.parse(body.toString('utf-8')) as { error_reason?: unknown }).error_reason; } catch { /* not an envelope */ }
-          if (!overflow && reason === DECLINED_BY_OWNER.reason) {
+          if (reason === DECLINED_BY_OWNER.reason) {
             log.debug('run-store owner declares it holds no store; serving in-process', { endpoint: opts.target.endpoint });
             finish('owner_declared_no_store');
             return;
