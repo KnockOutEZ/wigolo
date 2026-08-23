@@ -907,6 +907,37 @@ describe('response framing across the hop', () => {
     expect(r.headers['content-length']).toBeUndefined();
   });
 
+  /**
+   * WHY: the decline cap exists so this daemon does not buffer an unbounded body. It does NOT
+   * license inventing a shorter body — past the cap `chunks` holds the bytes that arrived BEFORE it
+   * tripped and nothing after, so relaying them relays a prefix cut at an arbitrary offset. For the
+   * envelope this branch is built around, that offset lands mid-token: the client receives a 503
+   * whose body does not parse, attributed to this daemon, and cannot tell it from an owner that
+   * genuinely sent malformed JSON.
+   */
+  it('synthesizes its own 503 envelope rather than relaying an oversized owner body truncated', async () => {
+    // Well-formed JSON upstream, and far past the 8 KiB cap. Its reason is NOT `store_unavailable`,
+    // so the relay branch — not the fallback — is the one under test.
+    const huge = JSON.stringify({ ok: false, error: 'x'.repeat(20_000), error_reason: 'too_many_requests' });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(huge);
+    };
+    proxyPort = await startProxyServer(false);
+
+    const r = await callRaw({ path: '/v1/runs' });
+    const text = r.body.toString('utf-8');
+
+    expect(r.status).toBe(503);
+    expect(r.complete).toBe(true);
+    // The load-bearing pair. Asserting only "not equal to `huge`" would pass on the truncated relay
+    // too — this says the body PARSES, which the prefix cannot.
+    expect(() => JSON.parse(text)).not.toThrow();
+    expect((JSON.parse(text) as { error_reason: string }).error_reason).toBe('studio_host_unavailable');
+    // And it is not a prefix of the owner's: a truncated relay would be exactly `huge.slice(0, n)`.
+    expect(huge.startsWith(text)).toBe(false);
+  });
+
   it('keeps the client’s connection framed when the owner over-announces its 503 body', async () => {
     // The security-reviewer's case: headers promise 20 000 bytes, four arrive, the owner never ends.
     // Relayed, the client hangs on a promise the owner broke. A raw socket is required — Node's own

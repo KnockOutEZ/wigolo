@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -539,5 +539,255 @@ describe('the live tail bus', () => {
     expect(viaHook).toEqual([1, 2]);
     expect(viaBus).toEqual([2]);
     off();
+  });
+});
+
+/**
+ * WHY: this route's whole bound on the daemon's heap was a count. The hold buffer wrote down that a
+ * count bounds the wrong thing — an event payload is capped at 64k, so N events is 64N kilobytes and
+ * the count never notices — and then applied that reasoning only to itself. Every other writer on
+ * the stream kept counting items or nothing at all: replay checked drain once per PAGE (500 events,
+ * so up to ~32 MB handed to a socket that already said it was full), the `goLive` flush handed over
+ * the entire hold buffer in one burst at the moment the socket is most likely fullest, the live
+ * emitter recorded `needsDrain` and nothing ever read it, and the heartbeat wrote unconditionally.
+ *
+ * A reader that simply stops reading is not exotic — a paused tab, a suspended laptop, a `curl` into
+ * a full pipe — and each of these turns it into per-tail heap growth for as long as the run emits.
+ * Every row below FORCES the stall rather than hoping for it: the response accepts nothing until the
+ * test says so, which is the only way these bounds are observable at all.
+ */
+describe('SSE writes are bounded in bytes on every path, not only between replay pages', () => {
+  const KNOBS = ['WIGOLO_STUDIO_SSE_FLUSH_BYTES', 'WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES'] as const;
+  let saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    saved = {};
+    for (const k of KNOBS) saved[k] = process.env[k];
+  });
+
+  afterEach(() => {
+    for (const k of KNOBS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  /** ~1 KiB of payload, so a frame is a round number of bytes to reason about a budget in. */
+  function bulky(seq: number): RunEvent {
+    return {
+      seq,
+      ts: '2026-08-22T14:00:00.000Z',
+      actor: { kind: 'daemon' },
+      type: 'run.note',
+      payload: { text: 'x'.repeat(1000) },
+    };
+  }
+
+  /**
+   * A response that accepts nothing until the test lets it — the forced condition these rows turn
+   * on. `write` returning false is exactly what a socket whose peer stopped reading does, and
+   * everything after it lives in this process's heap.
+   */
+  function stalledExchange(): {
+    req: IncomingMessage;
+    res: ServerResponse;
+    frames: () => string[];
+    bytes: () => number;
+    ended: () => boolean;
+    drain: () => void;
+  } {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const written: string[] = [];
+    let bytes = 0;
+    let ended = false;
+    let accept = false;
+
+    const on = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      const list = listeners.get(event) ?? [];
+      list.push(fn);
+      listeners.set(event, list);
+      return undefined;
+    };
+    const off = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      listeners.set(event, (listeners.get(event) ?? []).filter((f) => f !== fn));
+      return undefined;
+    };
+    const fire = (event: string): void => { for (const fn of [...(listeners.get(event) ?? [])]) fn(); };
+
+    const req = {
+      headers: {},
+      destroyed: false,
+      socket: { setTimeout: () => {} },
+      on,
+      off,
+    } as unknown as IncomingMessage;
+
+    const res = {
+      destroyed: false,
+      headersSent: false,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => {
+        written.push(chunk);
+        bytes += Buffer.byteLength(chunk);
+        return accept;
+      },
+      end: () => { ended = true; },
+      on,
+      off,
+    } as unknown as ServerResponse;
+
+    return {
+      req,
+      res,
+      frames: () => written.filter((c) => c.startsWith('id: ')),
+      bytes: () => bytes,
+      ended: () => ended,
+      drain: () => { accept = true; fire('drain'); },
+    };
+  }
+
+  function tailWith(
+    ex: { req: IncomingMessage; res: ServerResponse },
+    store: RunsStore,
+    id = '7fq2',
+  ): Promise<void> {
+    return import('../../../src/daemon/rest/runs.js').then(({ handleRunsRequest }) =>
+      handleRunsRequest(ex.req, ex.res, {
+        pathname: `/v1/runs/${id}/events`,
+        method: 'GET',
+        url: new URL(`http://127.0.0.1/v1/runs/${id}/events`),
+        respond: () => {},
+        sendError: () => {},
+        store,
+      }));
+  }
+
+  /** Let the handler's awaits settle. Macrotasks, because the replay yields with `setImmediate`. */
+  async function settle(turns = 12): Promise<void> {
+    for (let i = 0; i < turns; i++) await new Promise<void>((r) => setImmediate(r));
+  }
+
+  it('stops mid-PAGE once the replay has handed over its byte budget, not at the page boundary', async () => {
+    // A budget two frames wide against a page twenty frames long: a gate that only runs between
+    // pages cannot tell the difference, because this log is exactly one page.
+    process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES = '2000';
+    process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES = String(64 * 1024 * 1024);
+
+    const page = Array.from({ length: 20 }, (_, i) => bulky(i + 1));
+    let pages = 0;
+    const store: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async () => { pages += 1; return pages === 1 ? page : []; },
+    };
+
+    const ex = stalledExchange();
+    const done = tailWith(ex, store);
+    await settle();
+
+    // The load-bearing assertion. Per-page gating writes all twenty here; per-byte gating writes the
+    // two that fit the budget and then waits on a socket that has taken nothing.
+    expect(ex.frames().length).toBe(2);
+    expect(ex.ended()).toBe(false);
+
+    ex.drain();
+    await done;
+    // And the bound is a pause, not a loss: the whole page is delivered once the socket takes bytes.
+    expect(ex.frames().length).toBe(20);
+  });
+
+  it('gates the go-live flush on the same budget — the hold buffer is one burst, not one write', async () => {
+    process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES = '2000';
+    process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES = String(64 * 1024 * 1024);
+
+    // The replay parks, which is the window in which live appends are HELD. Ten of them go into the
+    // buffer, and the flush that releases them is the single largest write on this route.
+    let releaseReplay = (): void => {};
+    const parked = new Promise<void>((resolve) => { releaseReplay = resolve; });
+    let calls = 0;
+    const store: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async () => { calls += 1; if (calls === 1) await parked; return []; },
+    };
+
+    const ex = stalledExchange();
+    const done = tailWith(ex, store, '7fq3');
+    await settle(3);
+    for (let seq = 1; seq <= 10; seq++) publishRunEvent('7fq3', bulky(seq));
+    expect(ex.frames()).toHaveLength(0);
+
+    releaseReplay();
+    await settle();
+
+    // Ungated, `goLive` writes all ten before anything looks at the socket.
+    expect(ex.frames().length).toBe(2);
+
+    ex.drain();
+    await done;
+    expect(ex.frames().length).toBe(10);
+  });
+
+  it('ends the tail of a reader that stopped reading, rather than buffering the rest of the run', async () => {
+    // Small enough to reach in a handful of frames, which is what makes the row deterministic.
+    process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES = String(1024 * 1024);
+    process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES = '4000';
+
+    const store: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async () => [],
+    };
+
+    const ex = stalledExchange();
+    await tailWith(ex, store, '7fq4');
+    // Live now: an empty log means the replay and the flush are both no-ops, so every frame below
+    // goes out through the live path — the one that recorded `needsDrain` and never read it.
+    for (let seq = 1; seq <= 200; seq++) publishRunEvent('7fq4', bulky(seq));
+
+    // The bound, in the unit the heap grows in. Unbounded, this is 200 frames and ~220 KB.
+    expect(ex.bytes()).toBeLessThan(4000 + 1200);
+    expect(ex.frames().length).toBeLessThan(6);
+    // And it ends rather than waiting: law 1 makes the durable log the source of truth, so the
+    // client resumes from `Last-Event-ID` and misses nothing.
+    expect(ex.ended()).toBe(true);
+
+    const afterEnd = ex.frames().length;
+    for (let seq = 201; seq <= 400; seq++) publishRunEvent('7fq4', bulky(seq));
+    expect(ex.frames().length).toBe(afterEnd);
+  });
+
+  it('does not heartbeat a socket that has not drained — the last writer on a silent stalled tail', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const store: RunsStore = {
+        create: async () => { throw new Error('not used'); },
+        list: async () => ({ runs: [] }),
+        get: async () => undefined,
+        exists: async () => true,
+        eventsSince: async () => [],
+      };
+
+      const ex = stalledExchange();
+      await tailWith(ex, store, '7fq5');
+
+      // Five intervals on a socket that takes nothing. The first ping is how the timer LEARNS the
+      // socket is full; every one after it would be pure growth on a buffer nobody is draining, and
+      // on a silent run this timer is the only writer left.
+      for (let i = 0; i < 5; i++) vi.advanceTimersByTime(15_000);
+
+      const pings = (ex.bytes() - Buffer.byteLength('retry: 3000\n\n')) / Buffer.byteLength(': ping\n\n');
+      expect(pings).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
