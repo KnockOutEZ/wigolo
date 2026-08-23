@@ -518,6 +518,50 @@ function ensureRunDir(dir: string): void {
   ensuredRunDirs.add(dir);
 }
 
+/**
+ * Prepared statements, per `Database` handle.
+ *
+ * better-sqlite3 does not cache them: `db.prepare(sql)` runs the SQL compiler every time, and on the
+ * append path that compilation happens INSIDE `BEGIN IMMEDIATE` — the write lock on a database that
+ * search caching, embeddings and artifacts queue behind too. Measured over 20k appends, compiling
+ * per call costs 59.6 µs/append against 7.9 µs when the statements are reused: ~87% of the held-lock
+ * time was the compiler, on a path `cost.recorded` walks once per browser action by design, so a
+ * long run pays it continuously.
+ *
+ * Keyed by handle, because a `Statement` belongs to the connection that compiled it — the broker
+ * child, the daemon and every test database must never be handed each other's. A `WeakMap` so a
+ * closed connection's statements go away with it; a value that references its own key does not pin
+ * it here (ephemeron semantics), which is what makes that safe.
+ *
+ * Only CONSTANT sql goes through this. The two reads whose text varies with their arguments — the
+ * `IN (...)` placeholder lists — keep their own `prepare`, because caching them would key the map on
+ * the shape of each call rather than on a fixed set of statements. Nothing here may call
+ * `pluck`/`expand`/`safeIntegers` on a returned statement: those are sticky modes on a shared object.
+ */
+const preparedByDb = new WeakMap<Database.Database, Map<string, Database.Statement>>();
+
+function stmt(db: Database.Database, sql: string): Database.Statement {
+  let statements = preparedByDb.get(db);
+  if (statements === undefined) {
+    statements = new Map<string, Database.Statement>();
+    preparedByDb.set(db, statements);
+  }
+  const hit = statements.get(sql);
+  if (hit !== undefined) return hit;
+  const prepared = db.prepare(sql);
+  statements.set(sql, prepared);
+  return prepared;
+}
+
+/**
+ * Drop one handle's statements. A test that instruments `db.prepare` to count what the store reads
+ * only sees the calls it does not already hold a statement for, so the instrumentation has to reset
+ * this on the way in AND on the way out — otherwise the spy either counts nothing or outlives itself.
+ */
+export function _resetPreparedStatements(db: Database.Database): void {
+  preparedByDb.delete(db);
+}
+
 /** The single append transaction: read last_seq, insert at last_seq + 1, refresh the cache columns. */
 function appendWithinTransaction(
   db: Database.Database,
@@ -531,10 +575,10 @@ function appendWithinTransaction(
   const ts = now.toISOString();
 
   const insert = db.transaction((): RunEvent => {
-    const head = db.prepare('SELECT last_seq FROM studio_runs WHERE id = ?').get(runId) as { last_seq: number } | undefined;
+    const head = stmt(db, 'SELECT last_seq FROM studio_runs WHERE id = ?').get(runId) as { last_seq: number } | undefined;
     if (!head) throw new Error(`run not found: ${runId}`);
     const seq = head.last_seq + 1;
-    db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)')
+    stmt(db, 'INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)')
       .run(runId, seq, ts, JSON.stringify(actor), type, payload);
     // Seeks, not a class read. The whole log used to be read and parsed here, inside the write lock,
     // to recompute one cached string; filtering it to the status types then left two writer-driven
@@ -546,7 +590,11 @@ function appendWithinTransaction(
     // done; the columns are a cache of that fold, maintained in the same transaction as the event
     // that moves them, so the log stays the only source of truth (law 1).
     const delta = costDeltaOf(type, parsed);
-    db.prepare(
+    // Five possible texts, one per cost column plus the no-delta one, and every one of them is
+    // constant — the column names come from `COST_COLUMN_BY_KIND` and never from a payload — so the
+    // statement cache holds at most five entries however many kinds a run records.
+    stmt(
+      db,
       `UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ?${delta ? `, ${delta.column} = ${delta.column} + ?` : ''} WHERE id = ?`,
     ).run(...(delta ? [status, seq, ts, delta.amount, runId] : [status, seq, ts, runId]));
     return { seq, ts, actor, type, payload: parsed };
@@ -702,7 +750,7 @@ function readStatusHead(db: Database.Database, runId: string, now: Date): RunSta
 function readHeads(db: Database.Database, sql: string, types: readonly string[], runId: string): StatusRow[] {
   const params: unknown[] = [];
   for (const type of types) params.push(runId, type);
-  return db.prepare(sql).all(...params) as StatusRow[];
+  return stmt(db, sql).all(...params) as StatusRow[];
 }
 
 /**
@@ -745,7 +793,7 @@ function hasPendingDecision(db: Database.Database, runId: string, now: Date): bo
  */
 function readPendingDecisions(db: Database.Database, runId: string, now: Date): PendingDecision[] {
   const since = new Date(now.getTime() - AUTO_DENY_MS).toISOString();
-  const rows = db.prepare(PENDING_DECISION_SQL).all(runId, since) as PendingRow[];
+  const rows = stmt(db, PENDING_DECISION_SQL).all(runId, since) as PendingRow[];
   rows.sort((a, b) => a.seq - b.seq);
   const pending = new Map<string, PendingDecision>();
   for (const row of rows) {
@@ -789,6 +837,8 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
   const byRun = new Map<string, ProjectableEvent[]>();
   for (const id of runIds) byRun.set(id, []);
   if (runIds.length === 0) return byRun;
+  // Not through the statement cache: the placeholder list makes the text a function of how many runs
+  // this page holds, so caching it would key the map on the shape of each call.
   const rows = db
     .prepare(`SELECT run_id, seq, ts, type, payload FROM studio_run_events WHERE run_id IN (${placeholders(runIds)}) AND type IN (${placeholders(PROJECTION_EVENT_TYPES)})`)
     .all(...runIds, ...PROJECTION_EVENT_TYPES) as ProjectionRow[];
@@ -835,7 +885,7 @@ function readSeeds(db: Database.Database, runId: string, now: Date): ProjectRunO
 function readEventTails(db: Database.Database, runIds: readonly string[]): Map<string, { seq: number; ts: string }> {
   const tails = new Map<string, { seq: number; ts: string }>();
   if (runIds.length === 0) return tails;
-  const newest = db.prepare('SELECT seq, ts FROM studio_run_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1');
+  const newest = stmt(db, 'SELECT seq, ts FROM studio_run_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1');
   for (const id of runIds) {
     const row = newest.get(id) as TailRow | undefined;
     if (row) tails.set(id, { seq: row.seq, ts: row.ts });
@@ -866,8 +916,8 @@ function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date):
 
 function readEvents(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
   const rows = (limit === undefined
-    ? db.prepare('SELECT seq, ts, actor, type, payload FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC').all(runId, since)
-    : db.prepare('SELECT seq, ts, actor, type, payload FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?').all(runId, since, limit)) as EventRow[];
+    ? stmt(db, 'SELECT seq, ts, actor, type, payload FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC').all(runId, since)
+    : stmt(db, 'SELECT seq, ts, actor, type, payload FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?').all(runId, since, limit)) as EventRow[];
   return rows.map(rowToEvent);
 }
 
@@ -890,7 +940,7 @@ export function createRun(db: Database.Database, input: CreateRunInput, opts: Ru
   const mint = opts.mintId ?? mintRunId;
 
   const mintAndBirth = db.transaction((): { id: string; created: RunEvent } => {
-    const insertRun = db.prepare('INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
+    const insertRun = stmt(db, 'INSERT INTO studio_runs (id, task, space_id, created_at, status, last_seq, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)');
     let id: string | undefined;
     for (let length = RUN_ID_MIN_LENGTH; length <= MAX_ID_LENGTH && id === undefined; length++) {
       for (let attempt = 0; attempt < MINT_ATTEMPTS_PER_LENGTH; attempt++) {
@@ -943,7 +993,7 @@ export function appendEvent(db: Database.Database, runId: string, input: RunEven
 export function getRun(db: Database.Database, runId: string, opts: ReadRunOptions = {}): Run | undefined {
   const id = resolveRunId(runId);
   if (id === undefined) return undefined;
-  const row = db.prepare(`SELECT ${RUN_ROW_COLUMNS} FROM studio_runs WHERE id = ?`).get(id) as RunRow | undefined;
+  const row = stmt(db, `SELECT ${RUN_ROW_COLUMNS} FROM studio_runs WHERE id = ?`).get(id) as RunRow | undefined;
   if (!row) return undefined;
   return projectRows(db, [row], opts.now?.() ?? new Date())[0];
 }
@@ -956,7 +1006,7 @@ export function getRun(db: Database.Database, runId: string, opts: ReadRunOption
 export function runExists(db: Database.Database, runId: string): boolean {
   const id = resolveRunId(runId);
   if (id === undefined) return false;
-  const row = db.prepare('SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(id);
+  const row = stmt(db, 'SELECT 1 AS ok FROM studio_runs WHERE id = ?').get(id);
   return row !== undefined;
 }
 
@@ -986,6 +1036,8 @@ function readRunPage(
     where.push('(created_at < ? OR (created_at = ? AND id < ?))');
     params.push(after.createdAt, after.createdAt, after.id);
   }
+  // Four texts rather than one, built from which filters the caller passed — outside the statement
+  // cache for the same reason as the projection read, and off the append path either way.
   const sql = `SELECT ${RUN_ROW_COLUMNS} FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
   return db.prepare(sql).all(...params, n) as RunRow[];
 }
