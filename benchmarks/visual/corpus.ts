@@ -16,6 +16,7 @@
  */
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { MAX_LAYOUT_BOXES, type LayoutBox, type LayoutInput } from '../../src/studio/layout/signature.js';
 
 /** The four renders L-DET requires of every page (spec §3, the L-DET row). */
@@ -67,7 +68,10 @@ export interface FrozenCorpus {
   pages: CapturedPage[];
 }
 
-export const CORPUS_PATH = new URL('./corpus/l-det.json.gz', import.meta.url).pathname;
+// `fileURLToPath`, not `.pathname`: on Windows the latter yields `/C:/...`, which every `fs` call
+// then fails to open. The corpus is read by CI on three platforms, so this is a real path and not
+// a hypothetical one.
+export const CORPUS_PATH = fileURLToPath(new URL('./corpus/l-det.json.gz', import.meta.url));
 
 /** Boxes are stored as flat tuples: the JSON is ~4x smaller than an array of objects and reads the same. */
 type WireBox = [number, number, number, number, number];
