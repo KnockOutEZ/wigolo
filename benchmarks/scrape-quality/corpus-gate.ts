@@ -238,8 +238,15 @@ export function validateCorpus(manifest: ScrapeManifest, htmlDir?: string): Corp
   }
 
   // Non-vacuity, checked at corpus level so a dead `visible_only` value is caught by the gate
-  // rather than sitting green in the report. Same rule the scorer applies per-run; enforced
-  // here too because the gate is what a reviewer reads.
+  // rather than sitting green in the report — the gate is what a reviewer reads.
+  //
+  // This is the WEAKER half of the scorer's rule, deliberately. K25 tightened the scorer to
+  // "the source must carry at least one HIDDEN occurrence"; this check still only asks that
+  // the value be present in the source at all. The two therefore disagree in one direction
+  // only: a value that occurs solely as visible text clears this gate and then fails loudly
+  // at score time with `VACUOUS: all N source occurrence(s) are visible`. Loud-at-score-time
+  // is the safe direction, and a gate cannot be quieter than the scorer this way round.
+  // Tracked in known-issues as `visible_only corpus-gate vacuity is weaker than the scorer`.
   if (htmlDir) {
     for (const f of fixtures) {
       const path = join(htmlDir, f.htmlPath);
