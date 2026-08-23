@@ -207,6 +207,15 @@ export interface SseSlot {
  * and so was metered by nothing at all: K requests for a nonexistent run bought K concurrent owner
  * resolves and K broker round-trips for free. The slot is now the first thing the route touches, so
  * the preamble is inside the bound rather than in front of it.
+ *
+ * The bound is FLEET-WIDE and deliberately so: one counter for the whole daemon, with no per-caller
+ * share. A single client can therefore hold every slot and 429 everyone else off the route until it
+ * lets go. That is accepted here because the daemon is a local, loopback, single-tenant surface —
+ * the callers are this machine's own clients — so the bound exists to cap the process's socket and
+ * heap footprint, not to arbitrate between mutually distrusting tenants. Per-caller fairness or
+ * accounting is a recorded non-goal (`wigolo-studio-run#88`); it becomes required the day this
+ * route is exposed to callers that do not already share a trust boundary, and the honest reading
+ * until then is that availability of the tail is not defended against a local caller that wants it.
  */
 function acquireSseSlot(): SseSlot | null {
   if (openSseConnections >= maxSseConnections()) return null;
@@ -737,6 +746,56 @@ interface HeldEvent {
   bytes: number;
 }
 
+/** Everything about an event that is the same for every subscriber — which is all of it. */
+interface SerializedEvent {
+  /** The `data:` payload, and the whole of the expensive part. */
+  json: string;
+  /** The finished frame. Byte-identical on every tail, because nothing in it varies by subscriber. */
+  frame: string;
+  /** `Buffer.byteLength(frame)` — what the pace and stall budgets are spent in. */
+  frameBytes: number;
+  /** `Buffer.byteLength(json)` — what the hold buffer charges, measured on the envelope, not the frame. */
+  jsonBytes: number;
+}
+
+const serializedEvents = new WeakMap<RunEvent, SerializedEvent>();
+
+/**
+ * One serialization per event, however many tails are open on the run.
+ *
+ * This used to happen inside the per-subscriber write callback, and `publishRunEvent` invokes that
+ * callback once per listener on the WRITER's stack — it is the post-commit hook of `appendEvent`, so
+ * the cost lands on whoever appended, not on the readers. Nothing in the frame varies by subscriber,
+ * so an identical `JSON.stringify` ran N times per event: at the 32-connection cap and the 64 KB
+ * payload ceiling that is milliseconds of writer-stack blocking per append. The hold buffer then
+ * stringified the same envelope a second time just to learn how many bytes it was retaining.
+ *
+ * Keyed on the envelope's identity rather than on `(runId, seq)` because that identity IS the pair —
+ * an envelope object is one run's one seq, and the log is append-only, so a hit can never be stale —
+ * and because a WeakMap needs no eviction policy where a keyed cache on a long-lived run would.
+ * A fan-out that handed each listener its own copy would simply miss and pay what it paid before;
+ * `serializes a published event once however many subscribers are watching` is the row that goes red
+ * if that ever becomes the live path.
+ */
+function serializeRunEvent(event: RunEvent): SerializedEvent {
+  const cached = serializedEvents.get(event);
+  if (cached !== undefined) return cached;
+  // Wire safety rests on the store's event-type grammar (`EVENT_TYPE_GRAMMAR`, run-store.ts):
+  // `type` cannot contain CR or LF, so it cannot forge an SSE field line here. `data` is
+  // JSON.stringify, which escapes both. Relax that grammar and this interpolation becomes an
+  // injection point — `refuses an event type that could forge an SSE frame` pins it.
+  const json = JSON.stringify(event);
+  const frame = `id: ${event.seq}\nevent: ${event.type}\ndata: ${json}\n\n`;
+  const value: SerializedEvent = {
+    json,
+    frame,
+    frameBytes: Buffer.byteLength(frame),
+    jsonBytes: Buffer.byteLength(json),
+  };
+  serializedEvents.set(event, value);
+  return value;
+}
+
 export interface OrderedEmitterOptions {
   /**
    * What to do about a hole. Required, deliberately: an emitter with no gap policy is one that
@@ -784,7 +843,8 @@ export function createOrderedEmitter(
     // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
     // `measured` is passed only when the entry is coming BACK out of this same buffer (the flush's
     // gap door re-holds), where re-serializing to learn a number we already stored is pure waste.
-    const bytes = measured ?? Buffer.byteLength(JSON.stringify(event));
+    // Everything else reads the number off the one serialization the frame is built from.
+    const bytes = measured ?? serializeRunEvent(event).jsonBytes;
     if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
       held.length = 0;
       heldBytes = 0;
@@ -1001,14 +1061,12 @@ async function handleEvents(
 
   const emitter = createOrderedEmitter(resume.since, (event) => {
     if (closed || stalled) return;
-    // Wire safety rests on the store's event-type grammar (`EVENT_TYPE_GRAMMAR`, run-store.ts):
-    // `type` cannot contain CR or LF, so it cannot forge an SSE field line here. `data` is
-    // JSON.stringify, which escapes both. Relax that grammar and this interpolation becomes an
-    // injection point — `refuses an event type that could forge an SSE frame` pins it.
-    const frame = `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    // Built once per envelope and shared by every tail on the run — see `serializeRunEvent`, which
+    // also carries the wire-safety argument for this interpolation. The bytes come off the same
+    // record rather than being re-measured here, so a frame costs one pass however many are open.
+    const { frame, frameBytes: bytes } = serializeRunEvent(event);
     const accepted = res.write(frame);
     needsDrain = !accepted;
-    const bytes = Buffer.byteLength(frame);
     sincePace += bytes;
     lastWrite = Date.now();
     // Only bytes written to a socket that ALREADY said it was full count against the stall budget,
