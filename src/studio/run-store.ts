@@ -163,21 +163,35 @@ const MINT_ATTEMPTS_PER_LENGTH = 3;
 const MAX_ID_LENGTH = RUN_ID_MIN_LENGTH + 4;
 
 /**
+ * The three ways a run ends, and the status each one means. Newest wins, and it outranks a pause and
+ * a pending decision both — `statusFrom` owns that precedence for the replay fold and the seek fold
+ * alike, so there is still exactly one copy of §1's rules.
+ */
+const TERMINAL_STATUS_BY_TYPE: Readonly<Record<string, RunStatus>> = {
+  'run.completed': 'done',
+  'run.failed': 'failed',
+  'run.cancelled': 'cancelled',
+};
+const TERMINAL_EVENT_TYPES: readonly string[] = Object.keys(TERMINAL_STATUS_BY_TYPE);
+/** The pause pair — newest wins, and `run.resumed` clears rather than sets. */
+const PAUSE_EVENT_TYPES: readonly string[] = ['run.paused', 'run.resumed'];
+/** The pair with no natural bound: a run can raise and answer decisions all day (A-43-6). */
+const DECISION_EVENT_TYPES: readonly string[] = ['decision.requested', 'decision.resolved'];
+
+/**
  * The only types `foldStatus` can be moved by. The append path recomputes the `studio_runs.status`
- * cache column from these alone — over `idx_studio_run_events_type` — instead of re-reading and
- * re-parsing the whole log inside the write transaction, which cost O(events-so-far) of held
- * write-lock time on the shared database every single append.
+ * cache column WITHOUT reading this class: two of the seven are writer-controlled pairs that
+ * accumulate for the life of a run, so a type-filtered read of them was still O(events-so-far) of
+ * held write-lock time on the shared database every single append. `readStatusHead` asks SQLite for
+ * the newest row of each single-valued type and for whether one unanswered decision survives.
  *
- * Adding a status rule to `foldStatus` means adding its type here.
+ * Adding a status rule to `foldStatus` means adding its type here — and to the seek path, which the
+ * old-vs-new fold-equality test is what catches.
  */
 export const STATUS_EVENT_TYPES: readonly string[] = [
-  'run.completed',
-  'run.failed',
-  'run.cancelled',
-  'run.paused',
-  'run.resumed',
-  'decision.requested',
-  'decision.resolved',
+  ...TERMINAL_EVENT_TYPES,
+  ...PAUSE_EVENT_TYPES,
+  ...DECISION_EVENT_TYPES,
 ];
 
 /**
@@ -208,10 +222,12 @@ export const PROJECTION_EVENT_TYPES: readonly string[] = [
  * log back inside the type filter (measured on the tip: 200k `mark.placed` → 0.3 ms to project;
  * 200k `cost.recorded` → 244 ms, all of it JSON-parsing rows whose only use is to be added up).
  *
- * A sum is not a fold that needs the rows, so `readCostTotals` asks SQLite for the four totals and
- * the projection receives them pre-aggregated. `projectRun` keeps its `cost.recorded` case for the
- * callers that hand it a full log (a replay, the app's view model) — with the seed and the case
- * mutually exclusive, because a type in this list is never in the filtered read.
+ * A counter does not have to be folded at read time at all. The four totals are columns on
+ * `studio_runs`, incremented in the same transaction as the event that moves them, so a projection
+ * receives them without touching the log — a rebuildable cache of this fold, exactly as `status` is
+ * a cache of the status fold. `projectRun` keeps its `cost.recorded` case for the callers that hand
+ * it a full log (a replay, the app's view model) — with the seed and the case mutually exclusive,
+ * because a type in this list is never in the filtered read.
  */
 export const AGGREGATED_EVENT_TYPES: readonly string[] = ['cost.recorded'];
 
@@ -273,7 +289,51 @@ export function runEventsFile(id: string, dataDir?: string): string {
   return studioStateDir(dataDir, 'runs', normalizeRunId(id), 'events.jsonl');
 }
 
-interface RunRow { id: string; task: string; space_id: string; created_at: string }
+interface RunRow {
+  id: string;
+  task: string;
+  space_id: string;
+  created_at: string;
+  cost_browser_actions: number;
+  cost_tokens_in: number;
+  cost_tokens_out: number;
+  cost_spend_usd: number;
+}
+/** Every column a projected row needs, named once so an item read and a list page cannot drift. */
+const RUN_ROW_COLUMNS =
+  'id, task, space_id, created_at, cost_browser_actions, cost_tokens_in, cost_tokens_out, cost_spend_usd';
+
+/**
+ * Which counter column a `cost.recorded` payload moves, if any. An unrecognised kind lands in no
+ * bucket, exactly as `projectRun`'s fold refuses it — the column names are from this table and never
+ * from a payload, which is what keeps the interpolation in the append's UPDATE a constant.
+ */
+const COST_COLUMN_BY_KIND: Readonly<Record<string, string>> = {
+  browser_action: 'cost_browser_actions',
+  tokens_in: 'cost_tokens_in',
+  tokens_out: 'cost_tokens_out',
+  spend_usd: 'cost_spend_usd',
+};
+
+function costDeltaOf(type: string, payload: Record<string, unknown>): { column: string; amount: number } | undefined {
+  if (type !== 'cost.recorded') return undefined;
+  const column = typeof payload.kind === 'string' ? COST_COLUMN_BY_KIND[payload.kind] : undefined;
+  if (column === undefined) return undefined;
+  // `num` and not SQLite's coercion: a string `"3"` and a boolean `true` are not amounts, and the
+  // fold this caches reads both as zero.
+  const amount = num(payload.amount);
+  return amount === 0 ? undefined : { column, amount };
+}
+
+function costOf(row: RunRow): RunCost {
+  return {
+    browserActions: num(row.cost_browser_actions),
+    tokensIn: num(row.cost_tokens_in),
+    tokensOut: num(row.cost_tokens_out),
+    spendUsd: num(row.cost_spend_usd),
+  };
+}
+
 interface EventRow { seq: number; ts: string; actor: string; type: string; payload: string }
 interface StatusRow { seq: number; ts: string; type: string; payload: string }
 interface ProjectionRow { run_id: string; seq: number; ts: string; type: string; payload: string }
@@ -448,12 +508,20 @@ function appendWithinTransaction(
     const seq = head.last_seq + 1;
     db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)')
       .run(runId, seq, ts, JSON.stringify(actor), type, payload);
-    // Status-relevant rows only. The whole log used to be read and parsed here, inside the write
-    // lock, to recompute one cached string — O(events-so-far) per append, held against every other
-    // writer on the shared database.
-    const status = foldStatus(readStatusEvents(db, runId), now);
-    db.prepare('UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ? WHERE id = ?').run(status, seq, ts, runId);
-    return { seq, ts, actor, type, payload: JSON.parse(payload) as Record<string, unknown> };
+    // Seeks, not a class read. The whole log used to be read and parsed here, inside the write lock,
+    // to recompute one cached string; filtering it to the status types then left two writer-driven
+    // pairs with no bound in it, so the cost still tracked how long the run had been going.
+    const status = readStatusHead(db, runId, now);
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    // A counter is added where it is written. `cost.recorded` is one event per browser action by
+    // design, so folding it at READ time made every list page pay for how much work its runs had
+    // done; the columns are a cache of that fold, maintained in the same transaction as the event
+    // that moves them, so the log stays the only source of truth (law 1).
+    const delta = costDeltaOf(type, parsed);
+    db.prepare(
+      `UPDATE studio_runs SET status = ?, last_seq = ?, updated_at = ?${delta ? `, ${delta.column} = ${delta.column} + ?` : ''} WHERE id = ?`,
+    ).run(...(delta ? [status, seq, ts, delta.amount, runId] : [status, seq, ts, runId]));
+    return { seq, ts, actor, type, payload: parsed };
   });
 
   // IMMEDIATE takes the write lock up front, so the read of last_seq and the insert that depends on
@@ -470,10 +538,18 @@ function toFacts(r: RunRow): StoredRunFacts {
  * can be raised before the mirror gets round to logging it — but only if it parses: a
  * `new Date('later today').toISOString()` throws, and it used to throw INSIDE the projection, so
  * one bad payload made the whole run unreadable on every surface.
+ *
+ * ...and only if it is not LATER than the envelope. A card cannot have been raised after the event
+ * that records it, so a payload claiming a future `requestedAt` is describing something that did not
+ * happen — and what it would buy is a deadline of its own choosing on a run it does not own. Pinning
+ * the effective time at `ts` is also what lets the append path bound its pending-decision read by a
+ * time window: no row outside the window can be live, whatever its payload says.
  */
 function requestedAtOf(event: Pick<RunEvent, 'ts' | 'payload'>): string {
   const claimed = str(event.payload.requestedAt);
-  return claimed !== undefined && Number.isFinite(Date.parse(claimed)) ? claimed : event.ts;
+  if (claimed === undefined) return event.ts;
+  const at = Date.parse(claimed);
+  return Number.isFinite(at) && at <= Date.parse(event.ts) ? claimed : event.ts;
 }
 
 /** Pin 3's deadline, derived rather than stored — `autoDenyAt` is a rendering of this, not a fact. */
@@ -521,30 +597,99 @@ function foldStatus(events: readonly Pick<RunEvent, 'ts' | 'type' | 'payload'>[]
     }
   }
 
-  // A terminal event outranks a pause; a cap or a decision means "needs you", an agent parking
-  // itself does not.
+  return statusFrom(terminal, pausedReason, pending.size > 0);
+}
+
+/**
+ * §1's precedence, in exactly one place, over the three facts either fold produces. A terminal event
+ * outranks a pause; a cap or a decision means "needs you", an agent parking itself does not.
+ */
+function statusFrom(terminal: RunStatus | undefined, pausedReason: string | undefined, pending: boolean): RunStatus {
   if (terminal) return terminal;
   if (pausedReason !== undefined) {
     return pausedReason === 'cost_cap' || pausedReason === 'action_cap' || pausedReason === 'decision' ? 'needs_you' : 'paused';
   }
-  return pending.size > 0 ? 'needs_you' : 'running';
+  return pending ? 'needs_you' : 'running';
 }
 
+/** The types whose newest row is the whole answer: three terminals and the pause pair. */
+const SEEKABLE_STATUS_TYPES: readonly string[] = [...TERMINAL_EVENT_TYPES, ...PAUSE_EVENT_TYPES];
+
 /**
- * One run's status-relevant rows, and nothing else. This runs inside the write lock — keep it thin.
+ * Five newest-row seeks in ONE statement. Each arm stops at the first entry of its own
+ * (run_id, type, seq) slice, so the read is O(log depth) per type and returns at most five rows no
+ * matter how many times a run paused and resumed.
  *
- * The seq order is restored here rather than asked of SQLite: an `ORDER BY seq` makes the planner
- * prefer the (run_id, seq) primary key, which satisfies the sort but scans every row the run has —
- * exactly the O(log-depth) read this exists to avoid. Unordered, it seeks (run_id, type) instead,
- * and a handful of status rows sort for free.
+ * The arms are wrapped subselects because a compound SELECT cannot carry a per-arm ORDER BY/LIMIT.
  */
-function readStatusEvents(db: Database.Database, runId: string): Pick<RunEvent, 'ts' | 'type' | 'payload'>[] {
-  const rows = db
-    .prepare(`SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type IN (${placeholders(STATUS_EVENT_TYPES)})`)
-    .all(runId, ...STATUS_EVENT_TYPES) as StatusRow[];
-  return rows
-    .sort((a, b) => a.seq - b.seq)
-    .map((r) => ({ ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+const NEWEST_STATUS_ROWS_SQL = SEEKABLE_STATUS_TYPES.map(
+  () => 'SELECT * FROM (SELECT seq, ts, type, payload FROM studio_run_events WHERE run_id = ? AND type = ? ORDER BY seq DESC LIMIT 1)',
+).join(' UNION ALL ');
+
+/**
+ * The requests that could still be pending, and no others.
+ *
+ * Two bounds, and it takes both. The anti-join drops every request some LATER `decision.resolved`
+ * answered — that is the fold's rule, restated in SQL. The `ts` bound is what makes it constant
+ * work: a decision is only pending while it can still be answered, and `requestedAtOf` never reads
+ * an effective request time LATER than the envelope's own `ts`, so a row older than the auto-deny
+ * window cannot be pending whatever its payload claims. The window is a superset, never a filter —
+ * expiry itself is decided in JS by the same `hasAutoDenied` a replay uses.
+ */
+const PENDING_DECISION_SQL = `
+  SELECT req.ts AS ts, req.payload AS payload
+    FROM studio_run_events req
+   WHERE req.run_id = ? AND req.type = 'decision.requested' AND req.ts >= ?
+     AND NOT EXISTS (
+       SELECT 1 FROM studio_run_events res
+        WHERE res.run_id = req.run_id AND res.type = 'decision.resolved' AND res.seq > req.seq
+          AND json_extract(res.payload, '$.decisionId') = json_extract(req.payload, '$.decisionId'))`;
+
+/**
+ * The cached `studio_runs.status`, recomputed without reading the status class. This runs inside the
+ * write lock — every read it makes is a seek, and the number of rows it can return is fixed by the
+ * schema (five heads) plus the decisions raised in the last two minutes.
+ *
+ * `foldStatus` remains the definition; this is the same rules asked of SQLite, and the two are
+ * pinned equal by replaying one log both ways.
+ */
+function readStatusHead(db: Database.Database, runId: string, now: Date): RunStatus {
+  const params: unknown[] = [];
+  for (const type of SEEKABLE_STATUS_TYPES) params.push(runId, type);
+  const heads = db.prepare(NEWEST_STATUS_ROWS_SQL).all(...params) as StatusRow[];
+
+  let terminalAt = -1;
+  let terminal: RunStatus | undefined;
+  let pauseAt = -1;
+  let pause: StatusRow | undefined;
+  for (const row of heads) {
+    const asTerminal = TERMINAL_STATUS_BY_TYPE[row.type];
+    if (asTerminal !== undefined) {
+      if (row.seq > terminalAt) { terminalAt = row.seq; terminal = asTerminal; }
+    } else if (row.seq > pauseAt) { pauseAt = row.seq; pause = row; }
+  }
+
+  let pausedReason: string | undefined;
+  if (pause && pause.type === 'run.paused') {
+    pausedReason = str((JSON.parse(pause.payload) as Record<string, unknown>).reason) ?? 'agent';
+  }
+
+  // Neither of the cheap answers settled it, so the expensive question gets asked — and only then.
+  if (terminal || pausedReason !== undefined) return statusFrom(terminal, pausedReason, false);
+  return statusFrom(undefined, undefined, hasPendingDecision(db, runId, now));
+}
+
+/** Does one unanswered, unexpired decision survive? The count never matters, only the existence. */
+function hasPendingDecision(db: Database.Database, runId: string, now: Date): boolean {
+  const since = new Date(now.getTime() - AUTO_DENY_MS).toISOString();
+  const rows = db.prepare(PENDING_DECISION_SQL).all(runId, since) as { ts: string; payload: string }[];
+  for (const row of rows) {
+    const payload = JSON.parse(row.payload) as Record<string, unknown>;
+    // A request with no decisionId can never be answered and never counted — same rule as the fold.
+    if (!str(payload.decisionId)) continue;
+    if (!hasAutoDenied(requestedAtOf({ ts: row.ts, payload }), now)) return true;
+  }
+  return false;
 }
 
 /**
@@ -565,40 +710,6 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
   // Ordered here for the same reason as the status read: an ORDER BY would cost the type index.
   for (const events of byRun.values()) events.sort((a, b) => a.seq - b.seq);
   return byRun;
-}
-
-/**
- * The four cost totals per run, folded by SQLite. Bounded in the only way that matters to a caller:
- * it returns at most one row per cost KIND per run — four — no matter how many counter events a run
- * recorded, and no payload is parsed in this process to get them.
- *
- * The arithmetic is deliberately `projectRun`'s, restated in SQL: a non-numeric `amount` contributes
- * zero rather than coercing (SQLite would read `"3"` and `true` as 3 and 1; `num()` reads both as
- * 0), and an unrecognised `kind` lands in no bucket. The two folds are pinned equal by a test that
- * replays the same log both ways.
- */
-function readCostTotals(db: Database.Database, runIds: readonly string[]): Map<string, RunCost> {
-  const totals = new Map<string, RunCost>();
-  if (runIds.length === 0) return totals;
-  const rows = db
-    .prepare(
-      `SELECT run_id, json_extract(payload, '$.kind') AS kind,
-              SUM(CASE WHEN json_type(payload, '$.amount') IN ('integer', 'real') THEN json_extract(payload, '$.amount') ELSE 0 END) AS total
-         FROM studio_run_events
-        WHERE run_id IN (${placeholders(runIds)}) AND type = 'cost.recorded'
-        GROUP BY run_id, kind`,
-    )
-    .all(...runIds) as { run_id: string; kind: unknown; total: number | null }[];
-  for (const r of rows) {
-    const cost = totals.get(r.run_id) ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 };
-    const amount = num(r.total);
-    if (r.kind === 'browser_action') cost.browserActions += amount;
-    else if (r.kind === 'tokens_in') cost.tokensIn += amount;
-    else if (r.kind === 'tokens_out') cost.tokensOut += amount;
-    else if (r.kind === 'spend_usd') cost.spendUsd += amount;
-    totals.set(r.run_id, cost);
-  }
-  return totals;
 }
 
 /**
@@ -636,9 +747,8 @@ function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date):
   const ids = rows.map((r) => r.id);
   const byRun = readProjectionEvents(db, ids);
   const tails = readEventTails(db, ids);
-  const costs = readCostTotals(db, ids);
   return rows.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costs.get(r.id) });
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costOf(r) });
     const tail = tails.get(r.id);
     return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
   });
@@ -723,7 +833,7 @@ export function appendEvent(db: Database.Database, runId: string, input: RunEven
 export function getRun(db: Database.Database, runId: string, opts: ReadRunOptions = {}): Run | undefined {
   const id = resolveRunId(runId);
   if (id === undefined) return undefined;
-  const row = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as RunRow | undefined;
+  const row = db.prepare(`SELECT ${RUN_ROW_COLUMNS} FROM studio_runs WHERE id = ?`).get(id) as RunRow | undefined;
   if (!row) return undefined;
   return projectRows(db, [row], opts.now?.() ?? new Date())[0];
 }
@@ -768,7 +878,7 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
     where.push('(created_at < ? OR (created_at = ? AND id < ?))');
     params.push(cursor.createdAt, cursor.createdAt, cursor.id);
   }
-  const sql = `SELECT id, task, space_id, created_at FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
+  const sql = `SELECT ${RUN_ROW_COLUMNS} FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
   const rows = db.prepare(sql).all(...params, limit + 1) as RunRow[];
   const page = rows.slice(0, limit);
   // Bounded queries for the page, not one unbounded full-log read per row.

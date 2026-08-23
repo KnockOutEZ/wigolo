@@ -416,6 +416,37 @@ CREATE INDEX IF NOT EXISTS idx_studio_run_events_type ON studio_run_events(run_i
 CREATE INDEX IF NOT EXISTS idx_studio_runs_status ON studio_runs(status, created_at);
 `;
 
+// SD1 exit-2 perf HIGH-1/HIGH-2. Two halves of one change: an append should cost its status, not its
+// history, and a list page should cost its rows, not their counters. The index half is here; the
+// four cost columns arrive in the guarded postStep, because SQLite has no ADD COLUMN IF NOT EXISTS.
+const MIGRATION_017_STUDIO_RUN_COST = `
+-- Every statement is in the guarded postStep below: SQLite has no ADD COLUMN IF NOT EXISTS, and an
+-- unguarded CREATE INDEX here would make this migration require 016 to have run first, which is
+-- exactly the coupling the 012 and 015 postSteps exist to avoid.
+`;
+
+/** The four counter columns, in the order the backfill and the store both name them. */
+const STUDIO_RUN_COST_COLUMNS: ReadonlyArray<{ column: string; kind: string }> = [
+  { column: 'cost_browser_actions', kind: 'browser_action' },
+  { column: 'cost_tokens_in', kind: 'tokens_in' },
+  { column: 'cost_tokens_out', kind: 'tokens_out' },
+  { column: 'cost_spend_usd', kind: 'spend_usd' },
+];
+
+/**
+ * One kind's total for one run, restated in SQL. Deliberately the store's arithmetic and not
+ * SQLite's defaults: a non-numeric `amount` contributes zero rather than coercing (SQLite reads
+ * `"3"` and `true` as 3 and 1), and an unrecognised kind lands in no bucket.
+ */
+function costBackfillSum(kind: string): string {
+  return `COALESCE((
+    SELECT SUM(CASE WHEN json_type(e.payload, '$.amount') IN ('integer', 'real')
+                    THEN json_extract(e.payload, '$.amount') ELSE 0 END)
+      FROM studio_run_events e
+     WHERE e.run_id = studio_runs.id AND e.type = 'cost.recorded'
+       AND json_extract(e.payload, '$.kind') = '${kind}'), 0)`;
+}
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -622,6 +653,46 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   { name: '016-studio-runs', sql: MIGRATION_016_STUDIO_RUNS },
+  {
+    name: '017-studio-run-cost',
+    sql: MIGRATION_017_STUDIO_RUN_COST,
+    /**
+     * The counter columns, and their one-time backfill from the log.
+     *
+     * Guarded the way the 015 postStep is: an absent `studio_runs` means the runner-only harness
+     * skipped the table, and a column already present means someone got here first. Unlike 015's
+     * marker these ARE backfillable — the log holds every `cost.recorded` this run ever wrote, so an
+     * existing database ends the migration with exactly the totals a replay would fold.
+     */
+    postStep: (db) => {
+      const events = db.pragma('table_info(studio_run_events)') as Array<{ name: string }>;
+      if (events.length > 0) {
+        // (run_id, type) answers "which rows of this type" but not "the newest one": with seq off the
+        // index the planner has to materialise and sort every matching row to serve ORDER BY seq DESC
+        // LIMIT 1, which is the read the append path now makes once per status-bearing type.
+        db.exec('CREATE INDEX IF NOT EXISTS idx_studio_run_events_type_seq ON studio_run_events(run_id, type, seq)');
+        // ts on the tail bounds the one status question that is not a newest-row seek: a decision can
+        // only be pending while it can still be answered, so the candidates are the requests inside
+        // the auto-deny window and never the whole accumulated decision class.
+        db.exec('CREATE INDEX IF NOT EXISTS idx_studio_run_events_type_ts ON studio_run_events(run_id, type, ts)');
+        // Redundant the moment those two exist — (run_id, type) is a strict prefix of both — and an
+        // index that answers nothing new still costs a b-tree write on every append.
+        db.exec('DROP INDEX IF EXISTS idx_studio_run_events_type');
+      }
+      const cols = db.pragma('table_info(studio_runs)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const present = new Set(cols.map((c) => c.name));
+      const added = STUDIO_RUN_COST_COLUMNS.filter((c) => !present.has(c.column));
+      for (const { column } of added) {
+        // REAL, not INTEGER: the store adds whatever finite number a payload carried, and a fractional
+        // spend must not round on its way into a cache of a fold that did not round.
+        db.exec(`ALTER TABLE studio_runs ADD COLUMN ${column} REAL NOT NULL DEFAULT 0`);
+      }
+      if (added.length === 0) return;
+      db.exec(`UPDATE studio_runs SET ${added.map((c) => `${c.column} = ${costBackfillSum(c.kind)}`).join(', ')}
+                WHERE EXISTS (SELECT 1 FROM studio_run_events e WHERE e.run_id = studio_runs.id AND e.type = 'cost.recorded')`);
+    },
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
