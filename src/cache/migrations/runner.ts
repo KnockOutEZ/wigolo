@@ -447,6 +447,14 @@ function costBackfillSum(kind: string): string {
        AND json_extract(e.payload, '$.kind') = '${kind}'), 0)`;
 }
 
+// SD1 exit-7 perf. The list page reads `studio_runs` by keyset and orders by (created_at, id); with
+// no index over those columns SQLite planned SCAN + TEMP B-TREE — a full table read and a full sort
+// per page, on a table that grows forever by design.
+const MIGRATION_018_STUDIO_RUNS_LIST_INDEX = `
+-- Every statement is in the guarded postStep below, for the reason 017's are: an unguarded
+-- CREATE INDEX would make this migration require 016 to have run first.
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -691,6 +699,34 @@ export const MIGRATIONS: Migration[] = [
       if (added.length === 0) return;
       db.exec(`UPDATE studio_runs SET ${added.map((c) => `${c.column} = ${costBackfillSum(c.kind)}`).join(', ')}
                 WHERE EXISTS (SELECT 1 FROM studio_run_events e WHERE e.run_id = studio_runs.id AND e.type = 'cost.recorded')`);
+    },
+  },
+  {
+    name: '018-studio-runs-list-index',
+    sql: MIGRATION_018_STUDIO_RUNS_LIST_INDEX,
+    /**
+     * The list query's serving index, and the removal of the one nothing serves.
+     *
+     * Two indexes and not one because the page read has two live shapes and neither can use the
+     * other's index: the space-scoped read needs `space_id` leading to seek at all, and the
+     * unscoped read cannot use an index whose leading column it does not constrain. Both end in
+     * `id` so the keyset predicate `(created_at < ? OR (created_at = ? AND id < ?))` and the
+     * `ORDER BY created_at DESC, id DESC` are the same traversal — no sort step survives.
+     *
+     * They cost a b-tree write only at INSERT, once per run: `created_at`, `id` and `space_id` are
+     * fixed at creation, so the status/last_seq UPDATE every append makes does not touch either.
+     *
+     * `idx_studio_runs_status` is the opposite trade and is now dead: since the status filter moved
+     * onto the projection nothing selects `studio_runs` by status, but the index still had to be
+     * rewritten on every one of those appends. 016 keeps creating it — an applied migration is
+     * history and is not edited — so a fresh database creates it and drops it in the same pass.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(studio_runs)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      db.exec('CREATE INDEX IF NOT EXISTS idx_studio_runs_created_at ON studio_runs(created_at, id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_studio_runs_space_created_at ON studio_runs(space_id, created_at, id)');
+      db.exec('DROP INDEX IF EXISTS idx_studio_runs_status');
     },
   },
 ];
