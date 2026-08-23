@@ -123,6 +123,22 @@ const DEFAULT_SSE_FLUSH_BYTES = 256 * 1024;
  * is the source of truth and the resume door is the same one every reconnect uses. See A-88-1.
  */
 const DEFAULT_SSE_MAX_STALLED_BYTES = 4 * 1024 * 1024;
+/**
+ * How many heartbeat intervals a single drain wait may spend before the tail ends.
+ *
+ * `DEFAULT_SSE_MAX_STALLED_BYTES` bounds the reader that keeps taking frames too slowly. It does not
+ * bound the reader that stops taking them ALTOGETHER while holding the socket open, because that
+ * reader is never handed another byte: the await parks, so `stalledBytes` cannot grow past its
+ * budget, and the heartbeat — the stream's only other writer — returns early on `needsDrain` and so
+ * never writes the ping that would notice. Nothing else is left. The events route is exempt from the
+ * router's slot and deadline discipline by design, so a parked drain holds its connection slot until
+ * the daemon restarts, and `maxSseConnections()` of them 429 the route permanently.
+ *
+ * The wait therefore carries its own clock. It is expressed in heartbeats rather than in absolute
+ * milliseconds so the one knob that already governs "how long may this stream say nothing" governs
+ * this too — a deployment that widens the heartbeat widens the patience that hangs off it.
+ */
+const SSE_DRAIN_HEARTBEATS = 4;
 
 function replayPageSize(): number {
   const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
@@ -614,18 +630,34 @@ export function resolveSince(
  * Together they are why a reconnecting client gets each seq exactly once with no coordination.
  */
 /**
- * Wait for the socket to accept more, or for the connection to die — whichever comes first.
- * Waiting on `'drain'` alone would hang the replay forever on a client that vanished mid-page.
+ * Wait for the socket to accept more, for the connection to die, or for the deadline — whichever
+ * comes first. Resolves `true` when the socket moved (drained or closed) and `false` on expiry.
+ *
+ * Waiting on `'drain'` alone would hang the replay forever on a client that vanished mid-page, and
+ * adding `'close'` covers only the client that vanishes NOISILY. A peer that stops reading while
+ * holding the TCP connection open emits neither event, ever: no drain because it is not reading, no
+ * close because it has not left. That wait is unbounded and its caller holds a connection slot for
+ * the life of the process — see `SSE_DRAIN_HEARTBEATS`. The deadline is what makes it a wait rather
+ * than a leak, and the caller answers an expiry the same way every other back-pressure door on this
+ * route answers: end the stream and let the client resume from `Last-Event-ID` against the log.
  */
-function waitForDrain(res: ServerResponse): Promise<void> {
+function waitForDrain(res: ServerResponse, deadlineMs: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const done = (): void => {
-      res.off('drain', done);
-      res.off('close', done);
-      resolve();
+    let settled = false;
+    const finish = (drained: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      res.off?.('drain', moved);
+      res.off?.('close', moved);
+      resolve(drained);
     };
-    res.on('drain', done);
-    res.on('close', done);
+    const moved = (): void => { finish(true); };
+    // Unref'd: a tail waiting on a stalled socket must not be the reason the process stays up.
+    const timer = setTimeout(() => { finish(false); }, deadlineMs);
+    timer.unref?.();
+    res.on('drain', moved);
+    res.on('close', moved);
   });
 }
 
@@ -921,6 +953,7 @@ async function handleEvents(
   const flushBytes = sseFlushBytes();
   const maxStalledBytes = sseMaxStalledBytes();
   const heartbeatMs = sseHeartbeatMs();
+  const drainDeadlineMs = heartbeatMs * SSE_DRAIN_HEARTBEATS;
 
   // One repeating timer rather than a clear+set per event: a long replay would otherwise churn two
   // timer operations per envelope. The heartbeat only has to notice SILENCE, which a timestamp
@@ -1011,11 +1044,12 @@ async function handleEvents(
   function endStalled(where: string): void {
     if (stalled || closed) return;
     stalled = true;
-    log.warn('run tail reader stopped reading past its byte budget; ending the stream so it resumes from Last-Event-ID', {
+    log.warn('run tail reader stopped reading past its budget; ending the stream so it resumes from Last-Event-ID', {
       runId: id,
       where,
       stalledBytes,
       budget: maxStalledBytes,
+      drainDeadlineMs,
       lastEmitted: emitter.lastEmitted(),
     });
     cleanup();
@@ -1034,7 +1068,14 @@ async function handleEvents(
     if (sincePace < flushBytes) return true;
     sincePace = 0;
     if (needsDrain) {
-      await waitForDrain(res);
+      // An expiry is a reader that stopped reading without leaving, and it is answered exactly the
+      // way the byte budget answers the reader that reads too slowly: end, so the slot comes back
+      // and the client resumes from `Last-Event-ID`. Waiting on is the one answer that cannot work —
+      // no further byte is handed over while this parks, so no other door on this route can fire.
+      if (!(await waitForDrain(res, drainDeadlineMs))) {
+        endStalled('drain');
+        return false;
+      }
       needsDrain = false;
       stalledBytes = 0;
     }
@@ -1057,6 +1098,15 @@ async function handleEvents(
    * with it the byte budget, the between-pages drain check and the yield that keeps a long log from
    * freezing the daemon. Returns false when the caller must stop: the connection is gone, the stream
    * has ended, or the read itself failed.
+   *
+   * It stops on an EMPTY page, never on a short one. `pageSize` is what this process ASKS for, not
+   * what it gets: the broker clamps every read to its own per-frame ceiling (`MAX_EVENTS_PAGE`,
+   * `studio-db-broker.ts`) regardless, so a short page is the ordinary shape of a capped read and
+   * treating it as end-of-log silently truncates every replay whose requested page is larger — which
+   * `WIGOLO_STUDIO_RUN_REPLAY_PAGE` lets any operator do, and which the heal path then turns into an
+   * end/reconnect loop at `SSE_RETRY_MS`. The app-side projection already documents and enforces
+   * exactly this contract (`run-view-model.ts`); this was the odd one out. The cost is one extra
+   * empty read per replay, and correctness across a process boundary is worth an indexed seek.
    */
   async function pumpDurable(from: number, where: string): Promise<boolean> {
     const pageSize = replayPageSize();
@@ -1074,17 +1124,24 @@ async function handleEvents(
           emitter.emit(event);
           if (!(await pace())) return false;
         }
-        cursor = page[page.length - 1].seq;
+        const tail = page[page.length - 1].seq;
+        // A store that ignored `since` would hand back the same page forever. Nothing legitimate
+        // produces that; a spin on the event loop every other request shares is what it would cost
+        // if anything did. It is also the terminator the short-page check below used to double as.
+        if (tail <= cursor) return true;
+        cursor = tail;
         // A page that never reached the byte budget still leaves the socket back-pressured, so the
         // between-pages check stays: it is the one that covers a log of small events.
         if (needsDrain) {
-          await waitForDrain(res);
+          if (!(await waitForDrain(res, drainDeadlineMs))) {
+            endStalled('drain');
+            return false;
+          }
           needsDrain = false;
           stalledBytes = 0;
           sincePace = 0;
         }
         if (closed || stalled) return false;
-        if (page.length < pageSize) return true;
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } catch (err) {
