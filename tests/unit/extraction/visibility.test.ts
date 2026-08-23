@@ -82,6 +82,29 @@ describe('stripHiddenDom', () => {
     expect(document.body.innerHTML).toContain('pre-hydration body copy');
   });
 
+  it('drops a hidden gloss while keeping a visible link that repeats the same words', () => {
+    // wikipedia-python's shape, and the reason its referee row reads as a leak when it
+    // is not one: the lead sentence links "general-purpose programming language" as
+    // visible anchor text, word for word the same string as the hidden
+    // div.shortdescription above it. Suppressing the hidden node is required;
+    // suppressing the visible link would be the far worse defect — and a substring test
+    // over the extracted markdown cannot tell the two apart.
+    //
+    // Asserted at the pre-pass rather than through extractContent on purpose: on a page
+    // with enough prose the readability tier drops display:none by itself, so a
+    // pipeline-level assertion here would pass with this filter deleted.
+    const out = strip(`<html><body>
+      <div class="shortdescription" style="display:none">General-purpose programming language</div>
+      <section><p>Python is a
+      <a href="/wiki/General-purpose_programming_language" title="General-purpose programming language">general-purpose programming language</a>
+      that emphasizes code readability.</p></section>
+    </body></html>`);
+    expect(out).not.toContain('shortdescription');
+    // Two left, and both belong to the one visible link: its anchor text and the title
+    // attribute turndown carries over. A third would be the hidden gloss.
+    expect(out.toLowerCase().split('general-purpose programming language').length - 1).toBe(2);
+  });
+
   it('exposes the mechanisms it filters on, so the corpus can cite them', () => {
     expect(HIDDEN_SELECTORS).toContain('[hidden]');
   });
