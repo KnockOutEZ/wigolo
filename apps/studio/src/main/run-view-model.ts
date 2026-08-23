@@ -268,6 +268,8 @@ export class RunViewModel {
   private readonly adopting = new Map<string, AdoptState>();
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
+  /** One attach at a time per TAB — see `attachTab`. */
+  private readonly attaching = new Map<string, Promise<void>>();
   /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
   private readonly horizons = new Map<string, { at: number; stop: () => void }>();
 
@@ -507,7 +509,13 @@ export class RunViewModel {
     // usually already in. Checked BEFORE the sealed branch: an append that seals the run would
     // otherwise replay it immediately afterwards to fold an envelope it has already folded.
     if (log && event.seq <= log.lastSeq) return;
-    if (log?.kept) { await this.adopt(runId, { replace: true }); return; }
+    // Everything a plain fold cannot absorb is a replay, and it is AWAITED here. A caller that wrote
+    // through this class is entitled to a current projection by the time its promise settles —
+    // `attachTab`'s law-4 refusal is decided on that projection, and `setVisibility`'s idempotence
+    // is too. `applyEvent` starts the same replay for its own callers but has no promise to hand
+    // back, so routing a gap or a sealed run through it would resolve the write before the write
+    // was visible anywhere.
+    if (!log || log.kept || event.seq > log.lastSeq + 1) { await this.adopt(runId, { replace: true }); return; }
     this.applyEvent(runId, event);
   }
 
@@ -619,7 +627,27 @@ export class RunViewModel {
    * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
    * owner is a no-op rather than a duplicate fact.
    */
-  async attachTab(runId: string, tabId: string, url?: string): Promise<void> {
+  attachTab(runId: string, tabId: string, url?: string): Promise<void> {
+    // Serialised per TAB, because the check is against the PROJECTION and the append is a round-trip:
+    // two runs reaching for one tab in the same turn both read "nobody owns it", both commit, and the
+    // append-only log then records two owners for one tab. That is law 4 broken in the DURABLE
+    // record, where no replay can repair it and nothing detects it — every surface that reads the log
+    // afterwards, here or over REST or in a replay, sees one tab owned by two runs, and one agent is
+    // driving another agent's page. `setVisibility` serialises per run against the same shape of
+    // race. Per tab rather than globally, so a slow append never holds up an attach to another tab.
+    const queued = (this.attaching.get(tabId) ?? Promise.resolve()).then(
+      () => this.applyAttach(runId, tabId, url),
+      () => this.applyAttach(runId, tabId, url),
+    );
+    const tail = queued.then(
+      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
+      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
+    );
+    this.attaching.set(tabId, tail);
+    return queued;
+  }
+
+  private async applyAttach(runId: string, tabId: string, url?: string): Promise<void> {
     const owner = this.ownerOf(tabId);
     if (owner === runId) return;
     if (owner !== undefined) throw new TabOwnedError(tabId, owner);
