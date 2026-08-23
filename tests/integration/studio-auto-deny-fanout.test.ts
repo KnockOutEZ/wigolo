@@ -83,7 +83,7 @@ describe('the auto-deny, as the REST list filter sees it', () => {
     expect(running[0]!.pendingDecisions).toEqual([]);
   });
 
-  it('closes it when the auto-deny lands as an event, with no change in the store to do it', async () => {
+  it('closes it when the auto-deny lands as an event: the same verdict, with the resolution in the log and on disk', async () => {
     const runId = parkACard();
 
     nowMs += AUTO_DENY_MS + 1_000;
