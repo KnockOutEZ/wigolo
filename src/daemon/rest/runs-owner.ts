@@ -18,8 +18,9 @@
  */
 import { request as httpRequest, type IncomingMessage, type ServerResponse, type ClientRequest, type OutgoingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { readHandle, getMyInstanceId } from '../../studio/handle.js';
+import { readHandle, getMyInstanceId, studioHandlePath, type SessionHandle } from '../../studio/handle.js';
 import { createLogger } from '../../logger.js';
 import { errorEnvelope, type HttpError } from './errors.js';
 import { isLoopbackBind } from './auth.js';
@@ -84,6 +85,64 @@ export type RunsOwner =
   | { kind: 'local' }
   | { kind: 'proxy'; endpoint: string; token: string };
 
+interface HandleCacheEntry {
+  path: string;
+  ino: bigint;
+  mtimeNs: bigint;
+  size: bigint;
+  handle: SessionHandle | null;
+}
+
+let handleCache: HandleCacheEntry | null = null;
+
+/** Test seam — the cache is process-wide, and a row that writes a handle must not inherit another's. */
+export function _resetRunsOwnerHandleCache(): void {
+  handleCache = null;
+}
+
+/**
+ * The handle, re-parsed only when the file behind it changed.
+ *
+ * Ownership is resolved on EVERY `/v1/runs*` request, including each SSE tail's preamble, and the
+ * read behind it is synchronous — it blocks the daemon's whole event loop, every other request
+ * included. The handle changes at most once per studio launch, so the read was re-deriving a
+ * constant per request.
+ *
+ * The guard is the file's identity, not a clock: `writeHandle` is temp-file + rename, so every
+ * republish is a NEW inode and no ttl can be short enough to matter. Nanosecond mtime and size ride
+ * along for the case a future writer edits in place. A stat is still one syscall, but it neither
+ * parses JSON nor allocates the token — and it is skipped entirely on the studio host, which binds
+ * its store and never asks (see `runs.ts`).
+ *
+ * Liveness is deliberately NOT cached: `processExists` and the endpoint checks below re-run every
+ * time, because a host can die without touching its handle and a cached `proxy` answer would send
+ * every subsequent request to a dead socket.
+ */
+function readHandleCached(dataDir?: string): SessionHandle | null {
+  const path = studioHandlePath(dataDir);
+  let stat: { ino: bigint; mtimeNs: bigint; size: bigint };
+  try {
+    stat = statSync(path, { bigint: true });
+  } catch {
+    // No handle file at all — the daemon-is-owner case, and the cheapest one. Nothing to remember.
+    handleCache = null;
+    return null;
+  }
+
+  const cached = handleCache;
+  if (cached
+    && cached.path === path
+    && cached.ino === stat.ino
+    && cached.mtimeNs === stat.mtimeNs
+    && cached.size === stat.size) {
+    return cached.handle;
+  }
+
+  const handle = readHandle(dataDir);
+  handleCache = { path, ino: stat.ino, mtimeNs: stat.mtimeNs, size: stat.size, handle };
+  return handle;
+}
+
 /**
  * The ownership rule, in one place.
  *
@@ -96,7 +155,7 @@ export type RunsOwner =
  * and the OS reuses its pid, so a pid check would make an unrelated process wrongly claim ownership.
  */
 export function resolveRunsOwner(dataDir?: string): RunsOwner {
-  const handle = readHandle(dataDir);
+  const handle = readHandleCached(dataDir);
   // Deliberately NOT `ensureStudioRunning`: `proxyToStudioHost` auto-launches the substrate because
   // a `studio_*` call is meaningless without a browser session, but a `GET /v1/runs` is not — law 2
   // says a run exists whether or not anyone is watching, so a read of the run log must never boot a

@@ -76,6 +76,17 @@ const DEFAULT_REPLAY_PAGE = 500;
  * `Last-Event-ID` against the durable log, which is the same door every reconnect already uses.
  */
 const DEFAULT_MAX_HELD_EVENTS = 2048;
+/**
+ * The same ceiling in the unit the heap actually grows in.
+ *
+ * A count alone bounds the wrong thing: an event's payload is capped at `MAX_EVENT_PAYLOAD_CHARS`
+ * (64k), so 2048 held events is a ~128 MB hold buffer PER TAIL and the count never notices. Events
+ * are small in practice, which is exactly why the count is the ceiling that normally trips — this
+ * one exists for the traffic where it does not. Overflow behaviour is identical whichever ceiling
+ * trips: the buffer is dropped and the stream ends, because half a buffer delivered is a hole in
+ * the middle of the stream.
+ */
+const DEFAULT_MAX_HELD_BYTES = 8 * 1024 * 1024;
 
 function replayPageSize(): number {
   const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
@@ -89,6 +100,12 @@ function maxHeldEvents(): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_HELD_EVENTS;
 }
 
+function maxHeldBytes(): number {
+  const raw = process.env.WIGOLO_STUDIO_SSE_MAX_HELD_BYTES;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_HELD_BYTES;
+}
+
 function maxSseConnections(): number {
   const raw = process.env.WIGOLO_STUDIO_SSE_MAX_CONNECTIONS;
   const parsed = raw === undefined ? NaN : Number(raw);
@@ -100,6 +117,38 @@ let openSseConnections = 0;
 /** Diagnostic seam — a non-zero count with no live clients is a leak. */
 export function openRunStreamCount(): number {
   return openSseConnections;
+}
+
+/**
+ * A held connection slot. Released exactly once, whoever gets there first: the stream's `cleanup`,
+ * an early return, or the outer handler's `finally` when something threw between them.
+ */
+export interface SseSlot {
+  release(): void;
+}
+
+/**
+ * The events route's ONLY meter, taken before the route does any work at all.
+ *
+ * It used to be taken deep inside the stream handler — after the ownership resolve (a synchronous
+ * handle read) and after `store.exists`, which on the studio host is a broker RPC holding a
+ * pending-map entry for up to the call timeout. Everything before the check was therefore metered by
+ * nothing but the socket limit, and the 404 for an id that does not exist returned BEFORE the check
+ * and so was metered by nothing at all: K requests for a nonexistent run bought K concurrent owner
+ * resolves and K broker round-trips for free. The slot is now the first thing the route touches, so
+ * the preamble is inside the bound rather than in front of it.
+ */
+function acquireSseSlot(): SseSlot | null {
+  if (openSseConnections >= maxSseConnections()) return null;
+  openSseConnections++;
+  let released = false;
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      openSseConnections--;
+    },
+  };
 }
 
 export type RunsRoute =
@@ -202,11 +251,42 @@ export async function handleRunsRequest(
     return;
   }
 
+  // The events route is the one surface that escapes the router's slot and deadline discipline, so
+  // its own cap has to be the FIRST thing it does — before the ownership resolve, before the store
+  // resolve, before any existence check. Held for the life of the request: a proxied tail resolves
+  // only when the stream dies, and a 404 releases on the way out.
+  const slot = route.kind === 'events' ? acquireSseSlot() : null;
+  if (route.kind === 'events' && !slot) {
+    opts.sendError(tooManyRequests());
+    return;
+  }
+  let slotHandedOff = false;
+  try {
+    await handleRunsRoute(req, res, opts, route, method, slot, () => { slotHandedOff = true; });
+  } finally {
+    if (!slotHandedOff) slot?.release();
+  }
+}
+
+async function handleRunsRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: RunsRequestOptions,
+  route: RunsRoute,
+  method: string,
+  slot: SseSlot | null,
+  handOffSlot: () => void,
+): Promise<void> {
   // Ownership BEFORE the store resolve (SD1 §6 / A-43-5). A standalone daemon running beside a live
   // studio host has a perfectly good DB handle of its own — that is exactly the trap. Opening it
   // first and only then asking who owns the run would make the answer look optional, and the whole
   // rule exists because two processes appending to one log fan their live tails out separately.
-  const owner = (opts.resolveOwner ?? resolveRunsOwner)();
+  //
+  // A BOUND store is the exception, and it is not a shortcut: a process is handed one only by the
+  // host that owns the store (the Electron gateway passes its broker-backed store — SD1 §6 /
+  // A-43-5), so the answer is `local` by construction and resolving it would be a synchronous handle
+  // read plus an interface enumeration per request to re-derive a constant.
+  const owner: RunsOwner = opts.store ? { kind: 'local' } : (opts.resolveOwner ?? resolveRunsOwner)();
   let createBody: unknown;
   if (owner.kind === 'proxy') {
     // The body has to be read HERE, before the hop, because a request stream can be consumed once
@@ -253,8 +333,13 @@ export async function handleRunsRequest(
       await handleGet(opts, store, route.id);
       return;
     }
-    await handleEvents(req, res, opts, store, route.id);
+    // Past here the stream owns the slot: it outlives this call, and `cleanup` is what gives it back.
+    handOffSlot();
+    await handleEvents(req, res, opts, store, route.id, slot);
   } catch (err) {
+    // Idempotent, and the one path where the stream may have taken the slot without reaching the
+    // `cleanup` that hands it back — a slot leaked here is permanent for the life of the process.
+    slot?.release();
     log.error('runs route failed', { route: route.kind, error: String(err) });
     opts.sendError(internalError());
   }
@@ -503,11 +588,13 @@ export function createOrderedEmitter(
   since: number,
   write: (event: RunEvent) => void,
   maxHeld: number = maxHeldEvents(),
+  maxBytes: number = maxHeldBytes(),
 ): OrderedEmitter {
   let last = since;
   let replaying = true;
   let overflow = false;
   const held: RunEvent[] = [];
+  let heldBytes = 0;
 
   const emit = (event: RunEvent): void => {
     if (event.seq <= last) return;
@@ -528,15 +615,21 @@ export function createOrderedEmitter(
       // drop it anyway. Not holding it is what keeps an append storm the replay is KEEPING UP with
       // from spending the ceiling on events nobody would ever have written.
       if (event.seq <= last) return;
-      if (held.length >= maxHeld) {
+      // Measured on the serialized envelope because that is what the frame carries and what the
+      // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
+      const bytes = Buffer.byteLength(JSON.stringify(event));
+      if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
         held.length = 0;
+        heldBytes = 0;
         overflow = true;
         return;
       }
       held.push(event);
+      heldBytes += bytes;
     },
     goLive() {
       replaying = false;
+      heldBytes = 0;
       const pending = held.splice(0);
       pending.sort((a, b) => a.seq - b.seq);
       for (const event of pending) emit(event);
@@ -552,9 +645,11 @@ async function handleEvents(
   opts: RunsRequestOptions,
   store: RunsStore,
   rawId: string,
+  slot: SseSlot | null,
 ): Promise<void> {
   const decoded = decodeRunId(rawId);
   if (decoded === null) {
+    slot?.release();
     opts.sendError(runNotFound());
     return;
   }
@@ -562,34 +657,33 @@ async function handleEvents(
   // of the read-aloud alphabet is that people type these by hand.
   const id = resolveRunId(decoded);
   if (id === undefined) {
+    slot?.release();
     opts.sendError(runNotFound());
     return;
   }
   // Existence only — `get` would project the run, reading the whole log, which is exactly what the
-  // paged replay below exists to avoid doing in one burst.
+  // paged replay below exists to avoid doing in one burst. It runs INSIDE the connection cap: on the
+  // studio host it is a broker round-trip, and a 404 that was reached without a slot let a caller
+  // buy K of those concurrently for the price of K sockets.
   if (!(await store.exists(id))) {
+    slot?.release();
     opts.sendError(runNotFound());
     return;
   }
 
   const resume = resolveSince(req.headers['last-event-id'], opts.url.searchParams.get('since'));
   if (!resume.ok) {
+    slot?.release();
     opts.sendError(invalidInput(resume.detail));
-    return;
-  }
-
-  if (openSseConnections >= maxSseConnections()) {
-    opts.sendError(tooManyRequests());
     return;
   }
 
   // This route deliberately escapes the request-work discipline the tool routes run under: a
   // deadline would 504 a healthy stream, and a concurrency slot held for the life of a tail would
-  // starve the pool. The SSE connection cap above is what bounds it instead. Auth already ran.
+  // starve the pool. The SSE connection cap taken at the top of the route bounds it instead, and it
+  // is already held by the time we get here. Auth already ran.
   res.setTimeout(0);
   req.socket?.setTimeout(0);
-
-  openSseConnections++;
 
   let closed = false;
   let lastWrite = Date.now();
@@ -624,7 +718,7 @@ async function handleEvents(
     closed = true;
     unsubscribe();
     clearInterval(heartbeat);
-    openSseConnections--;
+    slot?.release();
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
