@@ -117,6 +117,16 @@ export interface ReadRunOptions {
   now?: () => Date;
 }
 
+/**
+ * What a projection can be handed instead of reading it. `cost` is the SQL-folded total for the
+ * types in `AGGREGATED_EVENT_TYPES`; supplying it and ALSO passing `cost.recorded` rows would double
+ * count, which is why the store's filtered read and this seed are mutually exclusive by
+ * construction. A caller with a full log (a replay, the app's view model) simply omits it.
+ */
+export interface ProjectRunOptions {
+  cost?: RunCost;
+}
+
 export interface ListRunsOptions extends ReadRunOptions {
   status?: RunStatus[];
   spaceId?: string;
@@ -171,12 +181,13 @@ export const STATUS_EVENT_TYPES: readonly string[] = [
 ];
 
 /**
- * Every type `projectRun`'s switch reads. `listRuns` projects a whole page from these alone: the
- * `default: break` arm is the proof that no other type can change a projected field, and `lastSeq` /
- * `updatedAt` — which DO move with any type — come from a separate bounded tail read.
+ * Every type `projectRun`'s switch reads AS A ROW. A read projects a whole run from these alone:
+ * the `default: break` arm is the proof that no other type can change a projected field, and
+ * `lastSeq` / `updatedAt` — which DO move with any type — come from a separate bounded tail read.
  *
- * Adding a `case` to `projectRun` means adding its type here. A source guard in the run-store tests
- * enforces that, because a case added without its type would silently drop from every list row.
+ * Adding a `case` to `projectRun` means adding its type here OR to `AGGREGATED_EVENT_TYPES`. A
+ * source guard in the run-store tests enforces that, because a case added to neither would silently
+ * drop from every projected row.
  */
 export const PROJECTION_EVENT_TYPES: readonly string[] = [
   'run.created',
@@ -184,9 +195,25 @@ export const PROJECTION_EVENT_TYPES: readonly string[] = [
   'tab.detached',
   'presentation.promoted',
   'presentation.demoted',
-  'cost.recorded',
   ...STATUS_EVENT_TYPES,
 ];
+
+/**
+ * The types a projection folds in SQL instead of reading row by row, and the reason the type filter
+ * above is a real bound rather than a shape.
+ *
+ * Every other projected type is a state transition a run emits a handful of times — tabs, driver,
+ * visibility, status. `cost.recorded` is a COUNTER: one per browser action by design, so its
+ * cardinality tracks how much work a run did and nothing caps it. Reading it per row put the whole
+ * log back inside the type filter (measured on the tip: 200k `mark.placed` → 0.3 ms to project;
+ * 200k `cost.recorded` → 244 ms, all of it JSON-parsing rows whose only use is to be added up).
+ *
+ * A sum is not a fold that needs the rows, so `readCostTotals` asks SQLite for the four totals and
+ * the projection receives them pre-aggregated. `projectRun` keeps its `cost.recorded` case for the
+ * callers that hand it a full log (a replay, the app's view model) — with the seed and the case
+ * mutually exclusive, because a type in this list is never in the filtered read.
+ */
+export const AGGREGATED_EVENT_TYPES: readonly string[] = ['cost.recorded'];
 
 const EVENT_TYPE_GRAMMAR = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 const ACTOR_KINDS = new Set<string>(['agent', 'human', 'daemon', 'system']);
@@ -262,16 +289,57 @@ function assertTask(task: unknown): string {
   return task;
 }
 
+/**
+ * A client badge is two strings and nothing else. Rebuilt rather than passed through because it is
+ * written into an append-only log and served back over REST: whatever else the caller hung on the
+ * object would be durable, and would be durable in a field a reader takes for a known shape.
+ */
+function clientOf(value: unknown): ClientInfo | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const c = value as { name?: unknown; version?: unknown };
+  const name = str(c.name);
+  const version = str(c.version);
+  return name && version ? { name, version } : undefined;
+}
+
 function assertDriver(driver: Driver | undefined): Driver {
   if (driver === undefined) return { kind: 'api' };
   if (!DRIVER_KINDS.has(driver.kind)) throw new Error(`unknown driver: ${String(driver.kind)}`);
-  return driver.client ? { kind: driver.kind, client: driver.client } : { kind: driver.kind };
+  const client = clientOf(driver.client);
+  return client ? { kind: driver.kind, client } : { kind: driver.kind };
 }
 
+/**
+ * Validated AND rebuilt, the way `assertDriver` is. Returning the caller's object let unknown keys
+ * ride into `actor` on every event — permanently, since the log is append-only, and visibly, since
+ * the envelope is what the SSE tail and the on-disk projection serialize.
+ */
 function assertActor(actor: Actor): Actor {
   if (!actor || !ACTOR_KINDS.has(actor.kind)) throw new Error(`unknown actor: ${String(actor?.kind)}`);
   if (actor.driver !== undefined && !DRIVER_KINDS.has(actor.driver)) throw new Error(`unknown actor driver: ${String(actor.driver)}`);
-  return actor;
+  const client = clientOf(actor.client);
+  return {
+    kind: actor.kind,
+    ...(actor.driver !== undefined ? { driver: actor.driver } : {}),
+    ...(client ? { client } : {}),
+  };
+}
+
+/**
+ * Law 8's address, checked before it is served. `anchor` was the one projected field cast wholesale
+ * out of a payload: every neighbouring field goes through `str()`, so a decision card could carry an
+ * arbitrary object — or an array, or a string — into a REST response typed `{ tabId; mark? }`.
+ *
+ * A junk `mark` costs the mark, not the anchor: the card still points at a tab, which is the part a
+ * human needs to answer it.
+ */
+function anchorOf(value: unknown): PendingDecision['anchor'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const a = value as { tabId?: unknown; mark?: unknown };
+  const tabId = str(a.tabId);
+  if (!tabId) return undefined;
+  const mark = typeof a.mark === 'number' && Number.isInteger(a.mark) && a.mark >= 0 ? a.mark : undefined;
+  return mark === undefined ? { tabId } : { tabId, mark };
 }
 
 /**
@@ -321,12 +389,45 @@ function rowToEvent(r: EventRow): RunEvent {
  * the tree is copied, archived or synced. The mode applies on create and is ignored on append.
  */
 function projectToDisk(runId: string, event: RunEvent, dataDir?: string): void {
+  const line = JSON.stringify(event) + '\n';
+  // Inside the try with everything else: `runDir` throws on an id that could not have been minted,
+  // and a disk projection is never allowed to unwind an event that has already committed.
+  let dir: string | undefined;
   try {
-    mkdirSync(runDir(runId, dataDir), { recursive: true, mode: 0o700 });
-    appendFileSync(runEventsFile(runId, dataDir), JSON.stringify(event) + '\n', { mode: 0o600 });
+    dir = runDir(runId, dataDir);
+    ensureRunDir(dir);
+    try {
+      appendFileSync(runEventsFile(runId, dataDir), line, { mode: 0o600 });
+    } catch {
+      // The memo is an optimisation, never a claim: the tree can be moved, cleaned or unmounted
+      // between two appends. Any write failure retires it and re-creates the directory once, so the
+      // observable behaviour is the unmemoised one — a deleted run directory is back on the NEXT
+      // append, not the one after it.
+      ensuredRunDirs.delete(dir);
+      ensureRunDir(dir);
+      appendFileSync(runEventsFile(runId, dataDir), line, { mode: 0o600 });
+    }
   } catch (err) {
+    if (dir !== undefined) ensuredRunDirs.delete(dir);
     log.warn('run event disk projection failed', { runId, seq: event.seq, error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/**
+ * One `mkdirSync` per run directory per process instead of one per append. `recursive: true` makes
+ * the repeat call a no-op semantically, but not for free — it is a synchronous stat-and-mkdir walk
+ * of every path segment on the hot append path, paid on an event whose directory this process
+ * created microseconds ago.
+ */
+const ensuredRunDirs = new Set<string>();
+/** A process that touches this many runs has nothing to gain from remembering the earlier ones. */
+const MAX_ENSURED_RUN_DIRS = 1024;
+
+function ensureRunDir(dir: string): void {
+  if (ensuredRunDirs.has(dir)) return;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (ensuredRunDirs.size >= MAX_ENSURED_RUN_DIRS) ensuredRunDirs.clear();
+  ensuredRunDirs.add(dir);
 }
 
 /** The single append transaction: read last_seq, insert at last_seq + 1, refresh the cache columns. */
@@ -467,6 +568,40 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
 }
 
 /**
+ * The four cost totals per run, folded by SQLite. Bounded in the only way that matters to a caller:
+ * it returns at most one row per cost KIND per run — four — no matter how many counter events a run
+ * recorded, and no payload is parsed in this process to get them.
+ *
+ * The arithmetic is deliberately `projectRun`'s, restated in SQL: a non-numeric `amount` contributes
+ * zero rather than coercing (SQLite would read `"3"` and `true` as 3 and 1; `num()` reads both as
+ * 0), and an unrecognised `kind` lands in no bucket. The two folds are pinned equal by a test that
+ * replays the same log both ways.
+ */
+function readCostTotals(db: Database.Database, runIds: readonly string[]): Map<string, RunCost> {
+  const totals = new Map<string, RunCost>();
+  if (runIds.length === 0) return totals;
+  const rows = db
+    .prepare(
+      `SELECT run_id, json_extract(payload, '$.kind') AS kind,
+              SUM(CASE WHEN json_type(payload, '$.amount') IN ('integer', 'real') THEN json_extract(payload, '$.amount') ELSE 0 END) AS total
+         FROM studio_run_events
+        WHERE run_id IN (${placeholders(runIds)}) AND type = 'cost.recorded'
+        GROUP BY run_id, kind`,
+    )
+    .all(...runIds) as { run_id: string; kind: unknown; total: number | null }[];
+  for (const r of rows) {
+    const cost = totals.get(r.run_id) ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 };
+    const amount = num(r.total);
+    if (r.kind === 'browser_action') cost.browserActions += amount;
+    else if (r.kind === 'tokens_in') cost.tokensIn += amount;
+    else if (r.kind === 'tokens_out') cost.tokensOut += amount;
+    else if (r.kind === 'spend_usd') cost.spendUsd += amount;
+    totals.set(r.run_id, cost);
+  }
+  return totals;
+}
+
+/**
  * `lastSeq`/`updatedAt` move with EVERY type, including the ones a projection ignores, so they
  * cannot come from the type-filtered read. They come from the log rather than the cached columns,
  * because a list row is a projection of the log and nothing else (law 1).
@@ -485,6 +620,28 @@ function readEventTails(db: Database.Database, runIds: readonly string[]): Map<s
     if (row) tails.set(id, { seq: row.seq, ts: row.ts });
   }
   return tails;
+}
+
+/**
+ * The ONE read path every projection goes through — a page of them or a single run. `getRun` used to
+ * have its own, and its own was the unbounded one: `SELECT * FROM studio_run_events WHERE run_id = ?`
+ * with no type filter and no limit, every row JSON-parsed, on the event loop. Measured at
+ * 36 ms / 157 ms / 682 ms of blocked loop per `GET /v1/runs/{id}` at 25k / 100k / 400k events, on a
+ * route whose response is four fields and a handful of tabs.
+ *
+ * Sharing the path is also what keeps the two agreeing: a list row and an item read cannot drift
+ * when neither owns a query.
+ */
+function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date): Run[] {
+  const ids = rows.map((r) => r.id);
+  const byRun = readProjectionEvents(db, ids);
+  const tails = readEventTails(db, ids);
+  const costs = readCostTotals(db, ids);
+  return rows.map((r) => {
+    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now, { cost: costs.get(r.id) });
+    const tail = tails.get(r.id);
+    return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
+  });
 }
 
 function readEvents(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
@@ -568,7 +725,7 @@ export function getRun(db: Database.Database, runId: string, opts: ReadRunOption
   if (id === undefined) return undefined;
   const row = db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as RunRow | undefined;
   if (!row) return undefined;
-  return projectRun(toFacts(row), readEvents(db, id), opts.now?.() ?? new Date());
+  return projectRows(db, [row], opts.now?.() ?? new Date())[0];
 }
 
 /**
@@ -614,16 +771,8 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   const sql = `SELECT id, task, space_id, created_at FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
   const rows = db.prepare(sql).all(...params, limit + 1) as RunRow[];
   const page = rows.slice(0, limit);
-  const ids = page.map((r) => r.id);
-  // Three bounded queries for the page, not one unbounded full-log read per row.
-  const byRun = readProjectionEvents(db, ids);
-  const tails = readEventTails(db, ids);
-  const now = opts.now?.() ?? new Date();
-  const runs = page.map((r) => {
-    const projected = projectRun(toFacts(r), byRun.get(r.id) ?? [], now);
-    const tail = tails.get(r.id);
-    return tail ? { ...projected, lastSeq: tail.seq, updatedAt: tail.ts } : projected;
-  });
+  // Bounded queries for the page, not one unbounded full-log read per row.
+  const runs = projectRows(db, page, opts.now?.() ?? new Date());
   const last = page[page.length - 1];
   return rows.length > limit && last
     ? { runs, nextCursor: encodeCursor(last.created_at, last.id) }
@@ -678,19 +827,29 @@ function str(value: unknown): string | undefined {
  * Unknown types are ignored and preserved — a consumer that does not know `mark.placed` must not
  * drop it or refuse the run.
  */
-export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEvent[], now: Date = new Date()): Run {
+export function projectRun(
+  facts: StoredRunFacts,
+  events: readonly ProjectableEvent[],
+  now: Date = new Date(),
+  opts: ProjectRunOptions = {},
+): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = 'hidden';
   const tabIds: string[] = [];
   const pending = new Map<string, PendingDecision>();
-  const cost: RunCost = { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 };
+  const cost: RunCost = { ...(opts.cost ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 }) };
 
   for (const event of events) {
     const p = event.payload;
     switch (event.type) {
       case 'run.created': {
         const d = p.driver as Driver | undefined;
-        if (d && DRIVER_KINDS.has(d.kind)) driver = d.client ? { kind: d.kind, client: d.client } : { kind: d.kind };
+        if (d && DRIVER_KINDS.has(d.kind)) {
+          // Rebuilt from the payload rather than cast out of it, for the reason `anchorOf` exists:
+          // this is a projected field on its way to a REST response.
+          const client = clientOf(d.client);
+          driver = client ? { kind: d.kind, client } : { kind: d.kind };
+        }
         break;
       }
       // run.completed / run.failed / run.cancelled / run.paused / run.resumed move only the status,
@@ -716,11 +875,12 @@ export function projectRun(facts: StoredRunFacts, events: readonly ProjectableEv
         // the run at needs_you. Skipping it here rather than filtering afterwards keeps a LATER
         // re-request of the same decisionId able to overwrite it.
         if (hasAutoDenied(requestedAt, now)) break;
+        const anchor = anchorOf(p.anchor);
         pending.set(decisionId, {
           decisionId,
           kind: str(p.kind) ?? 'approval',
           prompt: str(p.prompt) ?? '',
-          ...(p.anchor ? { anchor: p.anchor as PendingDecision['anchor'] } : {}),
+          ...(anchor ? { anchor } : {}),
           requestedAt,
           autoDenyAt: autoDenyAtOf(requestedAt),
         });
