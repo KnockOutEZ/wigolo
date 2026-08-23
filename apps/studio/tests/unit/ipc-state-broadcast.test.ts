@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // `registerIpc` registers handlers on the real `ipcMain`, which exists only inside a live main
 // process. Faking it is what lets the WIRING be exercised here rather than only read as text.
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn() } }));
 
+import { ipcMain } from 'electron';
 import { registerIpc, stateBroadcaster } from '../../src/main/ipc-host';
 import { RunViewModel } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
@@ -282,5 +283,120 @@ describe('registerIpc', () => {
     universe[2]!.active = true;
     listeners[0]!();
     expect(focused()).toBeNull();
+  });
+});
+
+/**
+ * Two lines in `registerIpc` were registered and never executed by anything: the `tabClose` handler's
+ * `runs.detachTab(id, 'closed')`, and the `runs.onChange(broadcast)` subscription. The electron mock
+ * above records handlers, and until now nothing pulled one back out and called it — so deleting
+ * either line left the whole suite green, while both lines' own comments name the regression that
+ * put them there. A comment is not a guard.
+ *
+ * These arms execute them. Both are asserted through an observable the deletion actually changes:
+ * the append that reaches the store, and the state that reaches the window.
+ */
+describe('registerIpc — the seams that only run in the live app', () => {
+  /**
+   * The handler as `ipcMain` holds it. Typed locally rather than through electron's `IpcMain`,
+   * because the only part of the invoke event these handlers touch is nothing at all.
+   */
+  type InvokeHandler = (event: unknown, ...args: unknown[]) => unknown;
+
+  const handlerFor = (channel: string): InvokeHandler => {
+    const call = vi.mocked(ipcMain.handle).mock.calls.find(([ch]) => ch === channel);
+    if (!call) throw new Error(`nothing handles ${channel}`);
+    return call[1] as unknown as InvokeHandler;
+  };
+
+  const tabUniverse = () => [
+    { id: 'agent-tab', url: 'https://example.com/', title: 'Example', active: true },
+    { id: 'human-inbox', url: 'https://mail.example/', title: 'Inbox', active: false },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(ipcMain.handle).mockClear();
+  });
+
+  /**
+   * Law 4's release. `removeTab` was wired to the human path only, so an agent tab the human closed
+   * stayed attached to its run forever — the run went on owning a tab that no longer existed, and no
+   * other run could ever be given that id. The fix is this one `detachTab`, and until now no test
+   * invoked the handler that carries it.
+   */
+  it('records the release when the human closes an agent tab', async () => {
+    const closed: string[] = [];
+    const tabs = { onChange: () => {}, listTabs: tabUniverse, closeTab: (id: string) => { closed.push(id); } };
+    const store = new FakeRunStore();
+    const runs = new RunViewModel(store);
+    const run = await runs.createRun({ task: 'check the order' });
+    await runs.attachTab(run.id, 'agent-tab');
+
+    const { win } = liveWindow();
+    registerIpc(
+      win as unknown as Parameters<typeof registerIpc>[0],
+      tabs as unknown as Parameters<typeof registerIpc>[1],
+      runs,
+    );
+    handlerFor(IPC.tabClose)({}, 'agent-tab');
+    await vi.waitFor(() => expect(runs.ownerOf('agent-tab')).toBeUndefined());
+
+    expect(closed, 'the tab itself was never closed').toEqual(['agent-tab']);
+    expect(store.appends.at(-1), 'the release was never written to the log').toEqual({
+      runId: run.id,
+      type: 'tab.detached',
+      payload: { tabId: 'agent-tab', reason: 'closed' },
+    });
+  });
+
+  /**
+   * The control. A `detachTab` on every close would be just as green above and would be wrong: a tab
+   * nobody owns is the human's, and closing it is not a run fact at all.
+   */
+  it('writes nothing to any log when the human closes their own tab', async () => {
+    const tabs = { onChange: () => {}, listTabs: tabUniverse, closeTab: () => {} };
+    const store = new FakeRunStore();
+    const runs = new RunViewModel(store);
+    const run = await runs.createRun({ task: 'check the order' });
+    await runs.attachTab(run.id, 'agent-tab');
+    store.appends.length = 0;
+
+    const { win } = liveWindow();
+    registerIpc(
+      win as unknown as Parameters<typeof registerIpc>[0],
+      tabs as unknown as Parameters<typeof registerIpc>[1],
+      runs,
+    );
+    handlerFor(IPC.tabClose)({}, 'human-inbox');
+    await vi.waitFor(() => expect(store.appends).toEqual([]));
+
+    expect(runs.ownerOf('agent-tab'), 'closing a user tab released somebody else’s').toBe(run.id);
+  });
+
+  /**
+   * The second subscription, and the reason it is not redundant with `tabs.onChange`: detaching is an
+   * async append, so a tab closing and its run releasing it are two separate moments, and only the
+   * second one carries the new ownership. Nothing touches the tab set here — `tabs.onChange` is never
+   * fired — so the push can only be the run subscription's.
+   */
+  it('pushes state when a run event moves ownership, with the tab set untouched', async () => {
+    const tabs = { onChange: () => {}, listTabs: tabUniverse, closeTab: () => {} };
+    const runs = new RunViewModel(new FakeRunStore());
+    const run = await runs.createRun({ task: 'check the order' });
+
+    const { win, send } = liveWindow();
+    registerIpc(
+      win as unknown as Parameters<typeof registerIpc>[0],
+      tabs as unknown as Parameters<typeof registerIpc>[1],
+      runs,
+    );
+    send.mockClear();
+
+    await runs.attachTab(run.id, 'agent-tab');
+    await vi.waitFor(() => expect(send, 'a run event moved ownership and the chrome was never told').toHaveBeenCalled());
+
+    const [, pushed] = send.mock.calls.at(-1) as [string, StudioState];
+    expect(pushed.tabs.find((t) => t.id === 'agent-tab')?.runId).toBe(run.id);
+    expect(pushed.focusedRunId, 'the chrome was pushed a state that still had no owner for the focused tab').toBe(run.id);
   });
 });
