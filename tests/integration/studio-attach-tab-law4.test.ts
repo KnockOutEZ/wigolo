@@ -13,10 +13,35 @@ import {
   listRuns,
   type CreateRunInput,
   type ListRunsOptions,
+  type Run,
   type RunEvent,
   type RunEventInput,
 } from '../../src/studio/run-store.js';
-import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../apps/studio/src/main/run-view-model.js';
+
+/**
+ * The app's main-process module, loaded through a COMPUTED specifier.
+ *
+ * `apps/studio` is a Bundler-resolution project: its relative imports carry no extension and its
+ * `wigolo/studio` specifier resolves through the BUILT package. Naming it in a static import here
+ * would pull it into the root type-check program, which resolves as nodenext — and the type-gate
+ * CI job deliberately does not build, so `wigolo/studio` would not resolve there and this arm would
+ * fail a gate it has nothing to do with. The runtime import is the same module the app loads; what
+ * the computed specifier costs is the static type, which the two shapes below restore at the seam
+ * this arm actually drives.
+ */
+interface RunViewModelLike {
+  createRun(input: CreateRunInput): Promise<Run>;
+  attachTab(runId: string, tabId: string, url?: string): Promise<void>;
+  ownerOf(tabId: string): string | undefined;
+  tabsOf(runId: string): string[];
+}
+interface TabOwnedErrorLike extends Error { readonly tabId: string; readonly ownerRunId: string }
+const { RunViewModel, TabOwnedError } = (await import(
+  new URL('../../apps/studio/src/main/run-view-model.ts', import.meta.url).href
+)) as {
+  RunViewModel: new (store: unknown) => RunViewModelLike;
+  TabOwnedError: new (tabId: string, ownerRunId: string) => TabOwnedErrorLike;
+};
 
 /**
  * Law 4 — "a tab belongs to exactly one run" — where the only place it can actually be checked is:
@@ -63,7 +88,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
    * for one has not yet changed anything — and the store fans a committed envelope out to the live
    * tail BEFORE the call that caused it resolves.
    */
-  function bindStore(): RunStoreClient {
+  function bindStore() {
     const handlers: Array<(runId: string, event: RunEvent) => void> = [];
     const fan = (runId: string, event: RunEvent): void => { for (const h of handlers) h(runId, event); };
     return {
@@ -105,7 +130,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
     expect(winners, 'both attaches were allowed to commit').toHaveLength(1);
     expect(losers).toHaveLength(1);
     expect(losers[0]!.reason, 'the loser got something other than the designed refusal').toBeInstanceOf(TabOwnedError);
-    expect((losers[0]!.reason as TabOwnedError).ownerRunId).toBe(winners[0]);
+    expect((losers[0]!.reason as TabOwnedErrorLike).ownerRunId).toBe(winners[0]);
 
     // The claim that matters is about the LOG, not about this process's answer: a projection can be
     // corrected on the next replay, a committed envelope cannot.
