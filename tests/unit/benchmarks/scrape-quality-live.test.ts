@@ -15,9 +15,12 @@ import { validateCorpus, CORPUS_TARGETS, satisfiedByEmptyExtraction } from '../.
 import {
   mutate,
   validateDriftCorpus,
+  renderDriftVerdict,
   MUTATION_CLASSES,
+  DRIFT_TARGETS,
   type DriftManifest,
 } from '../../../benchmarks/scrape-quality/drift.js';
+import { buildDriftManifest, variantClassesFor } from '../../../benchmarks/scrape-quality/drift-build.js';
 import type {
   Assertion,
   AssertionContext,
@@ -620,19 +623,44 @@ describe('drift corpus gate', () => {
   const shippedDrift = (): DriftManifest =>
     JSON.parse(readFileSync(join(FIXTURES, 'recipes', 'manifest.json'), 'utf-8')) as DriftManifest;
 
-  it('reports the scaffold as unpopulated, with the shortfall in numbers', () => {
+  it('reports the SHIPPED corpus as populated, and §8-B as a real number (K23)', () => {
+    // K23. The scaffold shipped 0 cases, so §8-B's <=0.02 collapsed to "exactly zero" and the
+    // gate exited 1 — correct behaviour, and a gate nobody can read a measurement off. The
+    // corpus is now built by `drift-build.ts` from the frozen C0 fixtures, and the same
+    // threshold means "at most 1 of 60".
     const v = validateDriftCorpus(shippedDrift());
-    expect(v.ok).toBe(false);
-    expect(v.recipes.actual).toBe(0);
-    expect(v.cases.actual).toBe(0);
-    expect(v.cases.required).toBe(60);
+    expect(v.ok).toBe(true);
+    expect(v.recipes.actual).toBeGreaterThanOrEqual(15);
+    expect(v.cases.actual).toBeGreaterThanOrEqual(60);
+    expect(v.silentWrongExpressible).toBe(true);
+    expect(Math.floor(0.02 * v.cases.actual)).toBeGreaterThanOrEqual(1);
   });
 
-  it('states that the silent-wrong gate is NOT expressible on an empty corpus', () => {
-    // §8-B's <=0.02 collapses to "exactly zero" below ~50 cases. The spec requires that be
-    // flagged rather than absorbed, because a threshold finer than its corpus reads like a
-    // tolerance and means zero.
-    expect(validateDriftCorpus(shippedDrift()).silentWrongExpressible).toBe(false);
+  it('still fails LOUDLY on an empty corpus — the behaviour K23 had to keep, not replace', () => {
+    // The acceptance criterion that is easiest to lose while satisfying the other one. A
+    // populated corpus must not soften the empty case into a vacuous pass: a gate that cannot
+    // be computed has to say so in numbers, which is what the scaffold got right.
+    const v = validateDriftCorpus({ version: '1', note: 't', recipes: [] });
+    expect(v.ok).toBe(false);
+    expect(v.cases.actual).toBe(0);
+    expect(v.cases.required).toBe(60);
+    expect(v.silentWrongExpressible).toBe(false);
+    expect(v.caseResolution).toBe(Infinity);
+    expect(renderDriftVerdict(v)).toMatch(/no rate threshold is expressible at all/);
+  });
+
+  it('counts the must-REFUSE arm separately, because only it can catch over-firing', () => {
+    // Found while populating the corpus: 60 cases sounds like a resolution of 0.017, but the
+    // only cases that can detect OVER-FIRING are the refusals, and the §3.4 mutation classes
+    // produce few of them. Reporting the case count alone would overstate the instrument's
+    // sensitivity to the exact failure §8-B's binding gate exists for.
+    const v = validateDriftCorpus(shippedDrift());
+    expect(v.outcomes.refuse).toBeGreaterThan(0);
+    expect(v.outcomes.resolve + v.outcomes.refuse).toBe(v.cases.actual);
+    expect(v.refuseResolution).toBe(1 / v.outcomes.refuse);
+    // The whole point of reporting it: it is coarser than the case count implies.
+    expect(v.refuseResolution).toBeGreaterThan(v.caseResolution);
+    expect(renderDriftVerdict(v)).toMatch(/must-refuse/);
   });
 
   it('becomes expressible at 50 cases and reports what <=0.02 then means', () => {
@@ -691,5 +719,81 @@ describe('drift corpus gate', () => {
       }],
     };
     expect(validateDriftCorpus(m).underVariedRecipes[0]).toMatch(/thin: 1 variant/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K23 — the builder that populates the drift corpus
+// ---------------------------------------------------------------------------
+
+describe('drift corpus builder (K23)', () => {
+  const shippedDrift = (): DriftManifest =>
+    JSON.parse(readFileSync(join(FIXTURES, 'recipes', 'manifest.json'), 'utf-8')) as DriftManifest;
+
+  it('gives every recipe four DISTINCT mutation classes, always including sibling_reorder', () => {
+    // The validator rejects a repeat, so a rotation bug would redden the gate rather than
+    // quietly shrink the corpus — but it would redden it at build time, after the expensive
+    // extraction pass. Checking the rotation directly is where the failure is legible.
+    for (let i = 0; i < 20; i += 1) {
+      const classes = variantClassesFor(i);
+      expect(classes).toHaveLength(DRIFT_TARGETS.variantsPerRecipe);
+      expect(new Set(classes).size).toBe(DRIFT_TARGETS.variantsPerRecipe);
+      expect(classes).toContain('sibling_reorder');
+    }
+  });
+
+  it('covers all five §3.4 classes across the corpus — none silently untested', () => {
+    // Four variants per recipe out of five classes means every recipe omits one. That is only
+    // acceptable if the omission ROTATES; a fixed omission would leave one rung of the heal
+    // cascade ungraded while the corpus reported 60 healthy cases.
+    const seen = new Set(Array.from({ length: DRIFT_TARGETS.recipes }, (_, i) => variantClassesFor(i)).flat());
+    expect([...seen].sort()).toEqual([...MUTATION_CLASSES].sort());
+  });
+
+  it('reproduces the COMMITTED manifest byte for byte from the frozen fixtures', async () => {
+    // The claim the committed corpus rests on: every value in it was measured by running the
+    // real extractor over the real bytes, and none of it was hand-edited afterwards. A JSON
+    // file cannot show that about itself. Rebuilding it and comparing is the only check that
+    // can — and it also pins the builder as deterministic, which a corpus that gets rebuilt
+    // when fixtures change has to be.
+    const built = buildDriftManifest();
+    const committed = shippedDrift();
+    expect(built.recipes).toEqual(committed.recipes);
+    expect(built.note).toBe(committed.note);
+  }, 300_000);
+
+  it('records the measured verdict per case, not one assigned per mutation class', () => {
+    // The distinction K23 turns on. If the builder assigned verdicts by class, every
+    // `sibling_reorder` case would carry the same verdict; on this corpus they do not, because
+    // the mutation only drifts a recipe whose region it actually touches.
+    const reorder = shippedDrift().recipes
+      .flatMap((r) => r.variants)
+      .filter((v) => v.mutation === 'sibling_reorder');
+    const verdicts = new Set(reorder.map((v) => (v.expected.outcome === 'resolve' ? `resolve:${v.expected.atTier}` : 'refuse')));
+    expect(verdicts.size).toBeGreaterThan(1);
+    expect(reorder.every((v) => (v.provenance ?? '').startsWith('measured:'))).toBe(true);
+  });
+
+  it('pins the row count exactly, so a replay landing on a different region cannot hide', () => {
+    // A range would absorb a replay that resolved to a neighbouring table of similar size,
+    // which is over-firing wearing a plausible number.
+    const counts = shippedDrift().recipes
+      .flatMap((r) => r.variants)
+      .flatMap((v) => v.assertions)
+      .filter((a) => a.kind === 'row_count');
+    expect(counts.length).toBeGreaterThan(0);
+    for (const a of counts) {
+      if (a.kind !== 'row_count') continue;
+      expect(a.min).toBe(a.max);
+      expect(a.min).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('carries no assertion on a must-REFUSE case — the refusal IS the claim', () => {
+    // A refuse case with row assertions would be scored twice in opposite directions: the
+    // replay is required not to produce rows, and then graded on the rows it did not produce.
+    const refusals = shippedDrift().recipes.flatMap((r) => r.variants).filter((v) => v.expected.outcome === 'refuse');
+    expect(refusals.length).toBeGreaterThan(0);
+    for (const v of refusals) expect(v.assertions).toEqual([]);
   });
 });
