@@ -307,6 +307,12 @@ interface RunV1SearchOptions {
   _isFallback?: boolean;
 }
 
+function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): EngineEntry[] {
+  const lowered = allowlist.map((n) => n.toLowerCase());
+  const filtered = entries.filter((e) => lowered.includes(e.engine.name.toLowerCase()));
+  return filtered.length > 0 ? filtered : entries;
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
   opts: RunV1SearchOptions = {},
@@ -376,11 +382,7 @@ export async function runV1Search(
   // Case-insensitive match against engine name. Unknown names are silently
   // ignored — if no entries match, fall back to the full roster.
   if (input.engineFilter && input.engineFilter.length > 0) {
-    const allowlist = input.engineFilter.map((n) => n.toLowerCase());
-    const filtered = entries.filter((e) => allowlist.includes(e.engine.name.toLowerCase()));
-    if (filtered.length > 0) {
-      entries = filtered;
-    }
+    entries = applyEngineAllowlist(entries, input.engineFilter);
   }
 
   const options: SearchEngineOptions = {
@@ -638,10 +640,13 @@ export async function runV1Search(
   const skippedPrimary = outcomes
     .filter((o) => o.skipped)
     .map((o) => o.engine);
-  const recoveryEntries = [
+  let recoveryEntries = [
     ...probeEntries,
     ...entries.filter((e) => skippedPrimary.includes(e.engine.name)),
   ];
+  if (input.engineFilter && input.engineFilter.length > 0) {
+    recoveryEntries = applyEngineAllowlist(recoveryEntries, input.engineFilter);
+  }
   if (
     outcomes.length > 0 &&
     primaryHealthy < poolHealthFloor(outcomes.length) &&
@@ -699,7 +704,10 @@ export async function runV1Search(
     vertical !== 'images' &&
     !opts._isFallback
   ) {
-    const generalEntries = getGeneralEngines();
+    let generalEntries = getGeneralEngines();
+    if (input.engineFilter && input.engineFilter.length > 0) {
+      generalEntries = applyEngineAllowlist(generalEntries, input.engineFilter);
+    }
     if (generalEntries.length > 0) {
       log.info('vertical starved below floor, backfilling from general', {
         from: vertical,

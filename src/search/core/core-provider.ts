@@ -203,6 +203,7 @@ export class CoreSearchProvider implements SearchProvider {
       exact_match: input.exact_match,
       search_depth: depth,
       reranker: getConfig().reranker,
+      search_engines: input.search_engines,
     });
 
     let items: SearchResultItem[] = [];
