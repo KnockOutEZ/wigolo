@@ -269,6 +269,23 @@ describe('G-S11a on the FROZEN corpus — the measured verdict, as an assertion 
   });
 });
 
+describe('the corpus-size refusal — a shrunken corpus is a weaker gate wearing the same output', () => {
+  it('FIRES below the L-DET minimum, counting COMPLETE pages rather than captured ones', () => {
+    // The distinction is the whole point: 30 pages of which 8 lost a render is not a 30-page corpus,
+    // and a count taken before the completeness filter would report one.
+    const nearlyEnough = pagesOf(MIN_CORPUS_PAGES, fullBleed, 'landing');
+    const oneBroken = nearlyEnough.map((p, i) =>
+      i === 0 ? { ...p, renders: p.renders.filter((r) => r.kind !== 'dpr2') } : p,
+    );
+    expect(oneBroken).toHaveLength(MIN_CORPUS_PAGES);
+    expect(completePages(corpusOf(oneBroken)).length).toBeLessThan(MIN_CORPUS_PAGES);
+  });
+
+  it('MUST NOT FIRE at exactly the minimum — the spec says ">= 30", and an off-by-one here silently raises the bar', () => {
+    expect(completePages(corpusOf(pagesOf(MIN_CORPUS_PAGES, fullBleed, 'landing'))).length).toBe(MIN_CORPUS_PAGES);
+  });
+});
+
 describe('the real-corpus scorer is the SAME arithmetic as the synthetic one', () => {
   it('reproduces `scoreSeparation` exactly when handed the same renders — the probes and the gate cannot be measuring different metrics', () => {
     // Two copies of one scoring rule drift, and the drift is invisible: both keep printing numbers.
