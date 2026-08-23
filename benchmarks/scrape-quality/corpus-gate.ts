@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '../../src/logger.js';
 import { REPLAY_ASSERTION_KINDS } from './types.js';
-import type { Category, ScrapeManifest } from './types.js';
+import type { Assertion, Category, ScrapeManifest } from './types.js';
 
 const log = createLogger('extract');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +73,125 @@ export const CORPUS_TARGETS = {
 
 const CATEGORIES: Category[] = ['markdown_fidelity', 'table_preservation', 'boilerplate_noise', 'structured_extract'];
 
+/**
+ * K22 — §8-A's go/no-go thresholds, held as RATES and printed as COUNTS derived from the
+ * corpus that is actually on disk.
+ *
+ * The spec states each gate twice: as an effect size ("≈ +0.15") and as the count that effect
+ * size came to at an ASSUMED denominator ("≥ 5 more `table_preservation` assertions … at
+ * ~30"). Only the first survives a corpus edit. The built corpus has 19 `table_preservation`
+ * assertions, so the carried-forward "+5" is a 26% swing rather than the modest one the prose
+ * implies — and on the 5-assertion corpus that preceded it, "+5" was arithmetically
+ * unreachable, so the gate had never once been meetable as written.
+ *
+ * The fix is not a better number in prose. It is to stop quoting a count that was computed
+ * against a denominator nobody re-measured: the RATE is the intent and lives here, the COUNT is
+ * derived from the manifest at gate time and printed with its arithmetic. `specCount` and
+ * `specAssumedN` are kept only so the restatement is auditable — they are never gated on.
+ */
+export const GO_NO_GO_A = [
+  {
+    gate: 'Overall',
+    bucket: 'overall',
+    rate: 0.05,
+    specCount: 6,
+    specAssumedN: 120,
+    verdictBelow: 'NO-GO — a11y-first does not ship at all',
+  },
+  {
+    gate: 'Table lane (sub-gate)',
+    bucket: 'table_preservation',
+    rate: 0.15,
+    specCount: 5,
+    specAssumedN: 30,
+    verdictBelow: 'ships without the table lane',
+  },
+] as const;
+
+export interface DerivedGate {
+  gate: string;
+  bucket: string;
+  /** The spec's effect size. This, not the count, is the thing that carries forward. */
+  intendedRate: number;
+  /** Assertions measured in this bucket, right now, on this manifest. */
+  n: number;
+  /** Smallest count whose rate reaches `intendedRate` — the gate, restated. */
+  count: number;
+  /** What that count actually expresses. Never below `intendedRate`; often above it. */
+  effectiveRate: number;
+  /**
+   * Whether the rate is expressible at all: a bucket of N can express nothing finer than 1/N,
+   * so a rate below that resolution rounds up to a count that overshoots it badly. This is the
+   * check that would have caught the 5-assertion corpus, where +0.15 could only be spelled as
+   * +1 = +0.20.
+   */
+  expressible: boolean;
+  /** The count the spec's prose carries, and the denominator it was computed against. */
+  specCount: number;
+  specAssumedN: number;
+  /** What the spec's carried-forward count would MEAN against the measured denominator. */
+  specCountRateHere: number;
+  restated: boolean;
+  verdictBelow: string;
+}
+
+export function deriveGoNoGoA(byBucket: Map<string, number>): DerivedGate[] {
+  return GO_NO_GO_A.map((g) => {
+    const n = byBucket.get(g.bucket) ?? 0;
+    const count = n === 0 ? 0 : Math.ceil(g.rate * n);
+    return {
+      gate: g.gate,
+      bucket: g.bucket,
+      intendedRate: g.rate,
+      n,
+      count,
+      effectiveRate: n === 0 ? Infinity : count / n,
+      // n >= 1/rate is the same statement as "resolution is at least as fine as the rate".
+      expressible: n > 0 && n >= 1 / g.rate,
+      specCount: g.specCount,
+      specAssumedN: g.specAssumedN,
+      specCountRateHere: n === 0 ? Infinity : g.specCount / n,
+      restated: count !== g.specCount,
+      verdictBelow: g.verdictBelow,
+    };
+  });
+}
+
+/**
+ * K24 — how much of the corpus is satisfied by an EMPTY extraction.
+ *
+ * K24 measured the ceiling on one kind: 30 of 101 assertions survived a `strip_body` probe,
+ * every one an `absent` claim satisfied by an emptied document. `absent` now carries a source
+ * precondition, but the shape generalises — a lower bound of zero, or an upper-bounded count
+ * with no floor, is satisfied by an empty document too. So the balance is REPORTED, per
+ * assertion kind, and a fixture author can see which way the corpus is drifting.
+ *
+ * Deliberately no threshold. Any ratio picked here would be a number nobody measured, which is
+ * the failure this file exists to prevent. The count is guidance for whoever adds the next
+ * fixture, not a gate.
+ */
+export function satisfiedByEmptyExtraction(a: Assertion): boolean {
+  switch (a.kind) {
+    // Needs the value to appear in the output — an empty document cannot satisfy it.
+    case 'contains':
+    case 'table_cell':
+      return false;
+    // Nothing to leak out of an empty document.
+    case 'absent':
+    case 'visible_only':
+      return true;
+    // A floor of zero cannot be violated by producing nothing.
+    case 'count':
+      return a.min <= 0;
+    case 'structured':
+      return a.min <= 0;
+    // Replay kinds are never in the C0 manifest (enforced above) and are scored against a
+    // replay outcome rather than an extraction, so the question does not arise.
+    default:
+      return false;
+  }
+}
+
 export interface BucketResolution {
   bucket: string;
   n: number;
@@ -87,6 +206,10 @@ export interface CorpusVerdict {
   pageClasses: { pageClass: string; actual: number; required: number; ok: boolean }[];
   /** N and 1/N for the overall corpus and each of the four categories. */
   resolution: BucketResolution[];
+  /** §8-A restated against the measured denominators (K22). */
+  goNoGoA: DerivedGate[];
+  /** K24 — assertions an empty extraction satisfies, per kind and in total. */
+  emptySatisfiable: { total: number; assertions: number; byKind: Record<string, number> };
   /** Structural violations that are errors regardless of corpus size. */
   violations: string[];
 }
@@ -149,12 +272,35 @@ export function validateCorpus(manifest: ScrapeManifest, htmlDir?: string): Corp
   const fx = { actual: fixtures.length, required: CORPUS_TARGETS.fixtures, ok: fixtures.length >= CORPUS_TARGETS.fixtures };
   const as = { actual: allAssertions.length, required: CORPUS_TARGETS.assertions, ok: allAssertions.length >= CORPUS_TARGETS.assertions };
 
+  const byBucket = new Map<string, number>([['overall', allAssertions.length]]);
+  for (const c of CATEGORIES) byBucket.set(c, byCategory.get(c) ?? 0);
+  const goNoGoA = deriveGoNoGoA(byBucket);
+
+  // An inexpressible go/no-go is a corpus defect, not a spec defect: the corpus is too small to
+  // carry the verdict someone will read off it. Failing here is the only place it can be caught
+  // BEFORE the number gets quoted in a review, which is how all three previous ones got through.
+  for (const g of goNoGoA) {
+    if (!g.expressible) {
+      violations.push(`§8-A "${g.gate}" wants +${(g.intendedRate * 100).toFixed(0)}% of '${g.bucket}', but ${g.bucket} holds ${g.n} assertion(s): the finest step is 1/${g.n} and the rate is not expressible. Needs >= ${Math.ceil(1 / g.intendedRate)} assertions.`);
+    }
+  }
+
+  const byKind: Record<string, number> = {};
+  let emptySat = 0;
+  for (const a of allAssertions) {
+    if (!satisfiedByEmptyExtraction(a)) continue;
+    emptySat += 1;
+    byKind[a.kind] = (byKind[a.kind] ?? 0) + 1;
+  }
+
   return {
     ok: fx.ok && as.ok && pageClasses.every((p) => p.ok) && violations.length === 0,
     fixtures: fx,
     assertions: as,
     pageClasses,
     resolution,
+    goNoGoA,
+    emptySatisfiable: { total: emptySat, assertions: allAssertions.length, byKind },
     violations,
   };
 }
@@ -176,6 +322,36 @@ export function renderCorpusVerdict(v: CorpusVerdict): string {
     const note = r.n === 0 ? 'bucket is empty — no threshold is expressible' : `any gate below ${r.resolution.toFixed(4)} means zero`;
     lines.push(`| ${r.bucket} | ${r.n} | ${res} | ${note} |`);
   }
+
+  lines.push('', '## §8-A go/no-go, restated against the measured corpus (K22)', '');
+  lines.push('The spec states each gate as an effect size AND as the count that effect size came');
+  lines.push('to at an assumed denominator. Only the effect size survives a corpus edit, so the');
+  lines.push('count is re-derived here every run. Never quote the prose count.', '');
+  lines.push('| Gate | Bucket | Intended | N | Restated gate | Actually expresses | Verdict below |', '|---|---|---:|---:|---|---:|---|');
+  for (const g of v.goNoGoA) {
+    const eff = Number.isFinite(g.effectiveRate) ? `+${(g.effectiveRate * 100).toFixed(1)}%` : 'n/a';
+    lines.push(`| ${g.gate} | ${g.bucket} | +${(g.intendedRate * 100).toFixed(0)}% | ${g.n} | **+${g.count} assertions** | ${eff} | ${g.verdictBelow} |`);
+  }
+  lines.push('');
+  for (const g of v.goNoGoA) {
+    if (!g.restated) {
+      lines.push(`- \`${g.bucket}\`: the spec's "+${g.specCount} at ~${g.specAssumedN}" survives the measurement — ${g.n} assertions gives the same +${g.count}.`);
+      continue;
+    }
+    const was = Number.isFinite(g.specCountRateHere) ? `${(g.specCountRateHere * 100).toFixed(1)}%` : 'n/a';
+    lines.push(`- ⚠️ \`${g.bucket}\`: the spec carries **+${g.specCount}**, computed against an assumed **${g.specAssumedN}**. Measured N is **${g.n}**, where +${g.specCount} would mean **${was}** rather than the intended +${(g.intendedRate * 100).toFixed(0)}%. **Restated: +${g.count}.**`);
+  }
+
+  lines.push('', '## Assertions an empty extraction satisfies (K24)', '');
+  lines.push('An assertion satisfied by a document containing nothing is blind to total content');
+  lines.push('loss. Reported, not gated — any ratio chosen here would be a number nobody measured.');
+  lines.push('Steer new fixtures toward positive-content assertions when this share grows.', '');
+  const es = v.emptySatisfiable;
+  const share = es.assertions === 0 ? 'n/a' : `${((es.total / es.assertions) * 100).toFixed(1)}%`;
+  lines.push(`${es.total} of ${es.assertions} assertions (${share}).`, '');
+  lines.push('| Kind | Count |', '|---|---:|');
+  for (const [k, n] of Object.entries(es.byKind).sort((a, b) => b[1] - a[1])) lines.push(`| ${k} | ${n} |`);
+  if (Object.keys(es.byKind).length === 0) lines.push('| _none_ | 0 |');
 
   lines.push('', '## Structural violations', '');
   lines.push(v.violations.length ? v.violations.map((x) => `- ❌ ${x}`).join('\n') : '_none_');

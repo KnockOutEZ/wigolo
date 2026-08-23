@@ -59,6 +59,15 @@ export interface DriftVariant {
   expected: ExpectedVerdict;
   /** Scored with the replay assertion kinds (`row_columns` / `row_count` / `heal_at_least`). */
   assertions: Assertion[];
+  /**
+   * How this variant's expected verdict was arrived at, in one line, written by the builder.
+   *
+   * Present because the difference between "we measured this mutation on this page" and "we
+   * assumed this mutation class does this" is invisible in the data otherwise, and it is the
+   * whole difference between a corpus and a set of opinions. A reviewer reading the manifest
+   * can see, per case, which one it was.
+   */
+  provenance?: string;
 }
 
 export interface DriftRecipeCase {
@@ -158,6 +167,19 @@ export interface DriftVerdict {
   caseResolution: number;
   /** Whether <=0.02 is expressible at this corpus size, and what it collapses to if not. */
   silentWrongExpressible: boolean;
+  /**
+   * The two arms, counted separately.
+   *
+   * §8-B's exact-column rate is read off the RESOLVE arm and its silent-wrong rate off the
+   * whole corpus, but the only cases that can catch OVER-FIRING are the must-REFUSE ones — so
+   * the refuse arm has its own denominator and its own resolution, and a corpus of 60 cases
+   * with 2 refusals detects over-firing at a resolution of 0.5, not 0.017. Reported rather than
+   * gated: a floor picked here would be a number nobody measured, which is the failure this
+   * whole file exists to prevent. The number is what a corpus author steers by.
+   */
+  outcomes: { resolve: number; refuse: number };
+  /** 1/refuse — the finest verdict the over-firing arm can express. */
+  refuseResolution: number;
   underVariedRecipes: string[];
   violations: string[];
 }
@@ -195,12 +217,18 @@ export function validateDriftCorpus(manifest: DriftManifest): DriftVerdict {
   const rc = { actual: manifest.recipes.length, required: DRIFT_TARGETS.recipes, ok: manifest.recipes.length >= DRIFT_TARGETS.recipes };
   const cs = { actual: cases, required: DRIFT_TARGETS.cases, ok: cases >= DRIFT_TARGETS.cases };
 
+  const all = manifest.recipes.flatMap((r) => r.variants);
+  const refuse = all.filter((v) => v.expected.outcome === 'refuse').length;
+  const byOutcome = { resolve: all.length - refuse, refuse };
+
   return {
     ok: rc.ok && cs.ok && underVaried.length === 0 && violations.length === 0,
     recipes: rc,
     cases: cs,
     caseResolution,
     silentWrongExpressible,
+    outcomes: byOutcome,
+    refuseResolution: refuse === 0 ? Infinity : 1 / refuse,
     underVariedRecipes: underVaried,
     violations,
   };
@@ -223,6 +251,20 @@ export function renderDriftVerdict(v: DriftVerdict): string {
       ? `§8-B's silent-wrong gate (<=0.02) is expressible: it means "at most ${Math.floor(0.02 * v.cases.actual)} case(s)".`
       : `❌ §8-B's silent-wrong gate (<=0.02) is NOT expressible at ${v.cases.actual} case(s): it collapses to EXACTLY ZERO, a stricter gate than intended. Corpus must reach >=50 cases.`,
   );
+  lines.push('', '## The two arms, counted separately', '');
+  lines.push('§8-B reads its exact-column rate off the resolve arm, but only the must-REFUSE');
+  lines.push('cases can catch OVER-FIRING — the failure the binding gate exists for. That arm');
+  lines.push('has its own denominator, and it is usually the smaller one.', '');
+  lines.push('| Arm | Cases | Resolution |', '|---|---:|---:|');
+  lines.push(`| must-resolve | ${v.outcomes.resolve} | ${v.outcomes.resolve === 0 ? 'n/a (empty)' : (1 / v.outcomes.resolve).toFixed(4)} |`);
+  lines.push(`| must-refuse | ${v.outcomes.refuse} | ${Number.isFinite(v.refuseResolution) ? v.refuseResolution.toFixed(4) : 'n/a (empty)'} |`);
+  lines.push('');
+  lines.push(
+    v.outcomes.refuse === 0
+      ? '❌ no must-refuse case: over-firing is undetectable at any threshold.'
+      : `Over-firing is detected at a resolution of 1/${v.outcomes.refuse} = ${v.refuseResolution.toFixed(4)} — coarser than the ${v.caseResolution.toFixed(4)} the case count suggests. Quote this number, not the case count, when discussing the silent-wrong gate's sensitivity.`,
+  );
+
   lines.push('', '## Under-varied recipes', '');
   lines.push(v.underVariedRecipes.length ? v.underVariedRecipes.map((x) => `- ${x}`).join('\n') : '_none_');
   lines.push('', '## Violations', '');

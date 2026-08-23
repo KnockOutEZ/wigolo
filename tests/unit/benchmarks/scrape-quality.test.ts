@@ -50,10 +50,37 @@ describe('evaluateAssertion', () => {
     expect(evaluateAssertion(contains('nonexistent phrase'), 'some other text', EMPTY_STRUCTURED).passed).toBe(false);
   });
 
+  const cookieBanner: Assertion = { kind: 'absent', category: 'boilerplate_noise', value: 'Accept all cookies', why: 'test' };
+  const bannerHtml = '<body><div class="cc">Accept all cookies</div><p>Body</p></body>';
+
   it('flags boilerplate that leaked into the output', () => {
-    const a: Assertion = { kind: 'absent', category: 'boilerplate_noise', value: 'Accept all cookies', why: 'test' };
-    expect(evaluateAssertion(a, 'Intro\nAccept all cookies\nBody', EMPTY_STRUCTURED).passed).toBe(false);
-    expect(evaluateAssertion(a, 'Intro\nBody', EMPTY_STRUCTURED).passed).toBe(true);
+    expect(evaluateAssertion(cookieBanner, 'Intro\nAccept all cookies\nBody', EMPTY_STRUCTURED, { sourceHtml: bannerHtml }).passed).toBe(false);
+    expect(evaluateAssertion(cookieBanner, 'Intro\nBody', EMPTY_STRUCTURED, { sourceHtml: bannerHtml }).passed).toBe(true);
+  });
+
+  it('fails an absent assertion whose value is not in the source — it suppresses nothing', () => {
+    // K24. `absent` is satisfied for free by any document that never contained the value, so a
+    // fixture typo scores a point for the life of the corpus. One such assertion was sitting in
+    // the shipped C0 manifest (`nasa-global-temperature`, "Skip to main content" — a skip link
+    // that page does not have) until this precondition was added.
+    const r = evaluateAssertion(cookieBanner, 'Intro\nBody', EMPTY_STRUCTURED, { sourceHtml: '<body><p>Body</p></body>' });
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/VACUOUS/);
+  });
+
+  it('fails an absent assertion against an EMPTIED document rather than passing it', () => {
+    // The K24 measurement itself: a `strip_body` probe emptied 24 fixtures and 30 assertions
+    // stayed green, every one an `absent`. An empty document suppresses nothing, so a claim
+    // about suppression scored against it is measuring nothing and must not read as a pass.
+    const r = evaluateAssertion(cookieBanner, '', EMPTY_STRUCTURED, { sourceHtml: '<body></body>' });
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/VACUOUS/);
+  });
+
+  it('fails an absent assertion with no source HTML instead of scoring it blind', () => {
+    const r = evaluateAssertion(cookieBanner, 'Intro\nBody', EMPTY_STRUCTURED);
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/needs sourceHtml/);
   });
 
   it('reads table cells out of structured rows, which are keyed objects not arrays', () => {
