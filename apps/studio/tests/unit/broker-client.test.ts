@@ -37,10 +37,10 @@ function makeFakeChild(): FakeChild {
   return child;
 }
 
-function newClient(opts: { children: FakeChild[]; callTimeoutMs?: number; bootTimeoutMs?: number; warn?: (l: string) => void }) {
+function newClient(opts: { children: FakeChild[]; callTimeoutMs?: number; bootTimeoutMs?: number; warn?: (l: string) => void; maxFrameChars?: number }) {
   const spawnFn = () => { const c = makeFakeChild(); opts.children.push(c); return c as unknown as ChildProcess; };
   // nodePath is injected, so the runtime probe is skipped: these tests exercise the wire, not resolution.
-  return createBrokerClient({ spawnFn, brokerPath: '/broker.js', nodePath: 'node', warn: opts.warn ?? (() => { /* silence */ }), callTimeoutMs: opts.callTimeoutMs, bootTimeoutMs: opts.bootTimeoutMs });
+  return createBrokerClient({ spawnFn, brokerPath: '/broker.js', nodePath: 'node', warn: opts.warn ?? (() => { /* silence */ }), callTimeoutMs: opts.callTimeoutMs, bootTimeoutMs: opts.bootTimeoutMs, maxFrameChars: opts.maxFrameChars });
 }
 
 describe('broker-client', () => {
@@ -158,6 +158,54 @@ describe('broker-client', () => {
     await vi.waitFor(() => expect(children.length).toBe(2), { timeout: 1000 });
     await new Promise((r) => setTimeout(r, 400));
     expect(children.length).toBe(2);
+    await client.stop();
+  });
+
+  /**
+   * MED-2's client half. Every read that could produce an unbounded answer is bounded at the source
+   * now, and that is where a policy bound belongs — this is the backstop for what a source bound
+   * cannot cover: a child that is broken, wedged mid-write, or newer than this host. Without it the
+   * partial-line buffer is an unbounded JS string on the thread that paints, and the failure mode is
+   * the window dying for memory with no error anyone can act on.
+   */
+  it('cuts off a frame that would grow without bound, and recovers instead of accumulating it', async () => {
+    const children: FakeChild[] = [];
+    const warnings: string[] = [];
+    const client = newClient({ children, maxFrameChars: 1_000, warn: (l) => { warnings.push(l); } });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    const inFlight = client.call('runListLogs');
+    await vi.waitFor(() => expect(children[0].writes.length).toBe(1));
+
+    // A frame with no newline in it, growing. Nothing legitimate produces this.
+    for (let i = 0; i < 3; i++) children[0].stdout.emit('data', 'x'.repeat(500));
+
+    // The caller is told, rather than left on a promise nobody will settle.
+    await expect(inFlight).rejects.toThrow(/oversized frame/);
+    expect(warnings.join(''), 'the cut-off was silent').toMatch(/exceeded 1000 characters/);
+    // …and the client recovers: a fresh child, and the stale partial line is not carried into it,
+    // which would eat the respawn's `ready` and leave the app permanently without a background service.
+    await vi.waitFor(() => expect(children.length).toBe(2), { timeout: 1000 });
+    children[1].line({ notify: 'ready' });
+    await expect(client.ready()).resolves.toBeUndefined();
+    await client.stop();
+  });
+
+  // The control: an ordinary answer that arrives across several chunks is REASSEMBLED, not cut. The
+  // guard is on a frame that never ends, not on a frame that arrives in pieces.
+  it('still reassembles a large answer that is split across chunks', async () => {
+    const children: FakeChild[] = [];
+    const client = newClient({ children, maxFrameChars: 1_000 });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    const p = client.call<string>('m');
+    await vi.waitFor(() => expect(children[0].writes.length).toBe(1));
+    const id = (JSON.parse(children[0].writes[0]) as { id: number }).id;
+
+    const frame = JSON.stringify({ id, ok: true, result: 'z'.repeat(800) }) + '\n';
+    for (let i = 0; i < frame.length; i += 100) children[0].stdout.emit('data', frame.slice(i, i + 100));
+
+    expect(await p).toBe('z'.repeat(800));
     await client.stop();
   });
 
