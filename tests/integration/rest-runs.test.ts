@@ -289,6 +289,77 @@ describe('REST /v1/runs — create, list, fetch', () => {
     expect(bigClient.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
   });
 
+  /**
+   * WHY: `""` is not a smaller version of a valid `spaceId`, it is a run nobody can find. The
+   * `?? DEFAULT_SPACE_ID` substitution fires only on `undefined`, so an empty string is persisted
+   * verbatim and the run is then invisible to `?spaceId=default` — the filter every surface lists
+   * with — while still being a live run holding tabs. The client strings fail the other way: the
+   * store rebuilds the badge with `name && version`, so an empty one is accepted on write and erased
+   * on read, and the caller is told 201 for a driver identity no surface will ever show.
+   *
+   * The enumeration is the point. Asking only about `""` would pass just as well against a guard
+   * that special-cases the empty string and lets a tab through, so every shape the schema ACCEPTS is
+   * listed here — and the rows that must STILL work are listed beside them, because a validator is
+   * only correct if it says no to the same set it used to say yes to, minus these.
+   */
+  it('refuses an empty or whitespace-only spaceId and client string, naming the field', async () => {
+    // Ordinary blanks, then the ones a guard written against `' '` alone misses: a tab, a newline, a
+    // CRLF, a mix, and a U+00A0 non-breaking space — which `trim()` removes and a hand-rolled
+    // `=== ' '` does not. The last entry in the list below IS that character, deliberately.
+    for (const spaceId of ['', ' ', '   ', '\r\n', '\t', '\n', '\t \n ', ' ']) {
+      const r = await post('/v1/runs', { task: 'blank space', spaceId });
+      expect(r.status, `spaceId ${JSON.stringify(spaceId)}`).toBe(400);
+      expect(r.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+      expect((r.body as { error: string }).error).toContain('spaceId');
+    }
+
+    for (const client of [
+      { name: '', version: '1.0' },
+      { name: 'cli', version: '' },
+      { name: '  ', version: '1.0' },
+      { name: 'cli', version: '\t' },
+      { name: '', version: '' },
+    ]) {
+      const r = await post('/v1/runs', { task: 'blank client', driver: { kind: 'api', client } });
+      expect(r.status, `client ${JSON.stringify(client)}`).toBe(400);
+      expect(r.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+      expect((r.body as { error: string }).error).toContain('driver.client');
+    }
+  });
+
+  it('leaves every non-blank shape working — the must-not-fire half of the same guard', async () => {
+    // Omitted entirely: the default-space path, which is the one behaviour that must not move.
+    const omitted = await post('/v1/runs', { task: 'default space' });
+    expect(omitted.status).toBe(201);
+    expect((omitted.body as { run: { spaceId: string } }).run.spaceId).toBe('default');
+
+    // A named space, a space whose PADDING is blank but whose value is not, and a driver with no
+    // client at all — all still accepted, and the padded one is persisted verbatim rather than
+    // silently rewritten, exactly as `task` already is.
+    const named = await post('/v1/runs', { task: 'named space', spaceId: 'work' });
+    expect(named.status).toBe(201);
+    expect((named.body as { run: { spaceId: string } }).run.spaceId).toBe('work');
+
+    const padded = await post('/v1/runs', { task: 'padded space', spaceId: ' work ' });
+    expect(padded.status).toBe(201);
+    expect((padded.body as { run: { spaceId: string } }).run.spaceId).toBe(' work ');
+
+    const noClient = await post('/v1/runs', { task: 'no client', driver: { kind: 'cli' } });
+    expect(noClient.status).toBe(201);
+
+    const withClient = await post('/v1/runs', { task: 'with client', driver: { kind: 'sdk', client: { name: 'cli', version: '1.0' } } });
+    expect(withClient.status).toBe(201);
+    expect((withClient.body as { run: { driver: { client?: { name: string } } } }).run.driver.client)
+      .toMatchObject({ name: 'cli', version: '1.0' });
+
+    // Non-string shapes were already refused and must stay refused: a guard written as
+    // `!spaceId || !spaceId.trim()` would let `0` and `false` through the type check it replaced.
+    for (const spaceId of [null, 0, false, 42, {}, [], ['a']]) {
+      const r = await post('/v1/runs', { task: 'wrong type', spaceId });
+      expect(r.status, `spaceId ${JSON.stringify(spaceId)}`).toBe(400);
+    }
+  });
+
   it('treats a malformed percent-escape in the id as a bad id, not a server fault', async () => {
     // `new URL` does not decode `pathname`, so a lone `%` reaches decodeURIComponent and throws.
     // Reporting a caller's typo as a 500 also makes it an error-log amplifier.

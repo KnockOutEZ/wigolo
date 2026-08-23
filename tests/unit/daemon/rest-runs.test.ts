@@ -925,7 +925,11 @@ describe('the live tail bus', () => {
  * test says so, which is the only way these bounds are observable at all.
  */
 describe('SSE writes are bounded in bytes on every path, not only between replay pages', () => {
-  const KNOBS = ['WIGOLO_STUDIO_SSE_FLUSH_BYTES', 'WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES'] as const;
+  const KNOBS = [
+    'WIGOLO_STUDIO_SSE_FLUSH_BYTES',
+    'WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES',
+    'WIGOLO_STUDIO_SSE_HEARTBEAT_MS',
+  ] as const;
   let saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -1133,6 +1137,91 @@ describe('SSE writes are bounded in bytes on every path, not only between replay
     expect(ex.frames().length).toBe(afterEnd);
   });
 
+  /**
+   * WHY: the byte budget above bounds the reader that reads too SLOWLY. It cannot bound the reader
+   * that stops reading altogether while holding the connection open, and that reader is the cheaper
+   * one to be: the drain wait parks, so no further byte is handed over, so `stalledBytes` never grows
+   * past its budget; the heartbeat — the only other writer — returns early on `needsDrain`, so no
+   * ping is written and the silence reconcile never runs; and the events route is exempt from the
+   * router's slot and deadline discipline by design. Nothing is left to notice. The connection slot
+   * is then held until the daemon restarts, and 32 of these 429 the events route permanently, from
+   * the front door, for any authed client whose run's log is long enough to reach the pace gate.
+   *
+   * The forced condition is the whole row: a response whose `write` returns false and which never
+   * emits `'drain'` OR `'close'`. Both rows below turn on that, and the second one is the control —
+   * a socket that is merely slow must not be killed, or the fix is a new outage.
+   */
+  describe('a drain wait carries its own deadline', () => {
+    /** Poll rather than sleep a fixed time: the assertion is "within the bound", not "at it". */
+    async function until(what: () => boolean, ms = 4000): Promise<void> {
+      const deadline = Date.now() + ms;
+      while (!what()) {
+        if (Date.now() > deadline) throw new Error('condition never held');
+        await new Promise<void>((r) => setTimeout(r, 5));
+      }
+    }
+
+    /** One page, big enough that the pace gate trips inside it and parks on the drain. */
+    function onePageStore(events: RunEvent[]): RunsStore {
+      let pages = 0;
+      return {
+        create: async () => { throw new Error('not used'); },
+        list: async () => ({ runs: [] }),
+        get: async () => undefined,
+        exists: async () => true,
+        eventsSince: async () => { pages += 1; return pages === 1 ? events : []; },
+      };
+    }
+
+    it('ends the stream and gives the slot back when a reader stops reading without closing', async () => {
+      const { openRunStreamCount } = await import('../../../src/daemon/rest/runs.js');
+      process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES = '2000';
+      // Wide enough that the byte budget CANNOT be the door that fires: the stall is 2 frames, and
+      // no further byte is handed to the socket while the drain wait parks. Only the deadline is left.
+      process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES = String(64 * 1024 * 1024);
+      // The deadline is N heartbeats, so this is the knob that makes the row a test rather than a wait.
+      process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = '25';
+
+      const before = openRunStreamCount();
+      const ex = stalledExchange();
+      // Never drained, never closed — the socket the old wait could not tell from a healthy one.
+      const done = tailWith(ex, onePageStore(Array.from({ length: 20 }, (_, i) => bulky(i + 1))), '7fq6');
+      await settle();
+
+      expect(ex.frames().length).toBe(2);
+      expect(ex.ended()).toBe(false);
+      expect(openRunStreamCount()).toBe(before + 1);
+
+      // The load-bearing assertions: it ends by itself, and the slot comes back. Unfixed, both of
+      // these are false forever — the await never resolves and this row times out.
+      await until(() => ex.ended());
+      await done;
+      expect(openRunStreamCount()).toBe(before);
+      // And it ended rather than writing into a buffer nobody drains.
+      expect(ex.frames().length).toBe(2);
+    });
+
+    it('does NOT end an ordinarily slow client that is still draining — the must-not-fire control', async () => {
+      process.env.WIGOLO_STUDIO_SSE_FLUSH_BYTES = '2000';
+      process.env.WIGOLO_STUDIO_SSE_MAX_STALLED_BYTES = String(64 * 1024 * 1024);
+      // A two-second deadline against a socket that drains on the next turn. If the deadline were
+      // keyed on anything the slow-but-healthy reader also trips, this row goes red.
+      process.env.WIGOLO_STUDIO_SSE_HEARTBEAT_MS = '500';
+
+      const ex = stalledExchange();
+      const done = tailWith(ex, onePageStore(Array.from({ length: 20 }, (_, i) => bulky(i + 1))), '7fq7');
+      await settle();
+      expect(ex.frames().length).toBe(2);
+
+      ex.drain();
+      await done;
+
+      // Back-pressure is a pause, not a kill: the whole page is delivered and the stream is alive.
+      expect(ex.frames().length).toBe(20);
+      expect(ex.ended()).toBe(false);
+    });
+  });
+
   it('does not heartbeat a socket that has not drained — the last writer on a silent stalled tail', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
     try {
@@ -1157,6 +1246,113 @@ describe('SSE writes are bounded in bytes on every path, not only between replay
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * WHY: `WIGOLO_STUDIO_RUN_REPLAY_PAGE` is what this process ASKS for; it is not what it gets. On the
+ * studio host the store is the broker, and the broker clamps every read to its own per-frame ceiling
+ * (`MAX_EVENTS_PAGE`, 2000) whatever the limit says. A replay that stopped on a SHORT page therefore
+ * read the clamp as end-of-log and truncated silently — every host-side replay, mid-log, for any
+ * operator who set the supported knob above the clamp. The heal path then loops end/reconnect at the
+ * client's backoff, because the stream keeps ending at the same seq.
+ *
+ * The rows below force the disagreement rather than hoping for it: the store clamps BELOW what the
+ * route asks for, which is the whole shape of the defect and is invisible to any fixture whose store
+ * honours the requested page size. `run-view-model.ts` already documents the correct contract; this
+ * pins the same one on the REST side so the two projections of law 1 cannot drift again.
+ */
+describe('replay stops on an EMPTY page, never on a short one', () => {
+  const PAGE = 'WIGOLO_STUDIO_RUN_REPLAY_PAGE';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[PAGE];
+    // Above the store's clamp below — the exact condition that made every page short.
+    process.env[PAGE] = '10';
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[PAGE];
+    else process.env[PAGE] = saved;
+  });
+
+  /** A response that takes every byte, so nothing here is confused with back-pressure. */
+  function openExchange(): { req: IncomingMessage; res: ServerResponse; seqs: () => number[] } {
+    const written: string[] = [];
+    const noop = (): unknown => undefined;
+    const req = { headers: {}, destroyed: false, socket: { setTimeout: () => {} }, on: noop, off: noop } as unknown as IncomingMessage;
+    const res = {
+      destroyed: false,
+      headersSent: false,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => { written.push(chunk); return true; },
+      end: () => {},
+      on: noop,
+      off: noop,
+    } as unknown as ServerResponse;
+    return {
+      req,
+      res,
+      seqs: () => written
+        .filter((c) => c.startsWith('id: '))
+        .map((c) => Number(c.slice('id: '.length, c.indexOf('\n')))),
+    };
+  }
+
+  function tail(ex: { req: IncomingMessage; res: ServerResponse }, store: RunsStore, id: string): Promise<void> {
+    return import('../../../src/daemon/rest/runs.js').then(({ handleRunsRequest }) =>
+      handleRunsRequest(ex.req, ex.res, {
+        pathname: `/v1/runs/${id}/events`,
+        method: 'GET',
+        url: new URL(`http://127.0.0.1/v1/runs/${id}/events`),
+        respond: () => {},
+        sendError: () => {},
+        store,
+      }));
+  }
+
+  it('replays the whole log when the store caps its pages below the size the route asked for', async () => {
+    const log = Array.from({ length: 7 }, (_, i) => ev(i + 1));
+    const asked: Array<number | undefined> = [];
+    // The broker's shape: honours `since`, and clamps the page to 2 whatever it was asked for.
+    const store: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async (_id, cursor, limit) => {
+        asked.push(limit);
+        return log.filter((e) => e.seq > cursor).slice(0, 2);
+      },
+    };
+
+    const ex = openExchange();
+    await tail(ex, store, '7fq8');
+
+    // The load-bearing assertion. Stopping on a short page delivers 2 of 7 and calls it a whole log.
+    expect(ex.seqs()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    // And the route really did ask for the bigger page — otherwise the row proves nothing about the
+    // disagreement, only that a store returning everything it was asked for works.
+    expect(asked[0]).toBe(10);
+  });
+
+  it('still terminates against a store that ignores `since` — an empty page is not the only exit', async () => {
+    // Nothing legitimate produces this, and before the short-page check was removed it was the check
+    // that accidentally covered it. A spin here is on the event loop every other request shares.
+    const store: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async () => [ev(1), ev(2)],
+    };
+
+    const ex = openExchange();
+    await tail(ex, store, '7fq9');
+    expect(ex.seqs()).toEqual([1, 2]);
   });
 });
 

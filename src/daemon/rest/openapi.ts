@@ -370,8 +370,11 @@ function driverSchema(): object {
       client: {
         type: 'object',
         properties: {
-          name: { type: 'string', maxLength: MAX_CLIENT_FIELD_CHARS },
-          version: { type: 'string', maxLength: MAX_CLIENT_FIELD_CHARS },
+          // `minLength` as well as `maxLength`, because the router refuses a blank one: the store
+          // rebuilds the badge from both strings together, so an empty either side erases the whole
+          // client on read. Omit `client` rather than sending a blank field.
+          name: { type: 'string', minLength: 1, maxLength: MAX_CLIENT_FIELD_CHARS },
+          version: { type: 'string', minLength: 1, maxLength: MAX_CLIENT_FIELD_CHARS },
         },
         required: ['name', 'version'],
       },
@@ -428,7 +431,10 @@ function runPaths(): Record<string, object> {
               type: 'object',
               properties: {
                 task: { type: 'string', minLength: 1, maxLength: MAX_TASK_CHARS },
-                spaceId: { type: 'string', default: 'default', maxLength: MAX_SPACE_ID_CHARS },
+                // Blank is refused rather than defaulted: the default substitution fires on an
+                // ABSENT spaceId, so `""` would be persisted verbatim and the run would then be
+                // invisible to the `?spaceId=default` filter every surface lists with.
+                spaceId: { type: 'string', minLength: 1, default: 'default', maxLength: MAX_SPACE_ID_CHARS },
                 driver: driverSchema(),
               },
               required: ['task'],

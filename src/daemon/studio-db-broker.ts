@@ -296,6 +296,10 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     },
     // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
     // and the view-model's gap replay called it exactly that way.
+    //
+    // CONTRACT: the returned page is clamped to `MAX_EVENTS_PAGE` whatever `limit` says, so a SHORT
+    // page never means end-of-log. Callers must page until an EMPTY one — a caller that stops on a
+    // short page silently truncates every log longer than the clamp.
     runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
       const limit = Math.floor(Number(p.limit));
       if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');

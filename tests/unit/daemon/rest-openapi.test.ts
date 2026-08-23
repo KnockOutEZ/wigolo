@@ -217,6 +217,24 @@ describe('OpenAPI run surface', () => {
     expect([...driver.requestBody.content['application/json'].schema.properties.driver.properties.kind.enum].sort()).toEqual([...expected].sort());
   });
 
+  it('serves the blank-string bounds the router actually enforces on create', () => {
+    // `task` carried `minLength: 1` from the start; `spaceId` and the client strings carried only a
+    // maximum, so the served document advertised a blank as valid input for both. A generated client
+    // would have emitted it and taken a 400 the contract said could not happen — and before the
+    // router refused it, the worse outcome: a 201 for a run invisible to the default space filter,
+    // or for a driver badge the store erases on read.
+    const create = runPaths()['/v1/runs'].post as unknown as {
+      requestBody: { content: { 'application/json': { schema: { properties: Record<string, { minLength?: number; properties?: Record<string, { minLength?: number }> }> } } } };
+    };
+    const props = create.requestBody.content['application/json'].schema.properties;
+    expect(props.task.minLength).toBe(1);
+    expect(props.spaceId.minLength).toBe(1);
+    expect(props.driver.properties!.client.minLength).toBeUndefined();
+    const client = props.driver.properties!.client as unknown as { properties: Record<string, { minLength?: number }> };
+    expect(client.properties.name.minLength).toBe(1);
+    expect(client.properties.version.minLength).toBe(1);
+  });
+
   it('serves the list bounds the router actually enforces', () => {
     // The router 400s a limit outside [1, MAX_LIST_LIMIT]; a doc that advertised a wider range would
     // have generated clients emitting requests the server rejects.
