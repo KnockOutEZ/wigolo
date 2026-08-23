@@ -157,7 +157,7 @@ function clause2(corpus: FrozenCorpus): void {
     `\n  verdict at the PINNED second width ${GATE_ALT_WIDTH}px: ` +
     `${pinned.inBandPct >= CLAUSE2_THRESHOLD ? 'PASS' : 'FAIL'} (${pct(pinned.inBandPct)} over ${pinned.pages} pages)\n`,
   );
-  out('  the width is part of the gate, not of this file — see the pin note at the top of this file for why 1024 and not 1152 or 720.\n');
+  out('  the width is part of the gate DEFINITION and lives in `gate-config.ts`; the note above this file\'s\n  imports carries the measured sweep the pin was derived from.\n');
 
   // A corpus-wide 97% can be 100% everywhere and 50% in one group, and the pin would then be an
   // artefact of the seed mix rather than a property of the width. Split it.
@@ -189,12 +189,20 @@ function dprArm(corpus: FrozenCorpus): void {
       '\n  So the exactness figure is NOT a pass for the ratio handling, and it is not printed as one.\n' +
       '  On this capture path the harvest reports a ratio of 1 for every page by construction\n' +
       '  (`harvest.ts:131-135`, reasoning at `:104-127`), so the ratio division is the identity and\n' +
-      '  removing it cannot change any number here.\n' +
-      '  What the arm DOES establish is the property the product depends on, and it is the stronger\n' +
-      '  of the two: every page whose signature moved had ALREADY moved in the capture, so the metric\n' +
-      '  introduced no scale-factor error of its own. Real pages do render differently at a scale\n' +
-      '  factor of 2 — responsive image selection changes intrinsic sizes, and the layout follows —\n' +
-      '  and reporting that as a signature difference is the metric being right, not wrong.\n',
+      '  removing it cannot change any number here.\n',
+    );
+    // The consolation claim is only available while the attribution count is zero. Printing it
+    // unconditionally would turn the one line that can report a metric defect into decoration.
+    out(
+      attr.metricIntroduced === 0
+        ? '  What the arm DOES establish is the property the product depends on, and it is the stronger of\n' +
+          '  the two: every page whose signature moved had ALREADY moved in the capture, so the metric\n' +
+          '  introduced no scale-factor error of its own. Real pages do render differently at a scale\n' +
+          '  factor of 2 — responsive image selection changes intrinsic sizes, and the layout follows —\n' +
+          '  and reporting that as a signature difference is the metric being right, not wrong.\n'
+        : `  AND THE ARM ESTABLISHES NOTHING REASSURING: ${attr.metricIntroduced} page(s) signed differently from a\n` +
+          '  BYTE-IDENTICAL capture. That is non-determinism in the quantiser, not a property of the web,\n' +
+          '  and it fails G-S11a-1 clause 1 by construction — fix it before reading any other number here.\n',
     );
   }
 }
