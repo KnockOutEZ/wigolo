@@ -12,6 +12,13 @@
  *
  * READ `synth.ts` BEFORE READING A NUMBER OUT OF THIS RUNNER. The corpus is synthetic. It measures
  * the metric's arithmetic, not the web's behaviour, and a pass here is not G-S11a-1 passing.
+ *
+ * THE VERDICT LIVES IN `gate.ts` NOW. That runner scores the same clauses on ~40 REAL pages captured
+ * through the shipped harvest, which is the corpus a G-S11a verdict may be read from. This file is
+ * kept, and kept synthetic, because it still answers a question the real corpus cannot: it varies ONE
+ * property of a page at a time (drift, text churn, a rotating slot, a re-flow) where a real capture
+ * varies all of them at once, so it is where the metric's arithmetic is exercised rather than the
+ * web's behaviour observed. Numbers from here remain unquotable as gate results.
  */
 import {
   computeLayoutSignature,
