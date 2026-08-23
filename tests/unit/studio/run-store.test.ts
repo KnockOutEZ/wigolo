@@ -25,6 +25,7 @@ import {
   MAX_EVENT_PAYLOAD_CHARS,
   runDir,
   runEventsFile,
+  _resetPreparedStatements,
   type RunEvent,
   type Run,
   type RunStatus,
@@ -753,6 +754,10 @@ describe('run-store — existence probe (§5.5 precondition)', () => {
       if (/FROM studio_run_events/i.test(sql)) readRows++;
       return realPrepare(sql);
     }) as typeof db.prepare;
+    // The store holds its statements per handle, so a spy on `prepare` only sees the sql it does not
+    // already have compiled. Dropping the cache is what makes the count the store's reads and not an
+    // artefact of what this test happened to call first.
+    _resetPreparedStatements(db);
     Object.defineProperty(db, 'prepare', { value: spy, configurable: true });
     try {
       runExists(db, run.id);
@@ -761,6 +766,7 @@ describe('run-store — existence probe (§5.5 precondition)', () => {
       expect(readRows).toBeGreaterThan(0);
     } finally {
       Object.defineProperty(db, 'prepare', { value: realPrepare, configurable: true });
+      _resetPreparedStatements(db);
     }
   });
 });
@@ -1277,6 +1283,94 @@ describe('run-store — cost is a counter kept as a column, not a fold at read t
   });
 });
 
+describe('run-store — an append does not compile sql inside the write lock (SD1 exit-7, perf HIGH-1)', () => {
+  /**
+   * Deliberately does NOT drop the statement cache: what a real writer pays is the count with the
+   * connection in the state the previous append left it in.
+   */
+  function countPrepares(database: Database.Database, fn: () => void): number {
+    let n = 0;
+    const realPrepare = database.prepare.bind(database);
+    const spy = ((sql: string) => { n++; return realPrepare(sql); }) as typeof database.prepare;
+    Object.defineProperty(database, 'prepare', { value: spy, configurable: true });
+    try {
+      fn();
+    } finally {
+      Object.defineProperty(database, 'prepare', { value: realPrepare, configurable: true });
+    }
+    return n;
+  }
+
+  /** Every sql shape the append path has: the plain envelope plus one per cost column. */
+  function appendPass(runId: string, n: number): void {
+    for (let i = 0; i < n; i++) {
+      appendEvent(db, runId, { actor: { kind: 'agent', driver: 'cli' }, type: 'tab.attached', payload: { tabId: `t${i}` } }, opts());
+      for (const kind of ['browser_action', 'tokens_in', 'tokens_out', 'spend_usd']) {
+        appendEvent(db, runId, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind, amount: 1 } }, opts());
+      }
+    }
+  }
+
+  it('compiles each of its statements once per connection, not once per append', () => {
+    const run = createRun(db, { task: 'warm' }, opts());
+
+    const first = countPrepares(db, () => appendPass(run.id, 20));
+    const second = countPrepares(db, () => appendPass(run.id, 20));
+
+    // The compiler used to run five times per append INSIDE `BEGIN IMMEDIATE` — the write lock on a
+    // database that search caching, embeddings and artifacts also queue behind. Measured over 20k
+    // appends that was 59.6 µs/append against 7.9 µs reusing the statements: ~87% of the time the
+    // lock was held was spent compiling constants. `cost.recorded` is one event per browser action
+    // by design, so a long run pays it continuously — which is why the number that matters is the
+    // WARM one, and it is zero.
+    expect(second).toBe(0);
+    // The first pass may compile each distinct text once and no more: the envelope read, the event
+    // INSERT, the status heads, the pending-decision read and the five UPDATE arms.
+    expect(first).toBeLessThanOrEqual(9);
+  });
+
+  it('never hands one connection a statement compiled on another', () => {
+    const other = freshDb();
+    try {
+      const mine = createRun(db, { task: 'handle a' }, opts());
+      appendPass(mine.id, 2);
+
+      // Same schema, same sql, different connection — and a `Statement` belongs to the connection
+      // that compiled it, so the broker child, the daemon and every test database must each get
+      // their own. A shared one would write into the wrong file or throw at step time.
+      const compiled = countPrepares(other, () => {
+        const theirs = createRun(other, { task: 'handle b' }, { dataDir: dir });
+        appendEvent(other, theirs.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'x' } }, { dataDir: dir });
+        expect(getRun(other, theirs.id)!.lastSeq).toBe(2);
+      });
+      expect(compiled).toBeGreaterThan(0);
+
+      expect(db.prepare('SELECT COUNT(*) AS n FROM studio_runs').get()).toEqual({ n: 1 });
+      expect(other.prepare('SELECT COUNT(*) AS n FROM studio_runs').get()).toEqual({ n: 1 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 11 });
+      expect(other.prepare('SELECT COUNT(*) AS n FROM studio_run_events').get()).toEqual({ n: 2 });
+    } finally {
+      other.close();
+    }
+  });
+
+  it('keeps every counter and every projection identical once the statements are reused', () => {
+    const run = createRun(db, { task: 'unchanged' }, opts());
+    appendPass(run.id, 3);
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.paused', payload: { reason: 'cap' } }, opts());
+
+    const projected = getRun(db, run.id)!;
+    expect(projected.status).toBe('paused');
+    expect(projected.lastSeq).toBe(17);
+    expect(projected.cost).toEqual({ browserActions: 3, tokensIn: 3, tokensOut: 3, spendUsd: 3 });
+    expect(db.prepare('SELECT status, last_seq AS s FROM studio_runs WHERE id = ?').get(run.id)).toEqual({ status: 'paused', s: 17 });
+    expect(eventsSince(db, run.id).map((e) => e.seq)).toEqual(Array.from({ length: 17 }, (_, i) => i + 1));
+    // A well-formed id nobody minted still fails the same way, from the same cached envelope read.
+    expect(() => appendEvent(db, mintRunId(), { actor: { kind: 'daemon' }, type: 'tab.attached', payload: {} }, opts()))
+      .toThrow(/run not found/);
+  });
+});
+
 describe('run-store — a projected field is validated, never cast (SD1 exit review, security LOW-3/LOW-4)', () => {
   it('serves an anchor only when it IS one, and only its two fields', () => {
     const run = createRun(db, { task: 'anchors' }, opts());
@@ -1587,6 +1681,10 @@ interface EventRead { sql: string; params: unknown[]; rows: number }
 /**
  * Every EXECUTION against the event log — not every prepare. A statement prepared once and stepped
  * per run is still a read per run, and counting prepares would hide exactly that.
+ *
+ * The store caches its prepared statements per handle, so the wrapping only reaches a statement it
+ * compiles itself: the cache is dropped on the way in so every read inside `fn` goes through the
+ * spy, and again on the way out so no wrapped statement outlives the array it reports into.
  */
 function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: number; rows: number; reads: EventRead[]; result: T } {
   const reads: EventRead[] = [];
@@ -1609,12 +1707,14 @@ function spyEventReads<T>(database: Database.Database, fn: () => T): { queries: 
     wrap('get', (out) => (out === undefined ? 0 : 1));
     return stmt;
   }) as typeof database.prepare;
+  _resetPreparedStatements(database);
   Object.defineProperty(database, 'prepare', { value: spy, configurable: true });
   try {
     const result = fn();
     return { queries: reads.length, rows: reads.reduce((n, r) => n + r.rows, 0), reads, result };
   } finally {
     Object.defineProperty(database, 'prepare', { value: realPrepare, configurable: true });
+    _resetPreparedStatements(database);
   }
 }
 
