@@ -836,6 +836,209 @@ describe('run-store — listing a page is bounded work (F2)', () => {
   });
 });
 
+describe('run-store — reading ONE run is bounded work too (SD1 exit review, perf #1)', () => {
+  function busyRun(eventsEach: number, type = 'mark.placed', payload: (i: number) => Record<string, unknown> = (i) => ({ mark: i })): string {
+    const r = createRun(db, { task: 'item' }, opts());
+    for (let i = 0; i < eventsEach; i++) {
+      appendEvent(db, r.id, { actor: { kind: 'agent' }, type, payload: payload(i) }, opts());
+    }
+    return r.id;
+  }
+
+  it('does the same work at any log depth — the item read tracks the projection, never the history', () => {
+    const shallow = (() => {
+      const id = busyRun(10);
+      return spyEventReads(db, () => getRun(db, id));
+    })();
+    db = freshDb();
+    const deep = (() => {
+      const id = busyRun(400);
+      return spyEventReads(db, () => getRun(db, id));
+    })();
+
+    // Forty times the log, identical work. `getRun` used to be the one path that still read and
+    // parsed every row — the defect F2 took off the list route and left on the item route, measured
+    // at 682 ms of blocked event loop per request at 400k events.
+    expect(deep.queries).toBe(shallow.queries);
+    expect(deep.rows).toBe(shallow.rows);
+    // The projection read, the newest-row tail seek, and the cost aggregate. Nothing per event.
+    expect(deep.queries).toBe(3);
+    // `run.created` from the projection read and the tail row. The 400 marks are what the old path
+    // read, JSON-parsed and threw away, synchronously, before the router could yield.
+    expect(deep.rows).toBe(2);
+    // ...and the answer is the one a full replay gives.
+    expect(deep.result!.lastSeq).toBe(401);
+    expect(getRun(db, deep.result!.id)).toEqual(listRuns(db, {}).runs[0]);
+  });
+
+  it('reaches the projection through the type index rather than walking the run', () => {
+    const id = busyRun(60);
+    const seen = spyEventReads(db, () => getRun(db, id));
+
+    // Row counts cannot see a scan that returns the right rows: an unfiltered read of a 61-event
+    // log still projects correctly and still returns one `run.created`. The plan is what says the
+    // other 60 rows were never touched.
+    const projection = seen.reads.find((r) => /type IN/i.test(r.sql));
+    expect(projection, seen.reads.map((r) => r.sql).join(' ;; ')).toBeDefined();
+    expect(queryPlan(projection!), queryPlan(projection!)).toContain('idx_studio_run_events_type');
+    expect(queryPlan(projection!), queryPlan(projection!)).not.toContain('sqlite_autoindex_studio_run_events');
+    // No read on this path may be a bare per-run log read — that is the regression itself.
+    const unbounded = seen.reads.filter((r) => !/type IN|type = |ORDER BY seq DESC/i.test(r.sql));
+    expect(unbounded.map((r) => r.sql)).toEqual([]);
+  });
+
+  it('serves a run whose whole log is invisible to the type filter', () => {
+    // Every projected field is a default and `lastSeq`/`updatedAt` come from the tail read, so the
+    // bounded path must still be right when the filter matches nothing but the birth event.
+    const id = busyRun(5, 'mark.placed');
+    const run = getRun(db, id)!;
+    expect(run.status).toBe('running');
+    expect(run.tabIds).toEqual([]);
+    expect(run.lastSeq).toBe(6);
+    expect(run.updatedAt).toBe(eventsSince(db, id, 5)[0].ts);
+  });
+});
+
+describe('run-store — cost is folded in SQL, not read row by row (SD1 exit review, perf #2)', () => {
+  function costlyRun(count: number): string {
+    const r = createRun(db, { task: 'costly' }, opts());
+    for (let i = 0; i < count; i++) {
+      appendEvent(db, r.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } }, opts());
+    }
+    return r.id;
+  }
+
+  it('costs the same at 20 counter events as at 600 — the read is O(kinds), not O(actions)', () => {
+    const shallow = (() => {
+      const id = costlyRun(20);
+      return { item: spyEventReads(db, () => getRun(db, id)), page: spyEventReads(db, () => listRuns(db, {})) };
+    })();
+    db = freshDb();
+    const deep = (() => {
+      const id = costlyRun(600);
+      return { item: spyEventReads(db, () => getRun(db, id)), page: spyEventReads(db, () => listRuns(db, {})) };
+    })();
+
+    // `cost.recorded` is one event per browser action by design, so bounding the projection to a
+    // type SET bounded nothing while this type was in it: 200k of them measured 244 ms to project
+    // against 0.3 ms for 200k of any other type. A sum does not need the rows.
+    expect(deep.item.queries).toBe(shallow.item.queries);
+    expect(deep.item.rows).toBe(shallow.item.rows);
+    expect(deep.page.queries).toBe(shallow.page.queries);
+    expect(deep.page.rows).toBe(shallow.page.rows);
+    // `run.created`, the tail row, and ONE aggregate row for the one kind — at either depth.
+    expect(deep.item.rows).toBe(3);
+    expect(deep.item.result!.cost.browserActions).toBe(600);
+    expect(shallow.item.result!.cost.browserActions).toBe(20);
+  });
+
+  it('reaches the counters through the type index rather than scanning the table', () => {
+    costlyRun(50);
+    const seen = spyEventReads(db, () => listRuns(db, {}));
+    const aggregate = seen.reads.find((r) => /SUM\(/i.test(r.sql));
+    expect(aggregate).toBeDefined();
+    const plan = queryPlan(aggregate!);
+    expect(plan, plan).toContain('idx_studio_run_events_type');
+    expect(plan, plan).not.toContain('SCAN studio_run_events');
+  });
+
+  it('folds exactly what a full replay folds, including payloads a fold must refuse', () => {
+    const run = createRun(db, { task: 'parity' }, opts());
+    const cost = (payload: Record<string, unknown>) =>
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload }, opts());
+    cost({ kind: 'browser_action', amount: 2 });
+    cost({ kind: 'browser_action', amount: '3' });   // a string is not an amount
+    cost({ kind: 'browser_action', amount: true });  // nor is a boolean — SQLite would read it as 1
+    cost({ kind: 'tokens_in', amount: 10 });
+    cost({ kind: 'tokens_out' });                    // no amount at all
+    cost({ kind: 'spend_usd', amount: 0.25 });
+    cost({ kind: 'spend_usd', amount: -1 });         // a refund is a legal counter
+    cost({ kind: 'wat', amount: 99 });               // an unknown kind lands in no bucket
+    cost({ amount: 5 });                             // ...and neither does no kind
+
+    const replayed = projectRun({ id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, eventsSince(db, run.id, 0));
+    // The SQL fold and the JS fold are two implementations of one rule, so the pin is that they
+    // agree — and that they agree on something, which the explicit totals below are here to say.
+    expect(getRun(db, run.id)!.cost).toEqual(replayed.cost);
+    expect(replayed.cost).toEqual({ browserActions: 2, tokensIn: 10, tokensOut: 0, spendUsd: -0.75 });
+  });
+
+  it('keeps every run\'s counters to itself across a page', () => {
+    const a = createRun(db, { task: 'a' }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 1)) });
+    const b = createRun(db, { task: 'b' }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 2)) });
+    appendEvent(db, a.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 4 } }, opts());
+    appendEvent(db, b.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'spend_usd', amount: 1.5 } }, opts());
+
+    const byId = new Map(listRuns(db, {}).runs.map((r) => [r.id, r]));
+    expect(byId.get(a.id)!.cost).toEqual({ browserActions: 4, tokensIn: 0, tokensOut: 0, spendUsd: 0 });
+    expect(byId.get(b.id)!.cost).toEqual({ browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 1.5 });
+    expect(byId.get(a.id)).toEqual(getRun(db, a.id));
+    expect(byId.get(b.id)).toEqual(getRun(db, b.id));
+  });
+});
+
+describe('run-store — a projected field is validated, never cast (SD1 exit review, security LOW-3/LOW-4)', () => {
+  it('serves an anchor only when it IS one, and only its two fields', () => {
+    const run = createRun(db, { task: 'anchors' }, opts());
+    const ask = (decisionId: string, anchor: unknown) =>
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId, prompt: 'ok?', anchor } }, opts());
+
+    ask('d1', { tabId: 'tab-1', mark: 4, note: 'ride-along', prompt: 'not this one' });
+    ask('d2', { tabId: 'tab-2', mark: '4' });
+    ask('d3', 'tab-3');
+    ask('d4', { mark: 2 });
+    ask('d5', [{ tabId: 'tab-5' }]);
+    ask('d6', { tabId: 'tab-6', mark: 1.5 });
+
+    const anchors = new Map(getRun(db, run.id)!.pendingDecisions.map((d) => [d.decisionId, d.anchor]));
+    // Law 8's address is a tab and a mark. Anything else in the payload is payload, and a REST
+    // consumer typed `{ tabId; mark? }` must not be handed the rest of it.
+    expect(anchors.get('d1')).toEqual({ tabId: 'tab-1', mark: 4 });
+    // A junk mark costs the mark, not the anchor — the card still points at a tab a human can answer.
+    expect(anchors.get('d2')).toEqual({ tabId: 'tab-2' });
+    expect(anchors.get('d6')).toEqual({ tabId: 'tab-6' });
+    // No tab, no address.
+    expect(anchors.get('d3')).toBeUndefined();
+    expect(anchors.get('d4')).toBeUndefined();
+    expect(anchors.get('d5')).toBeUndefined();
+    // The log still has every byte of it — the store validates what it SERVES, never what it stores.
+    const stored = eventsSince(db, run.id, 0).find((e) => e.payload.decisionId === 'd1')!;
+    expect(stored.payload.anchor).toEqual({ tabId: 'tab-1', mark: 4, note: 'ride-along', prompt: 'not this one' });
+  });
+
+  it('rebuilds the actor so an unknown key cannot ride into an append-only log', () => {
+    const run = createRun(db, { task: 'actors' }, opts());
+    const supplied = {
+      kind: 'agent',
+      driver: 'cli',
+      client: { name: 'a-harness', version: '2.1.0', apiKey: 'sk-should-not-persist' },
+      impersonating: 'human',
+    } as unknown as Parameters<typeof appendEvent>[2]['actor'];
+
+    const returned = appendEvent(db, run.id, { actor: supplied, type: 'mark.placed', payload: { mark: 1 } }, opts());
+    const clean = { kind: 'agent', driver: 'cli', client: { name: 'a-harness', version: '2.1.0' } };
+
+    // Returned, stored, replayed and projected to disk — the envelope is one object with one shape,
+    // and it is the store's, not the caller's.
+    expect(returned.actor).toEqual(clean);
+    expect(returned.actor).not.toBe(supplied);
+    expect(eventsSince(db, run.id, 1)[0].actor).toEqual(clean);
+    const line = readFileSync(runEventsFile(run.id, dir), 'utf8');
+    expect(line).not.toContain('sk-should-not-persist');
+    expect(line).not.toContain('impersonating');
+  });
+
+  it('rebuilds the driver badge on the way out of the log as well as into it', () => {
+    const run = createRun(db, { task: 'driver' }, opts());
+    // A payload written by an older build, or by any writer the store does not own: the projection
+    // is the last place that can stop it becoming a typed REST field.
+    db.prepare('UPDATE studio_run_events SET payload = ? WHERE run_id = ? AND seq = 1')
+      .run(JSON.stringify({ task: run.task, spaceId: run.spaceId, driver: { kind: 'cli', client: { name: 'h', version: '1', token: 'nope' } } }), run.id);
+
+    expect(getRun(db, run.id)!.driver).toEqual({ kind: 'cli', client: { name: 'h', version: '1' } });
+  });
+});
+
 // --- helpers -------------------------------------------------------------
 
 import * as store from '../../../src/studio/run-store.js';
