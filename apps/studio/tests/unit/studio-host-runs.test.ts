@@ -92,6 +92,25 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(runs.sessionIdOf(runId!)).toBe(session_id);
   });
 
+  // SD1 exit-9 (C1). Law 8's shared address space is only shared if the AGENT can read the id, and
+  // `studio_list` is the one seam it reads it from — the id it needs to correlate its session to
+  // `/v1/runs/{id}`. `runId` is optional on StudioSessionView, so dropping the key from the list spread,
+  // or `runForSession` going undefined for a live session, typechecks clean and stays green everywhere
+  // else; the sibling `tabIds` is pinned but this was not. `expected` is asserted truthy first so the
+  // comparison cannot pass by both sides being undefined.
+  it('names the session’s run id in the agent-visible listing, byte-equal to the run the session drives', async () => {
+    const { host, runs } = makeHost();
+    const { session_id } = await host.handlers.spawn({}) as { session_id: string };
+    const expected = runs.runForSession(session_id);
+    expect(expected, 'the control: the live session drives no run at all').toBeTruthy();
+
+    const listed = await host.handlers.list() as StudioListOutput;
+    const session = listed.sessions.find((s) => s.id === session_id)!;
+
+    expect(session, 'the live session is missing from studio_list entirely').toBeTruthy();
+    expect(session.runId, 'studio_list named no run id — the agent cannot reach /v1/runs/{id}').toBe(expected);
+  });
+
   // SD1 exit-7. `studio_open`'s startUrl is agent-supplied and lands in an append-only log that has no
   // prune path by design and is served over `GET /v1/runs/{id}/events` plus the SSE tail. Hand the agent a
   // magic link and the whole secret is stored forever and readable by every client past the REST gate. The
