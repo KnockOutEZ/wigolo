@@ -105,6 +105,9 @@ describe('stripHiddenDom', () => {
       '<html><body><div hidden><main>\n   \t </main>LEAK behind whitespace</div></body></html>',
     );
     expect(out).not.toContain('LEAK behind whitespace');
+    // The shell itself goes too. Without this the row stays green under a version that
+    // rescues ANY <main> and merely prunes around it, which is the decision being made.
+    expect(out).not.toContain('<main>');
   });
 
   it('never removes <body> or <html> themselves', () => {
@@ -186,9 +189,13 @@ describe('isHidden — the inline-style shapes the CSS grammar accepts', () => {
     'text-decoration:none',
     'opacity:1',
     '--legacy-fallback:display:none',
-    'content:"display:none"',
-    "content:'visibility:hidden'",
-    'background:red/*;display:none*/',
+    // Each of these carries a declaration-shaped substring in a position the CSS grammar
+    // says is not a declaration — inside a string, inside a comment. Spelled with the
+    // leading `;` on purpose: without one the pattern could not match them anyway, and
+    // the row would pass for a reason that has nothing to do with resolving them out.
+    'content:"padding;display:none;"',
+    "font-family:'x;visibility:hidden;'",
+    'background:red/*;display:none;*/',
     'display:none-important',
   ])('keeps: %s', (style) => {
     expect(strippedWithStyle(style)).toBe(false);
