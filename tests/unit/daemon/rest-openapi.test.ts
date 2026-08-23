@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { Validator } from '@seriousme/openapi-schema-validator';
 import { buildOpenApi, buildToolsIndex } from '../../../src/daemon/rest/openapi.js';
 import { CLAMP_TABLE } from '../../../src/daemon/rest/limits.js';
+import { MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '../../../src/studio/run-store.js';
 import * as SCHEMAS from '../../../src/server/tool-schemas.js';
 import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
 
@@ -160,6 +162,100 @@ describe('OpenAPI document assembly', () => {
     expect(doc.components.securitySchemes.bearerAuth.scheme).toBe('bearer');
     // Optional = the empty requirement object is one of the alternatives.
     expect(doc.security).toContainEqual({});
+  });
+});
+
+/**
+ * WHY: the run surface is the part of the contract an SDK author cannot re-derive from the code —
+ * a run outlives every UI, so the served document is the only thing telling them how to hold a
+ * stream open, when to resume, and which statuses exist. The tool loop above never touches it, so
+ * everything below was shipped unpinned: the vocabularies could drift from the router's enforcement
+ * fully green, and the stream description could promise a lifetime the implementation does not keep.
+ */
+describe('OpenAPI run surface', () => {
+  /**
+   * The store's own vocabulary, read from its type declaration rather than from the daemon that
+   * documents it. Deriving `expected` from the same module the doc derives from would make these
+   * rows agree with themselves; the point is a signal from OUTSIDE the daemon.
+   */
+  function unionMembers(alias: string): string[] {
+    const src = readFileSync(new URL(`../../../src/studio/run-store.ts`, import.meta.url), 'utf-8');
+    const decl = new RegExp(`export type ${alias} =([^;]+);`).exec(src);
+    if (!decl) throw new Error(`could not find "export type ${alias}" in run-store.ts`);
+    return decl[1].split('|').map((s) => s.trim().replace(/^'|'$/g, '')).filter((s) => s.length > 0);
+  }
+
+  function runPaths(): Record<string, Record<string, { operationId?: string; description?: string; parameters?: Array<{ name: string; in: string; description?: string; schema: Record<string, unknown> }> }>> {
+    return (buildOpenApi() as { paths: Record<string, Record<string, never>> }).paths;
+  }
+
+  it('serves all three run routes with their operation ids', () => {
+    // MUT: drop any runPaths() entry → RED. A generated SDK silently loses the whole resource family.
+    const paths = runPaths();
+    expect(paths['/v1/runs']?.post?.operationId).toBe('createRun');
+    expect(paths['/v1/runs']?.get?.operationId).toBe('listRuns');
+    expect(paths['/v1/runs/{id}']?.get?.operationId).toBe('getRun');
+    expect(paths['/v1/runs/{id}/events']?.get?.operationId).toBe('streamRunEvents');
+  });
+
+  it('documents exactly the store\'s run status vocabulary (drift gate)', () => {
+    // Differential: the doc's enum against the RunStatus union in the store. Adding a seventh status
+    // to the store without documenting it — or documenting one the store cannot produce — is RED.
+    const expected = unionMembers('RunStatus');
+    expect(expected.length).toBeGreaterThan(0);
+    const doc = buildOpenApi() as { paths: Record<string, { get: { responses: Record<string, { content: { 'application/json': { schema: { properties: { run: { properties: { status: { enum: string[] } } } } } } } }> } }> };
+    const status = doc.paths['/v1/runs/{id}'].get.responses['200'].content['application/json'].schema.properties.run.properties.status;
+    expect([...status.enum].sort()).toEqual([...expected].sort());
+    // And the list filter's description names the same set, so a 400 is diagnosable from the doc.
+    const filter = runPaths()['/v1/runs'].get.parameters!.find((p) => p.name === 'status');
+    for (const value of expected) expect(filter!.description).toContain(value);
+  });
+
+  it('documents exactly law 3\'s driver vocabulary (drift gate)', () => {
+    const expected = unionMembers('DriverKind');
+    const driver = runPaths()['/v1/runs'].post as unknown as { requestBody: { content: { 'application/json': { schema: { properties: { driver: { properties: { kind: { enum: string[] } } } } } } } } };
+    expect([...driver.requestBody.content['application/json'].schema.properties.driver.properties.kind.enum].sort()).toEqual([...expected].sort());
+  });
+
+  it('serves the list bounds the router actually enforces', () => {
+    // The router 400s a limit outside [1, MAX_LIST_LIMIT]; a doc that advertised a wider range would
+    // have generated clients emitting requests the server rejects.
+    const limit = runPaths()['/v1/runs'].get.parameters!.find((p) => p.name === 'limit');
+    expect(limit!.schema.minimum).toBe(1);
+    expect(limit!.schema.maximum).toBe(MAX_LIST_LIMIT);
+    expect(limit!.schema.default).toBe(DEFAULT_LIST_LIMIT);
+  });
+
+  it('documents both resume points and says which one wins', () => {
+    // Last-Event-ID is the ONLY way a client recovers from a server-side end; a doc that omitted it
+    // would leave the reconnect path undiscoverable from the machine contract.
+    const params = runPaths()['/v1/runs/{id}/events'].get.parameters!;
+    const since = params.find((p) => p.name === 'since');
+    expect(since!.schema.minimum).toBe(0);
+    const resume = params.find((p) => p.name === 'Last-Event-ID');
+    expect(resume!.in).toBe('header');
+    expect(resume!.description!.toLowerCase()).toContain('precedence');
+  });
+
+  it('admits that the server ends the stream, and tells the client to resume rather than give up', () => {
+    /**
+     * The defect this row exists for: the description used to read "the server does not close the
+     * stream, including after the run ends". `runs.ts` ends it at four doors — a stalled reader, a
+     * hold-buffer overflow before and during the go-live flush, and an unhealable seq gap — and
+     * every one of those log lines ends "so the client resumes". The implementation's correctness
+     * argument DEPENDS on the reconnect the spec told SDK authors would never be needed, so a
+     * client written to the old text treats the end as fatal and drops the tail permanently.
+     * MUT: restore any never-closes phrasing → RED.
+     */
+    const desc = runPaths()['/v1/runs/{id}/events'].get.description!.toLowerCase();
+    expect(desc).toMatch(/server may end the stream/);
+    expect(desc).toContain('last-event-id');
+    expect(desc).toMatch(/must treat it as a resume point|must .*resume/);
+    // Each door a client can actually be on the wrong side of is named, so "why did it end" is
+    // answerable from the contract alone.
+    for (const cause of ['byte budget', 'overflows', 'gap']) expect(desc).toContain(cause);
+    // No surviving promise that the server keeps it open forever.
+    expect(desc).not.toMatch(/does not close|never close|will not close|does not end the stream/);
   });
 });
 

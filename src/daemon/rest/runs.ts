@@ -45,8 +45,15 @@ const log = createLogger('rest');
 /** The route label used for body caps and log lines. `bodyCapFor` gives it the 1 MiB default. */
 export const RUNS_ROUTE_LABEL = 'runs';
 
-const RUN_STATUSES = new Set<string>(['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled']);
-const DRIVER_KINDS = new Set<string>(['cli', 'sdk', 'api', 'studio', 'human']);
+/**
+ * The two vocabularies this route enforces, exported so `openapi.ts` documents exactly what the
+ * router accepts. A second literal copy in the served document is a contract that can drift green.
+ */
+export const RUN_STATUS_VALUES: readonly string[] = ['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled'];
+export const DRIVER_KIND_VALUES: readonly string[] = ['cli', 'sdk', 'api', 'studio', 'human'];
+
+const RUN_STATUSES = new Set<string>(RUN_STATUS_VALUES);
+const DRIVER_KINDS = new Set<string>(DRIVER_KIND_VALUES);
 
 /** Persisted into the log AND onto disk, so both need a bound the 1 MiB body cap does not give. */
 export const MAX_SPACE_ID_CHARS = 200;

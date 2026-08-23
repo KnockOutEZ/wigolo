@@ -19,7 +19,7 @@ import {
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
 import { MAX_TASK_CHARS, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '../../studio/run-store.js';
-import { MAX_SPACE_ID_CHARS, MAX_CLIENT_FIELD_CHARS } from './runs.js';
+import { MAX_SPACE_ID_CHARS, MAX_CLIENT_FIELD_CHARS, RUN_STATUS_VALUES, DRIVER_KIND_VALUES } from './runs.js';
 import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -366,7 +366,7 @@ function driverSchema(): object {
     type: 'object',
     description: 'Who is driving the run. One driver at a time; the vocabulary is fixed.',
     properties: {
-      kind: { type: 'string', enum: ['cli', 'sdk', 'api', 'studio', 'human'], default: 'api' },
+      kind: { type: 'string', enum: [...DRIVER_KIND_VALUES], default: 'api' },
       client: {
         type: 'object',
         properties: {
@@ -388,7 +388,7 @@ function runSchema(): object {
       task: { type: 'string' },
       spaceId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
-      status: { type: 'string', enum: ['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled'] },
+      status: { type: 'string', enum: [...RUN_STATUS_VALUES] },
       driver: driverSchema(),
       tabIds: { type: 'array', items: { type: 'string' } },
       pendingDecisions: { type: 'array', items: { type: 'object', additionalProperties: true } },
@@ -462,7 +462,7 @@ function runPaths(): Record<string, object> {
           name: 'status',
           in: 'query',
           required: false,
-          description: 'Comma-separated run statuses to include.',
+          description: `Comma-separated run statuses to include. Any value outside ${RUN_STATUS_VALUES.join(', ')} is refused.`,
           schema: { type: 'string' },
         },
         { name: 'spaceId', in: 'query', required: false, schema: { type: 'string' } },
@@ -528,8 +528,14 @@ function runPaths(): Record<string, object> {
       description:
         'A server-sent event stream. Each message carries the event sequence number as its SSE id, ' +
         'so a client that reconnects with Last-Event-ID (or ?since=) resumes with no gaps and no ' +
-        'duplicates. The server does not close the stream, including after the run ends; the client ' +
-        'closes when it is done. Idle streams receive a comment heartbeat.',
+        'duplicates. The server MAY end the stream before the client is done: when a reader stops ' +
+        'reading past its byte budget, when a burst overflows the ordering buffer, when a sequence ' +
+        'gap cannot be filled from the durable log, or on an internal read error. An end is never ' +
+        'the end of the run and never a loss of events — the durable log is the source of truth — ' +
+        'so a client MUST treat it as a resume point and reconnect with Last-Event-ID rather than ' +
+        'as fatal. The stream also stays open after the run reaches a terminal status; the client ' +
+        'closes when it is done. Idle streams receive a comment heartbeat, and the stream opens ' +
+        'with a retry hint that sets the reconnect backoff.',
       security: [{}, { bearerAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
