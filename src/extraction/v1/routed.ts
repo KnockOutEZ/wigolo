@@ -4,6 +4,7 @@ import { defuddleExtract } from '../defuddle.js';
 import { readabilityExtract } from '../readability.js';
 import { htmlToMarkdown } from '../markdown.js';
 import { stripBoilerplateDom } from '../boilerplate.js';
+import { stripHiddenDom } from '../visibility.js';
 import { createLogger } from '../../logger.js';
 import { classifyContent, type ContentType } from './classifier.js';
 import { isolateContentRoot } from './content-root.js';
@@ -128,6 +129,11 @@ function detectSiteBlock(url: string, html: string): string | null {
 function cleanHtml(html: string, url: string): string {
   try {
     const { document } = parseHTML(html);
+    // Visibility first, boilerplate second. Hidden chrome is dropped before any
+    // extractor sees it, so suppression no longer depends on which tier wins the
+    // route — the divergence that let GitHub's session banner leak on a JS shell
+    // while the same markup was suppressed on the site's repo pages.
+    stripHiddenDom(document);
     stripBoilerplateDom(document);
     return document.toString();
   } catch (err) {
