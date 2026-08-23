@@ -1090,7 +1090,7 @@ async function handleEvents(
     if (needsDrain) {
       // An expiry is a reader that stopped reading without leaving, and it is answered exactly the
       // way the byte budget answers the reader that reads too slowly: end, so the slot comes back
-      // and the client resumes from `Last-Event-ID`. Waiting on is the one answer that cannot work —
+      // and the client resumes from `Last-Event-ID`. Waiting it out is the one answer that cannot —
       // no further byte is handed over while this parks, so no other door on this route can fire.
       if (!(await waitForDrain(res, drainDeadlineMs))) {
         endStalled('drain');
@@ -1147,7 +1147,7 @@ async function handleEvents(
         const tail = page[page.length - 1].seq;
         // A store that ignored `since` would hand back the same page forever. Nothing legitimate
         // produces that; a spin on the event loop every other request shares is what it would cost
-        // if anything did. It is also the terminator the short-page check below used to double as.
+        // if anything did. It is also the exit the removed short-page check used to double as.
         if (tail <= cursor) return true;
         cursor = tail;
         // A page that never reached the byte budget still leaves the socket back-pressured, so the
