@@ -150,7 +150,7 @@ describe('the tray follows the projection', () => {
     const handle = createRunTray({
       tray,
       dock,
-      runs: { list: () => runs, onChange: (cb) => { notify = cb; } },
+      runs: { listLive: () => runs, onChange: (cb) => { notify = cb; } },
       setVisibility: async () => {},
       onError: () => {},
     });
@@ -201,7 +201,7 @@ describe('the tray follows the projection', () => {
     createRunTray({
       tray,
       dock,
-      runs: { list: () => runs, onChange: (cb) => { notify = cb; } },
+      runs: { listLive: () => runs, onChange: (cb) => { notify = cb; } },
       setVisibility: async () => { throw new Error('the studio window is no longer available'); },
       onError: (err) => seen.push(err),
     });

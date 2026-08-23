@@ -128,9 +128,9 @@ export function isTerminal(status: Run['status']): boolean {
  * How long a burst of envelopes may be folded into one fan-out — one frame at 60 Hz.
  *
  * The fan-out is what makes folding expensive, not the fold. Every listener answers by PROJECTING:
- * `ipc-host` pushes `runs.list()` at the renderer, `run-tray` rebuilds a native menu template and
- * hands it to the OS item, `run-presentation` reads `list()` to decide what the window wants. Each of
- * those refills the memo the fold just dropped, so an un-coalesced fan-out replays the whole log once
+ * `ipc-host` pushes `runs.listLive()` at the renderer, `run-tray` rebuilds a native menu template and
+ * hands it to the OS item, `run-presentation` reads `listLive()` to decide what the window wants. Each
+ * of those refills the memo the fold just dropped, so an un-coalesced fan-out replays the whole log once
  * per envelope: measured on the shipped code at 3k envelopes = 44 ms against 6 ms with nobody
  * watching, and at 20k = 1135 ms against 14 ms — doubling the log roughly quadrupled the cost, on the
  * Electron main thread, which is also the thread that paints.
@@ -233,6 +233,19 @@ export interface RunSummary {
   status: Run['status'];
   tabIds: string[];
   visibility: Run['visibility'];
+}
+
+/**
+ * What a surface shows: everything unfinished, plus anything still being watched so it can be demoted.
+ *
+ * One rule, in one place, because three listeners answer with it — the state push, the tray menu and
+ * the presentation controller — and a surface that narrowed differently would be a second account of
+ * which runs exist (law 1). A finished run that is still on screen stays listed: dropping it would
+ * leave the human watching a run the chrome no longer knows about, with no affordance left to send it
+ * away.
+ */
+export function isListable(run: Pick<Run, 'status' | 'visibility'>): boolean {
+  return !isTerminal(run.status) || run.visibility === 'visible';
 }
 
 interface RunLog {
@@ -791,13 +804,27 @@ export class RunViewModel {
   }
 
   /**
-   * The run a still-pending decision belongs to, replayed rather than remembered. An answer arrives
-   * carrying only the card's id, and a map from card to run would be one more thing to keep in step
-   * with the log — the log already knows, because a resolved decision is no longer pending.
+   * The LIVE run a still-pending decision belongs to, replayed rather than remembered. An answer
+   * arrives carrying only the card's id, and a map from card to run would be one more thing to keep in
+   * step with the log — the log already knows, because a resolved decision is no longer pending.
+   *
+   * Terminal runs are skipped, which is the same narrowing `listLive` takes and for the same reason:
+   * this walked and PROJECTED every run the machine had ever held, and it grows with the lifetime run
+   * count exactly the way the state push did. A sealed run is skipped without projecting at all — its
+   * kept projection states the terminal status, and no read can move that.
+   *
+   * Narrowing it costs nothing observable. The one caller, `run-decisions`' `settle`, re-reads the
+   * status of whatever it gets back and refuses to write once the run is terminal — appending a
+   * `decision.resolved` after `run.completed` would be an out-of-order fact in an append-only log — so
+   * a terminal run was never an answer that could be acted on, only one more projection on the way
+   * past. Reverse this the moment some caller needs the run behind a card the log has already closed.
    */
   runForDecision(decisionId: string): string | undefined {
-    for (const runId of this.logs.keys()) {
-      if (this.snapshot(runId)!.pendingDecisions.some((d) => d.decisionId === decisionId)) return runId;
+    for (const [runId, log] of this.logs) {
+      if (log.kept && isTerminal(log.kept.status)) continue;
+      const run = this.snapshot(runId)!;
+      if (isTerminal(run.status)) continue;
+      if (run.pendingDecisions.some((d) => d.decisionId === decisionId)) return runId;
     }
     return undefined;
   }
@@ -1005,15 +1032,43 @@ export class RunViewModel {
     return universe.filter((t) => this.isUserTab(t));
   }
 
+  /**
+   * Every run this process holds, finished ones included — the history read, answered on demand.
+   *
+   * NOT what a surface renders. Nothing here is forgotten: sealing a terminal run drops its envelopes
+   * and keeps its projection, and `hydrate` deliberately keeps runs the listing did not name, so this
+   * grows with the machine's lifetime run count and never gives any of it back. See `listLive`.
+   */
   list(): RunSummary[] {
-    return [...this.logs.keys()].map((id) => {
+    return [...this.logs.keys()].map((id) => summaryOf(this.snapshot(id)!));
+  }
+
+  /**
+   * What the surfaces render: `isListable` applied before the summary is built, not after.
+   *
+   * The state push fires once per 16 ms coalescing window and used to carry `list()`, so every
+   * broadcast paid for every run the machine had ever seen — measured at 2,000 terminal + 2 live runs,
+   * 253 KB per fan-out, and at 10,000 runs with realistic task strings, 4.6 MB and 7 ms of a 16 ms
+   * frame, on the thread that paints, with structured clone dominating. The tray and the presentation
+   * controller each read on the same fan-out, so the cost was paid three times over.
+   *
+   * The skip is taken from the LOG rather than from a projection wherever it can be: a sealed run
+   * holds the projection it ended with, and neither of the two things a read can still change about it
+   * — `withoutExpiredDecisions` only ever drops a card and downgrades `needs_you` to `running` — can
+   * move a terminal status or a visibility. So a finished, unwatched run costs a map lookup and a
+   * comparison here instead of a `snapshot` call, and the walk is O(live runs) in an app where every
+   * run this process finished is sealed. A terminal run that is NOT sealed (adopted mid-flight, say)
+   * falls through to the correct arm rather than to a wrong answer.
+   */
+  listLive(): RunSummary[] {
+    const out: RunSummary[] = [];
+    for (const [id, log] of this.logs) {
+      if (log.kept && !isListable(log.kept)) continue;
       const run = this.snapshot(id)!;
-      // `tabIds` copied for the same reason `tabsOf` copies: this summary is handed to the tray, to
-      // the renderer's state push and to the presentation controller, and it must not be a handle on
-      // the memo. This one crosses an IPC boundary as well, and the structured clone would only hide
-      // the aliasing from the renderer, never from main.
-      return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds.slice(), visibility: run.visibility };
-    });
+      if (!isListable(run)) continue;
+      out.push(summaryOf(run));
+    }
+    return out;
   }
 
   /**
@@ -1095,6 +1150,18 @@ export class RunViewModel {
     }, Math.max(0, at - this.now().getTime()));
     this.horizons.set(runId, { at, stop });
   }
+}
+
+/**
+ * A projection as the surfaces name it.
+ *
+ * `tabIds` is copied for the same reason `tabsOf` copies: this summary is handed to the tray, to the
+ * renderer's state push and to the presentation controller, and it must not be a handle on the memo.
+ * This one crosses an IPC boundary as well, and the structured clone would only hide the aliasing from
+ * the renderer, never from main.
+ */
+function summaryOf(run: Run): RunSummary {
+  return { id: run.id, task: run.task, status: run.status, tabIds: run.tabIds.slice(), visibility: run.visibility };
 }
 
 /** The first moment the clock alone can change this projection: the earliest pending auto-deny. */

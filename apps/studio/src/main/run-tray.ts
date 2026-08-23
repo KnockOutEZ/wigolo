@@ -1,4 +1,4 @@
-import { isTerminal, type RunSummary } from './run-view-model';
+import { isListable, isTerminal, type RunSummary } from './run-view-model';
 
 /**
  * Pin 5 — the menu-bar item, and the whole of a headless run's discoverability.
@@ -35,7 +35,13 @@ export interface DockPort {
 }
 
 export interface TrayRuns {
-  list(): RunSummary[];
+  /**
+   * The LIVE runs, not the lifetime listing. Everything this item draws — the count, the tooltip, the
+   * badge, the menu — is already a function of `listable(runs)`, so asking for the whole history and
+   * filtering it here meant rebuilding a summary per finished run on every fan-out, at up to 60 Hz,
+   * for rows the menu then dropped. The narrowing is the same one, taken before the summaries exist.
+   */
+  listLive(): RunSummary[];
   onChange(cb: () => void): void;
 }
 
@@ -59,9 +65,14 @@ const MAX_TASK_CHARS = 52;
 
 const live = (runs: readonly RunSummary[]): RunSummary[] => runs.filter((r) => !isTerminal(r.status));
 
-/** What the menu offers: everything live, plus anything still being watched so it can be demoted. */
-const listable = (runs: readonly RunSummary[]): RunSummary[] =>
-  runs.filter((r) => !isTerminal(r.status) || r.visibility === 'visible');
+/**
+ * What the menu offers: everything live, plus anything still being watched so it can be demoted.
+ *
+ * The rule itself is `isListable`, shared with the view-model, because the state push and the
+ * presentation controller narrow by the same one — three surfaces disagreeing about which runs exist
+ * is the class law 1 removes. This stays as the array form the builders take.
+ */
+const listable = (runs: readonly RunSummary[]): RunSummary[] => runs.filter(isListable);
 
 export function needsYouCount(runs: readonly RunSummary[]): number {
   return runs.filter((r) => r.status === 'needs_you').length;
@@ -121,7 +132,7 @@ export function createRunTray(deps: RunTrayDeps): RunTrayHandle {
     // Redrawing a destroyed OS item throws from inside a listener the run log is fanning out to,
     // which is how a menu-bar item took a whole app shutdown down with it.
     if (gone) return;
-    const runs = deps.runs.list();
+    const runs = deps.runs.listLive();
     deps.tray.setLabel(trayLabel(runs));
     deps.tray.setToolTip(trayTooltip(runs));
     current = buildTrayMenu(runs, (runId, next) => {
