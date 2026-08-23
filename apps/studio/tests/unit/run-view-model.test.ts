@@ -7,7 +7,7 @@ import {
   type RunEvent,
   type RunEventInput,
 } from 'wigolo/studio';
-import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
+import { EMIT_COALESCE_MS, RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
 describe('RunViewModel — tab↔run ownership is the run log, not registry state', () => {
@@ -749,6 +749,42 @@ describe('RunViewModel — the deadline announces itself', () => {
 
     // A timer that outlives the app would announce a transition into destroyed surfaces.
     expect(timers).toHaveLength(0);
+  });
+
+  /**
+   * The coalescing window is the OTHER timer this class owns, and dispose could not reach it: it was a
+   * raw `setTimeout` with no handle kept, so nothing could clear it and no test could drive it.
+   *
+   * That matters most on the path dispose exists for. Shutdown ends every live run, so the last thing
+   * before this call is a burst of terminal appends; whichever lands in the final 16 ms is owed the
+   * trailing fan-out, and the tray was destroyed one line earlier. The window has to be on the
+   * injected timer for the first claim below to be checkable at all, and cleared for the second.
+   */
+  it('clears the coalescing window on dispose, so a change inside it never fans out afterwards', async () => {
+    const store = new FakeRunStore();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const vm = new RunViewModel(store, () => new Date(), collect(timers));
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+
+    let fanOuts = 0;
+    vm.onChange(() => { fanOuts++; });
+
+    await vm.attachTab(run.id, 'tab-a'); // leading edge, and the window opens behind it
+    expect(fanOuts).toBe(1);
+    const window = timers.find((t) => t.ms === EMIT_COALESCE_MS);
+    expect(window, 'the coalescing window is not on the injected timer, so nothing can clear it').toBeDefined();
+
+    await vm.attachTab(run.id, 'tab-b'); // lands INSIDE the window — owed the fan-out that closes it
+    expect(fanOuts, 'the window did not coalesce the second change').toBe(1);
+
+    vm.dispose();
+
+    expect(timers, 'dispose left the coalescing window running').not.toContain(window);
+    // The window that a raw `setTimeout` would still be running. Firing it must reach nobody.
+    window!.fire();
+    await new Promise((resolve) => { setTimeout(resolve, EMIT_COALESCE_MS * 4); });
+    expect(fanOuts, 'a fan-out reached listeners after dispose').toBe(1);
   });
 
   /**

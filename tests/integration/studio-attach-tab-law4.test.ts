@@ -32,6 +32,8 @@ import {
 interface RunViewModelLike {
   createRun(input: CreateRunInput): Promise<Run>;
   attachTab(runId: string, tabId: string, url?: string): Promise<void>;
+  detachTab(tabId: string, reason: 'closed' | 'run_ended'): Promise<void>;
+  endRun(runId: string, terminal: 'completed' | 'failed' | 'cancelled', detail?: string): Promise<void>;
   ownerOf(tabId: string): string | undefined;
   tabsOf(runId: string): string[];
 }
@@ -42,6 +44,21 @@ const { RunViewModel, TabOwnedError } = (await import(
   RunViewModel: new (store: unknown) => RunViewModelLike;
   TabOwnedError: new (tabId: string, ownerRunId: string) => TabOwnedErrorLike;
 };
+
+/** A latch a test can hold an append on, and open when the race it is staging is set up. */
+function gate(): { wait: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = () => { resolve(); }; });
+  return { wait, release };
+}
+
+/** A losing arm for `Promise.race` — never the reason the process stays alive. */
+function after<T>(ms: number, value: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const handle = setTimeout(() => { resolve(value); }, ms);
+    handle.unref?.();
+  });
+}
 
 /**
  * Law 4 — "a tab belongs to exactly one run" — where the only place it can actually be checked is:
@@ -88,7 +105,13 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
    * for one has not yet changed anything — and the store fans a committed envelope out to the live
    * tail BEFORE the call that caused it resolves.
    */
-  function bindStore() {
+  /**
+   * `park` holds an append on the wire for as long as the test wants, which is what turns a race that
+   * needs a slow broker into a deterministic one. Returning `undefined` lets the append through.
+   */
+  type Park = (runId: string, event: RunEventInput) => Promise<void> | undefined;
+
+  function bindStore(park?: Park) {
     const handlers: Array<(runId: string, event: RunEvent) => void> = [];
     const fan = (runId: string, event: RunEvent): void => { for (const h of handlers) h(runId, event); };
     return {
@@ -99,6 +122,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
       },
       async appendEvent(runId: string, event: RunEventInput) {
         await Promise.resolve();
+        await park?.(runId, event);
         const committed = appendEvent(db, runId, event, { dataDir });
         fan(runId, committed);
         return committed;
@@ -139,7 +163,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
     expect(vm.ownerOf('tab-contested')).toBe(winners[0]);
   });
 
-  it('still treats the owner re-attaching as a no-op, and never serialises one tab behind another', async () => {
+  it('still treats the owner re-attaching as a no-op', async () => {
     const vm = new RunViewModel(bindStore());
     const run = await vm.createRun({ task: 'read the docs' });
 
@@ -149,5 +173,91 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
     const attaches = eventsSince(db, run.id, 0).filter((e) => e.type === 'tab.attached');
     expect(attaches.map((e) => e.payload.tabId), 're-attaching the owner wrote a duplicate fact').toEqual(['tab-a', 'tab-b']);
     expect(vm.tabsOf(run.id)).toEqual(['tab-a', 'tab-b']);
+  });
+
+  /**
+   * The claim the row above cannot make. Two attaches that both succeed prove nothing about WHICH
+   * queue they went through: a single global FIFO lock passes that row, and every other arm here,
+   * while making one slow broker append block every tab in the app. So the falsifier has to be a tab
+   * whose append never lands: under a per-tab queue the other tab is unaffected, under a global one
+   * it never resolves.
+   */
+  it('serialises per TAB, not globally — tab-b lands while tab-a’s append is parked', async () => {
+    const held = gate();
+    const vm = new RunViewModel(bindStore((_runId, event) =>
+      event.type === 'tab.attached' && event.payload?.tabId === 'tab-a' ? held.wait : undefined));
+    const run = await vm.createRun({ task: 'read the docs' });
+
+    const slow = vm.attachTab(run.id, 'tab-a');
+    const other = vm.attachTab(run.id, 'tab-b');
+
+    expect(
+      await Promise.race([other.then(() => 'landed' as const), after(250, 'held' as const)]),
+      'tab-b waited on tab-a — the queue is global, so one slow broker append stalls every tab',
+    ).toBe('landed');
+
+    held.release();
+    await Promise.all([slow, other]);
+    expect(vm.tabsOf(run.id)).toEqual(['tab-b', 'tab-a']);
+  });
+
+  /**
+   * Law 4's other half, and the one the enforcement seam was missing: a tab a run owns has to STOP
+   * being owned when it stops existing.
+   *
+   * `detachTab` read `ownerOf` the moment it was called, off the queue the attach was on. A broker
+   * append can take seconds, so the ordinary sequence — agent attaches, human closes the tab before
+   * the append lands — found no owner, returned, and let the attach commit behind it. The durable log
+   * then says the run owns a destroyed tab, permanently: `agentVisibleTabs` lists it and `promote()`
+   * focuses a dead id, and no replay can tell that tab from a live one.
+   */
+  it('releases a tab the human closed while its attach was still on the wire', async () => {
+    const held = gate();
+    const vm = new RunViewModel(bindStore((_runId, event) =>
+      event.type === 'tab.attached' ? held.wait : undefined));
+    const run = await vm.createRun({ task: 'book the flight' });
+
+    const attach = vm.attachTab(run.id, 'tab-slow');
+    const detach = vm.detachTab('tab-slow', 'closed'); // the human closed it mid-flight
+    held.release();
+    await Promise.all([attach, detach]);
+
+    expect(
+      eventsSince(db, run.id, 0).filter((e) => e.type.startsWith('tab.')).map((e) => e.type),
+      'the log ends with the run still owning a tab that no longer exists',
+    ).toEqual(['tab.attached', 'tab.detached']);
+    expect(vm.ownerOf('tab-slow')).toBeUndefined();
+    expect(vm.tabsOf(run.id)).toEqual([]);
+  });
+
+  /**
+   * The same read, from the other side. `endRun` releases the run's tabs before it writes the terminal
+   * event, and a human closing one of them at that moment is not exotic — ending a run is exactly when
+   * a human reaches for its window. Both detaches read the owner before either folded, so the
+   * append-only record took two `tab.detached` facts for one detachment, and every later replay counts
+   * a release the run never made.
+   */
+  it('records exactly one tab.detached when a human close races the run ending', async () => {
+    const held = gate();
+    let parked = false;
+    const vm = new RunViewModel(bindStore((_runId, event) => {
+      if (event.type !== 'tab.detached' || parked) return undefined;
+      parked = true;
+      return held.wait;
+    }));
+    const run = await vm.createRun({ task: 'file the return' });
+    await vm.attachTab(run.id, 'tab-shared');
+
+    const byHuman = vm.detachTab('tab-shared', 'closed');
+    const ended = vm.endRun(run.id, 'completed');
+    held.release();
+    await Promise.all([byHuman, ended]);
+
+    const log = eventsSince(db, run.id, 0);
+    expect(
+      log.filter((e) => e.type === 'tab.detached'),
+      'one detachment was written to the append-only log twice',
+    ).toHaveLength(1);
+    expect(log.map((e) => e.type)).toEqual(['run.created', 'tab.attached', 'tab.detached', 'run.completed']);
   });
 });
