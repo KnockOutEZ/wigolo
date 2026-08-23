@@ -185,7 +185,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
   it('serialises per TAB, not globally — tab-b lands while tab-a’s append is parked', async () => {
     const held = gate();
     const vm = new RunViewModel(bindStore((_runId, event) =>
-      event.type === 'tab.attached' && event.payload.tabId === 'tab-a' ? held.wait : undefined));
+      event.type === 'tab.attached' && event.payload?.tabId === 'tab-a' ? held.wait : undefined));
     const run = await vm.createRun({ task: 'read the docs' });
 
     const slow = vm.attachTab(run.id, 'tab-a');
