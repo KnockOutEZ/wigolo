@@ -19,6 +19,7 @@ import {
   RUN_ID_MIN_LENGTH,
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
+  MAX_LIST_LIMIT,
   isValidListCursor,
   MAX_EVENT_PAYLOAD_CHARS,
   runDir,
@@ -492,9 +493,30 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
     expect(listRuns(db, { spaceId: 'other' }).runs.map((r) => r.id)).toEqual([b.id]);
   });
 
+  /**
+   * WHY: the clamp is the only thing in front of `SELECT ... LIMIT ?` on the list route, and the
+   * broker path reaches the store with no REST layer to reject a limit first. The test that stood
+   * here created THREE runs and asserted the page was at most 200 — true whether the clamp existed
+   * or not, so it could not go red for the defect it names.
+   */
   it('caps the page size so one call cannot ask for the whole store', () => {
-    for (let i = 0; i < 3; i++) createRun(db, { task: `t${i}` }, opts());
-    expect(listRuns(db, { limit: 10_000 }).runs.length).toBeLessThanOrEqual(200);
+    // One past the cap, so a page that returns everything is visibly one row too long — and so the
+    // cursor has something to point at.
+    for (let i = 0; i <= MAX_LIST_LIMIT; i++) {
+      createRun(db, { task: `t${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, i)) });
+    }
+    const page = listRuns(db, { limit: 10_000 });
+    expect(page.runs).toHaveLength(MAX_LIST_LIMIT);
+    // A clamp that silently drops the remainder is the other half of the defect: the caller has to
+    // be told there is more, or a paging loop stops one page short of the store.
+    expect(page.nextCursor).toBeDefined();
+    const rest = listRuns(db, { limit: 10_000, cursor: page.nextCursor });
+    expect(rest.runs).toHaveLength(1);
+    expect(rest.nextCursor).toBeUndefined();
+    // Newest first, and the two pages are disjoint — the clamp cannot be met by returning the same
+    // 200 rows twice.
+    expect(new Set([...page.runs, ...rest.runs].map((r) => r.id)).size).toBe(MAX_LIST_LIMIT + 1);
+    expect(rest.runs[0].task).toBe('t0');
   });
 });
 
