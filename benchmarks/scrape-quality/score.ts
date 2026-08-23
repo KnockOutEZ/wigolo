@@ -80,8 +80,29 @@ export function evaluateAssertion(
       return { category: a.category, passed, describe: `contains "${a.value}"`, detail: passed ? undefined : 'missing from extracted markdown' };
     }
     case 'absent': {
+      const describe = `omits "${a.value}"`;
+      // NON-VACUITY, checked before the property itself — the same obligation `visible_only`
+      // below already carries, applied to the kind that needs it just as badly.
+      //
+      // K24: an `absent` claim is satisfied FOR FREE by any document that no longer contains
+      // the value in its SOURCE, and the degenerate case of that is total content loss. The
+      // measurement: a `strip_body` inversion probe reached 71 of 101 compared assertions, and
+      // every one of the 30 survivors was an `absent` satisfied by an emptied document. A
+      // corpus drifting toward `absent` assertions therefore gets QUIETER about content loss,
+      // not louder. Requiring the value to be present in the source makes the claim scorable
+      // only where it means something, and fails it loudly where it does not.
+      //
+      // The same rule also catches the fixture-typo case — an `absent` value that was never on
+      // the page scores a free point for the life of the corpus. One such assertion was found
+      // in the shipped C0 manifest when this precondition was added.
+      if (ctx.sourceHtml === undefined) {
+        return { category: a.category, passed: false, describe, detail: 'not evaluated: absent needs sourceHtml' };
+      }
+      if (!norm(htmlText(ctx.sourceHtml)).includes(norm(a.value))) {
+        return { category: a.category, passed: false, describe, detail: 'VACUOUS: value is not in the source HTML, so this assertion suppresses nothing' };
+      }
       const passed = !norm(markdown).includes(norm(a.value));
-      return { category: a.category, passed, describe: `omits "${a.value}"`, detail: passed ? undefined : 'boilerplate leaked into extracted markdown' };
+      return { category: a.category, passed, describe, detail: passed ? undefined : 'boilerplate leaked into extracted markdown' };
     }
     case 'count': {
       const n = countFeature(markdown, a.feature);
