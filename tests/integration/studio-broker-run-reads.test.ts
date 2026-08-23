@@ -41,6 +41,49 @@ function recordingDb(db: Database.Database, sql: string[]): Database.Database {
   });
 }
 
+interface ReadRecord { sql: string; rows: number; chars: number }
+
+/**
+ * Records what each read EXECUTION returned, not what was prepared.
+ *
+ * `recordingDb` sees `prepare`, and the store caches one statement per SQL string per handle — so a
+ * read issued fifty times appears once. That is enough to ask WHICH table a read touched and useless
+ * for asking HOW MUCH it moved, which is the whole question a budget is about. This wraps the
+ * statement instead and counts the rows and the payload characters each `all()` actually returned.
+ */
+function countingDb(db: Database.Database, reads: ReadRecord[]): Database.Database {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'prepare' && typeof value === 'function') {
+        return (query: string) => {
+          const prepared = (value as Database.Database['prepare']).call(target, query);
+          return new Proxy(prepared, {
+            get(stTarget, stProp, stReceiver) {
+              const stValue = Reflect.get(stTarget, stProp, stReceiver);
+              if (stProp === 'all' && typeof stValue === 'function') {
+                return (...args: unknown[]) => {
+                  const rows = (stValue as (...a: unknown[]) => unknown[]).apply(stTarget, args);
+                  const chars = rows.reduce<number>((n, r) => {
+                    const payload = (r as { payload?: unknown }).payload;
+                    return n + (typeof payload === 'string' ? payload.length : 0);
+                  }, 0);
+                  reads.push({ sql: query, rows: rows.length, chars });
+                  return rows;
+                };
+              }
+              return typeof stValue === 'function'
+                ? (stValue as (...a: unknown[]) => unknown).bind(stTarget)
+                : stValue;
+            },
+          });
+        };
+      }
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
 /**
  * Grow a run's log to a size the caps are about, by the same INSERT the store makes.
  *
@@ -218,6 +261,117 @@ describe('studio-db-broker — the host-side run reads are bounded', () => {
     // The budget is spent by one run, not by the page: a small run beside it still comes whole.
     expect(smallEntry.events.map((e) => e.type)).toEqual(['run.created']);
     expect(smallEntry.projection).toBeUndefined();
+  });
+
+  /**
+   * MED-1 — the char budget was charged when a log was ACCEPTED, and a rejected one cost the same
+   * read for nothing.
+   *
+   * The event bound is decided from the listing row, before a row is read. The char bound was not:
+   * the only way to learn a log's serialized size was to MATERIALIZE it — up to two thousand rows,
+   * `JSON.parse` per payload, `JSON.stringify` over the array — and a run that then failed the check
+   * returned its projection WITHOUT decrementing either budget. So `charsLeft` was still the full
+   * four million for the next run on the page, which read itself in full to fail the same way. A page
+   * of fifty five-megabyte runs read, parsed and re-serialized a quarter of a gigabyte to answer with
+   * fifty projections a few hundred bytes each, and the next hydration page did it again.
+   *
+   * The read count is the instrument. The returned page looks IDENTICAL before and after — same
+   * projections, same tail seqs — so an assertion about the answer cannot see the defect at all.
+   */
+  it('spends the frame budget on the run that read it, so one rejection does not re-read the page', async () => {
+    const big = 'z'.repeat(50_000);
+    // Each run alone overruns the whole page's char budget, and every one of them is under the EVENT
+    // cap — so the char check is the only thing that can be rejecting them.
+    const rowsPerRun = Math.ceil(MAX_BOOT_FRAME_CHARS / big.length) + 2;
+    expect(rowsPerRun).toBeLessThan(MAX_BOOT_EVENTS_PER_RUN);
+    const oversized = 5;
+    for (let i = 0; i < oversized; i++) {
+      const run = await handlers.runCreate({ input: { task: `oversized ${i}`, sessionId: `sess-${i}` } });
+      bulkAppend(getDatabase(), run.id, rowsPerRun, () => ({ type: 'run.progress', payload: { blob: big } }));
+    }
+
+    const reads: ReadRecord[] = [];
+    const counted = createBrokerHandlers({
+      db: countingDb(getDatabase(), reads),
+      engines: [mockSearchEngine],
+      router: mockRouter,
+      backendStatus: undefined,
+      onArtifact: () => {},
+    });
+    const { entries } = await counted.runListLogs({});
+
+    // The answer is unchanged: every run is condensed, and carries what a condensed entry owes.
+    expect(entries).toHaveLength(oversized);
+    for (const entry of entries) {
+      expect(entry.events).toEqual([]);
+      expect(entry.projection).toBeDefined();
+      expect(entry.lastSeq).toBe(rowsPerRun + 1);
+      expect(entry.sessionId).toMatch(/^sess-\d$/);
+    }
+
+    // The log read — `eventsSince` is the only one shaped `seq > ?`; the projection's per-type reads
+    // are not. A rejected run must not have materialized its log, so the only one left is the
+    // one-row session link a condensed entry needs.
+    const logReads = reads.filter((r) => r.sql.includes('FROM studio_run_events') && r.sql.includes('seq > ?'));
+    const materialized = logReads.filter((r) => r.rows > 1);
+    expect(materialized.map((r) => r.rows), 'a run rejected on size still read its whole log').toEqual([]);
+
+    // …and the bytes, across EVERY event read the page made: the page cannot move more characters
+    // than the frame it is bounding. Before this, the five runs moved five full logs — five times it.
+    const charsRead = reads
+      .filter((r) => r.sql.includes('FROM studio_run_events'))
+      .reduce((n, r) => n + r.chars, 0);
+    expect(charsRead, 'the page read more than the frame budget it exists to enforce')
+      .toBeLessThan(MAX_BOOT_FRAME_CHARS);
+  });
+
+  /**
+   * The other half of MED-1, and the one the SUM cannot reach.
+   *
+   * The pre-read estimate is deliberately a LOWER bound — it counts stored payload characters and not
+   * the `seq`, `ts`, `actor` and `type` the frame also carries — because an estimate that could
+   * OVER-state would condense runs that fit, and the accepted path has to stay exactly what it was.
+   * The cost of that soundness is a band: a run whose payloads sit just under the budget still gets
+   * materialized, and can still fail on the real serialized size.
+   *
+   * That is the case where charging is the whole mechanism. This run is built INTO the band, so it
+   * cannot be rejected before the read — and the run behind it must then find the budget already
+   * spent rather than a fresh four million to read itself against.
+   */
+  it('charges an overrun the read cost it, so the run behind it is never read at all', async () => {
+    // ~2 KB payloads, just under two thousand of them: the payload sum lands under the frame budget
+    // and the envelope overhead the frame also carries pushes the serialized size over it.
+    const blob = 'w'.repeat(1_990);
+    const rowsPerRun = 1_990;
+    for (let i = 0; i < 2; i++) {
+      const run = await handlers.runCreate({ input: { task: `banded ${i}`, sessionId: `sess-band-${i}` } });
+      bulkAppend(getDatabase(), run.id, rowsPerRun, () => ({ type: 'run.progress', payload: { blob } }));
+      expect(rowsPerRun + 1, 'the EVENT cap would be doing the work instead').toBeLessThan(MAX_BOOT_EVENTS_PER_RUN);
+    }
+
+    const reads: ReadRecord[] = [];
+    const counted = createBrokerHandlers({
+      db: countingDb(getDatabase(), reads),
+      engines: [mockSearchEngine],
+      router: mockRouter,
+      backendStatus: undefined,
+      onArtifact: () => {},
+    });
+    const { entries } = await counted.runListLogs({});
+
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      expect(entry.events, 'neither run fits, so both must come back condensed').toEqual([]);
+      expect(entry.projection).toBeDefined();
+    }
+
+    const materialized = reads
+      .filter((r) => r.sql.includes('FROM studio_run_events') && r.sql.includes('seq > ?') && r.rows > 1);
+    // EXACTLY one. Two means the first overrun was free and the page starts over on every run — the
+    // defect. Zero means the estimate rejected it before the read, so this row is testing the arm it
+    // was written to test and not the cheaper one beside it.
+    expect(materialized).toHaveLength(1);
+    expect(materialized[0].rows).toBe(rowsPerRun + 1);
   });
 
   // `limit` used to be optional, and omitting it meant "every event this run ever had" in one frame
