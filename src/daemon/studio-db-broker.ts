@@ -115,6 +115,29 @@ export interface BrokerRunLogPage {
   nextCursor?: string;
 }
 
+/**
+ * A run's stored payload characters, summed in SQL — a strict LOWER bound on what its log serializes
+ * to, so `storedPayloadChars(run) > charsLeft` PROVES the log cannot fit without materializing it.
+ *
+ * Sound because every stored payload string appears verbatim inside `JSON.stringify(events)`, which
+ * additionally carries `seq`, `ts`, `actor`, `type`, the keys, the braces and the commas. SQLite's
+ * `length()` counts code points where JS `.length` counts UTF-16 units, so an astral character makes
+ * this estimate smaller still — never larger. A bound that can only UNDER-state means no run that
+ * would have fit is ever condensed by it: the accepted path is decided by exactly the check it was
+ * decided by before, on exactly the same characters.
+ *
+ * The point is what it does NOT do. The materializing check reads up to two thousand rows, parses
+ * every payload into an object and re-serializes the array; this reads one aggregate and allocates
+ * one number. It is charged to the accepted path too — but the accepted path is bounded by
+ * `MAX_BOOT_FRAME_CHARS` by construction, so the extra scan is bounded by the same four million.
+ */
+function storedPayloadChars(db: Database.Database, runId: string): number {
+  const row = db
+    .prepare('SELECT SUM(LENGTH(payload)) AS chars FROM studio_run_events WHERE run_id = ?')
+    .get(runId) as { chars: number | null } | undefined;
+  return row?.chars ?? 0;
+}
+
 /** The session link, as one row. Only read when the entry has no envelopes to replay it from. */
 function sessionLinkOf(db: Database.Database, runId: string): { sessionId?: string } {
   const [created] = eventsSince(db, runId, 0, 1);
@@ -280,15 +303,24 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
         const facts: StoredRunFacts = { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt };
         // `seq` is gap-free and starts at 1, so the tail seq IS the event count: how big a log is, is
         // known from the listing row before a single event row is read.
+        //
+        // The char bound is decided the same way wherever it can be. `storedPayloadChars` under-states
+        // the serialized size, so a run it rules out could not have fitted — and is ruled out for the
+        // price of one SUM instead of a full parse-and-re-serialize.
         const budget = Math.min(MAX_BOOT_EVENTS_PER_RUN, eventsLeft);
-        if (run.lastSeq <= budget) {
+        if (run.lastSeq <= budget && charsLeft > 0 && storedPayloadChars(deps.db, run.id) <= charsLeft) {
           const events = eventsSince(deps.db, run.id, 0, budget);
           const chars = JSON.stringify(events).length;
-          if (chars <= charsLeft) {
-            eventsLeft -= events.length;
-            charsLeft -= chars;
-            return { facts, events, lastSeq: run.lastSeq };
-          }
+          const fits = chars <= charsLeft;
+          // Charged for the READ, never for the acceptance. A run that got this far cost the page the
+          // same materialization whether or not its envelopes ship, and leaving the budget untouched
+          // on rejection made the NEXT run start from the full four million and pay it again — so a
+          // page of oversized runs read every one of them in full, and the next hydration page did it
+          // again. Charging here is what makes the overrun terminate: `charsLeft` goes non-positive
+          // and the guard above stops the reads for the rest of the page.
+          eventsLeft -= events.length;
+          charsLeft -= chars;
+          if (fits) return { facts, events, lastSeq: run.lastSeq };
         }
         return { facts, events: [], lastSeq: run.lastSeq, projection: run, ...sessionLinkOf(deps.db, run.id) };
       });
