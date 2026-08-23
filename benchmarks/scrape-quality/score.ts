@@ -1,3 +1,5 @@
+import { parseHTML } from 'linkedom';
+import { stripHiddenDom, type VisibilityDocument } from '../../src/extraction/visibility.js';
 import type { StructuredData } from '../../src/types.js';
 import type { Assertion, AssertionContext, AssertionResult, Category, FixtureResult, HealTier, MarkdownFeature, ScrapeReport, CategorySummary } from './types.js';
 
@@ -68,6 +70,72 @@ function htmlText(html: string): string {
     .replace(/&#0?39;|&apos;/g, "'");
 }
 
+/** Non-overlapping occurrence count, on the same normalised form the substring
+ *  checks use — so "twice in the source" and "twice in the markdown" are counted
+ *  by one rule and cannot disagree over whitespace or markdown escaping. */
+function occurrences(haystack: string, needle: string): number {
+  const h = norm(haystack);
+  const n = norm(needle);
+  if (n.length === 0) return 0;
+  let count = 0;
+  for (let i = h.indexOf(n); i !== -1; i = h.indexOf(n, i + n.length)) count += 1;
+  return count;
+}
+
+/** Attributes an HTML→markdown serialiser carries through into the output. A link's
+ *  `title` becomes `[text](href "title")` and an image's `alt` becomes `![alt](src)`,
+ *  so both are text the markdown may legitimately hold a copy of. Leaving them out
+ *  would make the referee count a faithful serialisation as a leak. */
+const MARKDOWN_BEARING_ATTRS: ReadonlyArray<string> = ['title', 'alt'];
+
+interface TextScopeElement {
+  getAttribute(name: string): string | null;
+  parentNode: { removeChild(child: TextScopeElement): void } | null;
+}
+interface TextScope {
+  querySelectorAll(selector: string): ArrayLike<TextScopeElement>;
+  textContent: string | null;
+}
+
+/** Read through the DOM rather than off a re-serialised string: linkedom re-emits
+ *  `&nbsp;` as `&#160;`, so a regex tag-stripper would leave an undecoded entity
+ *  sitting between two words and report a present value as absent. */
+function scopeText(scope: TextScope): string {
+  const parts = [scope.textContent ?? ''];
+  for (const attr of MARKDOWN_BEARING_ATTRS) {
+    const nodes = scope.querySelectorAll(`[${attr}]`);
+    for (let i = 0; i < nodes.length; i++) parts.push(nodes[i]!.getAttribute(attr) ?? '');
+  }
+  return parts.join(' ');
+}
+
+/**
+ * The text a value could reach the markdown FROM, with and without the hidden subtrees.
+ *
+ * The hidden side is dropped by the extractor's OWN `stripHiddenDom`, so the referee and
+ * the thing it referees agree on what "hidden" means by construction rather than by two
+ * hand-maintained rules drifting apart. Scoped to `<body>`: head metadata is never
+ * rendered, and counting it would let a `<meta>` copy of a string excuse a real leak.
+ *
+ * One parse, read twice — `stripHiddenDom` mutates in place, so `all` is taken before it
+ * runs and `visible` after. The fixtures are whole Wikipedia articles and a second parse
+ * of each measurably lengthened the referee lane for nothing.
+ */
+function reachableText(html: string): { all: string; visible: string } {
+  const { document } = parseHTML(html);
+  // `<script>` / `<style>` bodies are not rendered text and must never count as visible.
+  // `wikipedia-covid19` is the fixture that makes this matter: its second occurrence of the
+  // hidden string lives in a JSON-LD `<script>`. Counted as visible, it would silently pay
+  // for one leaked copy of the hidden div — the row would pass for a reason unrelated to
+  // visibility, and would flip the day anything promoted script text to content.
+  const dropped = (document as unknown as TextScope).querySelectorAll('script, style');
+  for (let i = 0; i < dropped.length; i++) dropped[i]!.parentNode?.removeChild(dropped[i]!);
+  const scope = ((document as unknown as { body?: TextScope }).body ?? (document as unknown as TextScope));
+  const all = scopeText(scope);
+  stripHiddenDom(document as unknown as VisibilityDocument);
+  return { all, visible: scopeText(scope) };
+}
+
 export function evaluateAssertion(
   a: Assertion,
   markdown: string,
@@ -122,18 +190,47 @@ export function evaluateAssertion(
     }
     case 'visible_only': {
       const describe = `invisible "${a.value}" does not survive extraction`;
-      // NON-VACUITY, checked before the property itself. The claim is "this text IS in the
-      // HTML and must NOT come out". If the text is not in the HTML, there is nothing to
-      // suppress and a "pass" would be measuring nothing — so it FAILS, loudly. Without
-      // this, one typo'd fixture value scores a free point for the life of the corpus.
+      // K25: this arm scores OCCURRENCES, not presence.
+      //
+      // Presence was the wrong proposition. `!markdown.includes(value)` is unsatisfiable the
+      // moment the hidden string also appears as VISIBLE content on the same page, because
+      // clearing it would mean deleting text a human reads. Measured on the frozen corpus,
+      // `wikipedia-python` is exactly that shape: its hidden `div.shortdescription` reads
+      // "General-purpose programming language" and so does the visible `<a>` in the lead
+      // sentence, word for word, anchor text and title attribute. The hidden div is dropped
+      // by every tier — the leak the row claimed does not reproduce — yet the row could never
+      // go green. Its three siblings passed not because they suppress better but because
+      // their hidden string has no visible twin. That is a property of the ASSERTION, not of
+      // the extractor, and scoring counts removes it.
+      //
+      // The property: the markdown may hold as many copies as the VISIBLE source can account
+      // for, and not one more. An extra copy has only one possible supplier — a hidden node.
       if (ctx.sourceHtml === undefined) {
         return { category: a.category, passed: false, describe, detail: 'not evaluated: visible_only needs sourceHtml' };
       }
-      if (!norm(htmlText(ctx.sourceHtml)).includes(norm(a.value))) {
-        return { category: a.category, passed: false, describe, detail: 'VACUOUS: value is not in the source HTML, so this assertion suppresses nothing' };
+      const reachable = reachableText(ctx.sourceHtml);
+      const inAll = occurrences(reachable.all, a.value);
+      const inVisible = occurrences(reachable.visible, a.value);
+      // NON-VACUITY, checked before the property itself, and STRICTER than presence-in-source
+      // was. The claim is "this text is HIDDEN in the source and must not come out". A value
+      // that occurs only as visible text suppresses nothing — the assertion could not fail
+      // for the reason it exists — so it fails loudly, exactly as a typo'd value does.
+      if (inAll <= inVisible) {
+        const why = inAll === 0
+          ? 'value is not in the source HTML'
+          : `all ${inAll} source occurrence(s) are visible`;
+        return { category: a.category, passed: false, describe, detail: `VACUOUS: ${why}, so this assertion suppresses nothing` };
       }
-      const passed = !norm(markdown).includes(norm(a.value));
-      return { category: a.category, passed, describe, detail: passed ? undefined : 'invisible content leaked into extracted markdown' };
+      const inMarkdown = occurrences(markdown, a.value);
+      const passed = inMarkdown <= inVisible;
+      return {
+        category: a.category,
+        passed,
+        describe,
+        detail: passed
+          ? undefined
+          : `invisible content leaked into extracted markdown: ${inMarkdown} occurrence(s) in markdown vs ${inVisible} visible in source (${inAll} total)`,
+      };
     }
     case 'row_columns': {
       const describe = `replay columns == [${a.expect.join(', ')}]`;
