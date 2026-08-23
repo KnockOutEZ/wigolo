@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { projectRun } from 'wigolo/studio';
 import { RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
@@ -105,6 +106,38 @@ describe('RunViewModel — the user tab group', () => {
     const run = await vm.createRun({ task: 'a' });
     await vm.attachTab(run.id, 'tab-a');
     expect(vm.agentVisibleTabs('no-such-run', ['tab-a'])).toEqual([]);
+  });
+
+  /**
+   * The memo is an implementation detail, and a returned array is the caller's.
+   *
+   * These enumerations read straight off the memoised projection, so before this they handed every
+   * caller the SAME array — the one the cache is holding. Callers treat what they are given as
+   * theirs: `endRun` iterates it while detaching, the tab strip sorts, a consumer splices. Any of
+   * those rewrote the cached projection under everyone else, and the run then appeared to have lost
+   * a tab that no `tab.detached` event ever mentioned — ownership silently disagreeing with the log,
+   * which is the one thing this class exists to prevent.
+   *
+   * Asserted through `ownerOf` as well as through the enumeration, because the corrupted memo is
+   * what law 4's refusal is checked against: a tab dropped out of the cache is a tab another run
+   * would then be allowed to attach.
+   */
+  it('hands out a copy of the tab list, so a mutating caller cannot corrupt the projection', async () => {
+    const run = await vm.createRun({ task: 'a' });
+    await vm.attachTab(run.id, 'tab-a');
+    await vm.attachTab(run.id, 'tab-b');
+
+    vm.tabsOf(run.id).pop();
+    expect(vm.tabsOf(run.id), 'the cached projection lost a tab nobody detached').toEqual(['tab-a', 'tab-b']);
+
+    vm.agentVisibleTabs(run.id).length = 0;
+    expect(vm.tabsOf(run.id), 'the agent-visible enumeration emptied the projection it read from').toEqual(['tab-a', 'tab-b']);
+
+    vm.list()[0]!.tabIds.push('tab-stolen');
+    expect(vm.tabsOf(run.id), 'a summary handed to the chrome was a handle on the projection').toEqual(['tab-a', 'tab-b']);
+
+    expect(vm.ownerOf('tab-b'), 'law 4 would now let another run attach a tab this one still owns').toBe(run.id);
+    expect(vm.snapshot(run.id)?.tabIds).toEqual(['tab-a', 'tab-b']);
   });
 });
 
@@ -384,5 +417,83 @@ describe('RunViewModel — boot hydration is one bounded, concurrent read', () =
     await booting;
 
     expect(vm.list().map((r) => r.task).sort()).toEqual(['run 0', 'run 1', 'run 2', 'run 3']);
+  });
+});
+
+/**
+ * The memo used to be keyed on the log alone. `projectRun` is a pure function of the log AND the
+ * clock — `autoDenyAt` is the one field the clock moves — so a projection cached while a decision
+ * was pending stayed `needs_you` forever: the two-minute deadline passes without any envelope
+ * arriving to drop the memo. The menu-bar count and the dock badge read through `list()`, so the app
+ * went on saying a human was needed while the REST surface, projecting fresh with its own clock,
+ * said the run was simply running. One log, two answers.
+ *
+ * Every arm therefore asserts the app's projection against `projectRun` over the SAME log at the
+ * SAME instant, which is what the REST surface does. Asserting only "not needs_you" would pass
+ * against a memo that had gone stale in some other direction.
+ */
+describe('RunViewModel — a memo the clock can invalidate', () => {
+  const restProjection = (store: FakeRunStore, runId: string, now: Date) =>
+    projectRun({ id: runId, ...store.facts.get(runId)! }, store.log.get(runId)!, now);
+
+  it('stops holding a run at needs_you once its card auto-denied, with no event arriving', async () => {
+    const store = new FakeRunStore();
+    let now = new Date();
+    const vm = new RunViewModel(store, () => now);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+
+    // The read the tray does on every redraw — and the read that warms the memo.
+    expect(vm.list()[0]!.status).toBe('needs_you');
+    const card = vm.snapshot(run.id)!.pendingDecisions[0]!;
+
+    // Two minutes pass. Auto-deny is a DEADLINE, not an envelope: nothing is appended, nothing is
+    // notified, and the only thing that changed is what time it is.
+    now = new Date(Date.parse(card.autoDenyAt));
+
+    expect(vm.list()[0]!.status, 'the menu bar went on asking for a human after the card expired').toBe('running');
+    expect(vm.snapshot(run.id)!.pendingDecisions, 'an expired card was still being offered').toEqual([]);
+
+    const rest = restProjection(store, run.id, now);
+    expect(vm.snapshot(run.id)!.status, 'the app and REST disagreed about one log').toBe(rest.status);
+    expect(vm.snapshot(run.id)!.pendingDecisions).toEqual(rest.pendingDecisions);
+  });
+
+  it('keeps the memo while the card is still answerable, rather than reprojecting on every read', async () => {
+    // The control: an expiry rule that just disabled the cache would satisfy the arm above and undo
+    // the whole point of memoising. The deadline is the key, not a reason to stop having one.
+    const store = new FakeRunStore();
+    let now = new Date();
+    const vm = new RunViewModel(store, () => now);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+
+    const first = vm.snapshot(run.id)!;
+    now = new Date(Date.parse(vm.snapshot(run.id)!.pendingDecisions[0]!.autoDenyAt) - 1);
+    expect(vm.snapshot(run.id), 'the memo was thrown away while it was still true').toBe(first);
+  });
+
+  it('does not go on offering an expired card on a run whose envelopes it has dropped', async () => {
+    // A sealed run cannot be reprojected — its envelopes are gone by design — but the clock still
+    // moves the same field, and REST still answers from the full log. Expiry only ever removes a
+    // card, so the kept projection can be narrowed without replaying anything.
+    const store = new FakeRunStore();
+    let now = new Date();
+    const vm = new RunViewModel(store, () => now);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'book the flight' });
+    await vm.requestDecision(run.id, { decisionId: 'd1', kind: 'approval', prompt: 'proceed?' });
+    const card = vm.snapshot(run.id)!.pendingDecisions[0]!;
+    await vm.endRun(run.id, 'completed');
+
+    expect(vm.retainedEventCount(run.id), 'the run was not sealed, so this arm proves nothing').toBe(0);
+    expect(vm.snapshot(run.id)!.pendingDecisions).toHaveLength(1);
+
+    now = new Date(Date.parse(card.autoDenyAt));
+    expect(vm.snapshot(run.id)!.pendingDecisions, 'a finished run kept offering a card that had expired').toEqual([]);
+    expect(vm.snapshot(run.id)!.pendingDecisions).toEqual(restProjection(store, run.id, now).pendingDecisions);
+    expect(vm.snapshot(run.id)!.status, 'narrowing the kept projection moved something other than the card').toBe('done');
   });
 });
