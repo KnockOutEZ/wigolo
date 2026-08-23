@@ -1013,8 +1013,13 @@ export const MAX_LIST_SCAN_PAGES = 8;
  * `projectRows` is the only status any surface is allowed to be selected by, so filter and row are
  * the same value by construction and there is no second predicate left to drift. The cost is that
  * the filter can no longer bound the SQL read, so the page is filled by scanning forward — one read
- * when nothing is filtered out, more when matches are sparse, never more than `MAX_LIST_SCAN` rows
- * before yielding a cursor.
+ * when nothing is filtered out, more when matches are sparse, never more than `MAX_LIST_SCAN_PAGES`
+ * reads before yielding a cursor.
+ *
+ * The look-ahead row is now projected rather than merely counted, because under a filter it is a
+ * candidate rather than a lookahead. That is one extra row of bounded seeks per call — 2% at the
+ * default page size — and it is the whole of what the projection-side filter costs on the hot
+ * unfiltered path.
  */
 export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT), MAX_LIST_LIMIT);
