@@ -211,6 +211,10 @@ export interface OrchestratorInput {
    * result whose title+snippet does not contain the unquoted query as a
    * case-insensitive substring is dropped post-rerank. */
   exactMatch?: boolean;
+  /** Caller-supplied engine allowlist. When non-empty, only engines whose
+   * name matches an entry (case-insensitive) are dispatched. Wired from
+   * SearchInput.search_engines via the MCP schema and CLI --search-engines. */
+  engineFilter?: string[];
 }
 
 export interface OrchestratorOutput {
@@ -303,6 +307,12 @@ interface RunV1SearchOptions {
   _isFallback?: boolean;
 }
 
+function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): EngineEntry[] {
+  const lowered = allowlist.map((n) => n.toLowerCase());
+  const filtered = entries.filter((e) => lowered.includes(e.engine.name.toLowerCase()));
+  return filtered.length > 0 ? filtered : entries;
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
   opts: RunV1SearchOptions = {},
@@ -365,8 +375,15 @@ export async function runV1Search(
   // Probe-only engines are held back from the primary wave: they are a
   // per-call latency/failure tax on the happy path but still an independent
   // signal the degraded-recovery wave can pull in when the pool collapses.
-  const entries = allEntries.filter((e) => e.probeOnly !== true);
+  let entries = allEntries.filter((e) => e.probeOnly !== true);
   const probeEntries = allEntries.filter((e) => e.probeOnly === true);
+
+  // Apply caller-supplied engine allowlist (SearchInput.search_engines).
+  // Case-insensitive match against engine name. Unknown names are silently
+  // ignored — if no entries match, fall back to the full roster.
+  if (input.engineFilter && input.engineFilter.length > 0) {
+    entries = applyEngineAllowlist(entries, input.engineFilter);
+  }
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
@@ -623,10 +640,13 @@ export async function runV1Search(
   const skippedPrimary = outcomes
     .filter((o) => o.skipped)
     .map((o) => o.engine);
-  const recoveryEntries = [
+  let recoveryEntries = [
     ...probeEntries,
     ...entries.filter((e) => skippedPrimary.includes(e.engine.name)),
   ];
+  if (input.engineFilter && input.engineFilter.length > 0) {
+    recoveryEntries = applyEngineAllowlist(recoveryEntries, input.engineFilter);
+  }
   if (
     outcomes.length > 0 &&
     primaryHealthy < poolHealthFloor(outcomes.length) &&
@@ -684,7 +704,10 @@ export async function runV1Search(
     vertical !== 'images' &&
     !opts._isFallback
   ) {
-    const generalEntries = getGeneralEngines();
+    let generalEntries = getGeneralEngines();
+    if (input.engineFilter && input.engineFilter.length > 0) {
+      generalEntries = applyEngineAllowlist(generalEntries, input.engineFilter);
+    }
     if (generalEntries.length > 0) {
       log.info('vertical starved below floor, backfilling from general', {
         from: vertical,
