@@ -127,9 +127,22 @@ export class DaemonHttpServer {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
     this.onUpgrade = options.onUpgrade ?? null;
     this.mcpServerFactory = options.mcpServerFactory ?? null;
-    // The CLI resolves the token; fall back to env resolution so direct
-    // DaemonHttpServer construction (tests, embedders) still honors it.
-    this.apiToken = options.apiToken !== undefined ? options.apiToken : resolveApiToken();
+    // ONE auth decision per request. When `auth` is configured this process is a HOST (the studio
+    // gateway / `wigolo studio`): the per-launch handle token is the surface's single credential and
+    // `handleRequest`'s gate OWNS the decision for every route, REST included. The REST router keeps
+    // its own gate — it is reachable from the standalone daemon too — but it is handed the SAME
+    // token, so both gates key on one predicate and are one layer, not two credentials.
+    //
+    // Resolving `WIGOLO_API_TOKEN` here instead would give the embedded router a DIFFERENT
+    // credential from the outer gate, and `/v1/runs*` would then accept neither: the handle token
+    // fails the router, the env token fails the outer gate (sd-87). The env var is the STANDALONE
+    // daemon's credential and only applies where there is no handle auth. An explicit `apiToken`
+    // still wins everywhere — that is how the CLI passes its resolved token.
+    this.apiToken = options.apiToken !== undefined
+      ? options.apiToken
+      : options.auth
+        ? options.auth.token
+        : resolveApiToken();
     this.allowUnauthenticated = options.allowUnauthenticated ?? false;
     this.restBindHost = options.restBindHost ?? options.host;
   }

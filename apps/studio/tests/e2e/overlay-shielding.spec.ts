@@ -69,7 +69,6 @@ describe.skipIf(!RUN)('the per-tab overlay resists a page that tries to blank it
       await wc.debugger.sendCommand('DOM.enable');
       await wc.debugger.sendCommand('CSS.enable');
       interface N { nodeId: number; attributes?: string[]; children?: N[]; shadowRoots?: N[] }
-      const { root } = (await wc.debugger.sendCommand('DOM.getDocument', { depth: -1, pierce: true })) as { root: N };
       const attrs = (n: N): Record<string, string> => {
         const out: Record<string, string> = {};
         const a = n.attributes ?? [];
@@ -84,24 +83,48 @@ describe.skipIf(!RUN)('the per-tab overlay resists a page that tries to blank it
         }
         return null;
       };
-      let from = root;
-      let el: N | null = null;
-      if (arg.scope !== 'page') {
-        const host = walk(root, (n) => 'data-wigolo-overlay' in attrs(n));
-        if (!host) throw new Error('the overlay host is not in the page at all');
-        if (arg.scope === 'host') el = host;
-        else {
-          const shadow = host.shadowRoots?.[0];
-          if (!shadow) throw new Error('the overlay host has no shadow root the protocol can see');
-          from = shadow;
+      // FETCH AND READ ARE ONE UNIT, and the retry is what makes them one. A node id is valid only
+      // until the next `DOM.getDocument` on this session, and this test does not own the session —
+      // the app's drive engine is attached to the same debugger and re-fetches whenever the page
+      // moves, which discards every id it previously reported. So a document fetched here can be
+      // invalidated between the walk and the style read by a party the test does not control, and
+      // CDP answers `Could not find node with given id`. Re-fetching and reading again is not a bare
+      // test retry: it retries the PAIR that has to be atomic, and every other error — a missing
+      // host, a missing shadow root, an absent class — still fails on the first attempt, because
+      // those are assertions about the overlay rather than races against the session.
+      const attempt = async (): Promise<Record<string, string>> => {
+        const { root } = (await wc.debugger.sendCommand('DOM.getDocument', { depth: -1, pierce: true })) as { root: N };
+        let from = root;
+        let el: N | null = null;
+        if (arg.scope !== 'page') {
+          const host = walk(root, (n) => 'data-wigolo-overlay' in attrs(n));
+          if (!host) throw new Error('the overlay host is not in the page at all');
+          if (arg.scope === 'host') el = host;
+          else {
+            const shadow = host.shadowRoots?.[0];
+            if (!shadow) throw new Error('the overlay host has no shadow root the protocol can see');
+            from = shadow;
+          }
+        }
+        if (!el) el = walk(from, (n) => (attrs(n).class ?? '').split(/\s+/).includes(arg.cls));
+        if (!el) throw new Error(`.${arg.cls} is not in the ${arg.scope}`);
+        const { computedStyle } = (await wc.debugger.sendCommand('CSS.getComputedStyleForNode', {
+          nodeId: el.nodeId,
+        })) as { computedStyle: Array<{ name: string; value: string }> };
+        return Object.fromEntries(computedStyle.map((p) => [p.name, p.value])) as Record<string, string>;
+      };
+      const STALE = 'Could not find node with given id';
+      let lastErr: unknown;
+      for (let i = 0; i < 5; i += 1) {
+        try {
+          return await attempt();
+        } catch (err) {
+          lastErr = err;
+          if (!String((err as Error)?.message ?? err).includes(STALE)) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
       }
-      if (!el) el = walk(from, (n) => (attrs(n).class ?? '').split(/\s+/).includes(arg.cls));
-      if (!el) throw new Error(`.${arg.cls} is not in the ${arg.scope}`);
-      const { computedStyle } = (await wc.debugger.sendCommand('CSS.getComputedStyleForNode', {
-        nodeId: el.nodeId,
-      })) as { computedStyle: Array<{ name: string; value: string }> };
-      return Object.fromEntries(computedStyle.map((p) => [p.name, p.value])) as Record<string, string>;
+      throw lastErr;
     }, { scope, cls });
 
   /**

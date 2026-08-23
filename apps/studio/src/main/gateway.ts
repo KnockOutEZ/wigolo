@@ -71,10 +71,18 @@ export async function startGateway(deps: GatewayDeps): Promise<Gateway> {
   //
   // `runStore` is the one exception to that, and does not breach it: the store is REACHED from here,
   // not LOADED here — the native handle stays in the broker child and this is an async port over it.
+  //
+  // ONE auth story: the per-launch handle token is the gateway's ONLY credential. `auth` is the gate
+  // that owns the decision (it runs first, on every route, and it is the token published in the 0600
+  // handle); `apiToken` hands the embedded REST router that SAME token so `/v1/runs*` keys on one
+  // predicate instead of a second one. Stating it here is not redundant — left unset, the router
+  // would resolve `WIGOLO_API_TOKEN` from the Electron main's environment, and an operator who has
+  // that exported would find NO credential passes both gates (sd-87).
   const opts: DaemonOptions = {
     port,
     host,
     auth: { token, host },
+    apiToken: token,
     mcpServerFactory: () => createStudioMcpServer({ studioHost: deps.host, sessions: deps.sessions, dataDir: deps.dataDir }),
     ...(deps.runStore ? { runStore: deps.runStore } : {}),
   };
