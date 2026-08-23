@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { RunEvent } from 'wigolo/studio';
+import type { RunEvent, RunEventInput } from 'wigolo/studio';
 import { RunViewModel } from '../../src/main/run-view-model';
 import { createRunTray, type TrayMenuItem, type TrayPort } from '../../src/main/run-tray';
 import { FakeRunStore } from '../helpers/fake-run-store';
@@ -135,6 +135,110 @@ describe('RunViewModel — a broadcast does not scan the runs to label a tab', (
     await fresh.hydrate();
     expect(fresh.ownerOf('tab-x')).toBe(b.id);
     expect(fresh.tabsOf(a.id)).toEqual([]);
+  });
+});
+
+/**
+ * The third seam of the same class, on the path that runs BEFORE the app draws anything.
+ *
+ * `retain` re-indexes the run it just replaced, and the clear step used to walk the WHOLE tab index
+ * looking for that run's entries. `hydrate` calls `retain` once per listed run — up to
+ * `MAX_HYDRATION_PAGES × DEFAULT_LIST_LIMIT` of them — so boot cost runs × every tab every run on the
+ * machine holds, on the Electron main thread, before the first frame. Measured isolated at 10,000
+ * runs × 3 tabs: 1.3 s of nothing but map deletion.
+ *
+ * Counting map iteration steps rather than the clock, because a wall-clock bound at this size is a
+ * flake on a loaded CI box and says nothing about WHY it was slow. The instrument is global — every
+ * `for…of` over any Map inside `hydrate` is counted — which is what makes the bound meaningful: it
+ * caps the total, so a scan moving to a different map cannot hide from it.
+ */
+const HYDRATION_RUNS = 2_000;
+const TABS_PER_RUN = 2;
+/**
+ * Per RUN, not in total: the claim is that boot is linear in the run count, so the bound has to scale
+ * with it or it is a bound on this fixture's size instead. Generous by more than an order of magnitude
+ * against what a linear hydrate actually costs, and smaller by three than what a quadratic one does —
+ * the gap is the margin, and nothing lives in it.
+ */
+const MAP_STEPS_PER_RUN_BOUND = 40;
+
+/**
+ * Total `next()` calls on every Map iterator taken while `fn` runs.
+ *
+ * `for (const x of map)` and `[...map]` both go through `Map.prototype[Symbol.iterator]`, so wrapping
+ * that one function catches every walk of a map without the view-model having to expose its indexes to
+ * a test. Restored in a `finally`: leaving a patched prototype behind would corrupt every later file.
+ */
+async function countMapSteps(fn: () => Promise<void>): Promise<number> {
+  const original = Map.prototype[Symbol.iterator];
+  let steps = 0;
+  Map.prototype[Symbol.iterator] = function (this: Map<unknown, unknown>) {
+    const inner = original.call(this);
+    return {
+      next: () => { steps++; return inner.next(); },
+      [Symbol.iterator]() { return this; },
+    } as MapIterator<[unknown, unknown]>;
+  };
+  try {
+    await fn();
+  } finally {
+    Map.prototype[Symbol.iterator] = original;
+  }
+  return steps;
+}
+
+describe('RunViewModel — boot hydration is linear in the number of runs', () => {
+  it('clears a replayed run’s tabs by what that run owns, not by every tab on the machine', async () => {
+    const store = new FakeRunStore();
+    const owners = new Map<string, string>();
+    for (let i = 0; i < HYDRATION_RUNS; i++) {
+      const run = await store.createRun({ task: `run ${i}` });
+      for (let t = 0; t < TABS_PER_RUN; t++) {
+        const tabId = `tab-${i}-${t}`;
+        await store.appendEvent(run.id, { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId } });
+        owners.set(tabId, run.id);
+      }
+    }
+
+    // The boot path exactly: a view-model that has seen nothing, replaying the store's listing.
+    const vm = new RunViewModel(store);
+    const steps = await countMapSteps(() => vm.hydrate());
+
+    expect(steps, 'hydrating scanned the whole tab index once per run').toBeLessThanOrEqual(HYDRATION_RUNS * MAP_STEPS_PER_RUN_BOUND);
+
+    // The controls. A bound is worth nothing if the index it made cheap is now wrong: every tab is
+    // still labelled with the run that attached it, every run still lists its own, and a tab no run
+    // ever attached is still the human's — law 4's refusal reads the same index.
+    for (const [tabId, runId] of owners) expect(vm.ownerOf(tabId)).toBe(runId);
+    const first = store.facts.keys().next().value!;
+    expect(vm.tabsOf(first)).toEqual(['tab-0-0', 'tab-0-1']);
+    expect(vm.isUserTab('tab-0-0')).toBe(false);
+    expect(vm.userTabs(['tab-0-0', 'human-1'])).toEqual(['human-1']);
+  });
+
+  /**
+   * The one shape a reverse index adds a way to get wrong. `attachTab` refuses a tab another run owns,
+   * so this only ever arrives as a fact already in a log — and when it does, the owner has to be the
+   * same run after the second replay as after the first. A clear driven by the wrong run's entries
+   * would unown a live tab here, which is law 4's refusal firing on a fact that is not in any log.
+   */
+  it('moves both directions together when a log hands a tab to a second run', async () => {
+    const store = new FakeRunStore();
+    const a = await store.createRun({ task: 'first' });
+    const b = await store.createRun({ task: 'second' });
+    const attach: RunEventInput = { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId: 'tab-x' } };
+    await store.appendEvent(a.id, attach);
+    await store.appendEvent(b.id, attach);
+
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    expect(vm.ownerOf('tab-x')).toBe(b.id);
+
+    // A second replay of the same pair of logs: the same facts fold to the same owner, and the run
+    // that lost the tab does not take it back on the way through.
+    await vm.hydrate();
+    expect(vm.ownerOf('tab-x')).toBe(b.id);
+    expect(vm.isUserTab('tab-x')).toBe(false);
   });
 });
 

@@ -290,6 +290,19 @@ export class RunViewModel {
    */
   private readonly tabOwners = new Map<string, string>();
   /**
+   * The same index read the other way: which tabs each run owns.
+   *
+   * It exists so that DROPPING a run's entries costs what that run holds instead of what the machine
+   * holds. `retain` re-indexes the run it just replaced, and `hydrate` calls `retain` once per listed
+   * run — up to `MAX_HYDRATION_PAGES × DEFAULT_LIST_LIMIT` of them — so a clear that walked the whole
+   * forward map made boot quadratic in the run count on the thread that paints, before the first
+   * frame: 10,000 runs × 3 tabs measured 1.3 s of nothing but map deletion.
+   *
+   * Not a third source of truth either: both directions are written by the same two fold rules, in
+   * `ownTab` and `disownTab`, which are the only two places `tabOwners` is mutated.
+   */
+  private readonly tabsByRun = new Map<string, Set<string>>();
+  /**
    * The tail seq at which each condensed run last had a CLOCK-driven re-read issued for it.
    *
    * `withoutExpiredDecisions` infers a status, and a condensed run asks the store for the real one
@@ -513,10 +526,13 @@ export class RunViewModel {
    * that is not in the log.
    */
   private indexTabs(runId: string): void {
-    for (const [tabId, owner] of this.tabOwners) if (owner === runId) this.tabOwners.delete(tabId);
+    // The reverse index names this run's entries, so the clear costs what THIS run owns rather than a
+    // sweep of every tab on the machine. Copied before the walk because `disownTab` mutates the set
+    // being iterated. It is at most one run's tabs; the forward map is every run's.
+    for (const tabId of [...(this.tabsByRun.get(runId) ?? [])]) this.disownTab(runId, tabId);
     const log = this.logs.get(runId);
     if (!log) return;
-    for (const tabId of log.kept?.tabIds ?? this.project(runId)?.tabIds ?? []) this.tabOwners.set(tabId, runId);
+    for (const tabId of log.kept?.tabIds ?? this.project(runId)?.tabIds ?? []) this.ownTab(runId, tabId);
   }
 
   /**
@@ -529,8 +545,42 @@ export class RunViewModel {
   private trackTabOwnership(runId: string, event: RunEvent): void {
     const tabId = event.payload.tabId;
     if (typeof tabId !== 'string' || tabId.length === 0) return;
-    if (event.type === 'tab.attached') this.tabOwners.set(tabId, runId);
-    else if (event.type === 'tab.detached' && this.tabOwners.get(tabId) === runId) this.tabOwners.delete(tabId);
+    if (event.type === 'tab.attached') this.ownTab(runId, tabId);
+    else if (event.type === 'tab.detached') this.disownTab(runId, tabId);
+  }
+
+  /**
+   * Both directions of the index, written together — the only place an owner is recorded.
+   *
+   * An attach naming a tab another run currently owns takes it, which is what the forward map did on
+   * its own, and the previous owner is told rather than left holding a reverse entry for a tab it no
+   * longer owns. No public answer differs either way today — the clear below refuses to drop a forward
+   * entry that is not this run's, so a stale entry is inert — and this keeps the invariant the reverse
+   * index is only worth having if it holds: `tabsByRun.get(r)` is exactly the tabs `tabOwners` maps to
+   * `r`. `attachTab` refuses this case at the seam above, so it reaches here only as a fact already in
+   * a log.
+   */
+  private ownTab(runId: string, tabId: string): void {
+    const prior = this.tabOwners.get(tabId);
+    if (prior !== undefined && prior !== runId) this.disownTab(prior, tabId);
+    this.tabOwners.set(tabId, runId);
+    const owned = this.tabsByRun.get(runId);
+    if (owned) owned.add(tabId);
+    else this.tabsByRun.set(runId, new Set([tabId]));
+  }
+
+  /**
+   * The inverse, with law 4's own refusal in it: the forward entry is dropped only if this run is the
+   * one holding it. A run's stale detach naming another run's live tab clears its own bookkeeping and
+   * nothing else — the same no-op `projectRun` folds. The empty set is dropped rather than kept, so a
+   * machine's worth of finished runs does not leave a map entry each.
+   */
+  private disownTab(runId: string, tabId: string): void {
+    if (this.tabOwners.get(tabId) === runId) this.tabOwners.delete(tabId);
+    const owned = this.tabsByRun.get(runId);
+    if (!owned) return;
+    owned.delete(tabId);
+    if (owned.size === 0) this.tabsByRun.delete(runId);
   }
 
   /**
