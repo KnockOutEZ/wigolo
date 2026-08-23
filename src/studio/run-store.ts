@@ -945,7 +945,12 @@ export function projectRun(
 ): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = 'hidden';
+  // The array is the answer — law 4's tabs in the order the run took them. The Set is only the
+  // membership question the array cannot answer cheaply: `includes` is O(held) per attach, so a run
+  // holding many tabs at once paid O(held squared) to project (measured 112 ms at 16k attach-only).
+  // A detach that names a tab the run does not hold now costs nothing rather than a full walk.
   const tabIds: string[] = [];
+  const held = new Set<string>();
   const pending = new Map<string, PendingDecision>();
   const cost: RunCost = { ...(opts.cost ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 }) };
 
@@ -966,13 +971,12 @@ export function projectRun(
       // which `foldStatus` owns below. They stay listed in PROJECTION_EVENT_TYPES all the same.
       case 'tab.attached': {
         const tabId = str(p.tabId);
-        if (tabId && !tabIds.includes(tabId)) tabIds.push(tabId);
+        if (tabId && !held.has(tabId)) { held.add(tabId); tabIds.push(tabId); }
         break;
       }
       case 'tab.detached': {
         const tabId = str(p.tabId);
-        const at = tabId ? tabIds.indexOf(tabId) : -1;
-        if (at >= 0) tabIds.splice(at, 1);
+        if (tabId && held.delete(tabId)) tabIds.splice(tabIds.indexOf(tabId), 1);
         break;
       }
       case 'presentation.promoted': visibility = 'visible'; break;

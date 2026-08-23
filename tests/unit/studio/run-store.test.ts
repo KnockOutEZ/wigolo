@@ -1223,6 +1223,72 @@ describe('run-store — a projected field is validated, never cast (SD1 exit rev
   });
 });
 
+describe('run-store — the tab fold is a set question, not a walk (SD1 exit-5, perf #3)', () => {
+  /**
+   * WHY: `tabIds.includes` is O(held) per `tab.attached`, so a run holding many tabs at once paid
+   * O(held squared) to project — measured 112 ms of blocked event loop at 16k attach-only events.
+   * A Set answers membership in constant time; the array stays because law 4's order is the answer.
+   *
+   * A counter cannot see the difference and a wall-clock constant is a flake, so what is pinned here
+   * is that the cheaper structure folds IDENTICALLY — every shape the O(n squared) walk could reach.
+   */
+  const fold = (events: Array<[string, Record<string, unknown>?]>): string[] => {
+    const run = createRun(db, { task: 'tabs' }, opts());
+    for (const [type, payload] of events) appendEvent(db, run.id, { actor: { kind: 'agent' }, type, payload }, opts());
+    const listed = listRuns(db, {}).runs.find((r) => r.id === run.id)!;
+    const item = getRun(db, run.id)!;
+    const replayed = projectRun({ id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt }, eventsSince(db, run.id, 0));
+    // One answer or a bug: the seeded page row, the seeded item read and the full-log replay.
+    expect(listed.tabIds).toEqual(replayed.tabIds);
+    expect(item.tabIds).toEqual(replayed.tabIds);
+    return replayed.tabIds;
+  };
+  const att = (tabId: unknown): [string, Record<string, unknown>] => ['tab.attached', { tabId }];
+  const det = (tabId: unknown): [string, Record<string, unknown>] => ['tab.detached', { tabId }];
+
+  it('keeps attach order, and a second attach of a held tab does not move it', () => {
+    expect(fold([att('a'), att('b'), att('a'), att('c')])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('drops a detached tab and re-appends it at the end when it comes back', () => {
+    expect(fold([att('a'), att('b'), det('a'), att('a')])).toEqual(['b', 'a']);
+    expect(fold([att('a'), att('b'), att('c'), det('b')])).toEqual(['a', 'c']);
+  });
+
+  it('detaching a tab the run never held changes nothing', () => {
+    expect(fold([att('a'), det('zz'), det('a'), det('a'), att('a')])).toEqual(['a']);
+  });
+
+  it('refuses a tab id that is not one, on both halves of the pair', () => {
+    // `str` is the rule: a non-string, an empty string and a missing key are all "no tab", and a
+    // detach carrying one must not remove the tab that happens to sit at index 0.
+    expect(fold([att('a'), att(''), att(7), att(null), ['tab.attached']])).toEqual(['a']);
+    expect(fold([att('a'), det(''), det(7), det(null), ['tab.detached']])).toEqual(['a']);
+  });
+
+  it('folds a long generated attach/detach log exactly as a linear replay does', () => {
+    // The differential the structure change is really about: 600 events of mixed attach, re-attach,
+    // detach and detach-of-unheld, folded against an independent reference implementation.
+    const script: Array<[string, Record<string, unknown>?]> = [];
+    const expected: string[] = [];
+    let seed = 20260823;
+    const next = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (let i = 0; i < 600; i++) {
+      const tabId = `t${next(24)}`;
+      if (next(3) === 0) {
+        script.push(det(tabId));
+        const at = expected.indexOf(tabId);
+        if (at >= 0) expected.splice(at, 1);
+      } else {
+        script.push(att(tabId));
+        if (!expected.includes(tabId)) expected.push(tabId);
+      }
+    }
+    expect(expected.length).toBeGreaterThan(1); // control: the script actually holds tabs
+    expect(fold(script)).toEqual(expected);
+  });
+});
+
 // --- helpers -------------------------------------------------------------
 
 import * as store from '../../../src/studio/run-store.js';
