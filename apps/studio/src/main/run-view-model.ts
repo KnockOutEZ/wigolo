@@ -1,5 +1,9 @@
 import { projectRun, type CreateRunInput, type ListRunsOptions, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
-import type { BrokerClient } from './broker-client';
+// Extension-qualified, unlike its siblings: this module is the one the root suite binds to the real
+// run store from `tests/integration`, and that program resolves as `nodenext`, where an
+// extensionless relative specifier does not resolve at all. Type-only, so nothing is emitted either
+// way — the specifier exists for the type-checker alone.
+import type { BrokerClient } from './broker-client.js';
 
 /**
  * SD1 spine 1 — the run store is authoritative and this is a projection of it.

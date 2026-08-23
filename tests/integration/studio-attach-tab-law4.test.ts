@@ -78,7 +78,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
         fan(runId, committed);
         return committed;
       },
-      async getRun(runId: string) { return getRun(db, runId, { dataDir }); },
+      async getRun(runId: string) { return getRun(db, runId); },
       async listRuns(opts: ListRunsOptions = {}) { return listRuns(db, opts); },
       async eventsSince(runId: string, since: number, limit: number) { return eventsSince(db, runId, since, limit); },
       onRunEvent(handler: (runId: string, event: RunEvent) => void) { handlers.push(handler); },
