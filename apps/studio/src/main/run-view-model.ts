@@ -235,6 +235,12 @@ interface RunLog {
   kept?: Run;
 }
 
+/** A replay in flight, and whether anything asked for another one while it was reading. */
+interface AdoptState {
+  promise: Promise<void>;
+  again: boolean;
+}
+
 /** What the store knows about a log that the log itself cannot say once it has been bounded. */
 interface RetainOptions {
   /** The store's true tail seq. See `RunLogEntry.lastSeq`. */
@@ -259,9 +265,11 @@ export class RunViewModel {
    * Replays in flight, so a burst of events for one run causes a single replay — and so a caller that
    * needs the projection current before it resolves can await the replay somebody else started.
    */
-  private readonly adopting = new Map<string, Promise<void>>();
+  private readonly adopting = new Map<string, AdoptState>();
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
+  /** One attach at a time per TAB — see `attachTab`. */
+  private readonly attaching = new Map<string, Promise<void>>();
   /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
   private readonly horizons = new Map<string, { at: number; stop: () => void }>();
 
@@ -400,17 +408,28 @@ export class RunViewModel {
    * one place rather than at each of the four call sites that read a whole log.
    */
   private retain(facts: StoredRunFacts, events: RunEvent[], opts: RetainOptions = {}): void {
+    // The store's tail wins, because a bounded read holds fewer envelopes than the run has and its
+    // last seq would sit BELOW where the store actually is — which would make the next live
+    // envelope look like a hole and replay a run that missed nothing. The max is not belt and
+    // braces: the listing's tail seek and the event read are separate statements, so an append
+    // landing between them puts the newer seq in the events, and taking the older one would let
+    // `applyEvent` fold an envelope this log already holds.
+    const lastSeq = Math.max(opts.lastSeq ?? 0, events.at(-1)?.seq ?? 0);
+    // A read that is BEHIND what this projection has already folded is DROPPED rather than applied.
+    // Every read here is a round-trip, so what comes back is where the store was when the child took
+    // it: a boot page read at seq N−1 can land after the live tail has folded seq N, and overwriting
+    // rewinds `lastSeq` below an envelope this log has already seen. Nothing repairs that afterwards
+    // — a heal needs a LATER envelope to open a gap, and the envelope lost this way is typically the
+    // run's last, so the app says `running` for a run that ended until it is restarted. Equality
+    // still applies: a condensed run is re-read at the same tail to replace an inferred status with
+    // the log's own.
+    const held = this.logs.get(facts.id);
+    if (held && held.lastSeq > lastSeq) return;
     const sessionId = opts.sessionId ?? events.find((e) => e.type === 'run.created')?.payload.sessionId;
     this.logs.set(facts.id, {
       facts,
       events,
-      // The store's tail wins, because a bounded read holds fewer envelopes than the run has and its
-      // last seq would sit BELOW where the store actually is — which would make the next live
-      // envelope look like a hole and replay a run that missed nothing. The max is not belt and
-      // braces: the listing's tail seek and the event read are separate statements, so an append
-      // landing between them puts the newer seq in the events, and taking the older one would let
-      // `applyEvent` fold an envelope this log already holds.
-      lastSeq: Math.max(opts.lastSeq ?? 0, events.at(-1)?.seq ?? 0),
+      lastSeq,
       ...(typeof sessionId === 'string' ? { sessionId } : {}),
     });
     this.projected.delete(facts.id);
@@ -490,7 +509,13 @@ export class RunViewModel {
     // usually already in. Checked BEFORE the sealed branch: an append that seals the run would
     // otherwise replay it immediately afterwards to fold an envelope it has already folded.
     if (log && event.seq <= log.lastSeq) return;
-    if (log?.kept) { await this.adopt(runId, { replace: true }); return; }
+    // Everything a plain fold cannot absorb is a replay, and it is AWAITED here. A caller that wrote
+    // through this class is entitled to a current projection by the time its promise settles —
+    // `attachTab`'s law-4 refusal is decided on that projection, and `setVisibility`'s idempotence
+    // is too. `applyEvent` starts the same replay for its own callers but has no promise to hand
+    // back, so routing a gap or a sealed run through it would resolve the write before the write
+    // was visible anywhere.
+    if (!log || log.kept || event.seq > log.lastSeq + 1) { await this.adopt(runId, { replace: true }); return; }
     this.applyEvent(runId, event);
   }
 
@@ -501,14 +526,31 @@ export class RunViewModel {
    */
   private adopt(runId: string, opts: { replace?: boolean } = {}): Promise<void> {
     const inFlight = this.adopting.get(runId);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      // A REPLACE is not answerable by a replay that is already reading, which is what returning the
+      // in-flight promise used to claim. A non-replace replay exits on the log it finds — `createRun`
+      // or a hydrate page registered it while this one was on the wire — and heals NOTHING; and even
+      // a replace one may have read the store before the envelope that opened this gap was committed.
+      // So it asks for one more pass instead. Every replace asked for while that pass is still owed
+      // coalesces into it, so a burst of gapped envelopes still costs one extra replay rather than
+      // one per envelope, and the promise handed back does not settle until the owed pass is done.
+      if (opts.replace) inFlight.again = true;
+      return inFlight.promise;
+    }
     if (this.logs.has(runId) && !opts.replace) return Promise.resolve();
-    const started = this.replay(runId, opts);
-    const tracked: Promise<void> = started.finally(() => {
-      if (this.adopting.get(runId) === tracked) this.adopting.delete(runId);
+    const state: AdoptState = { promise: Promise.resolve(), again: false };
+    const drain = async (): Promise<void> => {
+      await this.replay(runId, opts);
+      while (state.again) {
+        state.again = false;
+        await this.replay(runId, { replace: true });
+      }
+    };
+    state.promise = drain().finally(() => {
+      if (this.adopting.get(runId) === state) this.adopting.delete(runId);
     });
-    this.adopting.set(runId, tracked);
-    return tracked;
+    this.adopting.set(runId, state);
+    return state.promise;
   }
 
   private async replay(runId: string, opts: { replace?: boolean }): Promise<void> {
@@ -585,7 +627,27 @@ export class RunViewModel {
    * Law 4's enforcement seam. Attaching a tab another run owns is refused outright; re-attaching to the
    * owner is a no-op rather than a duplicate fact.
    */
-  async attachTab(runId: string, tabId: string, url?: string): Promise<void> {
+  attachTab(runId: string, tabId: string, url?: string): Promise<void> {
+    // Serialised per TAB, because the check is against the PROJECTION and the append is a round-trip:
+    // two runs reaching for one tab in the same turn both read "nobody owns it", both commit, and the
+    // append-only log then records two owners for one tab. That is law 4 broken in the DURABLE
+    // record, where no replay can repair it and nothing detects it — every surface that reads the log
+    // afterwards, here or over REST or in a replay, sees one tab owned by two runs, and one agent is
+    // driving another agent's page. `setVisibility` serialises per run against the same shape of
+    // race. Per tab rather than globally, so a slow append never holds up an attach to another tab.
+    const queued = (this.attaching.get(tabId) ?? Promise.resolve()).then(
+      () => this.applyAttach(runId, tabId, url),
+      () => this.applyAttach(runId, tabId, url),
+    );
+    const tail = queued.then(
+      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
+      () => { if (this.attaching.get(tabId) === tail) this.attaching.delete(tabId); },
+    );
+    this.attaching.set(tabId, tail);
+    return queued;
+  }
+
+  private async applyAttach(runId: string, tabId: string, url?: string): Promise<void> {
     const owner = this.ownerOf(tabId);
     if (owner === runId) return;
     if (owner !== undefined) throw new TabOwnedError(tabId, owner);
