@@ -12,15 +12,20 @@ import { AUTO_DENY_MS, appendEvent, createRun, eventsSince, listRuns, runEventsF
  * column that `GET /v1/runs?status=` filters on.
  *
  * That column is recomputed on APPEND and never on the clock, while the BODY of the same response is
- * projected with the clock. So an expiry that produces no event splits one request against itself —
- * the run is missing from `?status=running` and present in `?status=needs_you` carrying a body that
- * says `running`, with an empty card list. Two answers, one log, which is the class law 1 exists to
- * remove.
+ * projected with the clock. So an expiry that produced no event used to split one request against
+ * itself — the run missing from `?status=running` and present in `?status=needs_you` carrying a body
+ * that says `running`, with an empty card list. Two answers, one log, which is the class law 1
+ * exists to remove.
  *
- * The app half — that the auto-deny timer WRITES the resolving envelope, on the clock that has
- * actually reached the deadline — is pinned in `apps/studio/tests/unit/run-decisions.test.ts`, which
- * is where the timer lives. What is pinned here is the consequence: the append path is the whole fix
- * for K1, and the store needs no change of its own to close it.
+ * K1 closed the half the app owns: the auto-deny timer WRITES the resolving envelope, on the clock
+ * that has actually reached the deadline, pinned in `apps/studio/tests/unit/run-decisions.test.ts`
+ * where the timer lives. K7 then established that the store needed a change of its own after all —
+ * that timer only runs while a process holding it is alive, and the split survived every path where
+ * nothing appends (a closed terminal, a crashed host, a headless run nobody is watching). So the
+ * filter no longer reads the cached column at all; it is decided on the projection, in `listRuns`.
+ *
+ * Both halves are pinned here: agreement with no event at all, and agreement once the timer's event
+ * lands.
  */
 describe('the auto-deny, as the REST list filter sees it', () => {
   let dataDir: string;
@@ -60,19 +65,22 @@ describe('the auto-deny, as the REST list filter sees it', () => {
 
   const listed = (status: Run['status']): Run[] => listRuns(db, { status: [status], now }).runs;
 
-  it('reproduces the split: an expiry with no event leaves the filter and the body disagreeing', async () => {
+  it('closes the split with no event at all: filter and body agree across the deadline', async () => {
     const runId = parkACard();
     expect(listed('needs_you').map((r) => r.id)).toEqual([runId]);
 
     // Two minutes pass, and nothing else does — no answer, no timer, no append.
     nowMs += AUTO_DENY_MS + 1_000;
 
-    const stillFiled = listed('needs_you');
-    expect(stillFiled.map((r) => r.id), 'the cached column moved without an append, so this arm proves nothing').toEqual([runId]);
-    // The row the filter matched denies being the thing the filter matched on.
-    expect(stillFiled[0]!.status).toBe('running');
-    expect(stillFiled[0]!.pendingDecisions).toEqual([]);
-    expect(listed('running'), 'a run that projects as running was reachable by that filter').toEqual([]);
+    // The cached column is deliberately asserted STALE: nothing has appended, so nothing has moved
+    // it, and this test proves nothing unless it is the thing the filter is no longer reading.
+    expect(db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(runId)).toEqual({ status: 'needs_you' });
+
+    expect(listed('needs_you'), 'a run whose body says running was reachable by ?status=needs_you').toEqual([]);
+    const running = listed('running');
+    expect(running.map((r) => r.id), 'a run that projects as running was NOT reachable by ?status=running').toEqual([runId]);
+    expect(running[0]!.status).toBe('running');
+    expect(running[0]!.pendingDecisions).toEqual([]);
   });
 
   it('closes it when the auto-deny lands as an event, with no change in the store to do it', async () => {

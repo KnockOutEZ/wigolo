@@ -965,38 +965,104 @@ export function eventsSince(db: Database.Database, runId: string, since = 0, lim
   return id === undefined ? [] : readEvents(db, id, since, limit);
 }
 
-export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
-  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT), MAX_LIST_LIMIT);
+/**
+ * One keyset read of the run table — everything a row can be selected by WITHOUT projecting it.
+ * Status is deliberately not here; see `listRuns`.
+ */
+function readRunPage(
+  db: Database.Database,
+  spaceId: string | undefined,
+  after: { createdAt: string; id: string } | undefined,
+  n: number,
+): RunRow[] {
   const where: string[] = [];
   const params: unknown[] = [];
-  if (opts.status?.length) {
-    where.push(`status IN (${opts.status.map(() => '?').join(', ')})`);
-    params.push(...opts.status);
-  }
-  if (opts.spaceId) {
+  if (spaceId) {
     where.push('space_id = ?');
-    params.push(opts.spaceId);
+    params.push(spaceId);
   }
+  if (after) {
+    // Keyset, not offset: a run inserted mid-page cannot shift the rows a client has not seen yet.
+    where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+    params.push(after.createdAt, after.createdAt, after.id);
+  }
+  const sql = `SELECT ${RUN_ROW_COLUMNS} FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
+  return db.prepare(sql).all(...params, n) as RunRow[];
+}
+
+/**
+ * How many reads one call will do before it hands the rest back as a cursor. A status filter cannot
+ * be pushed into SQL (below), so a filter matching nothing would otherwise walk the whole table
+ * synchronously. Bounded as a multiple of the page the caller ALREADY asked to have projected, so
+ * the ceiling scales with the request rather than with the table. A short page plus a cursor is the
+ * honest answer; a short page and no cursor would read as "that was all".
+ */
+export const MAX_LIST_SCAN_PAGES = 8;
+
+/**
+ * K7: the status filter is decided on the PROJECTION, never on the cached `status` column.
+ *
+ * The column is refreshed by an append and by nothing else — there is no auto-deny writer and pin 3
+ * deliberately keeps expiry event-free — so one instant past a decision's deadline the column still
+ * says `needs_you` while every projection says `running`. Filtering on the column while returning
+ * projected rows made `?status=running` EXCLUDE a running run and `?status=needs_you` return a row
+ * whose own body said `"status": "running"`: a page contradicting its own filter, which no client
+ * can reconcile.
+ *
+ * The fix is to delete the second answer rather than to synchronise it. `run.status` from
+ * `projectRows` is the only status any surface is allowed to be selected by, so filter and row are
+ * the same value by construction and there is no second predicate left to drift. The cost is that
+ * the filter can no longer bound the SQL read, so the page is filled by scanning forward — one read
+ * when nothing is filtered out, more when matches are sparse, never more than `MAX_LIST_SCAN_PAGES`
+ * reads before yielding a cursor.
+ *
+ * The look-ahead row is now projected rather than merely counted, because under a filter it is a
+ * candidate rather than a lookahead. That is one extra row of bounded seeks per call — 2% at the
+ * default page size — and it is the whole of what the projection-side filter costs on the hot
+ * unfiltered path.
+ */
+export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): ListRunsResult {
+  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT), MAX_LIST_LIMIT);
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : undefined;
   // A cursor is opaque, not unchecked. `Buffer.from(x, 'base64url')` never throws — it drops the
   // characters it cannot read — so a corrupted or truncated cursor used to decode to nothing and be
   // treated as "no cursor", silently restarting pagination. A client that pages in a loop then
   // never terminates, or double-processes the first page and calls it the last.
   if (opts.cursor && !cursor) throw new Error('invalid cursor');
-  if (cursor) {
-    // Keyset, not offset: a run inserted mid-page cannot shift the rows a client has not seen yet.
-    where.push('(created_at < ? OR (created_at = ? AND id < ?))');
-    params.push(cursor.createdAt, cursor.createdAt, cursor.id);
+  const now = opts.now?.() ?? new Date();
+  const wanted = opts.status?.length ? new Set<RunStatus>(opts.status) : undefined;
+
+  const matched: { row: RunRow; run: Run }[] = [];
+  let after = cursor;
+  let lastScanned: RunRow | undefined;
+  let reads = 0;
+  let exhausted = false;
+
+  // One row past the page, so "is there more" costs no second query. With no status filter every
+  // scanned row matches and this loop runs exactly once, as the unfiltered path always did.
+  while (matched.length <= limit && !exhausted && reads < MAX_LIST_SCAN_PAGES) {
+    const rows = readRunPage(db, opts.spaceId, after, limit + 1);
+    if (rows.length < limit + 1) exhausted = true;
+    if (rows.length === 0) break;
+    reads++;
+    // Bounded queries for the chunk, not one unbounded full-log read per row.
+    const runs = projectRows(db, rows, now);
+    rows.forEach((row, i) => {
+      const run = runs[i];
+      if (!wanted || wanted.has(run.status)) matched.push({ row, run });
+    });
+    lastScanned = rows[rows.length - 1];
+    after = { createdAt: lastScanned.created_at, id: lastScanned.id };
   }
-  const sql = `SELECT ${RUN_ROW_COLUMNS} FROM studio_runs${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
-  const rows = db.prepare(sql).all(...params, limit + 1) as RunRow[];
-  const page = rows.slice(0, limit);
-  // Bounded queries for the page, not one unbounded full-log read per row.
-  const runs = projectRows(db, page, opts.now?.() ?? new Date());
+
+  const page = matched.slice(0, limit);
+  const runs = page.map((m) => m.run);
   const last = page[page.length - 1];
-  return rows.length > limit && last
-    ? { runs, nextCursor: encodeCursor(last.created_at, last.id) }
-    : { runs };
+  if (matched.length > limit && last) return { runs, nextCursor: encodeCursor(last.row.created_at, last.row.id) };
+  // Stopped on the scan bound rather than on the end of the table: the answer is not finished, so it
+  // carries a cursor from the last row LOOKED AT — the rows in between are already decided.
+  if (!exhausted && lastScanned) return { runs, nextCursor: encodeCursor(lastScanned.created_at, lastScanned.id) };
+  return { runs };
 }
 
 function encodeCursor(createdAt: string, id: string): string {

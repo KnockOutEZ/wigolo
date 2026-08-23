@@ -20,12 +20,14 @@ import {
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
   MAX_LIST_LIMIT,
+  MAX_LIST_SCAN_PAGES,
   isValidListCursor,
   MAX_EVENT_PAYLOAD_CHARS,
   runDir,
   runEventsFile,
   type RunEvent,
   type Run,
+  type RunStatus,
 } from '../../../src/studio/run-store.js';
 
 let dir: string;
@@ -435,6 +437,58 @@ describe('run-store — a pending decision expires on its own clock (pin 3)', ()
     expect(db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(id)).toEqual({ status: 'running' });
     expect(listRuns(db, { status: ['needs_you'], now: () => later }).runs).toEqual([]);
   });
+
+  /**
+   * WHY (K7): the filter used to be answered by the cached `status` COLUMN while the rows were
+   * answered by the projection, and nothing in `src/` writes that column except an append. So one
+   * instant past a deadline, with nothing appended, `?status=running` EXCLUDED a run the projection
+   * calls running, and `?status=needs_you` returned a row whose own body said `"status":"running"` —
+   * a page contradicting its own filter, which is the badge nobody can clear all over again.
+   *
+   * Both sides of the deadline, zero appends: the column is deliberately asserted stale here, so
+   * this test fails the moment the filter starts answering from it again.
+   */
+  it('agrees with its own filter on both sides of the deadline, with nothing appended (K7)', () => {
+    const id = runNeedingADecision();
+    const listed = (status: RunStatus[], ms: number) =>
+      listRuns(db, { status, now: at(ms) }).runs.filter((r) => r.id === id).map((r) => r.status);
+
+    expect(listed(['needs_you'], AUTO_DENY_MS - 1)).toEqual(['needs_you']);
+    expect(listed(['running'], AUTO_DENY_MS - 1)).toEqual([]);
+
+    // The column has not moved and cannot: no append, no writer, no sweeper (pin 3 keeps expiry
+    // event-free by design).
+    expect(db.prepare('SELECT status FROM studio_runs WHERE id = ?').get(id)).toEqual({ status: 'needs_you' });
+
+    expect(listed(['needs_you'], AUTO_DENY_MS)).toEqual([]);
+    expect(listed(['running'], AUTO_DENY_MS)).toEqual(['running']);
+  });
+
+  /**
+   * The acceptance criterion stated as a property rather than as one instant: for every status, a
+   * filtered page may only contain rows whose own projected status is one the caller asked for.
+   */
+  it('never returns a body disagreeing with the filter that selected it, at any instant', () => {
+    const pending = runNeedingADecision();
+    const done = createRun(db, { task: 'finished' }, { ...opts(), now: () => t0 }).id;
+    appendEvent(db, done, { actor: { kind: 'agent' }, type: 'run.completed' }, { ...opts(), now: () => t0 });
+    const paused = createRun(db, { task: 'paused' }, { ...opts(), now: () => t0 }).id;
+    appendEvent(db, paused, { actor: { kind: 'agent' }, type: 'run.paused', payload: { reason: 'cap' } }, { ...opts(), now: () => t0 });
+
+    const statuses: RunStatus[] = ['running', 'needs_you', 'paused', 'done', 'failed', 'cancelled'];
+    for (const ms of [0, AUTO_DENY_MS - 1, AUTO_DENY_MS, AUTO_DENY_MS * 2]) {
+      const seen = new Set<string>();
+      for (const status of statuses) {
+        for (const run of listRuns(db, { status: [status], now: at(ms) }).runs) {
+          expect(run.status, `${status} @ ${ms}ms`).toBe(status);
+          seen.add(run.id);
+        }
+      }
+      // ...and the six filters between them still cover every run, so agreement was not bought by
+      // dropping rows.
+      expect([...seen].sort()).toEqual([pending, done, paused].sort());
+    }
+  });
 });
 
 describe('run-store — list (§5.3 semantics, in the store)', () => {
@@ -491,6 +545,64 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
     expect(listRuns(db, { status: ['done'] }).runs.map((r) => r.id)).toEqual([a.id]);
     expect(listRuns(db, { status: ['running'] }).runs.map((r) => r.id)).toEqual([b.id]);
     expect(listRuns(db, { spaceId: 'other' }).runs.map((r) => r.id)).toEqual([b.id]);
+  });
+
+  /**
+   * WHY: the status filter is decided on the projection, AFTER the rows are read, so a page is only
+   * full once enough matching rows have been found — which can take several reads when the matches
+   * are sparse. A filtered page that stopped at the first read would come back short with no cursor
+   * and read as "that was all".
+   */
+  it('fills a status-filtered page across non-matching rows, and pages through the matches', () => {
+    const wanted: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const run = createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, i)) });
+      // Every third run is the one being looked for; the other two are noise between the matches.
+      if (i % 3 === 0) wanted.push(run.id);
+      else appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, opts());
+    }
+    const newestFirst = [...wanted].reverse();
+
+    const first = listRuns(db, { status: ['running'], limit: 2 });
+    expect(first.runs.map((r) => r.id)).toEqual(newestFirst.slice(0, 2));
+    expect(first.nextCursor).toBeTruthy();
+    const second = listRuns(db, { status: ['running'], limit: 2, cursor: first.nextCursor });
+    expect(second.runs.map((r) => r.id)).toEqual(newestFirst.slice(2, 4));
+    expect(second.nextCursor).toBeUndefined();
+
+    // The whole set in one page, and the complement, so the paging above is not hiding a dropped row.
+    expect(listRuns(db, { status: ['running'] }).runs.map((r) => r.id)).toEqual(newestFirst);
+    expect(listRuns(db, { status: ['done'] }).runs).toHaveLength(8);
+    expect(listRuns(db, { status: ['running', 'done'] }).runs).toHaveLength(12);
+  });
+
+  /**
+   * WHY: scanning forward for matches has to stop somewhere, or a filter matching nothing walks the
+   * whole table on the event loop. It stops after a bounded number of reads — and when it stops
+   * early it says so with a cursor, because a short page with no cursor is indistinguishable from
+   * the end of the list and would have the client conclude there is nothing to find.
+   */
+  it('stops after a bounded number of reads and hands the rest back as a cursor', () => {
+    const limit = 2;
+    const scannable = MAX_LIST_SCAN_PAGES * (limit + 1);
+    for (let i = 0; i < scannable + 10; i++) {
+      const run = createRun(db, { task: `task ${i}` }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, i)) });
+      appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'run.completed' }, opts());
+    }
+    // Nothing is cancelled, so no read can match and the scan runs to its bound.
+    const first = listRuns(db, { status: ['cancelled'], limit });
+    expect(first.runs).toEqual([]);
+    expect(first.nextCursor).toBeTruthy();
+    // ...and the cursor is real: it resumes past everything already looked at, and the walk ends.
+    let cursor = first.nextCursor;
+    let pages = 1;
+    while (cursor && pages < 20) {
+      const next = listRuns(db, { status: ['cancelled'], limit, cursor });
+      expect(next.runs).toEqual([]);
+      cursor = next.nextCursor;
+      pages++;
+    }
+    expect(cursor).toBeUndefined();
   });
 
   /**
