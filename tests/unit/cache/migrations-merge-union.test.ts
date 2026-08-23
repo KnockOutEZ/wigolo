@@ -57,6 +57,7 @@ const POST_MERGE_ADDED = [
   '015-url-cache-origin-authenticated',
   '016-studio-runs',
   '017-studio-run-cost',
+  '018-studio-runs-list-index',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */
