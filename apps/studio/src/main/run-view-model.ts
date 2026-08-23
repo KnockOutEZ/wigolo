@@ -181,11 +181,27 @@ interface ProjectionMemo {
  * can still move one of its fields. Expiry only ever REMOVES a card and never adds one, so it can be
  * applied to the kept projection directly. Returns the projection unchanged when nothing has expired,
  * so the ordinary read stays free and keeps its identity.
+ *
+ * The STATUS has to move with the cards, not just the list. Stripping the card and keeping
+ * `needs_you` left a condensed live run answering `status: needs_you, pendingDecisions: []` for the
+ * rest of its life — one projection contradicting itself, which is the same defect as two surfaces
+ * contradicting each other. `needs_you` can also come from a `run.paused` this projection no longer
+ * records, so the downgrade is the honest answer only until the horizon timer's re-read lands; see
+ * `trackHorizon`, which replays a condensed run from the store rather than leaving it on a guess.
  */
 function withoutExpiredDecisions(run: Run, now: Date): Run {
   const at = now.getTime();
   if (!run.pendingDecisions.some((d) => Date.parse(d.autoDenyAt) <= at)) return run;
-  return { ...run, pendingDecisions: run.pendingDecisions.filter((d) => Date.parse(d.autoDenyAt) > at) };
+  const pendingDecisions = run.pendingDecisions.filter((d) => Date.parse(d.autoDenyAt) > at);
+  const status = run.status === 'needs_you' && pendingDecisions.length === 0 ? 'running' : run.status;
+  return { ...run, pendingDecisions, status };
+}
+
+/** A timer that can never be the reason this process stays alive. */
+export function unrefTimer(cb: () => void, ms: number): () => void {
+  const handle = setTimeout(cb, ms);
+  handle.unref?.();
+  return () => clearTimeout(handle);
 }
 
 /** What a surface needs to name a run. Everything on it is projected; nothing is stored here. */
@@ -246,14 +262,28 @@ export class RunViewModel {
   private readonly adopting = new Map<string, Promise<void>>();
   /** One presentation transition at a time per run — see `setVisibility`. */
   private readonly transitions = new Map<string, Promise<void>>();
+  /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
+  private readonly horizons = new Map<string, { at: number; stop: () => void }>();
 
   /**
    * `now` is injectable for the same reason `projectRun` takes one: the projection depends on the
    * wall clock through `autoDenyAt`, so a test that cannot move the clock cannot reach the state
-   * where a pending decision has expired without any event arriving to say so.
+   * where a pending decision has expired without any event arriving to say so. `setTimer` is
+   * injectable for the same reason again: the fan-out AT that moment is on a real two-minute timer,
+   * and a test that cannot drive it cannot observe the transition it exists to announce.
    */
-  constructor(private readonly store: RunStoreClient, private readonly now: () => Date = () => new Date()) {
+  constructor(
+    private readonly store: RunStoreClient,
+    private readonly now: () => Date = () => new Date(),
+    private readonly setTimer: (cb: () => void, ms: number) => () => void = unrefTimer,
+  ) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
+  }
+
+  /** Let go of every scheduled horizon. A timer that outlives the app would fan out into a dead window. */
+  dispose(): void {
+    for (const { stop } of this.horizons.values()) stop();
+    this.horizons.clear();
   }
 
   /**
@@ -715,12 +745,48 @@ export class RunViewModel {
     const log = this.logs.get(runId);
     if (!log) return undefined;
     const now = this.now();
-    if (log.kept) return withoutExpiredDecisions(log.kept, now);
+    if (log.kept) {
+      const kept = withoutExpiredDecisions(log.kept, now);
+      this.trackHorizon(runId, kept);
+      return kept;
+    }
     const memo = this.projected.get(runId);
     if (memo && (memo.staleAt === undefined || now.getTime() < memo.staleAt)) return memo.run;
     const run = projectRun(log.facts, log.events, now);
     this.projected.set(runId, { run, staleAt: autoDenyHorizonOf(run) });
+    this.trackHorizon(runId, run);
     return run;
+  }
+
+  /**
+   * Announce the clock-driven transition at the moment it happens, instead of only when someone reads.
+   *
+   * The memo's `staleAt` made `snapshot` CORRECT when asked, and that fixed half the defect: `emit`
+   * fires on events, the `needs_you → running` transition at `autoDenyAt` arrives without one, and
+   * nothing asks a quiet run. So the tray label, the dock badge and the presentation controller kept
+   * saying "needs you" over a card the broker had already refused, while REST — projecting fresh on
+   * every request — said the run was running. One log, two answers, which is the class law 1 exists
+   * to remove; a memo that expires on read cannot close it, only a fan-out at the deadline can.
+   *
+   * A terminal run is never scheduled: its status cannot move again, and `withoutExpiredDecisions`
+   * already strips a card it ended holding.
+   */
+  private trackHorizon(runId: string, run: Run): void {
+    const at = isTerminal(run.status) ? undefined : autoDenyHorizonOf(run);
+    const current = this.horizons.get(runId);
+    if (current?.at === at) return;
+    current?.stop();
+    this.horizons.delete(runId);
+    if (at === undefined) return;
+    const stop = this.setTimer(() => {
+      this.horizons.delete(runId);
+      this.projected.delete(runId);
+      // A condensed run has no envelopes left to re-project, so `withoutExpiredDecisions` is guessing
+      // at a status the store can state: replay it rather than let the guess stand.
+      if (this.logs.get(runId)?.kept) void this.adopt(runId, { replace: true });
+      this.emit();
+    }, Math.max(0, at - this.now().getTime()));
+    this.horizons.set(runId, { at, stop });
   }
 }
 
