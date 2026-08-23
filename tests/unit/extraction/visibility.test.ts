@@ -64,13 +64,47 @@ describe('stripHiddenDom', () => {
     expect(out).toContain('visible decorative caption');
   });
 
-  it('never removes a wrapper that contains the page <main>, even if it is marked hidden', () => {
-    // Symmetric with stripBoilerplateDom's guard: a pre-render shell that marks its
-    // layout wrapper hidden must not cost us the whole article.
+  it('keeps a hidden shell\'s article but drops every sibling beside its <main>', () => {
+    // The pre-render-shell rescue survives, narrowed: what is rescued is the <main>
+    // itself, never the text a page parks beside it. Before this narrowing the mere
+    // PRESENCE of a <main> switched the whole suppression off, which handed the
+    // untrusted party a control over whether its own `display:none` was honoured.
     const out = strip(
-      '<html><body><div style="display:none"><main><h1>Article</h1><p>the entire body</p></main></div></body></html>',
+      '<html><body><div style="display:none"><main><h1>Article</h1><p>the entire body</p></main>' +
+        'LEAK smuggled beside the shell</div></body></html>',
     );
     expect(out).toContain('the entire body');
+    expect(out).not.toContain('LEAK smuggled beside the shell');
+  });
+
+  it('prunes to <main> through the wrappers between them, not just one level', () => {
+    const out = strip(
+      '<html><body><div hidden><section><div><main><p>the entire body</p></main>' +
+        'LEAK one level up</div>LEAK two levels up</section></div></body></html>',
+    );
+    expect(out).toContain('the entire body');
+    expect(out).not.toContain('LEAK one level up');
+    expect(out).not.toContain('LEAK two levels up');
+  });
+
+  it('an EMPTY <main> rescues nothing — the hidden wrapper goes, siblings and all', () => {
+    // The shape the security review reproduced: a page-controlled off-switch. An empty
+    // <main> costs the author nothing to write and, under the old guard, bought the
+    // whole hidden subtree an exemption from its own declaration.
+    const out = strip(
+      '<html><body><div style="display:none"><main></main>LEAK behind an empty shell</div>' +
+        '<p>kept prose</p></body></html>',
+    );
+    expect(out).toContain('kept prose');
+    expect(out).not.toContain('LEAK behind an empty shell');
+    expect(out).not.toContain('<main>');
+  });
+
+  it('a whitespace-only <main> is an empty shell too', () => {
+    const out = strip(
+      '<html><body><div hidden><main>\n   \t </main>LEAK behind whitespace</div></body></html>',
+    );
+    expect(out).not.toContain('LEAK behind whitespace');
   });
 
   it('never removes <body> or <html> themselves', () => {
@@ -110,6 +144,57 @@ describe('stripHiddenDom', () => {
   });
 });
 
+/**
+ * The inline test is a regex over an attribute a page author writes, so the shapes that
+ * matter are the ones the CSS declaration grammar ACCEPTS — not the one spelling a bug
+ * report happened to arrive with. `!important` is the whole point of the escape: it is
+ * how a page overrides a stylesheet, so it is the spelling a draft-hiding site is most
+ * likely to ship, and the version that shipped in #41 required `;` or end-of-string
+ * immediately after the value, so every `!important` spelling read as visible.
+ */
+describe('isHidden — the inline-style shapes the CSS grammar accepts', () => {
+  const strippedWithStyle = (style: string): boolean => {
+    const { document } = parseHTML('<html><body><div id="t">secret draft copy</div></body></html>');
+    // Set through the DOM rather than in the HTML literal so quotes inside the value
+    // are the value, not an attribute delimiter the parser resolves for us.
+    (document.getElementById('t') as unknown as { setAttribute(n: string, v: string): void })
+      .setAttribute('style', style);
+    stripHiddenDom(document);
+    return !document.body.innerHTML.includes('secret draft copy');
+  };
+
+  it.each([
+    'display: none !important',
+    'display:none!important',
+    'display:none!important;',
+    'display:none !important ;',
+    'display : none ! important',
+    'DISPLAY:NONE !IMPORTANT',
+    'visibility: hidden !important',
+    'visibility:hidden!important;',
+    'color:red;display:none!important;font-size:2px',
+    '  display:none  !important  ;  ',
+    'display:/* hidden by the editor */none',
+    'display:none;visibility:hidden!important',
+  ])('hides: %s', (style) => {
+    expect(strippedWithStyle(style)).toBe(true);
+  });
+
+  it.each([
+    'display:nonesuch',
+    'visibility:hiddenx',
+    'text-decoration:none',
+    'opacity:1',
+    '--legacy-fallback:display:none',
+    'content:"display:none"',
+    "content:'visibility:hidden'",
+    'background:red/*;display:none*/',
+    'display:none-important',
+  ])('keeps: %s', (style) => {
+    expect(strippedWithStyle(style)).toBe(false);
+  });
+});
+
 describe('hidden content does not survive extraction, whichever extractor wins', () => {
   // The github-node-contributors shape: a JS shell with no article body, so no
   // site-specific extractor claims it and the fallback chain answers. The session
@@ -127,6 +212,51 @@ describe('hidden content does not survive extraction, whichever extractor wins',
     const { markdown } = await extractContent(html, 'https://github.com/nodejs/node/graphs/contributors');
     expect(markdown).not.toContain('You signed out in another tab');
     expect(markdown).not.toContain('You signed in with another tab');
+  });
+
+  it('drops an !important-hidden banner on the defuddle route', async () => {
+    // Same JS-shell shape as the row above — the route with no visibility filter of its
+    // own — but hiding its banner the way a page that means it does: with `!important`.
+    const html = `<html><head><title>Contributors</title></head><body>
+      <main><h2>Contributions to main, excluding merge commits and bot accounts</h2>
+        <article><p>The contributor graph counts commits on the default branch and skips
+        merges, so the totals below differ from the raw commit count reported by the log.</p>
+        <p style="display:none !important">LEAK draft banner copy</p>
+        <p>Counts are recomputed nightly and cached, which is why a commit pushed in the
+        last few hours may not appear on this page yet.</p>
+        <p>Bot accounts are excluded from every series drawn here.</p></article>
+      </main>
+    </body></html>`;
+    const { markdown, extractor } = await extractContent(
+      html,
+      'https://github.com/nodejs/node/graphs/contributors',
+    );
+    expect(extractor).toBe('defuddle');
+    expect(markdown).not.toContain('LEAK draft banner copy');
+  });
+
+  it('drops an !important-hidden gloss on the turndown floor', async () => {
+    const html = `<html><head><title>Widget</title></head><body>
+      <div class="shortdescription" style="display:none!important">LEAK hidden one-line gloss</div>
+      <p>Short visible lead.</p>
+    </body></html>`;
+    const { markdown, extractor } = await extractContent(html, 'https://en.wikipedia.org/wiki/Widget');
+    expect(extractor).toBe('turndown');
+    expect(markdown).toContain('Short visible lead');
+    expect(markdown).not.toContain('LEAK hidden one-line gloss');
+  });
+
+  it('does not let an empty <main> shell smuggle its hidden siblings into the markdown', async () => {
+    // The reproduction from the security review, carried to the surface that matters:
+    // final markdown. An empty <main> is free to write and used to buy the whole hidden
+    // subtree beside it an exemption.
+    const html = `<html><head><title>Widget</title></head><body>
+      <div style="display:none"><main></main>LEAK smuggled by an empty shell</div>
+      <p>Short visible lead.</p>
+    </body></html>`;
+    const { markdown } = await extractContent(html, 'https://en.wikipedia.org/wiki/Widget');
+    expect(markdown).toContain('Short visible lead');
+    expect(markdown).not.toContain('LEAK smuggled by an empty shell');
   });
 
   it('drops a MediaWiki shortdescription that only the readability path used to catch', async () => {
