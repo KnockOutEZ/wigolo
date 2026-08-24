@@ -259,6 +259,7 @@ describe('studio host — a run owns its tabs (law 4)', () => {
 
     expect(runs.tabsOf(runId), 'the control: the detach committed, so this is the settled window, not the in-flight one').toContain('t1');
     expect(session.tabIds, 'studio_list handed the agent a tab the human already closed').not.toContain('t1');
+    expect(session.tabIds, 'the run has no other tab, so the listing is empty rather than merely t1-free').toEqual([]);
 
     release();
     await detaching;
