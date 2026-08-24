@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { stopBrokerChild } from 'wigolo/studio';
 import type { ArtifactDelta, RunEvent } from 'wigolo/studio';
 
 /**
@@ -422,6 +423,12 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     },
     onArtifact(handler) { artifactHandlers.push(handler); },
     onRunEvent(handler) { runEventHandlers.push(handler); },
-    async stop() { stopped = true; rejectAllPending('stopped'); child?.kill(); child = null; },
+    // A kill here used to be the whole stop, and on Windows that is a `TerminateProcess` — the child
+    // never runs its exit hook, so the tail of `events.jsonl` (law 11's readable-without-our-tooling
+    // copy of the run) dies in the queue on a perfectly ordinary app quit. `stopBrokerChild` ends the
+    // child's stdin instead, which every platform delivers as an in-process event, and escalates to a
+    // kill only if that door does not answer. `child` is cleared first so nothing dials a dying broker
+    // while we wait for it.
+    async stop() { stopped = true; rejectAllPending('stopped'); const dying = child; child = null; await stopBrokerChild(dying); },
   };
 }

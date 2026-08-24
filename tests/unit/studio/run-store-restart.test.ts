@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Run, RunEvent } from '../../../src/studio/run-store.js';
+// The PRODUCT's stop mechanism, not a spec-local one. A green here has to mean the app's own quit
+// path drains the projection — not that the spec found a gentler door than the app uses.
+import { stopBrokerChild } from '../../../src/studio/broker-stop.js';
 
 /**
  * SD1 acceptance — a run outlives every UI (law 1). This is the only test that proves it against a
@@ -18,14 +21,22 @@ const BROKER = fileURLToPath(new URL('../../../dist/daemon/studio-db-broker.js',
 interface Broker {
   call<T>(method: string, params?: unknown): Promise<T>;
   notifications: Array<Record<string, unknown>>;
+  /** How the child actually died — `signal: null, code: 0` is the graceful door, anything else is a kill. */
+  death: { code: number | null; signal: string | null };
   stop(): void;
   stopGracefully(): Promise<void>;
 }
 
-function startBroker(dataDir: string): Promise<Broker> {
+function startBroker(dataDir: string, stallMs?: number): Promise<Broker> {
   const child: ChildProcess = spawn(process.execPath, [BROKER], {
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, WIGOLO_STUDIO_BROKER_MAIN: '1', WIGOLO_DATA_DIR: dataDir, LOG_LEVEL: 'error' },
+    env: {
+      ...process.env,
+      WIGOLO_STUDIO_BROKER_MAIN: '1',
+      WIGOLO_DATA_DIR: dataDir,
+      LOG_LEVEL: 'error',
+      ...(stallMs ? { WIGOLO_STUDIO_PROJECTION_STALL_MS: String(stallMs) } : {}),
+    },
   });
   child.unref();
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -54,6 +65,9 @@ function startBroker(dataDir: string): Promise<Broker> {
     }
   });
 
+  const death: { code: number | null; signal: string | null } = { code: null, signal: null };
+  child.on('exit', (code, signal) => { death.code = code; death.signal = signal; });
+
   const broker: Broker = {
     call<T>(method: string, params?: unknown): Promise<T> {
       const id = nextId++;
@@ -63,14 +77,13 @@ function startBroker(dataDir: string): Promise<Broker> {
       });
     },
     notifications,
+    death,
     stop: () => { child.kill('SIGKILL'); },
-    // The way the app really ends a broker: SIGTERM, which `bail` turns into `process.exit(0)`
-    // (no-orphan, spec §11). Awaited, because the store's disk queue drains inside that exit.
-    stopGracefully: () => {
-      const exited = new Promise<void>((resolve) => { child.once('exit', () => resolve()); });
-      child.kill('SIGTERM');
-      return exited;
-    },
+    // Literally the app's stop path (`broker-client.stop`): end the child's stdin, which every
+    // platform delivers as an in-process readline `close` → `process.exit(0)` → the exit hook that
+    // drains the store's disk queue. SIGTERM used to stand in for this and could not: on Windows it
+    // is a `TerminateProcess`, no handler runs, and the queued tail is lost.
+    stopGracefully: () => stopBrokerChild(child),
   };
   return ready.then(() => broker);
 }
@@ -122,6 +135,46 @@ describe('run store — survives a broker process restart', () => {
     const file = join(dir, 'studio', 'runs', created.id, 'events.jsonl');
     expect(existsSync(file)).toBe(true);
     expect(readFileSync(file, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l))).toEqual(logAfter);
+  }, 120_000);
+
+  it('lands the whole projection on a graceful stop even when the disk queue never drains on its own', async () => {
+    // The arm above can pass for the wrong reason: on a fast machine the queue drains before the stop
+    // is even sent, so the exit hook has nothing left to do and a broken stop looks identical to a
+    // working one. That is exactly how the Windows hole reached CI green eight times before it went
+    // red — `TerminateProcess` runs no handler, and the drain only happened to beat the kill.
+    //
+    // So the race is forced rather than waited out: the child's disk queue is stalled for longer than
+    // this whole spec may run, which makes the exit drain the ONLY way any of these lines can reach
+    // the file. If the stop does not reach `process.exit(0)`, `events.jsonl` is empty or absent.
+    const forced = mkdtempSync(join(tmpdir(), 'wigolo-run-forced-'));
+    const first = await startBroker(forced, 10 * 60_000);
+    const created = await first.call<Run>('runCreate', { input: { task: 'stop must drain me', driver: { kind: 'studio' } } });
+    for (const event of [
+      { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId: 'tab-1', url: 'https://example.com' } },
+      { actor: { kind: 'agent', driver: 'studio' }, type: 'cost.recorded', payload: { kind: 'tokens_in', amount: 3 } },
+      // The terminal event a quit writes on its way out — the exact line the Windows stop was dropping.
+      { actor: { kind: 'system' }, type: 'run.completed', payload: {} },
+    ]) {
+      await first.call<RunEvent>('runAppend', { runId: created.id, event });
+    }
+    const file = join(forced, 'studio', 'runs', created.id, 'events.jsonl');
+    // Nothing has reached disk: every batch is still held behind the stall.
+    expect(existsSync(file)).toBe(false);
+
+    await first.stopGracefully();
+
+    // `signal: null, code: 0` is the graceful door answering. A kill — the escalation, or the SIGTERM
+    // this stop replaced on Windows — shows up here and never runs the drain.
+    expect(first.death).toEqual({ code: 0, signal: null });
+
+    const second = await startBroker(forced);
+    const log = await second.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
+    await second.stopGracefully();
+
+    expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    // Law 11: the file a person reads is whole, in order, and identical to the source of truth.
+    expect(readFileSync(file, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l))).toEqual(log);
+    rmSync(forced, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }, 120_000);
 
   it('loses nothing that matters when the process is SIGKILLed — the DB is whole and the file is a prefix of it', async () => {

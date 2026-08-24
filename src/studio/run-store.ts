@@ -554,7 +554,23 @@ async function drainProjection(projection: RunProjection): Promise<void> {
   }
 }
 
+/**
+ * Hold every projection batch this many ms short of the disk. Zero — the only value any real run uses
+ * — costs one `Number` parse per batch and nothing else.
+ *
+ * It exists because the queue's most important guarantee is what happens when the process dies with
+ * the queue still full, and a broker child is a PROCESS: a spec cannot reach inside it to stub the
+ * write. Without a knob the only way to observe an un-drained queue from outside is to race the disk
+ * and hope, which is how the Windows exit-drain hole reached CI green eight times before it went red.
+ */
+function projectionStallMs(): number {
+  const raw = Number(process.env.WIGOLO_STUDIO_PROJECTION_STALL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
 async function appendProjectionBatch(projection: RunProjection): Promise<void> {
+  const stall = projectionStallMs();
+  if (stall > 0) await new Promise<void>((resolve) => { setTimeout(resolve, stall).unref?.(); });
   const batch = projection.inFlight!;
   try {
     ensureRunDir(projection.dir);
