@@ -374,6 +374,59 @@ describe('studio-db-broker — the host-side run reads are bounded', () => {
     expect(materialized[0].rows).toBe(rowsPerRun + 1);
   });
 
+  /**
+   * The half of that charge the CALLER could not see, and the reason a paging host multiplied it.
+   *
+   * The allowance is a local of this call. A host that follows `nextCursor` gets a fresh four million
+   * per page, so the only bound it can carry across a boot is one it computes from the page it was
+   * handed — and the page reported `entries`. A condensed entry's `entries` is empty, so a page of
+   * runs that cost the child a full `eventsSince` + `JSON.stringify` each looked FREE from up there:
+   * the host's allowance never moved, every page kept asking for envelopes, and this call's budget was
+   * multiplied by the host's page cap.
+   *
+   * So the page reports the READ. Same rule as the charge above and for the same reason — the cost is
+   * paid at materialization, and a caller that can only see the acceptance cannot bound the work.
+   */
+  it('reports the read it was charged for, not the envelopes it shipped', async () => {
+    // The same band as the arm above: the payload sum sits under the frame budget, so the estimate
+    // cannot rule the run out, and the envelope overhead pushes the serialized size over it.
+    const blob = 'w'.repeat(1_990);
+    const rowsPerRun = 1_990;
+    const banded = await handlers.runCreate({ input: { task: 'banded', sessionId: 'sess-report' } });
+    bulkAppend(getDatabase(), banded.id, rowsPerRun, () => ({ type: 'run.progress', payload: { blob } }));
+
+    const page = await handlers.runListLogs({});
+    const entry = page.entries.find((e) => e.facts.id === banded.id)!;
+
+    // The premise: this run was READ and then condensed, so its cost is exactly the cost `entries`
+    // cannot show. Zero shipped envelopes, and the page still moved four million characters.
+    expect(entry.events, 'the run fitted, so there is no unreported read for this arm to be about').toEqual([]);
+    expect(entry.projection).toBeDefined();
+    expect(page.entries.reduce((n, e) => n + e.events.length, 0)).toBe(0);
+
+    // …and the report says so. `events.length` — what the host used to charge — is zero here; the
+    // spend is the whole log, and the characters are over the very budget that condensed the run.
+    expect(page.eventsSpent, 'the report followed the acceptance rather than the read').toBe(rowsPerRun + 1);
+    expect(page.charsSpent, 'a read that overran the frame budget reported less than it').toBeGreaterThan(MAX_BOOT_FRAME_CHARS);
+  });
+
+  // The accepted side of the same report: when everything fits, what was read IS what shipped, so the
+  // two numbers have to agree. A report that only ever fired on the condensed path would let a host
+  // page forever over ordinary runs.
+  it('reports a spend that matches the page it shipped when every run fits', async () => {
+    const first = await handlers.runCreate({ input: { task: 'a' } });
+    await handlers.runAppend({ runId: first.id, event: { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-1' } } });
+    await handlers.runCreate({ input: { task: 'b' } });
+
+    const page = await handlers.runListLogs({});
+    const shipped = page.entries.flatMap((e) => e.events);
+
+    expect(page.entries.every((e) => e.projection === undefined), 'a run was condensed, so this is not the accepted path').toBe(true);
+    expect(page.eventsSpent).toBe(shipped.length);
+    expect(page.charsSpent).toBe(page.entries.reduce((n, e) => n + JSON.stringify(e.events).length, 0));
+    expect(page.charsSpent).toBeLessThan(MAX_BOOT_FRAME_CHARS);
+  });
+
   // `limit` used to be optional, and omitting it meant "every event this run ever had" in one frame
   // — which is exactly how the host's gap replay called it. A required parameter is only half of it:
   // the ceiling is enforced here too, so no caller can ask for a frame the host cannot survive.

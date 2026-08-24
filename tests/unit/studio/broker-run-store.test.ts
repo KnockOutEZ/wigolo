@@ -88,6 +88,27 @@ describe('studio-db-broker — run store methods', () => {
     expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runExists', 'runFacts', 'runGet', 'runList', 'runListLogs']);
   });
 
+  /**
+   * The boot page always states what it spent reading itself.
+   *
+   * The host treats an absent report as "what came back is what was read", which is exact for the
+   * in-process fallback store and WRONG for this one — a condensed entry comes back empty and cost a
+   * full log read. So the fields being present on every page, including an empty one, is the claim: a
+   * page that omitted them would put the host silently back on the charge that never decremented.
+   */
+  it('states the read it was charged for on every boot page, including an empty one', async () => {
+    const empty = await handlers.runListLogs({});
+    expect(empty.entries).toEqual([]);
+    expect(empty.eventsSpent).toBe(0);
+    expect(empty.charsSpent).toBe(0);
+
+    const run = await handlers.runCreate({ input: { task: 'spend' } });
+    await handlers.runAppend({ runId: run.id, event: { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-1' } } });
+    const page = await handlers.runListLogs({});
+    expect(page.eventsSpent).toBe(2);
+    expect(page.charsSpent).toBeGreaterThan(0);
+  });
+
   it('surfaces a refusal instead of silently dropping a malformed append', async () => {
     const run = await handlers.runCreate({ input: { task: 't' } });
     await expect(handlers.runAppend({ runId: run.id, event: { actor: { kind: 'agent' }, type: 'nope' } })).rejects.toThrow(/type/i);
