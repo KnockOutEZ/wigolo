@@ -251,8 +251,13 @@ function describeNoRuntime(rejected: readonly NodeRuntimeRejection[]): string {
  * any legitimate answer (a synthesized brief, a page of artifacts with their bodies), because the
  * cost of cutting a real answer short is a failed call and the cost of not cutting a runaway one is
  * the window.
+ *
+ * Exported because the OTHER side of this pipe has to be sized against it. The child's own page
+ * ceilings were set independently of this number and its worst legal `runEventsSince` answer was
+ * twice it — a legitimate page killed as an oversized frame. `tests/integration/studio-broker-frame-budget.test.ts`
+ * asserts the relation, so a bump here reds a test naming the child's constants and vice versa.
  */
-const DEFAULT_MAX_FRAME_CHARS = 64 * 1024 * 1024;
+export const DEFAULT_MAX_FRAME_CHARS = 64 * 1024 * 1024;
 
 /** A client that only ever reports why it is dead. Loud (the reason travels to every caller), not fatal. */
 function deadClient(reason: string): BrokerClient {
