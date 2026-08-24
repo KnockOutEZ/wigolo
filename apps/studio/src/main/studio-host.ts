@@ -1042,13 +1042,32 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // Both failures are REFUSALS, not exceptions: the agent gets a designed tool result rather than an
     // unhandled throw at the gateway (law 9). And both roll the half-open session back, because a session
     // whose tabs no run owns is one law 4 cannot police and no surface can see.
+    let run: { id: string } | undefined;
     try {
-      const run = await deps.runs.createRun({ task: name, sessionId });
+      run = await deps.runs.createRun({ task: name, sessionId });
       await deps.runs.attachTab(run.id, tab.tabId, typeof input.startUrl === 'string' ? input.startUrl : undefined);
     } catch (err) {
       ctx.status = 'closed';
       contexts.delete(sessionId);
       try { deps.closeTab(tab.tabId); } catch { /* best-effort teardown */ }
+      // The session and the tab above are in-memory, but the run is DURABLE and the log is append-only
+      // with no reaper — so a run created before the attach failed would sit at `running` forever,
+      // counted in the tray, returned by `GET /v1/runs?status=running` and listed in the renderer, while
+      // describing a session that no longer exists and owning no tab. Rolling it back means ending it,
+      // because the only way to retract a fact from an append-only log is to write its terminal one.
+      // `endRun` releases anything it still owns first, so law 4 never ends up with a run on a dead tab.
+      //
+      // Best-effort like `close`'s, and for the same reason: the refusal below is the answer the agent
+      // gets either way, and the store that cannot take this terminal event is the very store that just
+      // refused the attach. A run left running is visible and recoverable; a throw here would replace a
+      // designed refusal with an unhandled one at the gateway (law 9).
+      if (run) {
+        try {
+          await deps.runs.endRun(run.id, 'cancelled');
+        } catch (endErr) {
+          process.stderr.write(`[studio] could not end run ${run.id} after a refused open: ${endErr instanceof Error ? endErr.message : String(endErr)}\n`);
+        }
+      }
       if (err instanceof TabOwnedError) {
         return { error_reason: 'tab_already_owned', hint: 'That tab already belongs to another run — two runs never share a tab.' };
       }

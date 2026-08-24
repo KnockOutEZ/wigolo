@@ -42,10 +42,20 @@ const viewport = () => ({ width: 800, height: 600 });
  * — created, painting, and with no ownership recorded. `nextTabId` lets a test hand the host a tab id
  * that is already spoken for, which is the only way to reach the double-attach refusal from outside.
  */
-function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean } = {}) {
+function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; breakAttach?: boolean } = {}) {
   const engine = createDriveEngine();
   const store = new FakeRunStore();
   if (opts.breakRunStore) store.createRun = async () => { throw new Error('studio background service unavailable'); };
+  // A broker hiccup between `createRun` and the attach: the run is minted, the attach append is not. Only
+  // that one event type fails, so the terminal event the rollback owes the run can still be written —
+  // a store that refuses EVERY append would make "the run was left running" untestable and unfixable.
+  if (opts.breakAttach) {
+    const append = store.appendEvent.bind(store);
+    store.appendEvent = async (runId, event) => {
+      if (event.type === 'tab.attached') throw new Error('studio background service unavailable');
+      return append(runId, event);
+    };
+  }
   const runs = new RunViewModel(store);
   /** Every tab the window holds — agent tabs and the human's alike, exactly as TabManager would. */
   const universe: string[] = [];
@@ -123,7 +133,7 @@ describe('studio host — a run owns its tabs (law 4)', () => {
   // can take in production (a recycled id, a view adopted twice), and the seam refuses it outright rather
   // than reassigning — a silent steal would put one agent on another agent's page.
   it('refuses to open a session onto a tab another run already owns', async () => {
-    const { host, runs } = makeHost({ nextTabId: () => 'recycled' });
+    const { host, runs, store } = makeHost({ nextTabId: () => 'recycled' });
     const first = await host.handlers.spawn({}) as { session_id: string };
     const runA = runs.runForSession(first.session_id)!;
 
@@ -135,6 +145,10 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(runs.sessionIdOf(runs.ownerOf('recycled')!)).toBe(first.session_id);
     // The half-open session is rolled back — one live session, not two, and the first still drives.
     expect(((await host.handlers.list()) as StudioListOutput).sessions.filter((x) => x.status === 'live')).toHaveLength(1);
+    // …and so is the run the refused open minted a line before the attach was refused (SD1 exit-9, K1).
+    const refused = [...store.facts.keys()].find((id) => id !== runA)!;
+    expect((await store.getRun(refused))!.status, 'the refused open left a zombie run at running').toBe('cancelled');
+    expect((await store.getRun(runA))!.status, 'the refusal ended the wrong run').toBe('running');
   });
 
   // A run that cannot be recorded is a run no surface can see and law 4 cannot police, so the session is
@@ -146,6 +160,35 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(out.error_reason).toBe('run_unavailable');
     expect(universe, 'a tab was left behind by the refused session').toEqual([]);
     expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
+  });
+
+  /**
+   * SD1 exit-9 (K1). The refusals above roll back the session and the tab, and both were always right.
+   * The leak is behind them: the run minted a line earlier is the one artifact that is DURABLE and
+   * append-only, and nothing reaps it — so a run left at `running` here describes a session that no
+   * longer exists and owns no tab, forever. It is counted in the tray, returned by
+   * `GET /v1/runs?status=running`, and listed in the renderer.
+   *
+   * The assertion is therefore on the STORED run, not on the refusal the handler returned: the handler's
+   * answer is identical either side of this fix, and the zombie is invisible to any test that reads it.
+   */
+  it('ends the run it just created when the attach fails, rather than leaving it running forever', async () => {
+    const { host, store, universe } = makeHost({ breakAttach: true });
+
+    const out = await host.handlers.spawn({}) as StudioToolError;
+    expect(out.error_reason).toBe('run_unavailable');
+
+    const ids = [...store.facts.keys()];
+    expect(ids, 'the arm is only interesting if the run was created BEFORE the attach failed').toHaveLength(1);
+    const run = (await store.getRun(ids[0]))!;
+    expect(run.status, 'a refused open left a zombie run at running').toBe('cancelled');
+    // Law 4 is unchanged by the rollback: the tab is gone from the window and owned by nobody.
+    expect(run.tabIds ?? []).toEqual([]);
+    expect(universe, 'a tab was left behind by the refused session').toEqual([]);
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
+    // The projection REST serves: `GET /v1/runs?status=running` has nothing to hand a client.
+    const running = (await store.listRuns()).runs.filter((r) => r.status === 'running');
+    expect(running.map((r) => r.id), 'the zombie is still on the wire to every client').toEqual([]);
   });
 
   it('releases the tab and ends the run when the session closes', async () => {
