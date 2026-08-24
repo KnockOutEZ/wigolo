@@ -166,6 +166,36 @@ const REPLAY_PAGE_SIZE = 500;
 const MAX_HYDRATION_PAGES = 200;
 
 /**
+ * How many envelopes the WHOLE hydration may load and retain — across every page, not per page.
+ *
+ * The store bounds one boot frame: `runListLogs` spends an event and a character allowance over the
+ * runs on its page and answers the rest with projections, so no single frame can stall the thread
+ * that paints. That allowance is a LOCAL of the call, and `hydrate` makes up to
+ * `MAX_HYDRATION_PAGES` of those calls — so the bound that holds for one frame was being handed out
+ * two hundred times, and the ceiling on what boot loads was `MAX_HYDRATION_PAGES ×` it. Nothing
+ * evicts afterwards: `retain` holds every entry's envelopes for the process's life, and the listing
+ * carries no status filter, so a run that ended months ago was read, parsed and held exactly like a
+ * live one.
+ *
+ * So the allowance is carried across the hydration instead. Once it is spent, the remaining pages
+ * are taken from `listRuns` — projections only, no envelopes on the wire at all — which is the same
+ * answer the store already gives for a single log too large for one frame, and the same one REST
+ * gives for that run. Every reader stays correct, and the run replays in bounded pages when it next
+ * speaks.
+ *
+ * Pinned to the store's own per-frame event allowance, so the two decisions cannot drift into
+ * disagreeing about the same boot. That makes the total what one frame used to be, and the shipped
+ * bound on what boot retains `MAX_BOOT_HYDRATION_EVENTS` plus at most one page — the page that
+ * spends the last of it is finished rather than torn in half, because an entry refused mid-page has
+ * no projection to be kept in place of its envelopes.
+ *
+ * The listing is newest-first, so the allowance is spent on the runs a surface is most likely to
+ * name, and the ones answered by projection are the oldest — which are also the ones most likely to
+ * be terminal, and a terminal run's envelopes are dropped by `seal` the moment they are folded.
+ */
+export const MAX_BOOT_HYDRATION_EVENTS = 20_000;
+
+/**
  * How long a log may be before a condensed run is RE-condensed rather than materialized.
  *
  * A run is condensed at boot precisely because it is long, and a live long run is exactly the one
@@ -284,6 +314,19 @@ interface RetainOptions {
   projection?: Run;
   /** The session link, when no `run.created` envelope came with the entry to replay it from. */
   sessionId?: string;
+}
+
+/** What a caller may say about one hydration. */
+export interface HydrateOptions {
+  /**
+   * The envelope allowance for this hydration, defaulting to `MAX_BOOT_HYDRATION_EVENTS`.
+   *
+   * Injectable for the same reason `now` and `setTimer` are: the shipped bound is twenty thousand
+   * envelopes across the boot, and a test that cannot force it has to ALLOCATE it — which measures
+   * how fast the fixture builds rather than what happens at the boundary. The behaviour either side
+   * of the line is identical whatever the line is.
+   */
+  eventBudget?: number;
 }
 
 export class RunViewModel {
@@ -455,19 +498,54 @@ export class RunViewModel {
    * created after it was taken would otherwise be discarded here and stay invisible until it happened
    * to emit again. Runs are never deleted, so "absent from the listing" only ever means "newer than it".
    */
-  async hydrate(): Promise<void> {
+  async hydrate(opts: HydrateOptions = {}): Promise<void> {
     let cursor: string | undefined;
+    // The allowance for the WHOLE hydration, not for each page — see `MAX_BOOT_HYDRATION_EVENTS`.
+    let eventsLeft = opts.eventBudget ?? MAX_BOOT_HYDRATION_EVENTS;
     // EVERY page, not the first one. This called `loadLogs()` with no options, which takes
     // `DEFAULT_LIST_LIMIT` runs and drops the `nextCursor` the store hands back with them — so a
     // machine with fifty-one runs booted the app showing fifty, and the fifty-first stayed invisible
     // until it happened to emit, because nothing calls `hydrate` after boot.
     for (let page = 0; page < MAX_HYDRATION_PAGES; page++) {
-      const { entries, nextCursor } = await this.loadLogs(cursor ? { cursor } : {});
-      for (const entry of entries) this.retain(entry.facts, entry.events, entry);
+      const pageOpts = cursor ? { cursor } : {};
+      const nextCursor =
+        eventsLeft > 0 ? await this.hydrateLogPage(pageOpts, (n) => { eventsLeft -= n; }) : await this.hydrateProjectionPage(pageOpts);
       if (!nextCursor || nextCursor === cursor) break;
       cursor = nextCursor;
     }
     this.emit();
+  }
+
+  /** One boot page WITH envelopes, charging what it retained against the hydration's allowance. */
+  private async hydrateLogPage(opts: ListRunsOptions, charge: (events: number) => void): Promise<string | undefined> {
+    const { entries, nextCursor } = await this.loadLogs(opts);
+    for (const entry of entries) {
+      charge(entry.events.length);
+      this.retain(entry.facts, entry.events, entry);
+    }
+    return nextCursor;
+  }
+
+  /**
+   * One boot page as PROJECTIONS — the shape every page takes once the allowance is spent.
+   *
+   * `listRuns` rather than `listRunLogs`, so the envelopes never cross the pipe and are never parsed:
+   * skipping the retention alone would still have paid the frame, and the frame is what blocks the
+   * thread that paints. Kept exactly the way the store's own condensed entry is kept, which is what
+   * makes this a bound on cost and not a second account of which runs exist.
+   *
+   * KNOWN COST: `listRuns` answers with projections, and a projection cannot carry the session link —
+   * only the `run.created` envelope does, which is why the store reads it separately for the entries
+   * IT condenses. A run answered here is therefore invisible to `runForSession` until it next speaks.
+   * Accepted because reaching this page at all means twenty thousand envelopes are newer than the run,
+   * and because the alternative is a round-trip per run, which is the boot cost this whole path exists
+   * to remove. `retain` carries a session link this projection already holds, so a re-hydration never
+   * loses one it had. See DECISIONS-AUTO.md (2026-08-24) for the reversal condition.
+   */
+  private async hydrateProjectionPage(opts: ListRunsOptions): Promise<string | undefined> {
+    const { runs, nextCursor } = await this.store.listRuns(opts);
+    for (const run of runs) this.retain(factsOf(run), [], { lastSeq: run.lastSeq, projection: run });
+    return nextCursor;
   }
 
   /**
@@ -536,7 +614,13 @@ export class RunViewModel {
     // the log's own.
     const held = this.logs.get(facts.id);
     if (held && held.lastSeq > lastSeq) return;
-    const sessionId = opts.sessionId ?? events.find((e) => e.type === 'run.created')?.payload.sessionId;
+    // The link is a fact fixed at creation, so a read that cannot see it must not UNSET one this log
+    // already holds. Two reads answer without it: `recondense`, which carries it by hand, and a boot
+    // page taken from `listRuns` once the hydration allowance is spent — projections carry no
+    // `run.created`. Carrying it here is what keeps a re-hydration from losing a session link the
+    // first one found.
+    const sessionId =
+      opts.sessionId ?? events.find((e) => e.type === 'run.created')?.payload.sessionId ?? held?.sessionId;
     this.logs.set(facts.id, {
       facts,
       events,
