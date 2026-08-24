@@ -192,6 +192,18 @@ export interface StudioHostDeps {
   createTab: (opts: { initialHolder: ControlParty; grant: NavGrant; partition: string }) => HostTab | Promise<HostTab>;
   /** Tear a session's tab down. */
   closeTab: (tabId: string) => void;
+  /**
+   * Every tab the window currently holds — the agent's and the human's alike, exactly the set the tab
+   * layer knows about. Read pull-at-call, never cached: the point of it is the ids that have just left.
+   *
+   * REQUIRED rather than optional, and that is deliberate. A host that forgets to supply one has no way
+   * to know a tab died behind its back, and the answer it gives the agent is stale in precisely the
+   * window this exists to close — a fallback would make that silent instead of a type error.
+   *
+   * It NARROWS an ownership answer and never widens one: what a run owns comes from the log, and a tab
+   * in here that no run attached is the human's, invisible either way (law 4).
+   */
+  tabUniverse: () => readonly string[];
   /** Surface a parked risky act to the human approval card (never auto-allowed). */
   onParked: (notice: ParkedApprovalNotice) => void;
   /**
@@ -1162,19 +1174,28 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     },
     // The agent-visible enumeration. Tabs are taken from what each RUN owns, never from the window's tab
     // set filtered down — so a tab the human opened has no route into this answer even by accident.
-    list: async (): Promise<StudioListOutput> => ({
-      sessions: [...contexts.values()].map((c) => {
-        const runId = deps.runs.runForSession(c.sessionId);
-        return {
-          id: c.sessionId,
-          status: c.status,
-          clients: 0,
-          createdAt: c.createdAt,
-          lastActiveAt: c.lastActiveAt,
-          ...(runId ? { runId, tabIds: deps.runs.agentVisibleTabs(runId) } : { tabIds: [] }),
-        };
-      }),
-    }),
+    //
+    // The universe is a NARROWING of that ownership answer, not its source (SD1 exit-9, K8). A tab the
+    // human closes leaves the window at once and its release is a broker round-trip behind, queued on
+    // the tab's own lane; between the two the log still says the run owns it. Listed unnarrowed, the
+    // agent gets an id that no longer exists and its next act against it fails deep in the engine
+    // instead of here. Read ONCE per call, so every session in one listing answers from one universe.
+    list: async (): Promise<StudioListOutput> => {
+      const universe = deps.tabUniverse();
+      return {
+        sessions: [...contexts.values()].map((c) => {
+          const runId = deps.runs.runForSession(c.sessionId);
+          return {
+            id: c.sessionId,
+            status: c.status,
+            clients: 0,
+            createdAt: c.createdAt,
+            lastActiveAt: c.lastActiveAt,
+            ...(runId ? { runId, tabIds: deps.runs.agentVisibleTabs(runId, universe) } : { tabIds: [] }),
+          };
+        }),
+      };
+    },
     // P4: agent→human chat post. Agent-authored text only; the renderer renders it as an inert text node
     // (no page content, no control/approval power — a legitimate 8th agent verb, PIN-SPLIT(b) intact).
     say: async (input: StudioSayInput): Promise<StudioSayOutput | StudioToolError> => {

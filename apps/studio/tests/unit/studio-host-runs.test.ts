@@ -83,6 +83,7 @@ function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; bre
       };
       return tab;
     },
+    tabUniverse: () => universe,
     closeTab: (tabId) => { const at = universe.indexOf(tabId); if (at >= 0) universe.splice(at, 1); void engine.detachTab(tabId); },
   });
   const openUserTab = (id: string): string => { universe.push(id); return id; };
@@ -220,6 +221,49 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     expect(runs.ownerOf('t1'), 'the closed session still owns its tab — the old registry’s exact leak').toBeUndefined();
     expect(store.appends.map((a) => a.type)).toEqual(['tab.attached', 'tab.detached', 'run.completed']);
     expect(runs.tabsOf(runId)).toEqual([]);
+  });
+
+  /**
+   * SD1 exit-9 (K8). The window destroys a tab the instant the human closes it; the release is a broker
+   * round-trip behind that, queued on the tab's own lane. In that window the log still says the run owns
+   * the tab, so an ownership-only answer hands the agent an id that no longer exists — and its next act
+   * against it fails deeper in the stack, as an engine error rather than as a designed one.
+   *
+   * `agentVisibleTabs` takes the universe for exactly this. The listing is the one agent-facing seam that
+   * enumerates tabs, and it was the one call site not passing it.
+   *
+   * The parked append is what makes this the in-flight window rather than the settled one, and the
+   * `tabsOf` control asserts the parking took: with the append committed, ownership is already gone and
+   * every arm below passes without narrowing anything.
+   */
+  it('does not list a tab the human already closed while its detach is still on the wire', async () => {
+    const { host, runs, store, universe } = makeHost();
+    const { session_id } = await host.handlers.spawn({}) as { session_id: string };
+    const runId = runs.runForSession(session_id)!;
+
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    const append = store.appendEvent.bind(store);
+    store.appendEvent = async (rid, event) => {
+      if (event.type === 'tab.detached') await parked;
+      return append(rid, event);
+    };
+
+    // The human closes the agent's tab from the tab strip: the view is gone from the window at once,
+    // the release is not.
+    universe.splice(universe.indexOf('t1'), 1);
+    const detaching = runs.detachTab('t1', 'closed');
+
+    const listed = await host.handlers.list() as StudioListOutput;
+    const session = listed.sessions.find((s) => s.id === session_id)!;
+
+    expect(runs.tabsOf(runId), 'the control: the detach committed, so this is the settled window, not the in-flight one').toContain('t1');
+    expect(session.tabIds, 'studio_list handed the agent a tab the human already closed').not.toContain('t1');
+    expect(session.tabIds, 'the run has no other tab, so the listing is empty rather than merely t1-free').toEqual([]);
+
+    release();
+    await detaching;
+    expect(runs.tabsOf(runId), 'the release never landed once unparked').toEqual([]);
   });
 
   // The tab is already destroyed by the time the terminal event is written, so a store that refuses it

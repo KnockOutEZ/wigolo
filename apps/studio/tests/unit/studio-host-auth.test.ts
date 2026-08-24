@@ -129,6 +129,7 @@ function makeAuthHost(opts: HarnessOpts) {
       };
       return tab;
     },
+    tabUniverse: () => ['t1'],
     closeTab: () => { void engine.detachTab('t1'); },
   });
   return { host, loginPushes, order, applied, getHolder: () => drive?.controlToken.holder };
