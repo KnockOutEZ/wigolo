@@ -1360,7 +1360,9 @@ async function handleEvents(
      * moving underneath it.
      *
      * Deferred, never dropped: the waiting read may end without filling THIS hole, so the heal is
-     * re-dispatched by `releaseBusy` and re-checks the guard above when it gets its turn.
+     * re-dispatched by `releaseBusy` and re-checks the guard above when it gets its turn. That
+     * re-dispatch is shadowed today and cannot change what goes out — `releaseBusy` writes down
+     * which two properties of this file make that true, and what relaxing either would cost.
      */
     if (busy) {
       pendingHeal = pendingHeal === null
@@ -1389,6 +1391,35 @@ async function handleEvents(
    * left in the buffer with nobody coming for it. Re-dispatched through `setImmediate` for the
    * reason the gap door defers in the first place — this runs in a `finally`, and a heal's first
    * act is a store read.
+   *
+   * "Nobody coming for it" is TODAY untrue, and not because of anything here: measured 2026-08-24,
+   * this re-dispatch is shadowed and cannot change what reaches the wire. Two properties that live
+   * elsewhere in this file are what make it so. Let `S = pendingHeal.arrivedAt`. Every `busy`
+   * window ends in a flush, and when that flush reaches the held event at `S`, exactly one of four
+   * things happens:
+   *
+   *   1. the flush door in `createOrderedEmitter` trips — at `S`, or at an earlier held entry,
+   *      since the door is unconditional over the whole hold buffer — and fires a FRESH `onGap` for
+   *      that same hole. Its `setImmediate` is queued strictly BEFORE ours: everything between the
+   *      door and the `finally` that calls us is microtasks. So the fresh heal takes the gate
+   *      first and issues exactly the durable read the queued one would have;
+   *   2. `emit` writes it, so `last === S`;
+   *   3. `emit` drops it as already covered, so `last >= S`;
+   *   4. the event is gone from the buffer — which requires `overflow`, and `goLiveOrEnd` turns
+   *      `overflow` into `endStream` unconditionally, so there is no live stream left to heal.
+   *
+   * 2 and 3 satisfy the guard at the top of `heal` (`lastEmitted() >= arrivedAt - 1`), which
+   * no-ops the re-dispatch. The `delivered === false` let-through in the flush door is an `emit`,
+   * so it lands in 2. Neuter this whole body to `busy = false` and `tests/unit/daemon/` is
+   * 479/479 green, both #113 arms and both #121 arms included; an instrumented sweep over 1080
+   * forced windows plus a 10-tail churn recorded `deferrals=1239 coalesced=0 pendingDidWork=0`.
+   * The `busy` early-return in `heal` is the opposite case — load-bearing, pinned, three arms red
+   * without it — so do not read this note as being about that gate.
+   *
+   * Kept anyway, because the unreachability is borrowed rather than local. Make the flush door
+   * conditional, or let an overflow go live instead of ending the stream, and this queue is the
+   * ONLY thing carrying that hole to a healer — and no arm would go red to tell you, because no
+   * arm can reach it today. Relax either and pin this branch in the same commit.
    */
   function releaseBusy(): void {
     busy = false;
@@ -1519,6 +1550,10 @@ async function handleEvents(
   await goLiveOrEnd('replay');
   // The opening read is done, so the silence reconcile may now take its turn. Cleared only on this
   // path: every early return above leaves a stream that is closing, and a reconcile on one of those
-  // has nothing to do that its own `closed` check does not already refuse.
+  // has nothing to do that its own `closed` check does not already refuse. Its re-dispatch half is
+  // dead by construction here, not merely shadowed: `pendingHeal` is written only by `heal`, and
+  // every route into `heal` is `onGap`, which defers through `setImmediate`. So even a gap the
+  // flush on the line above just reported has not run a `heal` body yet, and `pendingHeal` is
+  // still null when we get here.
   releaseBusy();
 }
