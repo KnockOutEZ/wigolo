@@ -19,6 +19,7 @@ interface Broker {
   call<T>(method: string, params?: unknown): Promise<T>;
   notifications: Array<Record<string, unknown>>;
   stop(): void;
+  stopGracefully(): Promise<void>;
 }
 
 function startBroker(dataDir: string): Promise<Broker> {
@@ -63,6 +64,13 @@ function startBroker(dataDir: string): Promise<Broker> {
     },
     notifications,
     stop: () => { child.kill('SIGKILL'); },
+    // The way the app really ends a broker: SIGTERM, which `bail` turns into `process.exit(0)`
+    // (no-orphan, spec §11). Awaited, because the store's disk queue drains inside that exit.
+    stopGracefully: () => {
+      const exited = new Promise<void>((resolve) => { child.once('exit', () => resolve()); });
+      child.kill('SIGTERM');
+      return exited;
+    },
   };
   return ready.then(() => broker);
 }
@@ -93,7 +101,9 @@ describe('run store — survives a broker process restart', () => {
     const logBefore = await first.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
     // The live tail fired for every committed envelope, in order, before the process died.
     expect((first.notifications.filter((n) => n.notify === 'run-event')).map((n) => (n.envelope as RunEvent).seq)).toEqual([1, 2, 3, 4, 5]);
-    first.stop();
+    // Graceful, because the disk projection is queued rather than written inline (A-118-1) and the
+    // law-11 assertion at the bottom is about the file. The SIGKILL boundary is the next test.
+    await first.stopGracefully();
 
     const second = await startBroker(dir);
     const after = await second.call<Run>('runGet', { runId: created.id });
@@ -112,5 +122,39 @@ describe('run store — survives a broker process restart', () => {
     const file = join(dir, 'studio', 'runs', created.id, 'events.jsonl');
     expect(existsSync(file)).toBe(true);
     expect(readFileSync(file, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l))).toEqual(logAfter);
+  }, 120_000);
+
+  it('loses nothing that matters when the process is SIGKILLed — the DB is whole and the file is a prefix of it', async () => {
+    // The boundary A-118-1 draws, said out loud rather than left to a CI flake. The projection is
+    // queued now (it was `appendFileSync` before, complete by the time `appendEvent` returned), so a
+    // kill no exit handler can survive may leave the file short. What must NOT change: the event log
+    // itself, which is the source of truth every other surface projects from (law 1).
+    const first = await startBroker(dir);
+    const created = await first.call<Run>('runCreate', { input: { task: 'killed mid-flight', driver: { kind: 'cli' } } });
+    for (let i = 0; i < 6; i++) {
+      await first.call<RunEvent>('runAppend', {
+        runId: created.id,
+        event: { actor: { kind: 'agent', driver: 'cli' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } },
+      });
+    }
+    first.stop(); // SIGKILL — no `exit` listener runs, nothing gets to drain
+
+    const second = await startBroker(dir);
+    const log = await second.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
+    await second.stopGracefully();
+
+    // Committed synchronously inside the transaction, so the crash cannot reach them.
+    expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+
+    // And the file is a genuine PREFIX: whole lines, in seq order, never reordered and never a torn
+    // one. How short it is depends on how much the runner had drained, which is why this arm bounds
+    // rather than pins — the ordering and exactly-once claims underneath it have their teeth in
+    // `run-store-disk-projection.test.ts` and `run-store-exit-drain.test.ts`, where the state can be
+    // forced. What this arm catches is the shape a loaded machine produces and a fast one never does:
+    // a batch that coalesced four events and then landed in the wrong order, or half-written.
+    const file = join(dir, 'studio', 'runs', created.id, 'events.jsonl');
+    const lines = readFileSync(file, 'utf8').trimEnd().split('\n').filter((l) => l.length > 0);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.map((l) => JSON.parse(l) as RunEvent)).toEqual(log.slice(0, lines.length));
   }, 120_000);
 });
