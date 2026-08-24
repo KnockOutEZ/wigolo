@@ -67,8 +67,9 @@ type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
  *
  * Neither is learned by materializing the log. The row count is the listing row's `lastSeq`, and the
  * size is a `SUM(LENGTH(payload))` that under-states the serialized frame by construction — see
- * `storedPayloadChars`. A run the estimate cannot rule out is read, and is charged for that read
- * whether or not its envelopes ship, so one overrun cannot be repeated by every run behind it.
+ * `storedPayloadChars`. Every read is charged the moment it is made — the estimate itself, and the
+ * materialization of a run the estimate cannot rule out — whether or not any envelope ships, so one
+ * overrun cannot be repeated by every run behind it.
  *
  * A run past either bound is answered with its PROJECTION instead of its envelopes. That is not a
  * degraded answer: `listRuns` has already computed it by the bounded path, it is field-for-field the
@@ -151,8 +152,9 @@ export interface BrokerRunLogPage {
  *
  * The point is what it does NOT do. The materializing check reads up to two thousand rows, parses
  * every payload into an object and re-serializes the array; this reads one aggregate and allocates
- * one number. It is charged to the accepted path too — but the accepted path is bounded by
- * `MAX_BOOT_FRAME_CHARS` by construction, so the extra scan is bounded by the same four million.
+ * one number. Cheaper is not free: it scans every payload byte the run has, so the caller charges
+ * this answer to the page's character budget BEFORE deciding on it. Both paths out of the probe are
+ * then bounded by `MAX_BOOT_FRAME_CHARS` — the run it rejects as much as the one it lets through.
  */
 function storedPayloadChars(db: Database.Database, runId: string): number {
   const row = db
@@ -337,21 +339,36 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
         // the serialized size, so a run it rules out could not have fitted — and is ruled out for the
         // price of one SUM instead of a full parse-and-re-serialize.
         const budget = Math.min(MAX_BOOT_EVENTS_PER_RUN, eventsLeft);
-        if (run.lastSeq <= budget && charsLeft > 0 && storedPayloadChars(deps.db, run.id) <= charsLeft) {
-          const events = eventsSince(deps.db, run.id, 0, budget);
-          const chars = JSON.stringify(events).length;
-          const fits = chars <= charsLeft;
-          // Charged for the READ, never for the acceptance. A run that got this far cost the page the
-          // same materialization whether or not its envelopes ship, and leaving the budget untouched
-          // on rejection made the NEXT run start from the full four million and pay it again — so a
-          // page of oversized runs read every one of them in full, and the next hydration page did it
-          // again. Charging here is what makes the overrun terminate: `charsLeft` goes non-positive
-          // and the guard above stops the reads for the rest of the page.
-          eventsLeft -= events.length;
-          charsLeft -= chars;
-          eventsSpent += events.length;
-          charsSpent += chars;
-          if (fits) return { facts, events, lastSeq: run.lastSeq };
+        if (run.lastSeq <= budget && charsLeft > 0) {
+          // The probe is a READ — a SUM over every payload byte this run has — so it is charged
+          // before its answer is used, exactly like the materialization below. Charging it inside
+          // the branch it guards made a run the probe ITSELF rejected cost the page nothing: the
+          // scan happened, the page reported zero, and zero is what the hydration's allowance moves
+          // by, so every page took the log branch and re-ran the same scan against a budget the
+          // caller had just been handed fresh.
+          const charsAtEntry = charsLeft;
+          const storedChars = storedPayloadChars(deps.db, run.id);
+          charsLeft -= storedChars;
+          charsSpent += storedChars;
+          if (storedChars <= charsAtEntry) {
+            const events = eventsSince(deps.db, run.id, 0, budget);
+            const chars = JSON.stringify(events).length;
+            const fits = chars <= charsAtEntry;
+            // Charged for the READ, never for the acceptance. A run that got this far cost the page
+            // the same materialization whether or not its envelopes ship, and leaving the budget
+            // untouched on rejection made the NEXT run start from the full four million and pay it
+            // again — so a page of oversized runs read every one of them in full, and the next
+            // hydration page did it again. Charging here is what makes the overrun terminate:
+            // `charsLeft` goes non-positive and the guard above stops the reads for the rest of the
+            // page. Only what the materialization added BEYOND the probe is charged here, because
+            // the probe's characters are already on the books and they are the same characters —
+            // the accepted path's total is `JSON.stringify(events).length`, unchanged.
+            eventsLeft -= events.length;
+            charsLeft -= chars - storedChars;
+            eventsSpent += events.length;
+            charsSpent += chars - storedChars;
+            if (fits) return { facts, events, lastSeq: run.lastSeq };
+          }
         }
         return { facts, events: [], lastSeq: run.lastSeq, projection: run, ...sessionLinkOf(deps.db, run.id) };
       });
