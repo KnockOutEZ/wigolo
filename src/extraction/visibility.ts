@@ -28,15 +28,68 @@ export const HIDDEN_SELECTORS: ReadonlyArray<string> = ['[hidden]', '[style]'];
 const INLINE_HIDDEN =
   /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!\s*important\s*)?(?:;|$)/i;
 
+const QUOTE_DOUBLE = 0x22;
+const QUOTE_SINGLE = 0x27;
+const SLASH = 0x2f;
+const STAR = 0x2a;
+const BACKSLASH = 0x5c;
+
 /**
- * Strings and comments are removed before the test, in that order, exactly as a CSS
- * tokenizer resolves them: a `/*` inside a string is not a comment, and a declaration
- * inside either is not a declaration. Removing them cuts both ways on purpose —
- * `display:/*x*\/none` is a real suppression the raw text hides, and
+ * Strings and comments are removed before the test, exactly as a CSS tokenizer resolves
+ * them: a `/*` inside a string is not a comment, a quote inside a comment is not a string,
+ * and a declaration inside either is not a declaration. Removing them cuts both ways on
+ * purpose — `display:/*x*\/none` is a real suppression the raw text hides, and
  * `content:"display:none"` is a false one it would otherwise invent.
+ *
+ * Written as one left-to-right scan rather than the two `String.replace` passes it replaces,
+ * because those were quadratic in a length the PAGE picks. Not by backtracking: by repeated
+ * failed starts. `/'(?:[^'\\]|\\.)*'/g` given `'` and then a run of `\'` finds a quote to
+ * open at every other index, and each one consumes the rest of the attribute before failing
+ * for want of a close; the lazy `/\/\*[\s\S]*?\*\//g` does the same for every `/*` when no
+ * `*\/` appears anywhere. Measured clean 4x per doubling — 5 ms at 4 KB to 1.2 s at 64 KB,
+ * 19 s at 256 KB — and `isHidden` runs on every `[style]` node of every HTML extraction,
+ * synchronous on the daemon event loop, so one attribute stalled every request beside it.
+ * A cap on the attribute length would have bought the same latency with a constant that
+ * expires; a scan that visits each character once has no constant to expire.
+ *
+ * An unterminated string or comment consumes to the end of the attribute, which is what a
+ * browser does with an unclosed comment and what makes the surviving text the declarations
+ * a browser would actually apply. The two `replace` passes left an unterminated construct
+ * in place instead, so `style="display:none/*"` read as VISIBLE — the trailing `/` denied
+ * the pattern the `;`-or-end it requires — and the page's own suppression went unhonoured.
  */
-const CSS_STRING = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
-const CSS_COMMENT = /\/\*[\s\S]*?\*\//g;
+function stripStringsAndComments(style: string): string {
+  let out = '';
+  let kept = 0;
+  let i = 0;
+  while (i < style.length) {
+    const ch = style.charCodeAt(i);
+    if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
+      out += style.slice(kept, i);
+      for (i++; i < style.length; i++) {
+        const inner = style.charCodeAt(i);
+        // A backslash escapes whatever follows, the delimiter included, so the pair is
+        // consumed whole and a trailing lone backslash simply ends the attribute.
+        if (inner === BACKSLASH) i++;
+        else if (inner === ch) {
+          i++;
+          break;
+        }
+      }
+      kept = i;
+      continue;
+    }
+    if (ch === SLASH && style.charCodeAt(i + 1) === STAR) {
+      out += style.slice(kept, i);
+      const close = style.indexOf('*/', i + 2);
+      i = close === -1 ? style.length : close + 2;
+      kept = i;
+      continue;
+    }
+    i++;
+  }
+  return kept === 0 ? style : out + style.slice(kept);
+}
 
 /** Never removable: the document scaffolding itself. */
 const STRUCTURAL = new Set(['HTML', 'HEAD', 'BODY']);
@@ -88,7 +141,7 @@ export function isHidden(el: VisibilityElement): boolean {
   if (hidden !== null && hidden.trim().toLowerCase() !== 'until-found') return true;
   const style = el.getAttribute('style');
   if (style === null) return false;
-  return INLINE_HIDDEN.test(style.replace(CSS_STRING, '').replace(CSS_COMMENT, ''));
+  return INLINE_HIDDEN.test(stripStringsAndComments(style));
 }
 
 /**

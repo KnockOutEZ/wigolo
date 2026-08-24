@@ -503,6 +503,75 @@ describe('isHidden — the inline-style shapes the CSS grammar accepts', () => {
   });
 });
 
+/**
+ * The inline test resolves strings and comments out before it runs, and the two patterns that
+ * did it were quadratic in a length the PAGE picks — not by backtracking but by repeated
+ * failed starts. `'` followed by a run of `\'` gives `/'(?:[^'\\]|\\.)*'/g` a quote to open at
+ * every other index, each of which consumes the rest of the attribute before failing for want
+ * of a close; `/*` with no `*\/` anywhere gives the lazy comment pattern the same shape. Both
+ * measured clean 4x per doubling on tip 6fcfdf13 — 5.0 / 20 / 73 / 304 / 1 246 ms across
+ * 4 KB to 64 KB, 19.1 s at a 256 KB attribute, and 17.2 s through this whole pass from a
+ * 0.23 MB page. `isHidden` runs on every `[style]` node of every HTML extraction, synchronous
+ * on the daemon event loop, so one hostile attribute stalled every concurrent request beside
+ * it, live event tails included.
+ *
+ * Timed rather than counted, unlike the DOM-walk pins above: there is no call to count here —
+ * the cost is inside one regex engine — so the clock IS the observable. The bound is a
+ * multiple of the SAME-LENGTH benign attribute measured on this machine plus a floor, because
+ * a constant taken from a sample maximum expires. The shapes below ran 5x to 20x over that
+ * floor on the machine that filed the finding, so noise cannot reach the bound and the
+ * regression cannot hide under it.
+ *
+ * Each shape is asserted twice: once carrying no suppression, where the element must survive,
+ * and once with `display:none` in front of the hostile run, where it must still be removed. A
+ * fix that made the pass fast by resolving less would go red on the second arm.
+ */
+describe('a hostile style attribute cannot stall the pass, whatever length the page picks', () => {
+  /** Every other index opens a quote that then scans to end-of-attribute and fails. */
+  const quoteRun = (bytes: number): string => "content:'" + "\\'".repeat(Math.floor(bytes / 2));
+  /**
+   * `/*` alone is not enough — `/*\/*` already CONTAINS `*\/`, so the lazy scan matches at
+   * once. A filler char between openers keeps every `*` from ever being followed by `/`.
+   */
+  const commentRun = (bytes: number): string => '/*a'.repeat(Math.floor(bytes / 3));
+  /** The same length in characters the sanitizer has no reason to look twice at. */
+  const benign = (bytes: number): string => 'color:red;' + 'x'.repeat(bytes);
+
+  const ATTR_BYTES = 128 * 1024;
+
+  const clock = (style: string): { ms: number; kept: boolean } => {
+    const { document } = parseHTML(
+      '<html><body><p>visible lead</p><div id="t">HOSTILE payload copy</div></body></html>',
+    );
+    (
+      document.getElementById('t') as unknown as { setAttribute(n: string, v: string): void }
+    ).setAttribute('style', style);
+    const started = performance.now();
+    stripHiddenDom(document);
+    return {
+      ms: performance.now() - started,
+      kept: document.body.innerHTML.includes('HOSTILE payload copy'),
+    };
+  };
+
+  const bound = Math.max(clock(benign(ATTR_BYTES)).ms * 20, 250);
+
+  it.each([
+    ['unclosed quote followed by an escaped-quote run', quoteRun],
+    ['unclosed comment openers with no close anywhere', commentRun],
+  ])('stays linear on %s', (_name, make) => {
+    const visible = clock(make(ATTR_BYTES));
+    expect(visible.ms).toBeLessThan(bound);
+    // Nothing in either run declares a suppression, so the element is visible copy.
+    expect(visible.kept).toBe(true);
+
+    const hiding = clock(`display:none;${make(ATTR_BYTES)}`);
+    expect(hiding.ms).toBeLessThan(bound);
+    // ...and a real declaration in front of the same run is still honoured.
+    expect(hiding.kept).toBe(false);
+  });
+});
+
 describe('hidden content does not survive extraction, whichever extractor wins', () => {
   // The github-node-contributors shape: a JS shell with no article body, so no
   // site-specific extractor claims it and the fallback chain answers. The session
