@@ -636,8 +636,10 @@ describe('RunViewModel — a condensed live run stays condensed', () => {
     for (const read of store.eventReads) {
       expect(read.since, 'the whole log was re-materialized from seq 0 by one live envelope').toBeGreaterThanOrEqual(tail);
     }
-    // One round-trip for the whole thing, and it is the one that asks for the projection.
-    expect(store.reads).toEqual(['getRun']);
+    // No round-trip at all: the envelope is at exactly `lastSeq + 1`, so it is folded into the kept
+    // projection here. SD1 exit-12 answered this with `['getRun']`, which is the per-envelope cost exit-13
+    // measured and this issue removes.
+    expect(store.reads, 'a foldable envelope on a condensed run still bought a round-trip').toEqual([]);
 
     // The kept state survives the replay: still condensed, still the answer REST gives for this run.
     expect(vm.retainedEventCount(runId), 'the run was re-materialized and now holds its whole log').toBe(0);
@@ -659,12 +661,124 @@ describe('RunViewModel — a condensed live run stays condensed', () => {
     }
     await vi.waitFor(() => expect(vm.snapshot(runId)!.cost.browserActions).toBe(REMATERIALIZE_MAX_EVENTS + burst + 1));
 
-    // Every envelope costs at most one bounded round-trip — `adopt` coalesces whatever lands while one
-    // is in flight — and NONE of them is a walk of the log. On the shipped code the first envelope
-    // alone paged the whole run back in and the nineteen behind it folded into what it left retained.
+    // No read of any kind. SD1 exit-12 left this at "at most one round-trip per envelope", which is what
+    // exit-13 measured as one round-trip per envelope forever; the fold makes it zero.
     expect(store.eventReads, 'a burst paged the log back in').toHaveLength(0);
-    expect(store.reads.length, 'a burst cost more than a round-trip per envelope').toBeLessThanOrEqual(burst);
-    expect(store.reads.every((r) => r === 'getRun'), 'a burst read something other than the projection').toBe(true);
+    expect(store.reads, 'a burst past the bound still cost round-trips').toEqual([]);
+    expect(vm.retainedEventCount(runId)).toBe(0);
+  });
+
+  /**
+   * SD1 exit-13 — the read COUNT for a STREAM, which is the quantity SD1 exit-12's arms never inspected.
+   *
+   * The accepted steady state was "one bounded `getRun` per burst", and a burst window is one broker
+   * round-trip: `adopt`'s in-flight coalescing paces the loop at 1/RTT, it does not end it. So a run
+   * emitting one `cost.recorded` per browser action — the fifty-thousand-action run SD1 exit-12's own commit
+   * message names — paid a projection read, on the child that serialises every other DB call, for
+   * every envelope it would ever emit. This arm is the instrument: envelopes in, `getRun`s out.
+   */
+  it('costs no reads at all for a long stream past the bound', async () => {
+    const { store, vm, runId } = await seedLong();
+    const stream = 200;
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    for (let i = 0; i < stream; i++) {
+      await store.appendEvent(runId, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.cost.browserActions).toBe(REMATERIALIZE_MAX_EVENTS + stream + 1));
+
+    // On the shipped code this was 200 — one per envelope, for the life of the run.
+    expect(store.reads.filter((r) => r === 'getRun'), 'the stream paid a projection read per envelope').toEqual([]);
+    expect(store.reads, 'the stream read the store at all').toEqual([]);
+    expect(store.eventReads, 'the stream paged the log back in').toHaveLength(0);
+    // …and the two properties SD1 exit-12 bought are still bought: bounded memory, and the same answer REST
+    // gives for the same log.
+    expect(vm.retainedEventCount(runId), 'the fold started retaining envelopes again').toBe(0);
+    expect(vm.snapshot(runId)).toEqual(restProjection(store, runId));
+  });
+
+  /**
+   * The fold is `projectRun`'s own rules or it is a second source of truth (law 1). One mixed stream,
+   * every projection-moving type the fold handles plus a type it must ignore and still advance past,
+   * checked against the projection the store — and therefore REST — computes for the same log.
+   */
+  it('folds a mixed stream to exactly the projection the store computes', async () => {
+    const { store, vm, runId } = await seedLong();
+    store.reads.length = 0;
+
+    const emit = async (type: string, payload: Record<string, unknown>): Promise<void> => {
+      await store.appendEvent(runId, { actor: { kind: 'agent' }, type, payload });
+    };
+    await emit('tab.attached', { tabId: 'tab-a' });
+    await emit('tab.attached', { tabId: 'tab-b' });
+    await emit('cost.recorded', { kind: 'tokens_in', amount: 40 });
+    await emit('presentation.promoted', { by: 'human' });
+    await emit('tab.detached', { tabId: 'tab-a', reason: 'closed' });
+    await emit('mark.placed', { mark: 7 });
+    await emit('cost.recorded', { kind: 'spend_usd', amount: 1.5 });
+    await emit('tab.attached', { tabId: 'tab-c' });
+    await emit('presentation.demoted', { by: 'human' });
+
+    const tail = store.log.get(runId)!.length;
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.lastSeq).toBe(tail));
+
+    expect(vm.snapshot(runId)).toEqual(restProjection(store, runId));
+    // The tab index moves with the fold, or law 4's refusal fires on a fact that is not in the log.
+    expect(vm.ownerOf('tab-b')).toBe(runId);
+    expect(vm.ownerOf('tab-c')).toBe(runId);
+    expect(vm.ownerOf('tab-a'), 'a detach folded in place left the run owning the tab').toBeUndefined();
+    expect(store.reads, 'a mixed foldable stream bought a round-trip').toEqual([]);
+  });
+
+  /**
+   * The named exception, and the reason it is one. `Run` carries `status` but not the `pausedReason`
+   * `statusFrom` decides it from, so a pause/resume/decision envelope cannot be folded onto a kept
+   * projection without GUESSING which of two states produced `needs_you`. Guessing puts a wrong status
+   * on a run, which is worse than a round-trip on an event that happens at human scale. So those types
+   * keep SD1 exit-12's re-read — and it stays exactly one, and the run stays condensed.
+   */
+  it('buys one round-trip for a status-moving envelope, and only one', async () => {
+    const { store, vm, runId } = await seedLong();
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    await store.appendEvent(runId, { actor: { kind: 'system' }, type: 'run.paused', payload: { reason: 'cost_cap' } });
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.status).toBe('needs_you'));
+
+    expect(store.reads, 'a status envelope on a condensed run cost more than the projection read').toEqual(['getRun']);
+    expect(store.eventReads, 'a status envelope paged the log back in').toHaveLength(0);
+    expect(vm.retainedEventCount(runId)).toBe(0);
+    expect(vm.snapshot(runId)).toEqual(restProjection(store, runId));
+
+    // And the fold resumes for free straight afterwards — the round-trip is per status event, not a
+    // door back into the per-envelope loop.
+    store.reads.length = 0;
+    await store.appendEvent(runId, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.lastSeq).toBe(store.log.get(runId)!.length));
+    expect(store.reads, 'the fold did not resume after a status envelope').toEqual([]);
+    expect(vm.snapshot(runId)).toEqual(restProjection(store, runId));
+  });
+
+  /**
+   * A gap is still the one thing that buys the round-trip — the non-goal in this issue, kept as an
+   * assertion rather than as prose. A fold that absorbed an envelope from the future would leave a log
+   * silently disagreeing with the store, which is the defect the gap arm exists to prevent.
+   */
+  it('still replays a condensed run on a real seq gap', async () => {
+    const { store, vm, runId } = await seedLong();
+    const tail = store.log.get(runId)!.length;
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    vm.applyEvent(runId, {
+      seq: tail + 4, ts: new Date().toISOString(), actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-phantom' },
+    });
+
+    await vi.waitFor(() => expect(store.reads).toEqual(['getRun']));
+    expect(store.eventReads, 'the gap re-read a log it was about to drop').toHaveLength(0);
+    expect(vm.ownerOf('tab-phantom'), 'the phantom envelope was folded in as if nothing were missing').toBeUndefined();
+    expect(vm.snapshot(runId)!.lastSeq).toBe(tail);
     expect(vm.retainedEventCount(runId)).toBe(0);
   });
 
@@ -722,6 +836,7 @@ describe('RunViewModel — a live run stops retaining envelopes at the bound', (
     const run = await vm.createRun({ task: 'a fifty-thousand-action one', sessionId: 'sess-live' });
 
     const actions = REMATERIALIZE_MAX_EVENTS + 25;
+    store.reads.length = 0;
     for (let i = 0; i < actions; i++) {
       await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
     }
@@ -733,6 +848,14 @@ describe('RunViewModel — a live run stops retaining envelopes at the bound', (
       vm.retainedEventCount(run.id),
       'a live run retained one envelope per browser action for its whole life',
     ).toBeLessThanOrEqual(REMATERIALIZE_MAX_EVENTS);
+    // SD1 exit-13's instrument, on the arm that used to look only at retention: crossing the bound
+    // costs the round-trips that CONDENSE the run, and the twenty-five envelopes behind the crossing
+    // cost none. SD1 exit-12 paid one per envelope past the bound, so this was ~25.
+    expect(store.reads.every((r) => r === 'getRun'), 'crossing the bound read something other than the projection').toBe(true);
+    expect(
+      store.reads.length,
+      'the envelopes past the bound each paid a projection read',
+    ).toBeLessThanOrEqual(2);
     // …and the run is still fully answerable, in the state every reader already handles for a run
     // that booted condensed — same projection REST gives, same tail, same session link.
     expect(vm.snapshot(run.id)).toEqual(restProjection(store, run.id));

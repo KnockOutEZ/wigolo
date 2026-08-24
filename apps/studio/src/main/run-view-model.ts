@@ -141,6 +141,53 @@ export function isTerminal(status: Run['status']): boolean {
 }
 
 /**
+ * The types a condensed run cannot fold in place, because folding them needs state a PROJECTION does
+ * not carry — see `foldCondensed`.
+ *
+ * `statusFrom` decides a run's status from three facts: a terminal verdict, a `pausedReason`, and
+ * whether any card is pending. A `Run` carries the ANSWER and two of the three inputs; the pause
+ * reason is nowhere on it. So `status: 'needs_you'` on a kept projection is either "a card is open"
+ * or "the run paused at a cap", and `status: 'paused'` says a reason exists without saying which —
+ * which means a `decision.resolved` or a `run.resumed` folded onto it would have to GUESS which of
+ * two states the run is returning to. A wrong status on a run is worse than a round-trip, and these
+ * types happen at human scale — a pause, a card, an ending — not at browser-action scale. So they
+ * keep the re-read, and every type that IS a pure function of the projection folds for free.
+ */
+const STATUS_FOLD_EVENT_TYPES: ReadonlySet<string> = new Set([
+  ...TERMINAL_EVENT_TYPES,
+  'run.paused',
+  'run.resumed',
+  'decision.requested',
+  'decision.resolved',
+]);
+
+/** The slice of an envelope `projectRun` reads. Structural, because the barrel does not export it. */
+type ProjectableEvent = Pick<RunEvent, 'seq' | 'ts' | 'type' | 'payload'>;
+
+/**
+ * The two projected fields `ProjectRunOptions` cannot seed, expressed as the envelopes that produce
+ * them — which is what lets a fold-in-place BE `projectRun` rather than a second copy of its rules.
+ *
+ * `cost`, `visibility`, `pendingDecisions` and `status` are seedable; `driver` and `tabIds` are not,
+ * because the store's own bounded read rebuilds them from a type-filtered read of the log instead.
+ * Replaying them as a `run.created` and one `tab.attached` per held tab reproduces both exactly —
+ * the attach arm dedupes and appends in order, so the array comes back in the order the run took its
+ * tabs, and the detach arm can then remove from it by the same rule it always did.
+ *
+ * Bounded by how many tabs the run HOLDS, not by how long it has been running, which is the whole
+ * difference between this and the read it replaces.
+ *
+ * The seq and ts are deliberately the run's own birth values: `projectRun` takes `lastSeq` and
+ * `updatedAt` from the LAST event it is given, which is the real envelope, never one of these.
+ */
+function keptSeed(run: Run): ProjectableEvent[] {
+  const ts = run.createdAt;
+  const seed: ProjectableEvent[] = [{ seq: 0, ts, type: 'run.created', payload: { driver: run.driver } }];
+  for (const tabId of run.tabIds) seed.push({ seq: 0, ts, type: 'tab.attached', payload: { tabId } });
+  return seed;
+}
+
+/**
  * How long a burst of envelopes may be folded into one fan-out — one frame at 60 Hz.
  *
  * The fan-out is what makes folding expensive, not the fold. Every listener answers by PROJECTING:
@@ -871,9 +918,16 @@ export class RunViewModel {
     if (event.seq <= log.lastSeq) return;
     // A gap means an envelope was missed — one that landed while this run was being adopted, or a
     // dropped notify. Appending the newer one anyway would leave a log that silently disagrees with the
-    // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail. A sealed run
-    // takes the same path for a different reason: its envelopes are gone, so folding is not available.
-    if (event.seq > log.lastSeq + 1 || log.kept) { void this.adopt(runId, { replace: true }); return; }
+    // store, so the run is replayed from scratch instead. Same contract as #46's SSE tail.
+    if (event.seq > log.lastSeq + 1) { void this.adopt(runId, { replace: true }); return; }
+    // A condensed run has no envelopes to fold INTO, so the envelope is folded onto the projection it
+    // keeps instead — see `foldCondensed`. What that refuses still replays, which is the state a
+    // sealed run and a short condensed one are both in.
+    if (log.kept) {
+      if (!this.foldCondensed(runId, log, event)) { void this.adopt(runId, { replace: true }); return; }
+      this.emit();
+      return;
+    }
     log.events.push(event);
     log.lastSeq = event.seq;
     this.trackTabOwnership(runId, event);
@@ -891,6 +945,54 @@ export class RunViewModel {
     // burst costs one read plus one, and the run is condensed by the time it settles.
     else if (this.overBound(runId)) void this.adopt(runId, { replace: true });
     this.emit();
+  }
+
+  /**
+   * Fold one envelope onto the projection a condensed run keeps, instead of asking the store for a
+   * fresh one. Returns false when this envelope is not foldable, and the caller replays.
+   *
+   * SD1 exit-12 bounded a live run's RETENTION by re-condensing at `REMATERIALIZE_MAX_EVENTS`, and
+   * accepted "one bounded `getRun` per burst" as the steady state. A burst window is one broker
+   * round-trip, so for a STREAM that is a round-trip per envelope, forever: `adopt`'s in-flight
+   * coalescing paces the loop at 1/RTT, it does not end it. And the read it paces is not small —
+   * `getRun` projects the run, which walks every `tab.attached`/`tab.detached` row the run has ever
+   * written plus the pending-card anti-join, on the broker child that serialises every other DB
+   * call. The run that pays it is the fifty-thousand-action one that emits a `cost.recorded` per
+   * browser action, for 48,000 envelopes.
+   *
+   * The envelope is at exactly `lastSeq + 1`, so nothing is missing and the projection can move by
+   * itself. It moves by `projectRun`'s OWN rules rather than a second copy of them: the four seedable
+   * fields are seeded from the kept projection and the two that are not are replayed as the envelopes
+   * that produce them (`keptSeed`), so the fold is the same function the store and REST both run.
+   * Cost is bounded by the tabs the run HOLDS, and there is no read at all.
+   *
+   * Three things still buy the round-trip, and each is a state the projection cannot answer from:
+   *  - a status-moving type, whose fold needs a `pausedReason` no `Run` carries — `STATUS_FOLD_EVENT_TYPES`
+   *  - a terminal run, whose envelopes are gone by design and whose next envelope is out of order anyway
+   *  - a run UNDER the bound, which is condensed by a boot page's budget rather than by its own size
+   *    and is deliberately re-materialized so it can hold its envelopes and fold the next for free
+   *
+   * A seq GAP never reaches here: `applyEvent` and `fold` both refuse it above, which is the single-read
+   * gap-replay contract this deliberately does not touch.
+   */
+  private foldCondensed(runId: string, log: RunLog, event: RunEvent): boolean {
+    const kept = log.kept;
+    if (!kept || isTerminal(kept.status)) return false;
+    if (STATUS_FOLD_EVENT_TYPES.has(event.type)) return false;
+    if (!this.overBound(runId)) return false;
+    // `now` is passed for honesty rather than for effect: the only rules that read it are the card
+    // arms and the status fold, and both are excluded above — `status` is seeded, so the fold is not
+    // consulted, and expiry stays where it already is, at the read in `snapshot`.
+    log.kept = projectRun(log.facts, [...keptSeed(kept), event], this.now(), {
+      cost: kept.cost,
+      visibility: kept.visibility,
+      pendingDecisions: kept.pendingDecisions,
+      status: kept.status,
+    });
+    log.lastSeq = event.seq;
+    this.trackTabOwnership(runId, event);
+    this.projected.delete(runId);
+    return true;
   }
 
   /**
