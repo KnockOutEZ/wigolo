@@ -41,8 +41,19 @@ const CSS_COMMENT = /\/\*[\s\S]*?\*\//g;
 /** Never removable: the document scaffolding itself. */
 const STRUCTURAL = new Set(['HTML', 'HEAD', 'BODY']);
 
+/**
+ * Elements whose text a browser never paints, so it is not "visible copy" for the purpose
+ * of telling a pre-hydration shell apart from a page with an article of its own.
+ */
+const NON_RENDERED = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'HEAD', 'TITLE']);
+
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+
 export interface VisibilityNode {
   readonly parentNode: VisibilityParentNode | null;
+  readonly nodeType: number;
+  readonly textContent: string | null;
 }
 
 export interface VisibilityParentNode extends VisibilityNode {
@@ -58,6 +69,7 @@ export interface VisibilityElement extends VisibilityParentNode {
 }
 
 export interface VisibilityDocument {
+  readonly body: VisibilityElement | null;
   querySelectorAll(selector: string): ArrayLike<VisibilityElement>;
 }
 
@@ -87,6 +99,40 @@ function carriesArticle(main: VisibilityElement): boolean {
 }
 
 /**
+ * True when the document paints any text OUTSIDE `excluded` — the discriminator between a
+ * page that IS a pre-hydration shell and a page that merely contains one.
+ *
+ * Narrowing the rescue to a non-empty `<main>` (A-92-1) did not take the switch away from
+ * the untrusted party, because an injection payload is non-empty by construction:
+ * `carriesArticle` was satisfied by the page's own text, so the page still decided whether
+ * its own `hidden` declaration was honoured. Nothing INSIDE the hidden subtree can settle
+ * that question, since the author writes all of it. The rest of the document can: a real
+ * shell has not painted its article yet, so there is nothing else to read, while a page
+ * smuggling copy through a hidden `<main>` has its visible article sitting beside it. The
+ * page can still suppress that signal — but only by hiding its own visible content, which
+ * costs it the thing it was trying to keep.
+ *
+ * Hidden subtrees are skipped as they are elsewhere in this pass: counting a second hidden
+ * node as "visible text outside" would break the rescue for genuine shells, which routinely
+ * ship hidden chrome (GitHub's session banner is the canonical one) beside their wrapper.
+ */
+function hasVisibleTextOutside(root: VisibilityElement, excluded: VisibilityElement): boolean {
+  for (const child of Array.from(root.childNodes)) {
+    if (child === excluded) continue;
+    if (child.nodeType === TEXT_NODE) {
+      if ((child.textContent ?? '').trim() !== '') return true;
+      continue;
+    }
+    if (child.nodeType !== ELEMENT_NODE) continue;
+    const el = child as VisibilityElement;
+    if (NON_RENDERED.has(el.tagName)) continue;
+    if (isHidden(el)) continue;
+    if (hasVisibleTextOutside(el, excluded)) return true;
+  }
+  return false;
+}
+
+/**
  * Remove everything inside `hidden` that is not on the path down to `main`, leaving the
  * article and nothing else. Every node dropped here was declared hidden by the page, so
  * dropping it is the declaration being honoured; what survives is only the shell's own
@@ -106,6 +152,7 @@ function pruneToMain(hidden: VisibilityElement, main: VisibilityElement): void {
 }
 
 export function stripHiddenDom(document: VisibilityDocument): void {
+  const body = document.body;
   const seen = new Set<VisibilityElement>();
   const candidates: VisibilityElement[] = [];
   for (const sel of HIDDEN_SELECTORS) {
@@ -127,9 +174,21 @@ export function stripHiddenDom(document: VisibilityDocument): void {
     // erring towards keeping is right there; here it would soften an explicit author
     // declaration, and the author is the untrusted party. Skipping the whole subtree made
     // the presence of a `<main>` — free to write, empty or not — a page-controlled switch
-    // deciding whether suppression fired at all (A-92-1).
+    // deciding whether suppression fired at all (A-92-1). Both conditions below are the
+    // same requirement asked of the two things the page controls separately: the `<main>`
+    // must not be the throwaway an author writes for free, AND the page must actually BE a
+    // shell rather than merely contain one. Neither alone survives an author who wants the
+    // exemption; the second is the one an injection payload cannot satisfy.
     const main = el.querySelector('main');
-    if (main !== null && carriesArticle(main)) {
+    if (
+      main !== null &&
+      carriesArticle(main) &&
+      // No body is no evidence of shell-ness, and this is a suppression gate: the absence
+      // of the signal declines the exemption rather than granting it. Honouring the page's
+      // own `hidden` is the safe direction to fall.
+      body !== null &&
+      !hasVisibleTextOutside(body, el)
+    ) {
       pruneToMain(el, main);
       continue;
     }
