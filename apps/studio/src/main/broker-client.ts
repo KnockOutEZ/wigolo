@@ -297,7 +297,21 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
 
   let child: ChildProcess | null = null;
   let nextId = 1;
-  let buf = '';
+  // The partial frame is held as the chunks that carry it, never as one growing string.
+  //
+  // `buf += chunk; buf.indexOf('\n')` reads as O(1) + O(chunk) and is neither: the concatenation
+  // builds a rope, and `indexOf` has to flatten it first, so every chunk re-copies every character
+  // carried so far. Accumulating an N-character frame is then O(n²) — on the thread that paints.
+  // Measured at 64KiB chunks, carrying 32M characters cost 1.3s of frozen window here and reaching
+  // `DEFAULT_MAX_FRAME_CHARS` cost seconds more, which made the oversize guard below the very outage
+  // it exists to prevent. An array plus a running length keeps the carry O(1) per chunk and pays one
+  // join per completed line, so the total is linear in what the child actually sent.
+  //
+  // `bufLen` is tracked rather than derived, because summing `parts` to test the bound would restore
+  // the per-chunk walk the array removes.
+  let parts: string[] = [];
+  let bufLen = 0;
+  const dropPartial = (): void => { parts = []; bufLen = 0; };
   let stopped = false;
   let backoff = 250;
   let readyResolve: (() => void) | null = null;
@@ -377,23 +391,40 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
       if (gone) return;
       gone = true;
       rejectAllPending(reason);
-      buf = ''; // drop any partial line from the dead child — else it corrupts the respawn's first frame (can eat `ready`)
+      dropPartial(); // drop any partial line from the dead child — else it corrupts the respawn's first frame (can eat `ready`)
       if (stopped) return;
       readyPromise = new Promise((r) => { readyResolve = r; });
       scheduleRespawn();
     };
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
-      buf += chunk;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); onLine(line); }
+      // Only the NEW chunk is scanned for the terminator. The characters already carried have been
+      // scanned once, when they arrived, and re-scanning them is exactly the quadratic term.
+      let nl = chunk.indexOf('\n');
+      if (nl < 0) {
+        parts.push(chunk);
+        bufLen += chunk.length;
+      } else {
+        // The first line ends in this chunk, so it is whatever was carried plus this chunk's head;
+        // every later line in the same chunk is a plain slice of it, since the carry is empty by then.
+        let start = 0;
+        do {
+          const tail = chunk.slice(start, nl);
+          const line = parts.length === 0 ? tail : parts.join('') + tail;
+          dropPartial();
+          onLine(line);
+          start = nl + 1;
+          nl = chunk.indexOf('\n', start);
+        } while (nl >= 0);
+        if (start < chunk.length) { parts.push(chunk.slice(start)); bufLen = chunk.length - start; }
+      }
       // Every legitimate answer is bounded at the source, so a partial line past this is a broken or
-      // runaway child rather than a large one — and this buffer is a JS string on the Electron main
-      // thread, the one that paints. Left unbounded it grows until the process is killed for memory,
-      // taking the window with it; cut here, the caller gets an error and the child is respawned.
-      if (buf.length > maxFrameChars) {
+      // runaway child rather than a large one — and this buffer lives on the Electron main thread, the
+      // one that paints. Left unbounded it grows until the process is killed for memory, taking the
+      // window with it; cut here, the caller gets an error and the child is respawned.
+      if (bufLen > maxFrameChars) {
         warn(`[studio] background service frame exceeded ${maxFrameChars} characters; restarting it\n`);
-        buf = '';
+        dropPartial();
         onGone('studio background service sent an oversized frame');
         child?.kill();
       }

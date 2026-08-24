@@ -263,6 +263,47 @@ describe('broker-client', () => {
   });
 
   /**
+   * Carrying a partial frame must cost time LINEAR in its size. `buf += chunk` followed by
+   * `buf.indexOf('\n')` is not: the concatenation builds a rope and every `indexOf` flattens it, so
+   * each chunk re-walks every character carried so far — O(n²), on the Electron main thread, which is
+   * the thread that paints.
+   *
+   * That made the oversize backstop below self-defeating: reaching the 64MiB `DEFAULT_MAX_FRAME_CHARS`
+   * ceiling cost seconds of frozen window BEFORE the guard could fire, so the enforcement was the
+   * outage it exists to prevent.
+   *
+   * The assertion is wall-clock because the defect is wall-clock; nothing else distinguishes the two
+   * readers, which agree on every byte they produce. Both sides were measured at this size on the
+   * reference machine — quadratic 1186ms, linear 11ms — and the bound is placed between them nearer
+   * the slow side: ~45x above what a linear reader costs, so no loaded CI machine can fail it, and
+   * below what the quadratic one costs, so no quadratic reader can pass it.
+   */
+  it('carries a large partial frame in linear time, not quadratic', async () => {
+    const CHUNK = 64 * 1024;
+    const BODY = 32 * 1024 * 1024;
+    const BOUND_MS = 500;
+    const children: FakeChild[] = [];
+    // Above the carry, so this measures the accumulation itself and not the cut-off path.
+    const client = newClient({ children, maxFrameChars: 64 * 1024 * 1024 });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    const p = client.call<string>('m');
+    await vi.waitFor(() => expect(children[0].writes.length).toBe(1));
+    const id = (JSON.parse(children[0].writes[0]) as { id: number }).id;
+
+    const frame = JSON.stringify({ id, ok: true, result: 'z'.repeat(BODY) }) + '\n';
+    const started = performance.now();
+    for (let i = 0; i < frame.length; i += CHUNK) children[0].stdout.emit('data', frame.slice(i, i + CHUNK));
+    const elapsed = performance.now() - started;
+
+    // Reassembled byte-for-byte — a fast reader that loses characters is not a fix.
+    expect(await p).toHaveLength(BODY);
+    expect(elapsed, `carrying ${BODY} characters took ${Math.round(elapsed)}ms — the reader is not linear`)
+      .toBeLessThan(BOUND_MS);
+    await client.stop();
+  }, 60_000);
+
+  /**
    * The stop has to reach the child's exit hook, because that hook is what drains the queued tail of
    * `events.jsonl` — the copy of the run a person can read without our tooling (law 11). A signal
    * cannot carry that: on Windows `kill('SIGTERM')` is a `TerminateProcess` and no handler runs, so a
