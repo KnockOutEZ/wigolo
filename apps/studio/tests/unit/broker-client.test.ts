@@ -291,12 +291,17 @@ describe('broker-client', () => {
     await vi.waitFor(() => expect(children[0].writes.length).toBe(1));
     const id = (JSON.parse(children[0].writes[0]) as { id: number }).id;
 
-    const frame = JSON.stringify({ id, ok: true, result: 'z'.repeat(BODY) }) + '\n';
+    // The terminator is withheld so the timed loop is PURE carry. Completing the frame inside the
+    // window would put a 32M-character `JSON.parse` in the measurement, and that parse is neither
+    // what changed nor bounded by the same machine factors — it is how a wall-clock bound picks up a
+    // flake on a slow runner. What is measured is exactly the term that was quadratic.
+    const frame = JSON.stringify({ id, ok: true, result: 'z'.repeat(BODY) });
     const started = performance.now();
     for (let i = 0; i < frame.length; i += CHUNK) children[0].stdout.emit('data', frame.slice(i, i + CHUNK));
     const elapsed = performance.now() - started;
 
     // Reassembled byte-for-byte — a fast reader that loses characters is not a fix.
+    children[0].stdout.emit('data', '\n');
     expect(await p).toHaveLength(BODY);
     expect(elapsed, `carrying ${BODY} characters took ${Math.round(elapsed)}ms — the reader is not linear`)
       .toBeLessThan(BOUND_MS);
