@@ -698,6 +698,109 @@ describe('RunViewModel — a condensed live run stays condensed', () => {
 });
 
 /**
+ * perf SD1 exit-12 (F1) — what a run that was never condensed costs while it is still running.
+ *
+ * The bound above was only ever consulted for a run that BOOTED condensed. A run created in this
+ * process, or adopted while it was small, kept `kept === undefined` forever, so nothing re-applied
+ * it: `applyEvent` appended every folded envelope and `seal` emptied the array only at a terminal
+ * event. `cost.recorded` is one envelope per browser action by design, so a fifty-thousand-action
+ * agent run held fifty thousand envelopes — order twenty megabytes — on the thread that paints, and
+ * re-folded all of them on every memo miss for as long as it kept emitting. The run that pays this is
+ * the busiest one on the machine, and it pays for the whole time a human is watching it.
+ *
+ * The instrument is what the process RETAINS, not the projection: the projection is identical either
+ * way, which is why every other arm in this file is blind to it.
+ */
+describe('RunViewModel — a live run stops retaining envelopes at the bound', () => {
+  const restProjection = (store: FakeRunStore, runId: string) =>
+    projectRun({ id: runId, ...store.facts.get(runId)! }, store.log.get(runId)!);
+
+  it('re-condenses a materialized run whose log crosses the bound while it is live', async () => {
+    const store = new FakeRunStore();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'a fifty-thousand-action one', sessionId: 'sess-live' });
+
+    const actions = REMATERIALIZE_MAX_EVENTS + 25;
+    for (let i = 0; i < actions; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    await vi.waitFor(() => expect(vm.snapshot(run.id)!.cost.browserActions).toBe(actions));
+
+    // The whole claim: the array does not grow with the run. On the shipped code it held every
+    // envelope the run had ever emitted, so this equalled `actions + 1`.
+    expect(
+      vm.retainedEventCount(run.id),
+      'a live run retained one envelope per browser action for its whole life',
+    ).toBeLessThanOrEqual(REMATERIALIZE_MAX_EVENTS);
+    // …and the run is still fully answerable, in the state every reader already handles for a run
+    // that booted condensed — same projection REST gives, same tail, same session link.
+    expect(vm.snapshot(run.id)).toEqual(restProjection(store, run.id));
+    expect(vm.snapshot(run.id)!.lastSeq).toBe(store.log.get(run.id)!.length);
+    expect(vm.sessionIdOf(run.id)).toBe('sess-live');
+    expect(vm.runForSession('sess-live')).toBe(run.id);
+  });
+
+  /**
+   * The control: the bound must not fire on the ordinary run, which is every run in this file. A short
+   * live run keeps its envelopes and folds the next one for free — the same reason a short condensed
+   * run is re-materialized rather than left condensed.
+   */
+  it('leaves a live run under the bound holding its envelopes', async () => {
+    const store = new FakeRunStore();
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    const run = await vm.createRun({ task: 'an ordinary one' });
+    store.reads.length = 0;
+
+    for (let i = 0; i < 12; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}` } });
+    }
+    await vi.waitFor(() => expect(vm.ownerOf('tab-11')).toBe(run.id));
+
+    expect(vm.retainedEventCount(run.id), 'the bound fired on a run nowhere near it').toBe(13);
+    expect(store.reads, 'folding a short live run cost a round-trip').toEqual([]);
+    expect(vm.snapshot(run.id)).toEqual(restProjection(store, run.id));
+  });
+
+  /**
+   * The other half of the same gap: `replayOnce` asks `overBound` FIRST, and for a materialized run it
+   * used to answer false whatever the log's length. So a dropped notify on a huge live run took
+   * `readLog` — sequential broker pages at five hundred a time, parsed on the thread that paints — and
+   * then retained every envelope it had just read, which is the state this issue exists to end.
+   */
+  it('condenses a gap replay on a materialized over-bound run instead of paging its log back in', async () => {
+    const store = new FakeRunStore();
+    const run = await store.createRun({ task: 'a long one', sessionId: 'sess-gap' });
+    for (let i = 0; i < REMATERIALIZE_MAX_EVENTS; i++) {
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    const tail = store.log.get(run.id)!.length;
+    expect(
+      vm.retainedEventCount(run.id),
+      'boot condensed this run, so the materialized arm proves nothing',
+    ).toBeGreaterThan(REMATERIALIZE_MAX_EVENTS);
+    store.reads.length = 0;
+    store.eventReads.length = 0;
+
+    // An envelope from the future, as a tail that dropped the ones before it would deliver.
+    vm.applyEvent(run.id, {
+      seq: tail + 4, ts: new Date().toISOString(), actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-phantom' },
+    });
+
+    await vi.waitFor(() => expect(vm.retainedEventCount(run.id)).toBe(0));
+    expect(store.eventReads, 'the gap re-read a log it was about to drop').toHaveLength(0);
+    expect(store.reads, 'the gap cost more than the one read that asks for the projection').toEqual(['getRun']);
+    expect(vm.snapshot(run.id)).toEqual(restProjection(store, run.id));
+    expect(vm.snapshot(run.id)!.lastSeq).toBe(tail);
+    expect(vm.ownerOf('tab-phantom'), 'the phantom envelope was folded in as if nothing were missing').toBeUndefined();
+    expect(vm.sessionIdOf(run.id)).toBe('sess-gap');
+  });
+});
+
+/**
  * perf #5 (second half) and perf #6 — what a gap replay costs.
  *
  * `replay` read the same log twice and read all of it both times: `getRun` made the store PROJECT the

@@ -879,6 +879,17 @@ export class RunViewModel {
     this.trackTabOwnership(runId, event);
     this.projected.delete(runId);
     if (TERMINAL_EVENT_TYPES.has(event.type)) this.seal(runId);
+    // A live run that has grown past the bound is condensed exactly as a boot read condenses one, so
+    // the array stops growing with the run. Nothing trimmed a live log before: `seal` empties it only
+    // at a terminal event, and `cost.recorded` is one envelope per browser action by design, so the
+    // busiest run on the machine held every envelope it had ever emitted on the thread that paints and
+    // re-folded all of them on every memo miss.
+    //
+    // Routed through `adopt` rather than straight to `recondense` for its in-flight coalescing: the
+    // re-condense is a round-trip, envelopes keep arriving while it is on the wire, and each one would
+    // otherwise buy its own. Every caller that arrives mid-flight asks for one more pass instead, so a
+    // burst costs one read plus one, and the run is condensed by the time it settles.
+    else if (this.overBound(runId)) void this.adopt(runId, { replace: true });
     this.emit();
   }
 
@@ -1009,12 +1020,22 @@ export class RunViewModel {
   }
 
   /**
-   * Is this run condensed AND still too long to materialize? Answered from `lastSeq`, which the store
-   * has already told us, so deciding costs no read at all — the read is what the decision is about.
+   * Is this run too long for this process to hold its envelopes? Answered from what is already here —
+   * `lastSeq`, which the store told us, or the retained array — so deciding costs no read at all; the
+   * read is what the decision is about.
+   *
+   * It used to open with `kept !== undefined`, which made it a question about how a run BOOTED rather
+   * than about how long it is. A run created in this process, or adopted while it was short, has
+   * `kept === undefined` for its whole life, so the bound never applied to the one class of run that
+   * actually grows: the live one. Both arms ask the same question of the quantity each state can
+   * answer it with — a condensed run has no envelopes to count, and a materialized one's `lastSeq` can
+   * sit above what it holds after a bounded read.
    */
   private overBound(runId: string): boolean {
     const log = this.logs.get(runId);
-    return log?.kept !== undefined && log.lastSeq > REMATERIALIZE_MAX_EVENTS;
+    if (!log) return false;
+    if (log.kept !== undefined) return log.lastSeq > REMATERIALIZE_MAX_EVENTS;
+    return log.events.length > REMATERIALIZE_MAX_EVENTS;
   }
 
   /**
@@ -1062,9 +1083,10 @@ export class RunViewModel {
   }
 
   /**
-   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal, and
-   * zero for a run whose log was condensed at boot — the retention bound is a property callers and
-   * tests can actually check, not a comment.
+   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal, zero
+   * for a run whose log was condensed at boot, and zero for a live one that has since grown past
+   * `REMATERIALIZE_MAX_EVENTS` — the retention bound is a property callers and tests can actually
+   * check, not a comment.
    */
   retainedEventCount(runId: string): number {
     return this.logs.get(runId)?.events.length ?? 0;
@@ -1410,9 +1432,11 @@ export class RunViewModel {
    * holds the projection it ended with, and neither of the two things a read can still change about it
    * — `withoutExpiredDecisions` only ever drops a card and downgrades `needs_you` to `running` — can
    * move a terminal status or a visibility. So a finished, unwatched run costs a map lookup and a
-   * comparison here instead of a `snapshot` call, and the walk is O(live runs) in an app where every
-   * run this process finished is sealed. A terminal run that is NOT sealed (adopted mid-flight, say)
-   * falls through to the correct arm rather than to a wrong answer.
+   * comparison here instead of a `snapshot` call. The WALK is still over every run this process
+   * retains — nothing evicts a finished run, and `hydrate` deliberately keeps what a later listing did
+   * not name — so this is O(retained runs) with a live run's projection paid for only by the live
+   * ones. A terminal run that is NOT sealed (adopted mid-flight, say) falls through to the correct arm
+   * rather than to a wrong answer.
    */
   listLive(): RunSummary[] {
     const out: RunSummary[] = [];
