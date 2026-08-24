@@ -1462,6 +1462,74 @@ describe('RunViewModel — a boot over condensed runs is bounded by what the sto
 });
 
 /**
+ * The corpus the store answers WITHOUT materializing anything: every run rejected by the size probe.
+ *
+ * The store rules a run out with a scan of its stored payloads before it reads a single envelope, so
+ * this boot ships no envelopes and parses no logs — and it still costs the child a full payload scan
+ * per page. That scan used to be charged only on the branch it guards, so a page of runs the probe
+ * itself rejected reported zero, the hydration's allowance never moved, and `hydrate` took the log
+ * branch for all `MAX_HYDRATION_PAGES` of them — each one handing the store a freshly reset per-call
+ * budget to scan against.
+ *
+ * The instrument is the store's read total across the WHOLE hydration, as above. What separates this
+ * arm from that one is that nothing here is ever materialized: `readEvents` stays zero, so any bound
+ * that comes from the event allowance or from retention cannot be what stopped it.
+ */
+describe('RunViewModel — a boot the store answers from the size probe alone is still bounded', () => {
+  const PAGE_RUNS = 4;
+  const PAGES = 5;
+  /** The store's per-CALL char allowance — `MAX_BOOT_FRAME_CHARS`, forced small. */
+  const PER_CALL_CHARS = 500;
+  const EVENT_BUDGET = 1_000_000;
+
+  /**
+   * `PAGES` pages of one-envelope runs whose single stored payload is over `PER_CALL_CHARS` on its
+   * own — so the probe rejects each of them without the log ever being read.
+   */
+  async function seedProbeRejectedPages(): Promise<FakeRunStore> {
+    const store = new FakeRunStore();
+    store.listLimit = PAGE_RUNS;
+    store.bootCharCapTotal = PER_CALL_CHARS;
+    const blob = 'x'.repeat(PER_CALL_CHARS);
+    for (let i = 0; i < PAGE_RUNS * PAGES; i++) {
+      const run = await store.createRun({ task: `run ${i}`, sessionId: `sess-${i}` });
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'run.progress', payload: { blob } });
+    }
+    return store;
+  }
+
+  it('stops paging on what the probe scanned, not on what the probe let through', async () => {
+    const store = await seedProbeRejectedPages();
+    const vm = new RunViewModel(store);
+    store.reads.length = 0;
+    store.readEvents = 0;
+    store.readChars = 0;
+
+    await vm.hydrate({ eventBudget: EVENT_BUDGET, charBudget: PER_CALL_CHARS + 1 });
+
+    // The premise, checked rather than assumed: the store scanned, and it materialized nothing. An
+    // arm that let a single log be read would be the previous one wearing a different name.
+    expect(store.readChars, 'nothing was scanned, so there is no spend for this arm to bound').toBeGreaterThan(0);
+    expect(store.readEvents, 'a log was materialized, so the probe is not what rejected these runs').toBe(0);
+
+    // The bound: the allowance plus at most the page that spent the last of it.
+    expect(store.readChars, 'the hydration scanned more than its allowance plus the page that spent it')
+      .toBeLessThanOrEqual(PER_CALL_CHARS + 1 + PER_CALL_CHARS * 2);
+    // …and the inversion. With the probe uncharged every page reported zero, so the allowance never
+    // moved and all `PAGES` of them asked for envelopes — each against a per-call budget handed out
+    // fresh. That multiplication is what this counts.
+    expect(store.reads.filter((r) => r === 'listRunLogs').length, 'a page still asked for envelopes the store would only condense')
+      .toBeLessThan(PAGES);
+    expect(store.reads.filter((r) => r === 'listRuns').length, 'no page fell back to projections at all').toBeGreaterThan(0);
+
+    // Law 1 again: the bound is on cost, never on which runs exist.
+    const ids = [...store.facts.keys()];
+    expect(vm.list()).toHaveLength(ids.length);
+    for (const id of ids) expect(vm.snapshot(id)).toEqual(await store.getRun(id));
+  });
+});
+
+/**
  * A store that can be taken away and given back, so a read failure is a state a test can FORCE
  * rather than a flake it has to wait for.
  *

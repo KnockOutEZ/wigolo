@@ -204,15 +204,29 @@ export class FakeRunStore implements RunStoreClient {
       const lastSeq = events.at(-1)?.seq ?? 0;
       const facts = this.factsOf(run.id)!;
       if (events.length <= Math.min(this.bootEventCapPerRun, eventsLeft) && charsLeft > 0) {
-        const chars = JSON.stringify(events).length;
-        const fits = chars <= charsLeft;
-        eventsLeft -= events.length;
-        charsLeft -= chars;
-        eventsSpent += events.length;
-        charsSpent += chars;
-        this.readEvents += events.length;
-        this.readChars += chars;
-        if (fits) return { facts, events: [...events], lastSeq };
+        // The size PROBE, mirrored: the broker rules a run out with a SUM over its stored payloads,
+        // which under-states the serialized size and so can only condense runs that could not have
+        // fitted. It is a scan of every payload byte the run has, so it is charged before its answer
+        // is used — a run the probe itself rejects must not be free, or a page of them reports zero
+        // and the hydration's allowance never moves.
+        const charsAtEntry = charsLeft;
+        const storedChars = events.reduce((n, e) => n + JSON.stringify(e.payload).length, 0);
+        charsLeft -= storedChars;
+        charsSpent += storedChars;
+        this.readChars += storedChars;
+        if (storedChars <= charsAtEntry) {
+          const chars = JSON.stringify(events).length;
+          const fits = chars <= charsAtEntry;
+          // Only what the materialization added BEYOND the probe — those characters are already on
+          // the books, so an accepted run still costs exactly its serialized length.
+          eventsLeft -= events.length;
+          charsLeft -= chars - storedChars;
+          eventsSpent += events.length;
+          charsSpent += chars - storedChars;
+          this.readEvents += events.length;
+          this.readChars += chars - storedChars;
+          if (fits) return { facts, events: [...events], lastSeq };
+        }
       }
       const sessionId = events[0]?.payload.sessionId;
       return {
