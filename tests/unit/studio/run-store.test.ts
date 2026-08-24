@@ -1103,6 +1103,96 @@ describe('run-store — an append costs its status, not its history (F1)', () =>
   });
 });
 
+/**
+ * WHY: the status recompute runs INSIDE the append's `BEGIN IMMEDIATE`, so whatever it reads is
+ * write-lock time on a database every other subsystem shares. It needs one bit — is anything
+ * pending — and it used to get it by materialising every in-window row: parse, card, Map, then
+ * `.length > 0` and throw the lot away. The auto-deny window bounds that read by TIME, not by
+ * COUNT, and nothing caps how many cards a run raises, so the lock was held for as long as the run
+ * had been asking questions: measured 25 us with no cards against 2398 us at 1600 of them, once per
+ * browser action.
+ */
+describe('run-store — the append path asks WHETHER a card is pending, not which (perf HIGH-1)', () => {
+  const requestCards = (runId: string, n: number, payload: (i: number) => Record<string, unknown>): void => {
+    for (let i = 0; i < n; i++) {
+      appendEvent(db, runId, { actor: { kind: 'agent' }, type: 'decision.requested', payload: payload(i) }, opts());
+    }
+  };
+  const PENDING_READ = /type = 'decision\.requested'/;
+  /** One more append, and what its status recompute pulled out of the log to decide the cache. */
+  const appendCost = (runId: string): EventRead => {
+    const seen = spyEventReads(db, () =>
+      appendEvent(db, runId, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } }, opts()));
+    const pending = seen.reads.filter((r) => PENDING_READ.test(r.sql));
+    // Exactly one pending read per append — a count that silently went to zero would make every
+    // row assertion below trivially true.
+    expect(pending).toHaveLength(1);
+    return pending[0];
+  };
+
+  it('reads one row at any number of open cards, so the lock cost is flat in K', () => {
+    const few = createRun(db, { task: 'few' }, opts()).id;
+    requestCards(few, 20, (i) => ({ decisionId: `d${i}`, prompt: 'ok?' }));
+    const shallow = appendCost(few);
+
+    db = freshDb();
+    const many = createRun(db, { task: 'many' }, opts()).id;
+    requestCards(many, 400, (i) => ({ decisionId: `d${i}`, prompt: 'ok?' }));
+    const deep = appendCost(many);
+
+    // Twenty times the open cards, the same one row read. A fixed expectation alone could be met by
+    // a path that happened to hit the number once; the differential is what says "not O(K)".
+    expect(deep.rows).toBe(shallow.rows);
+    expect(deep.rows).toBe(1);
+    // ...and the answer it stopped early on is still the right one.
+    expect(cachedStatus(many)).toBe('needs_you');
+  }, 20_000);
+
+  /**
+   * WHY: the early-out cannot be a SQL `LIMIT 1`. The window is a superset of what is pending —
+   * `pendingCardOf` throws away a request with no `decisionId` (nothing can ever answer it) and one
+   * whose effective `requestedAt` has already expired. A row-shaped early-out would call both of
+   * those "pending" and strand the run at `needs_you` with no card to answer and no way out.
+   */
+  it('keeps the JS rejection: junk and expired rows are read past, not stopped on', () => {
+    const anonymous = createRun(db, { task: 'anonymous' }, opts());
+    requestCards(anonymous.id, 12, () => ({ prompt: 'who?' }));
+    const junk = appendCost(anonymous.id);
+    // Every row was pulled and every row was refused — the probe cannot stop on one SQL admits.
+    expect(junk.rows).toBe(12);
+    expect(cachedStatus(anonymous.id)).toBe('running');
+
+    // Inside the SQL window by its envelope `ts`, already past its deadline by its own payload:
+    // the one shape where SQL says "candidate" and the fold says "gone".
+    const stale = createRun(db, { task: 'stale' }, opts());
+    const longAgo = new Date(Date.now() - AUTO_DENY_MS - 1000).toISOString();
+    requestCards(stale.id, 6, (i) => ({ decisionId: `d${i}`, prompt: 'ok?', requestedAt: longAgo }));
+    const expired = appendCost(stale.id);
+    expect(expired.rows).toBe(6);
+    expect(cachedStatus(stale.id)).toBe('running');
+    expect(getRun(db, stale.id)!.pendingDecisions).toEqual([]);
+
+    // Control: one live card among the same junk still lights the run, so "running" above is a
+    // rejection and not a read that quietly found nothing.
+    appendEvent(db, stale.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'live', prompt: 'ok?' } }, opts());
+    expect(cachedStatus(stale.id)).toBe('needs_you');
+  });
+
+  it('still hands a projection every card, because a list is not an existence question', () => {
+    const run = createRun(db, { task: 'seeds' }, opts());
+    requestCards(run.id, 3, (i) => ({ decisionId: `d${i}`, prompt: `q${i}` }));
+    appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.resolved', payload: { decisionId: 'd1', outcome: 'approved' } }, opts());
+
+    const listed = getRun(db, run.id)!.pendingDecisions;
+    expect(listed.map((d) => d.decisionId)).toEqual(['d0', 'd2']);
+    // The seed read is the one that still materialises: it must not inherit the append path's
+    // early-out, or a `needs_you` run would render with no card on it.
+    const seen = spyEventReads(db, () => getRun(db, run.id));
+    // Two, not one: the answered card is dropped by the anti-join, and BOTH survivors are pulled.
+    expect(seen.reads.filter((r) => PENDING_READ.test(r.sql))[0].rows).toBe(2);
+  });
+});
+
 describe('run-store — listing a page is bounded work (F2)', () => {
   function busyRuns(count: number, eventsEach: number): string[] {
     const ids: string[] = [];
@@ -1873,6 +1963,24 @@ function spyEventReads<T>(
     };
     wrap('all', (out) => (out as unknown[]).length);
     wrap('get', (out) => (out === undefined ? 0 : 1));
+    // A read that stops early yields its rows one at a time, so its cost is the number the store
+    // actually pulled — not the number the query could have returned. Counted as they come, into a
+    // record pushed up front, because the caller only totals them after `fn` has returned.
+    const realIterate = stmt.iterate.bind(stmt) as (...args: unknown[]) => IterableIterator<unknown>;
+    Object.defineProperty(stmt, 'iterate', {
+      value: (...args: unknown[]) => {
+        const read: EventRead = { sql, params: args, rows: 0 };
+        reads.push(read);
+        const inner = realIterate(...args);
+        return (function* counted() {
+          for (const row of inner) {
+            read.rows++;
+            yield row;
+          }
+        })();
+      },
+      configurable: true,
+    });
     return stmt;
   }) as typeof database.prepare;
   _resetPreparedStatements(database);

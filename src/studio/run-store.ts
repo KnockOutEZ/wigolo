@@ -916,9 +916,28 @@ function foldHeads(heads: readonly StatusRow[]): { terminal?: RunStatus; pausedR
   return { terminal, pausedReason, visibility };
 }
 
-/** Does one unanswered, unexpired decision survive? The count never matters, only the existence. */
+/**
+ * Does one unanswered, unexpired decision survive? The count never matters, only the existence.
+ *
+ * This runs inside the append's write lock, so every row it touches is time the shared database is
+ * closed to everyone else. Listing the cards to ask `.length > 0` made that time track the number of
+ * questions a run had raised — the `ts` bound is a bound on AGE, not on COUNT, and nothing caps how
+ * many cards a run may raise — so it stops at the first row that survives instead.
+ *
+ * The stop cannot be a SQL `LIMIT 1`: the window is a superset of what is pending, and `pendingCardOf`
+ * still refuses a request with no `decisionId` (nothing can ever answer it) and one whose effective
+ * `requestedAt` has already expired. A row-shaped early-out would call either of those pending and
+ * strand the run at `needs_you` with no card to answer.
+ */
 function hasPendingDecision(db: Database.Database, runId: string, now: Date): boolean {
-  return readPendingDecisions(db, runId, now).length > 0;
+  const since = new Date(now.getTime() - AUTO_DENY_MS).toISOString();
+  const rows = stmt(db, PENDING_DECISION_SQL).iterate(runId, since) as IterableIterator<PendingRow>;
+  // Leaving the loop early closes the statement, which the UPDATE that follows this read inside the
+  // same transaction depends on — a live iterator would make the handle busy.
+  for (const row of rows) {
+    if (pendingCardOf({ ts: row.ts, payload: JSON.parse(row.payload) as Record<string, unknown> }, now)) return true;
+  }
+  return false;
 }
 
 /**
