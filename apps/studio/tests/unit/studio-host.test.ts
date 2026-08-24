@@ -106,7 +106,8 @@ function makeHost(
   let n = 0;
   // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
   // so a host change that stopped recording it reds these tests rather than passing against a stub.
-  const runs = new RunViewModel(new FakeRunStore());
+  const store = new FakeRunStore();
+  const runs = new RunViewModel(store);
   const host = createStudioHost({
     config,
     runs,
@@ -137,7 +138,7 @@ function makeHost(
     closeTab: (tabId) => { const t = tabs.get(tabId); if (t) t.closed = true; void engine.detachTab(tabId); },
     ...(hostOver.approvalSurfaceAttached ? { approvalSurfaceAttached: hostOver.approvalSurfaceAttached } : {}),
   });
-  return { host, parked, said, sessionChanges, tabs, broker };
+  return { host, parked, said, sessionChanges, tabs, broker, store };
 }
 
 describe('createStudioHost — session lifecycle', () => {
@@ -171,6 +172,85 @@ describe('createStudioHost — session lifecycle', () => {
     const { host } = makeHost();
     const r = await host.handlers.close({ session_id: 'nope' });
     expect((r as StudioToolError).error_reason).toBe('no_such_session');
+  });
+});
+
+/**
+ * SD1 exit-9 (P3). `before-quit` bounds `shutdown()` at a FIXED `SHUTDOWN_DEADLINE_MS` and, on expiry,
+ * leaves via `app.exit(0)` — which truncates every append still in flight and leaves those runs
+ * `running` in the durable log forever, the exact loss the handler exists to prevent (law 1). That
+ * bound was calibrated against the DEFAULT cap of 8 over a SERIAL walk, so `sessionCap` — a supported
+ * knob — quietly bought the defect back: raise it and the walk outgrows the deadline.
+ *
+ * The clock is virtual, and has to be. The claim is about ~12s of simulated broker round trips, which
+ * is not time a unit test may actually spend; and an in-memory append that resolves in the same tick
+ * makes a serial walk and a concurrent one indistinguishable, so a test without a cost model here
+ * would pass against the defect.
+ *
+ * Inversion (run against the serial `for` walk restored): 1 of 24 terminal appends inside the budget
+ * below, and 19 of 24 by the full deadline — a partial flush, which is the shape of the bug.
+ */
+describe('createStudioHost — shutdown at a raised session cap', () => {
+  /** index.ts's backstop, mirrored. The number the healthy path has to stay clear of. */
+  const SHUTDOWN_DEADLINE_MS = 10_000;
+  /**
+   * One append's broker round trip, taken from the shipped calibration: eight live sessions cost ~4.2s
+   * serially, and each session is two appends — the `run_ended` detach, then the terminal event.
+   */
+  const APPEND_MS = 260;
+  /**
+   * Above the default 8, and picked so a serial walk cannot pass by luck: 24 × 2 × 260ms ≈ 12.5s of
+   * appends against a 10s deadline. An operator raising `sessionCap` is the ordinary way to be here —
+   * this is a supported configuration, not a stress test.
+   */
+  const RAISED_CAP = 24;
+  /** What ONE session costs. A concurrent walk finishes the whole fleet in about this. */
+  const ONE_SESSION_MS = 2 * APPEND_MS;
+
+  it('ends every session concurrently, so the walk costs one session rather than the whole cap', async () => {
+    const { host, store } = makeHost({ sessionCap: RAISED_CAP });
+    for (let i = 0; i < RAISED_CAP; i++) {
+      expect('session_id' in await host.handlers.spawn({})).toBe(true);
+    }
+    const terminalAppends = () => store.appends.filter((a) => a.type === 'run.cancelled').length;
+
+    vi.useFakeTimers();
+    try {
+      store.appendDelayMs = APPEND_MS; // set AFTER the opens, so only the quit pays it
+      const done = host.shutdown();
+      // One session's round trips plus a whole append of slack — well inside the deadline, and less
+      // than a twentieth of what the same fleet costs walked serially.
+      const budget = ONE_SESSION_MS + APPEND_MS;
+      expect(budget).toBeLessThan(SHUTDOWN_DEADLINE_MS);
+      await vi.advanceTimersByTimeAsync(budget);
+      expect(terminalAppends()).toBe(RAISED_CAP);
+      // And nothing is merely far enough along: the walk itself is over, so the backstop firing at the
+      // deadline would have nothing left to truncate.
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_DEADLINE_MS);
+      await done;
+    } finally {
+      store.appendDelayMs = 0;
+      vi.useRealTimers();
+    }
+
+    // Law 1 read from the log rather than from the counter above: every run ENDS on its terminal
+    // event. A truncated quit is exactly a log whose last envelope is the detach and never the end.
+    expect(store.log.size).toBe(RAISED_CAP);
+    for (const events of store.log.values()) expect(events.at(-1)?.type).toBe('run.cancelled');
+  });
+
+  it('keeps the per-tab lane serialised: each run detaches its own tab before it ends', async () => {
+    // The concurrency is ACROSS sessions only. Within a run the order is still detach-then-end, and it
+    // is the view-model's per-tab and per-run lanes that make that true — a shutdown that reached past
+    // them to go faster would produce a log that no replay can put back in order.
+    const { host, store } = makeHost({ sessionCap: 4 });
+    for (let i = 0; i < 4; i++) await host.handlers.spawn({});
+    await host.shutdown();
+    for (const events of store.log.values()) {
+      const types = events.map((e) => e.type);
+      expect(types.indexOf('tab.detached')).toBeGreaterThan(-1);
+      expect(types.indexOf('tab.detached')).toBeLessThan(types.indexOf('run.cancelled'));
+    }
   });
 });
 

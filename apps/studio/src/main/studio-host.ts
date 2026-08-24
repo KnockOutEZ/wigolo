@@ -1441,22 +1441,39 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         return (out.results ?? []).map((r) => ({ url: r.url, title: r.title, score: r.relevance_score, source: r.source }));
       } catch { return []; } // broker down → the rail degrades quietly (never errors the UI)
     },
+    /**
+     * Concurrent across sessions, on purpose.
+     *
+     * `before-quit` bounds this walk with a fixed deadline (index.ts `SHUTDOWN_DEADLINE_MS`) that was
+     * calibrated against the DEFAULT cap. A serial walk put a healthy quit's cost in step with
+     * `sessionCap` — two broker round trips per session, the detach and the terminal append — so a host
+     * configured above the default crossed the backstop, `app.exit(0)` fired, and the sessions at the
+     * TAIL of the walk lost the very append this path exists to land: a run left `running` in the
+     * durable log forever (law 1).
+     *
+     * Nothing here is order-dependent between sessions. Each context owns exactly one tab (law 4), and
+     * everything that must be serialised already is, one layer down: the view-model's per-tab and
+     * per-run lanes order the writes for a given tab/run, and the store's `BEGIN IMMEDIATE` orders the
+     * transactions. So the ends overlap and a healthy quit costs about one session's round trips
+     * rather than N of them — the cost no longer scales with the cap at all.
+     */
     async shutdown(): Promise<void> {
-      for (const ctx of contexts.values()) {
-        if (ctx.status !== 'live') continue;
-        ctx.status = 'closed';
+      const live = [...contexts.values()].filter((ctx) => ctx.status === 'live');
+      // Marked closed in one synchronous pass BEFORE the first await, so no context can be treated as
+      // live while its own end is still in flight — the serial walk got that for free, this does not.
+      for (const ctx of live) ctx.status = 'closed';
+      await Promise.all(live.map(async (ctx) => {
         try {
           deps.closeTab(ctx.tab.tabId); // detaches the CDP transport + destroys the WebContentsView
         } catch { /* best-effort teardown */ }
         // The host is going away; the run is not finished, it is cancelled. Best-effort, because a
         // shutdown that hangs on a store write is worse than a run whose last event lands late.
         const runId = deps.runs.runForSession(ctx.sessionId);
-        if (runId) {
-          try {
-            await deps.runs.endRun(runId, 'cancelled');
-          } catch { /* best-effort teardown */ }
-        }
-      }
+        if (!runId) return;
+        try {
+          await deps.runs.endRun(runId, 'cancelled');
+        } catch { /* best-effort teardown */ }
+      }));
       contexts.clear();
       parked.clear();
       actChains.clear();

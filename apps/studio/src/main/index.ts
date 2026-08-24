@@ -505,9 +505,18 @@ async function createWindow(): Promise<void> {
    *
    * The bound is a backstop for a WEDGED broker, so it must sit well clear of what a healthy quit
    * costs — a deadline ordinary use brushes against is not a backstop, it is a truncation with a
-   * timer. Measured: eight live sessions cost ~4.2s here, because `shutdown()` walks them serially and
-   * each detach and append is a broker round trip. 10s leaves that headroom and still sits under the
-   * 15s the e2e lane bounds `close()` at, so a slow quit cannot turn into a red lane either.
+   * timer. Measured: eight live sessions cost ~4.2s here while `shutdown()` still walked them
+   * serially, each detach and append being a broker round trip. That made a healthy quit's cost linear
+   * in `sessionCap`, which is a supported knob: at ~19 sessions the walk crossed this bound and the
+   * appends at the tail of it were truncated by the `app.exit(0)` below — the exact loss this handler
+   * exists to prevent. So the fix belongs in `shutdown()`, not here: it now ends its sessions
+   * concurrently, and a healthy quit costs about one session's round trips whatever the cap is.
+   *
+   * A cap-derived deadline would have been the other way to close it and is deliberately NOT what this
+   * is. Scaling the bound with `sessionCap` scales the WEDGED case too, and would push a stuck quit
+   * past the 15s the e2e lane bounds `close()` at — trading a truncated log for an unquittable app and
+   * a red lane. A constant is correct precisely because the healthy cost is now a constant too: 10s
+   * keeps the headroom and still sits under that 15s.
    */
   const SHUTDOWN_DEADLINE_MS = 10_000;
   let quitState: 'idle' | 'shutting-down' | 'cleared' = 'idle';
