@@ -49,6 +49,7 @@ const NON_RENDERED = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'HEAD',
 
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
+const DOCUMENT_NODE = 9;
 
 export interface VisibilityNode {
   readonly parentNode: VisibilityParentNode | null;
@@ -151,7 +152,11 @@ function hasVisibleTextOutside(root: VisibilityElement): boolean {
  * dropping it is the declaration being honoured; what survives is only the shell's own
  * `<main>`, never the text parked beside it.
  */
-function pruneToMain(hidden: VisibilityElement, main: VisibilityElement): void {
+function pruneToMain(
+  hidden: VisibilityElement,
+  main: VisibilityElement,
+  settled: Set<VisibilityNode>,
+): void {
   let keep: VisibilityNode = main;
   while (keep !== hidden) {
     const parent = keep.parentNode;
@@ -161,6 +166,13 @@ function pruneToMain(hidden: VisibilityElement, main: VisibilityElement): void {
       if (child !== keep) parent.removeChild(child);
     }
     keep = parent;
+    // The wrappers between the article and the outer candidate survive this prune, are
+    // hidden themselves as often as not, and are therefore candidates in their own right —
+    // each one asking the same question about the same <main> and re-running a prune that
+    // has already finished. `hidden` is excluded because the loop exits before recording it
+    // and it cannot recur anyway, and `main` is excluded because it is not a wrapper: a
+    // <main> that is itself hidden is still removed on its own turn, exactly as before.
+    if (keep !== hidden) settled.add(keep);
   }
 }
 
@@ -194,9 +206,47 @@ export function stripHiddenDom(document: VisibilityDocument): void {
     return !paintsOutsideHidden;
   };
 
+  // Removing a candidate detaches every hidden node below it, but those nodes are already in
+  // `candidates` and each was still asked the rescue question — one `querySelector` over its
+  // own detached-but-populated subtree apiece, so K nested wrappers cost K × subtree. Nothing
+  // outside the document can affect the output, so the answer is not worth its price: this is
+  // the same page-controlled superlinear shape the memo above removed from `pageIsShell`,
+  // left behind on the scan beside it and measured at 3.8 s for K=5 000 on a 40 000-element
+  // budget, synchronous, on the unauthenticated fetch path.
+  //
+  // Reachability is read off the tree — the question `isConnected` answers, asked by walking
+  // parents up to the document — rather than inferred from a note taken at each removal, so
+  // it cannot drift from what the tree actually says if a later edit detaches a node by some
+  // other route. It is written out rather than delegated because that walk is O(depth) and
+  // the page picks the depth: detachment is permanent within one pass, so every node proven
+  // detached is cached and a nest that reaches an already-proven ancestor stops there, which
+  // the DOM property cannot do and which is what keeps the guard itself from being the next
+  // O(K²). Proven-CONNECTED is deliberately not cached — a node connected now can be
+  // detached by any later removal, and a stale yes there would leak hidden copy.
+  const offDocument = new Set<VisibilityNode>();
+  const isDetached = (start: VisibilityElement): boolean => {
+    const path: VisibilityNode[] = [];
+    let node: VisibilityNode | null = start;
+    while (node !== null && !offDocument.has(node)) {
+      if (node.nodeType === DOCUMENT_NODE) return false;
+      path.push(node);
+      node = node.parentNode;
+    }
+    for (const seenOff of path) offDocument.add(seenOff);
+    return true;
+  };
+
+  // Wrappers a completed prune has already settled — see `pruneToMain`.
+  const settled = new Set<VisibilityNode>();
+
   for (const el of candidates) {
     if (STRUCTURAL.has(el.tagName)) continue;
+    // Ordered cheapest-first, and `isHidden` before the reachability walk on purpose: an
+    // ordinary page ships thousands of `[style]` nodes that declare nothing about
+    // visibility, and they are the ones that must not pay for a walk they cannot use.
     if (!isHidden(el)) continue;
+    if (settled.has(el)) continue;
+    if (isDetached(el)) continue;
     // A pre-hydration shell that marks its layout wrapper hidden must not cost us the
     // article — but the rescue is scoped to the article, not extended to the wrapper.
     // stripBoilerplateDom's version of this guard softens a class-name HEURISTIC, so
@@ -210,7 +260,7 @@ export function stripHiddenDom(document: VisibilityDocument): void {
     // exemption; the second is the one an injection payload cannot satisfy.
     const main = el.querySelector('main');
     if (main !== null && carriesArticle(main) && pageIsShell()) {
-      pruneToMain(el, main);
+      pruneToMain(el, main, settled);
       continue;
     }
     el.parentNode?.removeChild(el);
