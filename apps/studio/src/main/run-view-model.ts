@@ -1117,8 +1117,21 @@ export class RunViewModel {
     return true;
   }
 
-  /** A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source). */
-  async requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+  /**
+   * A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source).
+   *
+   * On the run lane and refused past the terminal event for the same reason its answer is — the same
+   * closing session that races a resolution races the card that raised it, and a `decision.requested`
+   * landing after `run.completed` is worse than an out-of-order envelope: it is the one event that
+   * projects to `needs_you`, so a finished run would ask for a human nobody can answer to.
+   */
+  requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    return this.queueForRun(runId, () => this.applyRequestDecision(runId, input));
+  }
+
+  private async applyRequestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    const run = this.snapshot(runId);
+    if (!run || isTerminal(run.status)) return;
     const event = await this.store.appendEvent(runId, {
       actor: { kind: 'agent', driver: 'studio' },
       type: 'decision.requested',

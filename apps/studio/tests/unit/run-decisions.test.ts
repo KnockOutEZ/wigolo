@@ -402,4 +402,25 @@ describe('the decision mirror, with an append still in flight', () => {
 
     expect(store.appends).toEqual([]);
   });
+
+  /**
+   * The card, not its answer — the same race one event earlier, and the worse half of it. A run that
+   * has ended cannot need a human, and `decision.requested` is the one event that projects to
+   * `needs_you`: parked past the terminal event it would relight the dock badge over a finished run
+   * and leave it lit, because the answer that would clear it is refused.
+   */
+  it('parks no card on a run whose terminal append was already in flight', async () => {
+    store.gate(1);
+    const ending = vm.endRun(runId, 'completed');
+    await settled();
+
+    const parking = mirror.parked({ approval_id: 'ap-late', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    await settled();
+
+    await store.release();
+    await Promise.all([ending, parking]);
+
+    expect(store.appends.map((a) => a.type)).toEqual(['run.completed']);
+    expect(vm.snapshot(runId)!.status).toBe('done');
+  });
 });
