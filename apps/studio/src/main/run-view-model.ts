@@ -1083,9 +1083,10 @@ export class RunViewModel {
   }
 
   /**
-   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal, and
-   * zero for a run whose log was condensed at boot — the retention bound is a property callers and
-   * tests can actually check, not a comment.
+   * How many raw envelopes this projection is holding for a run. Zero once the run is terminal, zero
+   * for a run whose log was condensed at boot, and zero for a live one that has since grown past
+   * `REMATERIALIZE_MAX_EVENTS` — the retention bound is a property callers and tests can actually
+   * check, not a comment.
    */
   retainedEventCount(runId: string): number {
     return this.logs.get(runId)?.events.length ?? 0;
