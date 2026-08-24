@@ -27,6 +27,7 @@ import {
   MAX_EVENT_PAYLOAD_CHARS,
   runDir,
   runEventsFile,
+  flushRunEventProjections,
   _resetPreparedStatements,
   type RunEvent,
   type Run,
@@ -765,7 +766,7 @@ describe('run-store — an id is an id and a payload is bounded (structural guar
     expect(eventsSince(db, 'run-1')).toEqual([]);
   });
 
-  it('refuses an event payload past the cap — the log is persisted twice', () => {
+  it('refuses an event payload past the cap — the log is persisted twice', async () => {
     const run = createRun(db, { task: 'bounded' }, opts());
     const oversize = { blob: 'x'.repeat(MAX_EVENT_PAYLOAD_CHARS) };
     expect(() => appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'note.added', payload: oversize }, opts()))
@@ -773,6 +774,7 @@ describe('run-store — an id is an id and a payload is bounded (structural guar
     // Refused at the door: no row, no seq burned, no line appended to the on-disk projection.
     expect(eventsSince(db, run.id).map((e) => e.type)).toEqual(['run.created']);
     expect(getRun(db, run.id)!.lastSeq).toBe(1);
+    await flushRunEventProjections();
     expect(readFileSync(runEventsFile(run.id, dir), 'utf8').trimEnd().split('\n')).toHaveLength(1);
 
     // Just under still appends — the cap has to be a bound, not a ban on real payloads.
@@ -782,9 +784,10 @@ describe('run-store — an id is an id and a payload is bounded (structural guar
 });
 
 describe('run-store — files on disk (law 11, A-43-3)', () => {
-  it('writes one envelope per line under the run directory', () => {
+  it('writes one envelope per line under the run directory', async () => {
     const run = createRun(db, { task: 'inspectable' }, opts());
     appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-1' } }, opts());
+    await flushRunEventProjections();
     const file = runEventsFile(run.id, dir);
     expect(existsSync(file)).toBe(true);
     const lines = readFileSync(file, 'utf8').trimEnd().split('\n');
@@ -798,20 +801,22 @@ describe('run-store — files on disk (law 11, A-43-3)', () => {
     if (process.platform !== 'win32') expect(mode).toBe(0o700);
   });
 
-  it('keeps the event file itself owner-only, not merely owner-only by its parent', () => {
+  it('keeps the event file itself owner-only, not merely owner-only by its parent', async () => {
     if (process.platform === 'win32') return;
     const run = createRun(db, { task: 't' }, opts());
     appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'decision.requested', payload: { decisionId: 'd1', prompt: 'card number?' } }, opts());
+    await flushRunEventProjections();
     // The line above is why: prompts, task text and attached URLs that can carry a query-string
     // token all live in this file, and the 0700 directory stops shielding it the moment the tree is
     // copied, archived or synced.
     expect(statSync(runEventsFile(run.id, dir)).mode & 0o777).toBe(0o600);
   });
 
-  it('is a projection — a lost or damaged file never changes what the store reads back', () => {
+  it('is a projection — a lost or damaged file never changes what the store reads back', async () => {
     const run = createRun(db, { task: 't' }, opts());
     appendEvent(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 2 } }, opts());
     const before = getRun(db, run.id);
+    await flushRunEventProjections();
     rmSync(runEventsFile(run.id, dir));
     expect(getRun(db, run.id)).toEqual(before);
     expect(eventsSince(db, run.id, 0)).toHaveLength(2);
@@ -1554,7 +1559,7 @@ describe('run-store — a projected field is validated, never cast (SD1 exit rev
     expect(stored.payload.anchor).toEqual({ tabId: 'tab-1', mark: 4, note: 'ride-along', prompt: 'not this one' });
   });
 
-  it('rebuilds the actor so an unknown key cannot ride into an append-only log', () => {
+  it('rebuilds the actor so an unknown key cannot ride into an append-only log', async () => {
     const run = createRun(db, { task: 'actors' }, opts());
     const supplied = {
       kind: 'agent',
@@ -1571,7 +1576,10 @@ describe('run-store — a projected field is validated, never cast (SD1 exit rev
     expect(returned.actor).toEqual(clean);
     expect(returned.actor).not.toBe(supplied);
     expect(eventsSince(db, run.id, 1)[0].actor).toEqual(clean);
+    await flushRunEventProjections();
     const line = readFileSync(runEventsFile(run.id, dir), 'utf8');
+    // A file that had not been written yet would pass both `not.toContain`s for the wrong reason.
+    expect(line).toContain('a-harness');
     expect(line).not.toContain('sk-should-not-persist');
     expect(line).not.toContain('impersonating');
   });
