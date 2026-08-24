@@ -421,8 +421,31 @@ export class RunViewModel {
     }, EMIT_COALESCE_MS);
   }
 
+  /**
+   * Every listener gets the fan-out, whatever the one before it did.
+   *
+   * A bare loop made one listener's throw two separate defects. It reached the CALLER — `emit` is
+   * called from `applyEvent`, which is the broker's live-tail callback, so the throw left the fold as
+   * an uncaught exception in the Electron main and took the tray's process down with it — and it
+   * starved every listener after it of a fold that had already committed: the state push, the menu
+   * template and the presentation controller are three subscribers to one event, and the second one
+   * throwing left the third holding a projection the log has already moved past, with nothing to
+   * re-fire it. Neither is recoverable afterwards, because a fan-out is not replayed.
+   *
+   * Same rule and same reason as `publishRunEvent` on the core side. The copy is part of it: a
+   * listener that subscribes another one while the fold is being announced must not extend the pass
+   * that is announcing it.
+   */
   private fanOut(): void {
-    for (const cb of this.listeners) cb();
+    for (const cb of [...this.listeners]) {
+      try {
+        cb();
+      } catch (err) {
+        // stderr, never stdout — stdout is the MCP frame channel. Loud rather than swallowed: a
+        // listener that throws is a bug in a surface, and the only place it can now be seen.
+        process.stderr.write(`[studio] a run-projection listener threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+      }
+    }
   }
 
   /**
@@ -687,14 +710,22 @@ export class RunViewModel {
   private adopt(runId: string, opts: { replace?: boolean } = {}): Promise<void> {
     const inFlight = this.adopting.get(runId);
     if (inFlight) {
-      // A REPLACE is not answerable by a replay that is already reading, which is what returning the
-      // in-flight promise used to claim. A non-replace replay exits on the log it finds — `createRun`
-      // or a hydrate page registered it while this one was on the wire — and heals NOTHING; and even
-      // a replace one may have read the store before the envelope that opened this gap was committed.
-      // So it asks for one more pass instead. Every replace asked for while that pass is still owed
-      // coalesces into it, so a burst of gapped envelopes still costs one extra replay rather than
-      // one per envelope, and the promise handed back does not settle until the owed pass is done.
-      if (opts.replace) inFlight.again = true;
+      // NEITHER kind is answerable by a replay that is already reading, which is what returning the
+      // in-flight promise used to claim. A replace one may have read the store before the envelope
+      // that opened this gap was committed; and a NON-replace one — `applyEvent`'s unknown-run arm —
+      // is the same race with no later envelope to heal it. That arm is reached once per envelope
+      // until the adoption lands, so envelope A starts the replay and envelope B, arriving while its
+      // `readLog` is still on the wire, used to be dropped on the floor: `again` was set by
+      // `opts.replace` alone, the read that resolves afterwards holds the store as of BEFORE B, and
+      // `retain` pins `lastSeq` below it. Nothing repairs that — a heal needs a LATER envelope to
+      // open a gap — so when B was the run's last (`run.completed`), the app said `running` forever
+      // while REST, projecting the same log fresh, said `done`. Two answers, one log; law 1.
+      // REST-surface appends reach `applyEvent` through `store.onRunEvent`, so this is a live path.
+      //
+      // So EVERY caller that arrives mid-replay asks for one more pass. They all coalesce into the
+      // one owed pass, so a burst still costs one extra replay rather than one per envelope, and the
+      // promise handed back does not settle until that pass is done.
+      inFlight.again = true;
       return inFlight.promise;
     }
     if (this.logs.has(runId) && !opts.replace) return Promise.resolve();

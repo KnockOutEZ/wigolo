@@ -310,13 +310,36 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     pending.clear();
   };
 
+  /**
+   * Hand one notification to every handler, whatever the one before it did.
+   *
+   * These loops run inside the child's `stdout` data callback, so a bare one made a handler's throw
+   * an uncaught exception on the Electron main's event loop — the background service killing its
+   * host, which is the one thing §11 says it must never be able to do. It also starved the handlers
+   * after it: a notify is a live tail, not a request, so nothing re-delivers it and the surface that
+   * missed it stays behind the log with no way to notice. The run-event tail is the fold's only
+   * source, so one throwing subscriber there desynchronised the whole projection.
+   *
+   * Copied before the walk so a handler that subscribes another one is not delivered to inside the
+   * pass that is delivering to it. Same rule and same reason as `publishRunEvent` on the core side.
+   */
+  const notifyAll = <H>(handlers: readonly H[], deliver: (h: H) => void, what: string): void => {
+    for (const h of [...handlers]) {
+      try {
+        deliver(h);
+      } catch (err) {
+        warn(`[studio] a ${what} listener threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+      }
+    }
+  };
+
   const onLine = (line: string): void => {
     if (!line.trim()) return;
     let msg: Record<string, unknown>;
     try { msg = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     if (msg.notify === 'ready') { readyResolve?.(); return; }
-    if (msg.notify === 'artifact') { for (const h of artifactHandlers) h(msg.delta as ArtifactDelta); return; }
-    if (msg.notify === 'run-event') { for (const h of runEventHandlers) h(msg.runId as string, msg.envelope as RunEvent); return; }
+    if (msg.notify === 'artifact') { notifyAll(artifactHandlers, (h) => h(msg.delta as ArtifactDelta), 'artifact'); return; }
+    if (msg.notify === 'run-event') { notifyAll(runEventHandlers, (h) => h(msg.runId as string, msg.envelope as RunEvent), 'run-event'); return; }
     const id = msg.id as number | undefined;
     if (id == null) return;
     const p = pending.get(id);

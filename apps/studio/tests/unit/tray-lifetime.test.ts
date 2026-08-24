@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { RunEvent } from 'wigolo/studio';
 import { createRunTray, type TrayMenuItem, type TrayPort } from '../../src/main/run-tray';
 import { livingTrayPort } from '../../src/main/tray-lifetime';
@@ -14,10 +14,17 @@ import { FakeRunStore } from '../helpers/fake-run-store';
  *
  * WHAT IS ASSERTED, and why it is the observable rather than the call. A test that checked "setLabel
  * was not called" would still pass with the guard deleted at the wrapper, because the deleted guard
- * changes whether the call THROWS, not whether it happens. So every arm here asserts the one thing
- * the outage was made of: nothing escapes `applyEvent`. The negative-control arm at the bottom runs
- * the same two orderings through the UNGUARDED port and requires them to throw — without it, these
- * tests could not fail if the guard stopped being load-bearing.
+ * changes whether the call THROWS, not whether it happens. So every arm here asserts the two things
+ * the outage was made of: nothing escapes `applyEvent`, AND the tray's redraw did not fail in place.
+ *
+ * The second half is not decoration. `RunViewModel.fanOut` isolates its listeners from each other
+ * now (issue #111), which is defence in depth against exactly this crash — so "nothing escapes
+ * `applyEvent`" is true on its own whether or not this guard exists, and an arm resting on it alone
+ * has stopped testing the guard. What the isolation cannot do is keep the menu bar updating: an
+ * unguarded tray still throws, the fan-out catches it and REPORTS it, and the item stops redrawing.
+ * That report is the observable that still separates the two worlds, so it is what these arms read.
+ * The negative-control block at the bottom runs the same two orderings through the UNGUARDED port
+ * and requires the failure back.
  *
  * WHY THE DOUBLE IS TRUSTWORTHY. `FakeTray` in `run-tray.test.ts` cannot be destroyed — its `destroy`
  * sets a flag and every later call still succeeds — so it can never witness this class at all.
@@ -68,11 +75,22 @@ const rawPort = (item: DestroyableTray): TrayPort => ({
   destroy: () => item.destroy(),
 });
 
+/**
+ * What the fan-out reported while the arm ran. `RunViewModel.fanOut` catches a listener's throw and
+ * writes it to stderr rather than letting it reach the main process's stack, so this is where an
+ * unguarded tray's failure now shows up — and the only thing that still tells the two worlds apart.
+ */
+function captureFanOutReports(): { reports: () => string; restore: () => void } {
+  const spy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+  return { reports: () => spy.mock.calls.map((c) => String(c[0])).join(''), restore: () => { spy.mockRestore(); } };
+}
+
 describe('a run event that outlives the menu-bar item', () => {
   let store: FakeRunStore;
   let vm: RunViewModel;
   let item: DestroyableTray;
   let runId: string;
+  let fanOut: ReturnType<typeof captureFanOutReports>;
 
   /** The next envelope the socket would deliver for this run — the `onLine → applyEvent` entry point. */
   const nextEvent = (): RunEvent => ({
@@ -98,7 +116,10 @@ describe('a run event that outlives the menu-bar item', () => {
     await vm.hydrate();
     runId = (await vm.createRun({ task: 'read the release notes' })).id;
     item = new DestroyableTray();
+    fanOut = captureFanOutReports();
   });
+
+  afterEach(() => { fanOut.restore(); });
 
   // Ordering one: the platform tore the item down and the socket delivers afterwards. This is the
   // reported stack verbatim. Note the tray handle is NEVER destroyed here — its own `gone` flag knows
@@ -108,6 +129,8 @@ describe('a run event that outlives the menu-bar item', () => {
     item.destroy();
 
     expect(() => vm.applyEvent(runId, nextEvent())).not.toThrow();
+    // …and the redraw did not merely fail somewhere the fan-out swallowed it. See the header.
+    expect(fanOut.reports(), 'the guarded tray threw and the fan-out caught it').toBe('');
   });
 
   // Ordering two: the event lands DURING teardown. The engine's own destroy runs nested tasks, so a
@@ -118,6 +141,7 @@ describe('a run event that outlives the menu-bar item', () => {
     item.onTeardown = () => vm.applyEvent(runId, nextEvent());
 
     expect(() => item.destroy()).not.toThrow();
+    expect(fanOut.reports(), 'the guarded tray threw and the fan-out caught it').toBe('');
   });
 
   // Second destroy, and destroy after the platform already took the item: the guard covers `destroy`
@@ -147,12 +171,20 @@ describe('a run event that outlives the menu-bar item', () => {
  * when it has stopped testing anything — so these run the SAME two orderings with the guard removed
  * and require the outage back. If the guard ever becomes decorative, this describe block is what
  * notices.
+ *
+ * WHERE THE OUTAGE LANDS MOVED, and the control moved with it. These arms used to require the throw
+ * to escape `vm.applyEvent`, which was true because `fanOut` called its listeners bare. It isolates
+ * them now (issue #111), so the unguarded throw no longer reaches the main process's stack — that is
+ * the second layer working, not the outage going away. The redraw still fails, the menu bar still
+ * stops updating, and the fan-out now says so on stderr. So that report is what the control reads.
+ * Reading nothing at all here would be the failure mode this block exists to prevent.
  */
 describe('without the guard, the same two orderings are the outage', () => {
   let store: FakeRunStore;
   let vm: RunViewModel;
   let item: DestroyableTray;
   let runId: string;
+  let fanOut: ReturnType<typeof captureFanOutReports>;
 
   const nextEvent = (): RunEvent => ({
     seq: (store.log.get(runId)?.length ?? 0) + 1,
@@ -174,15 +206,20 @@ describe('without the guard, the same two orderings are the outage', () => {
       setVisibility: async () => {},
       onError: () => {},
     });
+    fanOut = captureFanOutReports();
   });
 
-  it('throws out of applyEvent when the item was destroyed first', () => {
+  afterEach(() => { fanOut.restore(); });
+
+  it('breaks the redraw when the item was destroyed first', () => {
     item.destroy();
-    expect(() => vm.applyEvent(runId, nextEvent())).toThrow(/Tray is destroyed/);
+    vm.applyEvent(runId, nextEvent());
+    expect(fanOut.reports(), 'the unguarded tray redrew a destroyed item without failing').toMatch(/run-projection listener threw[\s\S]*Tray is destroyed/);
   });
 
-  it('throws out of the teardown when the event arrives inside it', () => {
+  it('breaks the redraw when the event arrives inside the teardown', () => {
     item.onTeardown = () => vm.applyEvent(runId, nextEvent());
-    expect(() => item.destroy()).toThrow(/Tray is destroyed/);
+    item.destroy();
+    expect(fanOut.reports(), 'the unguarded tray redrew a destroyed item without failing').toMatch(/run-projection listener threw[\s\S]*Tray is destroyed/);
   });
 });
