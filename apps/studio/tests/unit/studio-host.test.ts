@@ -131,6 +131,9 @@ function makeHost(
       };
       return tab;
     },
+    // The window's live set: a tab this harness has closed is destroyed, so it leaves the universe the
+    // way TabManager's does.
+    tabUniverse: () => [...tabs].filter(([, t]) => !t.closed).map(([id]) => id),
     closeTab: (tabId) => { const t = tabs.get(tabId); if (t) t.closed = true; void engine.detachTab(tabId); },
     ...(hostOver.approvalSurfaceAttached ? { approvalSurfaceAttached: hostOver.approvalSurfaceAttached } : {}),
   });

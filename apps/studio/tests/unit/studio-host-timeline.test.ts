@@ -38,6 +38,8 @@ function makeHost(broadcasts: Record<string, unknown>[], brokerOver: Record<stri
   const broker = makeFakeBroker(brokerOver);
   const engine = createDriveEngine();
   let n = 0;
+  /** The window's live tab set, the way TabManager holds one. */
+  const live: string[] = [];
   // The REAL run view-model over an in-memory store: law 4's ownership check runs for real here,
   // so a host change that stopped recording it reds these tests rather than passing against a stub.
   const runs = new RunViewModel(new FakeRunStore());
@@ -47,6 +49,7 @@ function makeHost(broadcasts: Record<string, unknown>[], brokerOver: Record<stri
     onParked: () => { /* no card in this test */ },
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;
+      live.push(tabId);
       const drive = await engine.attachTab(tabId, {
         debugger: fakeDbg(), viewport, grant, initialHolder,
         broadcast: (m) => broadcasts.push(m),
@@ -62,6 +65,7 @@ function makeHost(broadcasts: Record<string, unknown>[], brokerOver: Record<stri
       };
       return tab;
     },
+    tabUniverse: () => live,
     closeTab: () => { /* noop */ },
   });
   return { host, broker };

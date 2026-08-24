@@ -385,6 +385,10 @@ async function createWindow(): Promise<void> {
         applyStorageState: (state) => applyStorageState(wc.session.cookies as unknown as CookieJar, state),
       };
     },
+    // The live tab set, straight off the tab layer — the same one the state broadcast projects ownership
+    // onto. A tab is gone from here the moment it is destroyed, which is what lets the listing narrow a
+    // still-owned-per-the-log tab out while its release is on the wire.
+    tabUniverse: () => tabs.listTabs().map((t) => t.id),
     closeTab: (tabId: string) => {
       void driveEngine.detachTab(tabId);
       sessionTabWc.delete(tabId);

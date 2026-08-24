@@ -115,6 +115,7 @@ function makeHost(dbg: () => DebuggerLike, broker = makeFakeBroker(), grantPriva
       };
       return tab;
     },
+    tabUniverse: () => [...tabs.keys()],
     closeTab: () => {},
   });
   return { host, tabs };
