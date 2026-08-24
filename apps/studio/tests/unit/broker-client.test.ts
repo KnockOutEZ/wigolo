@@ -11,10 +11,15 @@ import { createBrokerClient } from '../../src/main/broker-client';
  */
 interface FakeChild {
   stdout: EventEmitter & { setEncoding(): void };
-  stdin: { write(s: string): boolean };
+  stdin: { write(s: string): boolean; end(): void };
   exitCode: number | null;
-  kill(): void;
+  signalCode: NodeJS.Signals | null;
+  /** Set by `stdin.end()` — the graceful drain door. Distinguishes it from a bare `kill()`. */
+  stdinEnded: boolean;
+  killedWith: NodeJS.Signals | undefined;
+  kill(signal?: NodeJS.Signals): void;
   on(ev: string, cb: (...a: unknown[]) => void): void;
+  once(ev: string, cb: (...a: unknown[]) => void): void;
   emit(ev: string, ...a: unknown[]): boolean;
   writes: string[];
   line(obj: unknown): void;
@@ -24,14 +29,23 @@ function makeFakeChild(): FakeChild {
   const stdout = Object.assign(new EventEmitter(), { setEncoding() { /* noop */ } });
   const bus = new EventEmitter();
   const writes: string[] = [];
-  const child = {
+  const child: FakeChild = {
     stdout,
-    stdin: { write: (s: string) => { writes.push(s); return true; } },
-    exitCode: null as number | null,
+    stdin: {
+      write: (s: string) => { writes.push(s); return true; },
+      // The real broker turns stdin EOF into an in-process readline `close` and exits 0 — which is
+      // what runs its projection drain. Modelled here so a stop that skips this door is visible.
+      end: () => { child.stdinEnded = true; child.exitCode = 0; bus.emit('exit', 0, null); },
+    },
+    exitCode: null,
+    signalCode: null,
+    stdinEnded: false,
+    killedWith: undefined,
     on: (ev: string, cb: (...a: unknown[]) => void) => { bus.on(ev, cb); },
+    once: (ev: string, cb: (...a: unknown[]) => void) => { bus.once(ev, cb); },
     emit: (ev: string, ...a: unknown[]) => bus.emit(ev, ...a),
     writes,
-    kill() { child.exitCode = 0; bus.emit('exit', 0); },
+    kill(signal?: NodeJS.Signals) { child.killedWith = signal ?? 'SIGTERM'; child.exitCode = 0; bus.emit('exit', 0, child.killedWith); },
     line: (obj: unknown) => { stdout.emit('data', JSON.stringify(obj) + '\n'); },
   };
   return child;
@@ -246,6 +260,23 @@ describe('broker-client', () => {
 
     expect(await p).toBe('z'.repeat(800));
     await client.stop();
+  });
+
+  /**
+   * The stop has to reach the child's exit hook, because that hook is what drains the queued tail of
+   * `events.jsonl` — the copy of the run a person can read without our tooling (law 11). A signal
+   * cannot carry that: on Windows `kill('SIGTERM')` is a `TerminateProcess` and no handler runs, so a
+   * perfectly ordinary app quit silently truncated the log. Ending stdin is the one door every
+   * platform delivers, so that is what a normal stop must use — a kill here is the escalation only.
+   */
+  it('stop() closes the child stdin rather than signalling it', async () => {
+    const children: FakeChild[] = [];
+    const client = newClient({ children });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    await client.stop();
+    expect(children[0].stdinEnded, 'the graceful drain door was never opened').toBe(true);
+    expect(children[0].killedWith).toBeUndefined();
   });
 
   it('stop() prevents respawn', async () => {
