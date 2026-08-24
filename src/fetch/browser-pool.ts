@@ -62,8 +62,23 @@ async function readAdvertisedUa(page: { evaluate?: unknown }): Promise<string | 
  * by a solve rung, so a ladder-cleared challenge persists its clearance exactly
  * like the auto-poll pass path. Returns null when no clearance cookie is present.
  */
-function findCfClearance(cookies: ClearanceCookie[]): { value: string; expires: number } | null {
-  const c = cookies.find((k) => k.name === CLEARANCE_COOKIE_NAME && k.value.length > 0);
+function cookieDomainMatchesHost(domain: string, host: string): boolean {
+  const normalizedDomain = domain.trim().toLowerCase().replace(/^\./, '');
+  const normalizedHost = host.toLowerCase();
+  return normalizedDomain.length > 0 &&
+    (normalizedHost === normalizedDomain || normalizedHost.endsWith(`.${normalizedDomain}`));
+}
+
+function findCfClearance(
+  cookies: ClearanceCookie[],
+  targetUrl: string,
+): { value: string; expires: number } | null {
+  const host = hostOf(targetUrl);
+  if (!host) return null;
+  const c = cookies.find((k) =>
+    k.name === CLEARANCE_COOKIE_NAME &&
+    k.value.length > 0 &&
+    cookieDomainMatchesHost(k.domain, host));
   return c ? { value: c.value, expires: c.expires } : null;
 }
 
@@ -91,8 +106,8 @@ const WIDGET_FRAME_SELECTORS = [
 /** Cross-origin frames a vision solve drives into, most specific first. */
 const CHALLENGE_FRAME_SELECTORS = [
   'iframe[src*="api2/bframe"]',
-  'iframe[src*="hcaptcha.com"]',
-  'iframe[title*="challenge" i]',
+  'iframe[src*="hcaptcha.com"][src*="/captcha/v1/challenge"]',
+  'iframe[title*="challenge" i]:not([src*="/checkbox"])',
 ] as const;
 
 export const WIDGET_LOCATE_SELECTOR_COUNT =
@@ -471,14 +486,25 @@ export class MultiBrowserPool {
   // slot is free, otherwise queues until a release frees one. Default limit is
   // config.maxBrowsers so the hardened path shares the same overall cap as the
   // pooled path.
-  private acquireStealthSlot(): Promise<void> {
+  private acquireStealthSlot(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const limit = getConfig().maxBrowsers;
     if (this.stealthActive < limit) {
       this.stealthActive++;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.stealthWaitQueue.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const index = this.stealthWaitQueue.indexOf(grant);
+        if (index !== -1) this.stealthWaitQueue.splice(index, 1);
+        reject(signal?.reason);
+      };
+      this.stealthWaitQueue.push(grant);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -612,6 +638,8 @@ export class MultiBrowserPool {
     const fetchStartMs = Date.now();
     const config = getConfig();
     const navTimeoutMs = options.timeoutMs ?? config.playwrightNavTimeoutMs;
+    const configuredRoute = config.useProxy && config.proxyUrl ? config.proxyUrl : 'direct';
+    let clearanceRoute: string | null = configuredRoute;
 
     // OFF-BY-DEFAULT opt-in escalation rung: raw-CDP content fetch via a throwaway
     // real Chrome, no Playwright control plane (Phase 1). When `cdpDirect === 'off'`
@@ -678,6 +706,7 @@ export class MultiBrowserPool {
     if (options.cdpUrl) {
       // CDP is always Chromium
       resolvedType = 'chromium';
+      clearanceRoute = null;
       try {
         log.info('connecting via CDP', { cdpUrl: redactUrl(options.cdpUrl) });
         cdpBrowser = await chromium.connectOverCDP(options.cdpUrl);
@@ -688,6 +717,7 @@ export class MultiBrowserPool {
           cdpUrl: redactUrl(options.cdpUrl),
           error: err instanceof Error ? err.message : String(err),
         });
+        clearanceRoute = configuredRoute;
         ctx = await this.acquireForType(resolvedType);
       }
     } else if (options.userDataDir) {
@@ -701,7 +731,7 @@ export class MultiBrowserPool {
       // Bounded by the same dedicated-path semaphore as stealth so a burst of
       // authenticated fetches cannot exceed the browser cap.
       resolvedType = 'chromium';
-      await this.acquireStealthSlot();
+      await this.acquireStealthSlot(options.signal);
       stealthSlotHeld = true;
       dedicated = true;
       log.debug('fetching with browser (persistent profile context)', { url, userDataDir: options.userDataDir });
@@ -733,6 +763,7 @@ export class MultiBrowserPool {
         signal: options.signal,
       }).catch(() => null);
       if (scrapingHandle) {
+        clearanceRoute = null;
         // Treat the hosted browser like the pinned-CDP browser so the shared
         // finally closes it (never released to the local pool).
         cdpBrowser = scrapingHandle.browser;
@@ -748,6 +779,7 @@ export class MultiBrowserPool {
           });
           await scrapingHandle.close().catch(() => {});
           cdpBrowser = null;
+          clearanceRoute = configuredRoute;
           ctx = await this.acquireForType(resolvedType);
         }
       } else {
@@ -757,7 +789,8 @@ export class MultiBrowserPool {
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
       // Bound concurrency BEFORE launching so a burst cannot exceed the cap.
-      await this.acquireStealthSlot();
+      clearanceRoute = options.forceNoProxy ? 'direct' : configuredRoute;
+      await this.acquireStealthSlot(options.signal);
       stealthSlotHeld = true;
       dedicated = true;
       log.debug('fetching with browser (anti-bot fingerprint hardening)', { url, type: resolvedType });
@@ -872,10 +905,6 @@ export class MultiBrowserPool {
       page.on('download', (dl) => { capturedDownload = dl; });
     }
 
-    if (options.headers) {
-      await page.setExtraHTTPHeaders(options.headers);
-    }
-
     let statusCode = 200;
     let contentType = '';
     let responseHeaders: Record<string, string> = {};
@@ -897,6 +926,9 @@ export class MultiBrowserPool {
     let ladderSolveMethod: SolveMethod | null | undefined;
 
     try {
+      if (options.headers) {
+        await page.setExtraHTTPHeaders(options.headers);
+      }
       // Pre-navigation fetch-time SSRF re-check. `guardFetchUrl` (applied
       // upstream on input + every redirect hop before a fetch reaches the
       // browser tier) only validates the LITERAL host, so a public hostname
@@ -1054,6 +1086,7 @@ export class MultiBrowserPool {
               ? Math.max(0, options.timeoutMs - (Date.now() - fetchStartMs))
               : completionTimeoutMs;
           const deadlineMs = Math.min(completionTimeoutMs, remainingBudgetMs);
+          const challengeDeadlineMs = Date.now() + deadlineMs;
           enteredChallengePoll = true;
           log.warn('bot-protection challenge detected, polling to completion', { url, statusCode, deadlineMs });
           const outcome = await pollUntilCleared(page, {
@@ -1089,9 +1122,7 @@ export class MultiBrowserPool {
             const stillChallenge = (html: string) =>
               isAntiBotStatus(statusCode) ? stillShowingChallenge(html) : isChallengeShell(statusCode, html);
             const ladderRemainingMs = () =>
-              options.timeoutMs !== undefined
-                ? Math.max(0, options.timeoutMs - (Date.now() - fetchStartMs))
-                : config.challengeCompletionTimeoutMs;
+              Math.max(0, challengeDeadlineMs - Date.now());
             const ladder = await this.runChallengeSolveLadder({
               page,
               url,
@@ -1116,8 +1147,8 @@ export class MultiBrowserPool {
                 responseHeaders = normalized;
               }
               // Harvest a minted clearance the same way the auto-poll path does.
-              const cf = findCfClearance(ladder.cookies);
-              if (cf) {
+              const cf = findCfClearance(ladder.cookies, finalUrl);
+              if (cf && clearanceRoute !== null) {
                 const host = hostOf(finalUrl) ?? hostOf(url);
                 const ua = advertisedUa ?? (await readAdvertisedUa(page));
                 if (host && ua) {
@@ -1127,7 +1158,7 @@ export class MultiBrowserPool {
                       ua,
                       tier: 'browser',
                       expiresAt: clearanceExpiresIso(cf.expires),
-                      solvedRoute: getConfig().proxyUrl ?? 'direct',
+                      solvedRoute: clearanceRoute,
                     });
                   } catch { /* best-effort — never block the fetch */ }
                 }
@@ -1140,10 +1171,14 @@ export class MultiBrowserPool {
               // replayed next time, then fast-fail into the normal escalation
               // ladder (never serve the shell as content).
               if (options.injectedCookies && options.injectedCookies.length > 0) {
-                const host = hostOf(finalUrl) ?? hostOf(url);
-                if (host) {
+                const domains = new Set(
+                  options.injectedCookies
+                    .map((cookie) => cookie.domain.trim().toLowerCase().replace(/^\./, ''))
+                    .filter((domain) => domain.length > 0),
+                );
+                for (const domain of domains) {
                   try {
-                    clearDomainClearance(host);
+                    clearDomainClearance(domain);
                   } catch { /* best-effort — never block the fetch */ }
                 }
               }
@@ -1187,23 +1222,24 @@ export class MultiBrowserPool {
           // advertised + tier:'browser' so a later visit can replay it. Fall
           // through so the normal post-goto hydration waits run and the final
           // content read below captures the fully-rendered page.
-          if (outcome.cfClearance) {
+          const scopedClearance = findCfClearance(outcome.cookies, finalUrl);
+          if (scopedClearance && clearanceRoute !== null) {
             const host = hostOf(finalUrl) ?? hostOf(url);
             const ua = advertisedUa ?? (await readAdvertisedUa(page));
             if (host && ua) {
               try {
                 recordDomainClearance(host, {
-                  cookie: `${CLEARANCE_COOKIE_NAME}=${outcome.cfClearance.value}`,
+                  cookie: `${CLEARANCE_COOKIE_NAME}=${scopedClearance.value}`,
                   ua,
                   tier: 'browser',
-                  expiresAt: clearanceExpiresIso(outcome.cfClearance.expires),
+                  expiresAt: clearanceExpiresIso(scopedClearance.expires),
                   // A cf_clearance is IP/UA/TLS-bound; record the egress route it
                   // was solved on so reuse can refuse a route-identity mismatch.
-                  solvedRoute: getConfig().proxyUrl ?? 'direct',
+                  solvedRoute: clearanceRoute,
                 });
               } catch { /* best-effort — never block the fetch */ }
             }
-            log.debug('challenge cleared with clearance cookie', { url, expires: outcome.cfClearance.expires });
+            log.debug('challenge cleared with clearance cookie', { url, expires: scopedClearance.expires });
           }
           log.info('bot-protection challenge auto-passed within completion window', { url });
         }
@@ -1474,8 +1510,11 @@ export class MultiBrowserPool {
     // we skip the keychain read entirely. The ladder still gets a correct
     // visionAvailable for the image path.
     const aiSolveEngaged = config.aiSolve !== 'off';
+    if (signal?.aborted) throw signal.reason;
     const visionAvailable =
-      challengeClass === 'image' && aiSolveEngaged ? await this.visionProviderAvailable() : false;
+      challengeClass === 'image' && aiSolveEngaged && remainingMs() > 0
+        ? await this.visionProviderAvailable()
+        : false;
 
     return runSolveLadder({
       challengeClass,
@@ -1611,11 +1650,19 @@ export class MultiBrowserPool {
 
   /** Drag the slider handle by `offsetPx` via a trusted mouse gesture. */
   private async dragChallengeSlider(page: import('playwright').Page, offsetPx: number): Promise<void> {
-    const box = await this.locateChallengeWidget(page).catch(() => null);
+    const frame = await this.challengeSolveFrame(page);
+    if (!frame) return;
+    let box: { x: number; y: number; width: number; height: number } | null = null;
+    for (const selector of ['[role="slider"]', '.slider-handle', '.slider', '[class*="slider" i]']) {
+      box = await frame.locator(selector).first().boundingBox({ timeout: WIDGET_LOCATE_TIMEOUT_MS }).catch(() => null);
+      if (box) break;
+    }
     if (!box || typeof page.mouse === 'undefined') return;
-    await page.mouse.move(box.x, box.y).catch(() => {});
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y).catch(() => {});
     await page.mouse.down().catch(() => {});
-    await page.mouse.move(box.x + offsetPx, box.y, { steps: 12 }).catch(() => {});
+    await page.mouse.move(x + offsetPx, y, { steps: 12 }).catch(() => {});
     await page.mouse.up().catch(() => {});
   }
 

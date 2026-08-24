@@ -566,26 +566,18 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
     await pool.shutdown();
   });
 
-  it('LADDER cleared: an interactive challenge the auto-pass rung clears records the clearance with solvedRoute = current route', async () => {
-    // WHY (reviewer-flagged regression): the ladder-solved harvest must thread
-    // the CURRENT egress route into recordDomainClearance.solvedRoute. This drives
-    // the REAL pool path: the auto-poll cannot see the clearance cookie (no CDP
-    // session), times out, and the LADDER's auto-pass rung opens a CDP session
-    // — which reveals the cookie — and clears. The rung is OPT-IN (it adds time
-    // to an already-blocked fetch), so this test enables it explicitly.
+  it('does not reset the challenge timeout for the solve ladder after auto-poll expiration', async () => {
+    // The auto-poll consumes the configured completion window. The ladder must
+    // receive zero remaining time instead of silently starting a second full
+    // window after the first one expires.
     process.env.WIGOLO_AUTO_PASS = 'auto';
     resetConfig();
     vi.useFakeTimers();
     process.env.WIGOLO_CHALLENGE_COMPLETION_MS = '3000';
     resetConfig();
     state.status = 403;
-    // BEFORE any CDP session (the auto-poll phase): a near-empty interactive
-    // interstitial — the auto-poll can never clear it (markers present, no cookie
-    // visible without CDP), so it times out and hands off to the ladder. AFTER the
-    // ladder auto-pass rung opens its CDP session: the page has hydrated to real
-    // content, so the ladder's clearance poll clears and the post-clear near-empty
-    // guard sees a substantial body (no false relabel). The cf_clearance cookie is
-    // also revealed only post-CDP, so the harvest has a clearance to persist.
+    // The page could clear if a new solve window were incorrectly granted, but
+    // the original completion deadline is already exhausted.
     state.cdpGatedBodies = {
       before:
         '<html><head><title>Just a moment...</title></head><body>' +
@@ -595,7 +587,7 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
         'Real hydrated content after the interactive widget was passed. '.repeat(40) +
         '</article></body></html>',
     };
-    // A tiny widget near the origin → a short Bézier path (few waypoints).
+    // A tiny widget would make the ladder cheap if it were allowed to run.
     state.widgetBox = { x: 20, y: 20, width: 40, height: 40 };
     state.cookies = [
       { name: 'cf_clearance', value: 'minted-token', domain: 'blocked.example', expires: 9999999999 },
@@ -607,25 +599,14 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
       (res) => ({ res }),
       (err) => ({ err }),
     );
-    // Drive the auto-poll to its deadline, the ladder auto-pass Bézier + clearance
-    // poll, and the post-goto settle. Advance in chunks so each queued timer fires.
+    // Drive past the single challenge deadline.
     for (let i = 0; i < 12; i++) {
       await vi.advanceTimersByTimeAsync(1000);
     }
     const outcome = await captured;
 
-    // It cleared through the ladder auto-pass rung (did not throw).
-    expect('err' in outcome ? outcome.err : undefined).toBeUndefined();
-    // The regression under test: the harvest threaded the current route.
-    expect(recordDomainClearanceMock).toHaveBeenCalledTimes(1);
-    const arg = recordDomainClearanceMock.mock.calls[0];
-    expect(arg[0]).toBe('blocked.example');
-    expect(arg[1]).toMatchObject({
-      cookie: 'cf_clearance=minted-token',
-      tier: 'browser',
-      // No proxy configured in this test → the current route is 'direct'.
-      solvedRoute: 'direct',
-    });
+    expect('err' in outcome ? outcome.err : undefined).toBeInstanceOf(ChallengeBlockedError);
+    expect(recordDomainClearanceMock).not.toHaveBeenCalled();
     delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
     await pool.shutdown();
   });

@@ -11,6 +11,7 @@ interface ProfileState {
   gotoThrows: boolean;
   // When set, launchPersistentContext rejects — simulates a launch failure.
   persistentLaunchThrows: boolean;
+  headerSetupThrows: boolean;
 }
 
 const state: ProfileState = {
@@ -20,6 +21,7 @@ const state: ProfileState = {
   cdpConnects: 0,
   gotoThrows: false,
   persistentLaunchThrows: false,
+  headerSetupThrows: false,
 };
 
 function makePage() {
@@ -44,7 +46,10 @@ function makePage() {
     }),
     content: vi.fn().mockResolvedValue('<html><body>ok</body></html>'),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
-    setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
+    setExtraHTTPHeaders: vi.fn().mockImplementation(() => {
+      if (state.headerSetupThrows) return Promise.reject(new Error('header setup boom'));
+      return Promise.resolve(undefined);
+    }),
     on: vi.fn(),
     close: vi.fn().mockResolvedValue(undefined),
   };
@@ -109,6 +114,7 @@ function resetState() {
   state.cdpConnects = 0;
   state.gotoThrows = false;
   state.persistentLaunchThrows = false;
+  state.headerSetupThrows = false;
 }
 
 describe('browser-pool persistent profile (userDataDir) path — issue #161', () => {
@@ -209,6 +215,33 @@ describe('browser-pool persistent profile (userDataDir) path — issue #161', ()
       userDataDir: '/tmp/wigolo-chrome-ok',
     });
     expect(result.method).toBe('browser');
+
+    delete process.env.MAX_BROWSERS;
+    await pool.shutdown();
+  });
+
+  it('a header setup failure closes the persistent context and frees the dedicated slot', async () => {
+    process.env.MAX_BROWSERS = '1';
+    resetConfig();
+    state.headerSetupThrows = true;
+
+    const pool = new MultiBrowserPool();
+    await expect(
+      pool.fetchWithBrowser('https://intranet.example', {
+        userDataDir: '/tmp/wigolo-chrome-header-fail',
+        headers: { Authorization: 'Bearer test' },
+      }),
+    ).rejects.toThrow(/header setup boom/);
+
+    expect(state.persistentContextsCreated).toBe(1);
+    expect(state.persistentContextsClosed).toBe(1);
+
+    state.headerSetupThrows = false;
+    await expect(
+      pool.fetchWithBrowser('https://intranet.example', {
+        userDataDir: '/tmp/wigolo-chrome-after-header-fail',
+      }),
+    ).resolves.toMatchObject({ method: 'browser' });
 
     delete process.env.MAX_BROWSERS;
     await pool.shutdown();
