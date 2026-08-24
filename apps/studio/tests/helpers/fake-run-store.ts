@@ -59,6 +59,13 @@ export class FakeRunStore implements RunStoreClient {
    * it. Defaults are effectively no cap, so every arm that is not about the bound is unaffected.
    */
   bootEventCapPerRun = Number.POSITIVE_INFINITY;
+  /**
+   * The boot page's allowance across the whole CALL, spent run by run — the broker's
+   * `MAX_BOOT_EVENTS_TOTAL`. It is a local of each call there, and reproducing that is the point:
+   * the defect the host-side allowance exists for is that this resets on every page, so a fake that
+   * had no per-call total could not show the multiplication it removes.
+   */
+  bootEventCapTotal = Number.POSITIVE_INFINITY;
   listLimit = Number.POSITIVE_INFINITY;
   /** The server-side per-frame ceiling: a caller asking for more than this gets a SHORT page. */
   eventsPageCeiling = Number.POSITIVE_INFINITY;
@@ -157,11 +164,15 @@ export class FakeRunStore implements RunStoreClient {
   async listRunLogs(opts: ListRunsOptions = {}): Promise<RunLogPage> {
     this.reads.push('listRunLogs');
     const { runs, nextCursor } = this.page(opts);
+    let eventsLeft = this.bootEventCapTotal;
     const entries = runs.map((run) => {
       const events = this.log.get(run.id) ?? [];
       const lastSeq = events.at(-1)?.seq ?? 0;
       const facts = this.factsOf(run.id)!;
-      if (events.length <= this.bootEventCapPerRun) return { facts, events: [...events], lastSeq };
+      if (events.length <= Math.min(this.bootEventCapPerRun, eventsLeft)) {
+        eventsLeft -= events.length;
+        return { facts, events: [...events], lastSeq };
+      }
       const sessionId = events[0]?.payload.sessionId;
       return {
         facts,
