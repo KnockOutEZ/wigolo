@@ -90,11 +90,15 @@ function startBroker(dataDir: string, stallMs?: number): Promise<Broker> {
 
 describe('run store — survives a broker process restart', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wigolo-run-restart-'));
+  const dataDirs = [dir];
   afterAll(() => {
     // A SIGKILLed child releases its database handle asynchronously, and Windows keeps the file
     // locked until it does — so the unlink races the kill and raises EBUSY. Retry, and never let
-    // a leftover temp directory redden a test whose subject is durability, not cleanup.
-    try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }); } catch { /* the runner reclaims it */ }
+    // a leftover temp directory redden a test whose subject is durability, not cleanup. Cleaning
+    // here rather than at the end of a spec body also means a failing assertion leaves no tree behind.
+    for (const d of dataDirs) {
+      try { rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }); } catch { /* the runner reclaims it */ }
+    }
   });
 
   it('reads back the identical run and event sequence from a second process', async () => {
@@ -147,6 +151,7 @@ describe('run store — survives a broker process restart', () => {
     // this whole spec may run, which makes the exit drain the ONLY way any of these lines can reach
     // the file. If the stop does not reach `process.exit(0)`, `events.jsonl` is empty or absent.
     const forced = mkdtempSync(join(tmpdir(), 'wigolo-run-forced-'));
+    dataDirs.push(forced);
     const first = await startBroker(forced, 10 * 60_000);
     const created = await first.call<Run>('runCreate', { input: { task: 'stop must drain me', driver: { kind: 'studio' } } });
     for (const event of [
@@ -174,7 +179,6 @@ describe('run store — survives a broker process restart', () => {
     expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
     // Law 11: the file a person reads is whole, in order, and identical to the source of truth.
     expect(readFileSync(file, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l))).toEqual(log);
-    rmSync(forced, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }, 120_000);
 
   it('loses nothing that matters when the process is SIGKILLed — the DB is whole and the file is a prefix of it', async () => {
