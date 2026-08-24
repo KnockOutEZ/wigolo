@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { parseHTML } from 'linkedom';
 import { stripHiddenDom, HIDDEN_SELECTORS } from '../../../src/extraction/visibility.js';
+import type {
+  VisibilityElement,
+  VisibilityNode,
+  VisibilityParentNode,
+} from '../../../src/extraction/visibility.js';
 import { extractContent } from '../../../src/extraction/pipeline.js';
 
 /**
@@ -157,6 +162,21 @@ describe('stripHiddenDom', () => {
     expect(out).not.toContain('LEAK beside the shell');
   });
 
+  it('a <script> beside the shell is not visible copy, so the rescue still fires', () => {
+    // The NON_RENDERED skip has no arm of its own: delete the set and every existing row
+    // stays green, because none of them parks a script, style, template or noscript beside
+    // a hidden shell. A browser paints none of those, so their source text is not the
+    // "visible article sitting beside the wrapper" the discriminator is looking for — and
+    // counting it as such would revoke the rescue for essentially every real pre-hydration
+    // page, since a JS shell ships its bundle tag by definition.
+    const out = strip(
+      '<html><body><div hidden><main><p>the entire body</p></main>LEAK beside the shell</div>' +
+        '<script>window.__NEXT_DATA__ = {"page":"/"};</script></body></html>',
+    );
+    expect(out).toContain('the entire body');
+    expect(out).not.toContain('LEAK beside the shell');
+  });
+
   it('never removes <body> or <html> themselves', () => {
     const { document } = parseHTML(
       '<html><body hidden><p>pre-hydration body copy</p></body></html>',
@@ -191,6 +211,86 @@ describe('stripHiddenDom', () => {
 
   it('exposes the mechanisms it filters on, so the corpus can cite them', () => {
     expect(HIDDEN_SELECTORS).toContain('[hidden]');
+  });
+});
+
+/**
+ * The discriminator walks the whole document, and the page decides how many candidates ask
+ * it. Asked once per candidate, a page of K hidden `<main>` wrappers beside a large body is
+ * O(K × DOM) — measured 4.1 s at K=500 against a 50 000-node body, synchronous, on the
+ * unauthenticated fetch path, with the input entirely page-controlled.
+ *
+ * Counted rather than timed on purpose: a wall-clock bound turns a DoS regression into a
+ * flake on a loaded machine, and the shape — not the speed — is the thing being pinned. The
+ * count is reads of `body.childNodes`, which is the walk's first act and nothing else in the
+ * pass touches it, so one read is one walk.
+ */
+describe('the shell discriminator costs one document walk, whatever K the page picks', () => {
+  const probe = (
+    html: string,
+  ): { walks: number; out: string } => {
+    const { document } = parseHTML(html);
+    const real = document.body as unknown as VisibilityElement;
+    let walks = 0;
+    const body: VisibilityElement = {
+      get childNodes(): ArrayLike<VisibilityNode> {
+        walks++;
+        return real.childNodes;
+      },
+      get parentNode(): VisibilityParentNode | null {
+        return real.parentNode;
+      },
+      get nodeType(): number {
+        return real.nodeType;
+      },
+      get textContent(): string | null {
+        return real.textContent;
+      },
+      get tagName(): string {
+        return real.tagName;
+      },
+      getAttribute: (name: string) => real.getAttribute(name),
+      querySelector: (selector: string) => real.querySelector(selector),
+      removeChild: (child: VisibilityNode) => real.removeChild(child),
+    };
+    stripHiddenDom({
+      body,
+      querySelectorAll: (selector: string) =>
+        document.querySelectorAll(selector) as unknown as ArrayLike<VisibilityElement>,
+    });
+    return { walks, out: document.body.innerHTML };
+  };
+
+  const shell = (k: number): string =>
+    '<html><body>' +
+    '<div style="display:none"><main>the entire body</main></div>'.repeat(k) +
+    '</body></html>';
+
+  it('walks once for one hidden shell', () => {
+    const { walks, out } = probe(shell(1));
+    expect(walks).toBe(1);
+    // The count means nothing if the pass stopped doing its job, so pin the outcome too.
+    expect(out).toContain('the entire body');
+  });
+
+  it('still walks exactly once when the page ships fifty of them', () => {
+    // The arm the per-candidate shape fails, and the reason it is fifty rather than two:
+    // a shape that memoised only the previous candidate's answer would pass at K=2.
+    const { walks, out } = probe(shell(50));
+    expect(walks).toBe(1);
+    expect(out).toContain('the entire body');
+  });
+
+  it('never walks at all on a page with no hidden <main> to rescue', () => {
+    // Laziness is the half that protects the ordinary page: hoisting the walk to the top of
+    // the pass would make every page with any `[hidden]` or `[style]` node pay for a
+    // discriminator none of its candidates ever asks for.
+    const { walks, out } = probe(
+      '<html><body><p>ordinary prose</p><span hidden>You signed out in another tab.</span></body></html>',
+    );
+    expect(walks).toBe(0);
+    expect(out).toContain('ordinary prose');
+    expect(out).not.toContain('You signed out');
   });
 });
 
