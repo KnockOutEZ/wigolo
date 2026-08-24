@@ -1266,3 +1266,103 @@ describe('RunViewModel — one listener cannot take the fan-out down with it', (
     }
   });
 });
+
+/**
+ * SD1 exit-9 finding P1 — the boot allowance was a LOCAL of each page, so paging multiplied it.
+ *
+ * The store bounds one boot frame: `runListLogs` spends an event allowance over the runs on its page
+ * and answers the rest with projections, so no single frame can stall the thread that paints. But
+ * `hydrate` follows the listing cursor for up to two hundred pages, and every one of those calls
+ * started its allowance again from full — so what boot loaded and held was `pages × the per-frame
+ * bound`, and nothing evicts afterwards. The listing carries no status filter either, so runs that
+ * ended months ago were read, parsed and retained exactly like live ones.
+ *
+ * The instrument is what is RETAINED, not what is projected: every arm below sees the same
+ * projections either way, which is exactly why this survived the rest of this file.
+ */
+describe('RunViewModel — the boot allowance is carried across pages, not reset per page', () => {
+  const PAGE_RUNS = 4;
+  const EVENTS_PER_RUN = 3;
+  /** The store's per-CALL allowance — `MAX_BOOT_EVENTS_TOTAL`, forced small. */
+  const PER_CALL = 6;
+  const PAGES = 5;
+
+  /** `PAGES` pages of `PAGE_RUNS` runs, each holding `EVENTS_PER_RUN` envelopes. Newest last. */
+  async function seedPages(): Promise<FakeRunStore> {
+    const store = new FakeRunStore();
+    store.listLimit = PAGE_RUNS;
+    store.bootEventCapTotal = PER_CALL;
+    for (let i = 0; i < PAGE_RUNS * PAGES; i++) {
+      const run = await store.createRun({ task: `run ${i}`, sessionId: `sess-${i}` });
+      for (let e = 1; e < EVENTS_PER_RUN; e++) {
+        await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: `tab-${i}-${e}` } });
+      }
+    }
+    return store;
+  }
+
+  const retainedTotal = (store: FakeRunStore, vm: RunViewModel) =>
+    [...store.facts.keys()].reduce((n, id) => n + vm.retainedEventCount(id), 0);
+
+  it('bounds what the whole hydration retains, rather than the per-page allowance times the pages', async () => {
+    const store = await seedPages();
+    const vm = new RunViewModel(store);
+    store.reads.length = 0;
+
+    const budget = PER_CALL + 1;
+    await vm.hydrate({ eventBudget: budget });
+
+    // The bound is the allowance plus at most ONE page: the page that spends the last of it is
+    // finished rather than torn in half, because an entry refused mid-page has no projection to keep
+    // in place of its envelopes.
+    const retained = retainedTotal(store, vm);
+    expect(retained, 'the hydration retained more than its allowance plus the page that spent it').toBeLessThanOrEqual(budget + PER_CALL);
+    // …and the inversion this arm exists for. With the allowance reset per call — the shipped
+    // behaviour before this — every one of the five pages retained a full `PER_CALL` of envelopes.
+    expect(retained, 'the allowance was still being handed out once per page').toBeLessThan(PER_CALL * PAGES);
+    // The frames stop too, not just the retention: once the allowance is spent the remaining pages
+    // come from `listRuns`, so the envelopes never cross the pipe and are never parsed.
+    expect(store.reads.filter((r) => r === 'listRunLogs').length, 'a page still asked for envelopes it would not keep').toBeLessThan(PAGES);
+    expect(store.reads.filter((r) => r === 'listRuns').length, 'no page fell back to projections at all').toBeGreaterThan(0);
+  });
+
+  it('still names every run, and projects a run it did not keep envelopes for exactly as REST does', async () => {
+    const store = await seedPages();
+    const vm = new RunViewModel(store);
+    await vm.hydrate({ eventBudget: PER_CALL + 1 });
+
+    // Law 1: the bound is on what is HELD, never on which runs exist. Every seeded run is still named
+    // and still projects to the store's own answer — that is what makes this a cost bound and not a
+    // second account of the machine.
+    const ids = [...store.facts.keys()];
+    expect(vm.list()).toHaveLength(ids.length);
+    for (const id of ids) expect(vm.snapshot(id)).toEqual(await store.getRun(id));
+
+    // The run on the LAST page is the one the allowance never reached, so it is held as a projection
+    // — and its tabs are still indexed from that projection, which is law 4 answered off a run whose
+    // envelopes this process never saw.
+    const last = ids[ids.length - 1]!;
+    expect(vm.retainedEventCount(last), 'the last page kept its envelopes, so the allowance never tripped').toBe(0);
+    expect(vm.ownerOf(`tab-${ids.length - 1}-1`)).toBe(last);
+  });
+
+  it('does not lose a session link a previous hydration already found', async () => {
+    const store = await seedPages();
+    const vm = new RunViewModel(store);
+    const last = [...store.facts.keys()][store.facts.size - 1]!;
+    const session = `sess-${store.facts.size - 1}`;
+
+    // A first hydration with room for every page learns every session link — from `run.created` for
+    // a run whose envelopes came, and from the store's own condensed entry for one whose did not.
+    await vm.hydrate();
+    expect(vm.runForSession(session)).toBe(last);
+
+    // …and a second one that answers this run from `listRuns` must not UNSET it. A projection carries
+    // no `run.created`, and the link is a fact fixed at creation, so a read that cannot see it is not
+    // a read that says it is gone.
+    store.reads.length = 0;
+    await vm.hydrate({ eventBudget: PER_CALL + 1 });
+    expect(store.reads.filter((r) => r === 'listRuns').length, 'no page fell back to projections, so this arm proves nothing').toBeGreaterThan(0);
+    expect(vm.runForSession(session), 'the re-hydration dropped a session link it already had').toBe(last);
+  });
+});
