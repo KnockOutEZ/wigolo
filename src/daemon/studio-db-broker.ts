@@ -118,6 +118,24 @@ export interface BrokerRunLogPage {
   entries: BrokerRunLogEntry[];
   /** The listing's own cursor, so the host can hydrate PAST the first page. */
   nextCursor?: string;
+  /**
+   * What this page's READS cost, accumulated over every run it materialized — including the ones it
+   * then condensed and shipped as projections.
+   *
+   * The page's allowance is a LOCAL of the call, so a host that pages is handed a fresh one per page
+   * and the only bound it can carry across the hydration is one it computes from what came BACK. What
+   * came back is `events`, and a condensed entry's `events` is empty — so a page of condensed runs
+   * looked free from up there while costing the child a full `eventsSince` + `JSON.stringify` per run
+   * here. The host charged zero, kept asking for envelopes, and multiplied this call's budget by its
+   * page cap.
+   *
+   * Reporting the READ rather than the answer is the same rule as the charge at the read site, for the
+   * same reason: the cost is paid at materialization, and a caller that can only see the acceptance
+   * cannot bound the work. Both dimensions travel, because neither alone bounds a frame — see
+   * `MAX_BOOT_*`.
+   */
+  eventsSpent: number;
+  charsSpent: number;
 }
 
 /**
@@ -304,6 +322,12 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       const { runs, nextCursor } = listRuns(deps.db, p);
       let eventsLeft = MAX_BOOT_EVENTS_TOTAL;
       let charsLeft = MAX_BOOT_FRAME_CHARS;
+      // Accumulated at the read, not derived as `MAX - left` afterwards. The spend is a fact about
+      // the reads this call made; deriving it ties the number to whatever the allowance happened to
+      // start at, and a stand-in store that forces an unbounded allowance — which the host's own
+      // fixtures do — would report `NaN` and compare false against every bound the host applies.
+      let eventsSpent = 0;
+      let charsSpent = 0;
       const entries = runs.map((run): BrokerRunLogEntry => {
         const facts: StoredRunFacts = { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt };
         // `seq` is gap-free and starts at 1, so the tail seq IS the event count: how big a log is, is
@@ -325,11 +349,13 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
           // and the guard above stops the reads for the rest of the page.
           eventsLeft -= events.length;
           charsLeft -= chars;
+          eventsSpent += events.length;
+          charsSpent += chars;
           if (fits) return { facts, events, lastSeq: run.lastSeq };
         }
         return { facts, events: [], lastSeq: run.lastSeq, projection: run, ...sessionLinkOf(deps.db, run.id) };
       });
-      return { entries, ...(nextCursor ? { nextCursor } : {}) };
+      return { entries, eventsSpent, charsSpent, ...(nextCursor ? { nextCursor } : {}) };
     },
     // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
     // and the view-model's gap replay called it exactly that way.

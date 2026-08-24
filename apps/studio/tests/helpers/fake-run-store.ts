@@ -66,6 +66,22 @@ export class FakeRunStore implements RunStoreClient {
    * had no per-call total could not show the multiplication it removes.
    */
   bootEventCapTotal = Number.POSITIVE_INFINITY;
+  /**
+   * The boot page's CHARACTER allowance across the whole call — the broker's `MAX_BOOT_FRAME_CHARS`.
+   *
+   * A per-call local there too, and the one that carries the defect the host-side char allowance
+   * exists for: the store charges it at the READ, so a run it materializes and then condenses spends
+   * characters and ships no envelopes. A fake without it cannot produce a page that costs the store
+   * everything and reports nothing, which is exactly the page that used to be free.
+   */
+  bootCharCapTotal = Number.POSITIVE_INFINITY;
+  /**
+   * What every `listRunLogs` call so far has actually MATERIALIZED, summed across calls — the
+   * instrument for "what did this whole boot cost the child", which is a claim no single page's
+   * answer can see and no assertion about retention can either.
+   */
+  readEvents = 0;
+  readChars = 0;
   listLimit = Number.POSITIVE_INFINITY;
   /** The server-side per-frame ceiling: a caller asking for more than this gets a SHORT page. */
   eventsPageCeiling = Number.POSITIVE_INFINITY;
@@ -167,20 +183,36 @@ export class FakeRunStore implements RunStoreClient {
    * page. Deliberately does NOT project the runs it can send whole — that is what makes it cheaper
    * than `listRuns` + a read per run.
    *
-   * A run whose log is over the cap is answered with its projection instead of its envelopes, and
+   * A run whose log is over either cap is answered with its projection instead of its envelopes, and
    * always with the store's TRUE tail seq, exactly as the broker does.
+   *
+   * The charge is on the READ and never on the acceptance, which is the broker's own rule and the one
+   * that makes a condensed page cost something: the log was materialized and serialized before anyone
+   * knew it would not fit, so leaving the allowance untouched on rejection lets the next run start
+   * from the full budget and pay it again. `eventsSpent`/`charsSpent` report that read, because
+   * `entries` reports only what the page accepted.
    */
   async listRunLogs(opts: ListRunsOptions = {}): Promise<RunLogPage> {
     this.reads.push('listRunLogs');
     const { runs, nextCursor } = this.page(opts);
     let eventsLeft = this.bootEventCapTotal;
+    let charsLeft = this.bootCharCapTotal;
+    let eventsSpent = 0;
+    let charsSpent = 0;
     const entries = runs.map((run) => {
       const events = this.log.get(run.id) ?? [];
       const lastSeq = events.at(-1)?.seq ?? 0;
       const facts = this.factsOf(run.id)!;
-      if (events.length <= Math.min(this.bootEventCapPerRun, eventsLeft)) {
+      if (events.length <= Math.min(this.bootEventCapPerRun, eventsLeft) && charsLeft > 0) {
+        const chars = JSON.stringify(events).length;
+        const fits = chars <= charsLeft;
         eventsLeft -= events.length;
-        return { facts, events: [...events], lastSeq };
+        charsLeft -= chars;
+        eventsSpent += events.length;
+        charsSpent += chars;
+        this.readEvents += events.length;
+        this.readChars += chars;
+        if (fits) return { facts, events: [...events], lastSeq };
       }
       const sessionId = events[0]?.payload.sessionId;
       return {
@@ -191,7 +223,7 @@ export class FakeRunStore implements RunStoreClient {
         ...(typeof sessionId === 'string' ? { sessionId } : {}),
       };
     });
-    return { entries, ...(nextCursor ? { nextCursor } : {}) };
+    return { entries, eventsSpent, charsSpent, ...(nextCursor ? { nextCursor } : {}) };
   }
 
   async eventsSince(runId: string, since = 0, limit?: number): Promise<RunEvent[]> {

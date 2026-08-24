@@ -42,6 +42,22 @@ export interface RunLogEntry {
 export interface RunLogPage {
   entries: RunLogEntry[];
   nextCursor?: string;
+  /**
+   * What the STORE spent reading this page — every run it materialized, including the ones it then
+   * condensed and answered with a projection.
+   *
+   * `entries` is what came back, and what came back is not what was read: a condensed entry carries no
+   * envelopes and the store paid for its log anyway. Charging the hydration's allowance by
+   * `events.length` therefore charged zero for exactly the runs that cost the most, which left the
+   * allowance untouched and the log branch taken for every page — so the store's per-call budget was
+   * multiplied by `MAX_HYDRATION_PAGES`.
+   *
+   * Optional because this is a port. A store that omits it is one with no per-call budget to reset —
+   * the fallback in `loadLogs` reads each log itself and condenses nothing — so there, what came back
+   * IS what was read and `events.length` is the honest charge.
+   */
+  eventsSpent?: number;
+  charsSpent?: number;
 }
 
 /** The store, as this process reaches it. Broker-backed in the app; the port exists so tests can bind. */
@@ -184,16 +200,43 @@ const MAX_HYDRATION_PAGES = 200;
  * speaks.
  *
  * Pinned to the store's own per-frame event allowance, so the two decisions cannot drift into
- * disagreeing about the same boot. That makes the total what one frame used to be, and the shipped
- * bound on what boot retains `MAX_BOOT_HYDRATION_EVENTS` plus at most one page — the page that
- * spends the last of it is finished rather than torn in half, because an entry refused mid-page has
- * no projection to be kept in place of its envelopes.
+ * disagreeing about the same boot. The shipped bound on what boot RETAINS is therefore
+ * `MAX_BOOT_HYDRATION_EVENTS` plus at most one page — the page that spends the last of it is
+ * finished rather than torn in half, because an entry refused mid-page has no projection to be kept
+ * in place of its envelopes.
+ *
+ * This allowance alone does NOT bound what boot READS: see `MAX_BOOT_HYDRATION_CHARS`, which is the
+ * other half of the same bound and the reason the total is what one frame used to be.
  *
  * The listing is newest-first, so the allowance is spent on the runs a surface is most likely to
  * name, and the ones answered by projection are the oldest — which are also the ones most likely to
  * be terminal, and a terminal run's envelopes are dropped by `seal` the moment they are folded.
  */
 export const MAX_BOOT_HYDRATION_EVENTS = 20_000;
+
+/**
+ * How many characters the WHOLE hydration may make the store READ — across every page, not per page.
+ *
+ * The event allowance bounds what this process retains, and a retention bound is not a read bound.
+ * The store spends BOTH an event and a character allowance per call, and it charges them at the read
+ * rather than at the acceptance — a run it materializes and then condenses is charged for in the
+ * child and arrives here with `events: []`. So a corpus of condensed runs — few envelopes, large
+ * payloads, an unlucky shape rather than an adversarial one — spent nothing of the event allowance
+ * on the way past. `eventsLeft` never fell, every page kept taking the log branch, and each one
+ * handed the store a freshly reset character allowance: the store's per-call budget multiplied by
+ * `MAX_HYDRATION_PAGES`, synchronously, in the child that serialises every other read during boot.
+ *
+ * So the character allowance is carried across the hydration too, charged by what the store reports
+ * it SPENT. Pinned to the store's own per-frame character allowance for the same reason as the event
+ * one: two numbers deciding one boot must not drift. Once either is spent the remaining pages come
+ * from `listRuns` — projections only, no envelopes read, materialized or parsed — which is what
+ * makes the total across the boot one frame's work plus at most the page that spent the last of it.
+ *
+ * NOT injectable separately from `HydrateOptions.charBudget`, and forced there for the same reason
+ * `eventBudget` is: the behaviour either side of the line is identical whatever the line is, and a
+ * test that has to ALLOCATE four million characters measures its own fixture.
+ */
+export const MAX_BOOT_HYDRATION_CHARS = 4_000_000;
 
 /**
  * How long a log may be before a condensed run is RE-condensed rather than materialized.
@@ -363,6 +406,14 @@ export interface HydrateOptions {
    * of the line is identical whatever the line is.
    */
   eventBudget?: number;
+  /**
+   * The character allowance for this hydration's READS, defaulting to `MAX_BOOT_HYDRATION_CHARS`.
+   *
+   * Injectable for the same reason as `eventBudget`, and it is the one a condensed corpus needs: the
+   * defect this bounds is invisible to an event allowance, so an arm that can only force the event
+   * one cannot reach it.
+   */
+  charBudget?: number;
 }
 
 export class RunViewModel {
@@ -549,8 +600,13 @@ export class RunViewModel {
    */
   async hydrate(opts: HydrateOptions = {}): Promise<void> {
     let cursor: string | undefined;
-    // The allowance for the WHOLE hydration, not for each page — see `MAX_BOOT_HYDRATION_EVENTS`.
+    // The allowances for the WHOLE hydration, not for each page — see `MAX_BOOT_HYDRATION_EVENTS`
+    // (what is retained) and `MAX_BOOT_HYDRATION_CHARS` (what is read). Both, because neither alone
+    // bounds a boot: a condensed run costs the store a full read and retains nothing, so on the event
+    // allowance alone it is free, and a corpus of them keeps this loop on the log branch for every
+    // page while handing the store a freshly reset per-call budget each time.
     let eventsLeft = opts.eventBudget ?? MAX_BOOT_HYDRATION_EVENTS;
+    let charsLeft = opts.charBudget ?? MAX_BOOT_HYDRATION_CHARS;
     // EVERY page, not the first one. This called `loadLogs()` with no options, which takes
     // `DEFAULT_LIST_LIMIT` runs and drops the `nextCursor` the store hands back with them — so a
     // machine with fifty-one runs booted the app showing fifty, and the fifty-first stayed invisible
@@ -558,21 +614,34 @@ export class RunViewModel {
     for (let page = 0; page < MAX_HYDRATION_PAGES; page++) {
       const pageOpts = cursor ? { cursor } : {};
       const nextCursor =
-        eventsLeft > 0 ? await this.hydrateLogPage(pageOpts, (n) => { eventsLeft -= n; }) : await this.hydrateProjectionPage(pageOpts);
+        eventsLeft > 0 && charsLeft > 0
+          ? await this.hydrateLogPage(pageOpts, (events, chars) => { eventsLeft -= events; charsLeft -= chars; })
+          : await this.hydrateProjectionPage(pageOpts);
       if (!nextCursor || nextCursor === cursor) break;
       cursor = nextCursor;
     }
     this.emit();
   }
 
-  /** One boot page WITH envelopes, charging what it retained against the hydration's allowance. */
-  private async hydrateLogPage(opts: ListRunsOptions, charge: (events: number) => void): Promise<string | undefined> {
-    const { entries, nextCursor } = await this.loadLogs(opts);
-    for (const entry of entries) {
-      charge(entry.events.length);
-      this.retain(entry.facts, entry.events, entry);
-    }
-    return nextCursor;
+  /**
+   * One boot page WITH envelopes, charging what the STORE SPENT against the hydration's allowances.
+   *
+   * Not what arrived. A condensed entry arrives with no envelopes and cost the store a full read, so
+   * charging `events.length` charged zero for the most expensive runs on the page — see
+   * `RunLogPage.eventsSpent`.
+   *
+   * The fallback is `events.length` and no characters, which is exact for the only store that omits
+   * the report: `loadLogs`'s own listing-plus-read path materializes every log it returns and
+   * condenses nothing, so there what arrived IS what was read.
+   */
+  private async hydrateLogPage(opts: ListRunsOptions, charge: (events: number, chars: number) => void): Promise<string | undefined> {
+    const page = await this.loadLogs(opts);
+    for (const entry of page.entries) this.retain(entry.facts, entry.events, entry);
+    charge(
+      page.eventsSpent ?? page.entries.reduce((n, entry) => n + entry.events.length, 0),
+      page.charsSpent ?? 0,
+    );
+    return page.nextCursor;
   }
 
   /**

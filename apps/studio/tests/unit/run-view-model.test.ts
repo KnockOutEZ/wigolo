@@ -1377,6 +1377,91 @@ describe('RunViewModel — the boot allowance is carried across pages, not reset
 });
 
 /**
+ * The corpus the event allowance is blind to: runs with FEW envelopes and LARGE payloads.
+ *
+ * The store charges its allowances at the READ, so a run it materializes and then condenses is paid
+ * for in the child and arrives here with `events: []`. The hydration charged `entry.events.length` —
+ * zero for exactly those runs — so its allowance never moved, `hydrate` kept taking the log branch for
+ * all `MAX_HYDRATION_PAGES` of them, and every page handed the store a freshly reset per-call char
+ * budget. Worst case was the page cap TIMES that budget, synchronously, in the child that serialises
+ * every other read during boot.
+ *
+ * The instrument has to be the store's own read total across the WHOLE hydration. Retention cannot
+ * see this — nothing is retained. One page cannot see it either: every individual page was already
+ * within the store's budget, and the defect is that there were two hundred of them.
+ */
+describe('RunViewModel — a boot over condensed runs is bounded by what the store READ', () => {
+  const PAGE_RUNS = 4;
+  const PAGES = 5;
+  /** The store's per-CALL char allowance — `MAX_BOOT_FRAME_CHARS`, forced small. */
+  const PER_CALL_CHARS = 500;
+  /**
+   * So large that the event allowance cannot be what stops the loop. This arm is only about the char
+   * one, and an event budget a condensed corpus could exhaust would let it pass for the wrong reason.
+   */
+  const EVENT_BUDGET = 1_000_000;
+
+  /**
+   * `PAGES` pages of `PAGE_RUNS` runs, each two envelopes long and each over `PER_CALL_CHARS` on its
+   * own — so every run is read, charged, and then condensed. Two envelopes is the point: on a count,
+   * this whole corpus is twenty runs and forty events, which is nothing.
+   */
+  async function seedCondensedPages(): Promise<FakeRunStore> {
+    const store = new FakeRunStore();
+    store.listLimit = PAGE_RUNS;
+    store.bootCharCapTotal = PER_CALL_CHARS;
+    const blob = 'x'.repeat(PER_CALL_CHARS);
+    for (let i = 0; i < PAGE_RUNS * PAGES; i++) {
+      const run = await store.createRun({ task: `run ${i}`, sessionId: `sess-${i}` });
+      await store.appendEvent(run.id, { actor: { kind: 'agent' }, type: 'run.progress', payload: { blob } });
+    }
+    return store;
+  }
+
+  it('stops paging on the store’s reported spend, not on the envelopes it was handed', async () => {
+    const store = await seedCondensedPages();
+    const vm = new RunViewModel(store);
+    store.reads.length = 0;
+    store.readEvents = 0;
+    store.readChars = 0;
+
+    await vm.hydrate({ eventBudget: EVENT_BUDGET, charBudget: PER_CALL_CHARS + 1 });
+
+    // The premise, checked rather than assumed: the corpus really is one the event allowance cannot
+    // stop. If it had spent that budget, this arm would pass on the mechanism it is not about.
+    expect(store.readChars, 'nothing was read, so there is no spend for this arm to bound').toBeGreaterThan(0);
+    expect(store.readEvents, 'the event allowance was spent, so the char one is not what stopped this')
+      .toBeLessThan(EVENT_BUDGET);
+    expect(vm.retainedEventCount([...store.facts.keys()][0]!), 'a run was retained, so nothing was condensed').toBe(0);
+
+    // The bound: the allowance plus at most the page that spent the last of it — the same shape the
+    // event allowance carries, for the same reason. A page is finished rather than torn in half.
+    expect(store.readChars, 'the hydration read more than its allowance plus the page that spent it')
+      .toBeLessThanOrEqual(PER_CALL_CHARS + 1 + PER_CALL_CHARS);
+    // …and the inversion. Before this, `events.length` charged zero for every condensed entry, so the
+    // allowance never moved and all five pages asked for envelopes — each against a fresh per-call
+    // budget. That is the multiplication, and it is what this number would be.
+    expect(store.readChars, 'the store’s per-call budget was still being handed out once per page')
+      .toBeLessThan(PER_CALL_CHARS * PAGES);
+    expect(store.reads.filter((r) => r === 'listRunLogs').length, 'a page still asked for envelopes the store would only condense')
+      .toBeLessThan(PAGES);
+    expect(store.reads.filter((r) => r === 'listRuns').length, 'no page fell back to projections at all').toBeGreaterThan(0);
+  });
+
+  it('still names every run and projects it exactly as the store does', async () => {
+    const store = await seedCondensedPages();
+    const vm = new RunViewModel(store);
+    await vm.hydrate({ eventBudget: EVENT_BUDGET, charBudget: PER_CALL_CHARS + 1 });
+
+    // Law 1: the bound is on cost, never on which runs exist. Every seeded run is still named, and
+    // still projects to the store's own answer — including the ones the char allowance never reached.
+    const ids = [...store.facts.keys()];
+    expect(vm.list()).toHaveLength(ids.length);
+    for (const id of ids) expect(vm.snapshot(id)).toEqual(await store.getRun(id));
+  });
+});
+
+/**
  * A store that can be taken away and given back, so a read failure is a state a test can FORCE
  * rather than a flake it has to wait for.
  *
