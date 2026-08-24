@@ -645,6 +645,54 @@ export function resolveSince(
 }
 
 /**
+ * A resume point the durable log cannot back, clamped back down to one it can.
+ *
+ * `resolveSince` validates the SHAPE of a cursor and nothing else, so a client can ask to resume
+ * past the end of the run's log. That request opens a stream which is silent forever: the replay
+ * finds nothing, the monotone emitter then drops every live event (`seq <= last`) because `last`
+ * starts at the bogus cursor, and the silence reconcile probes past the tail and keeps finding
+ * nothing. The heartbeat holds the connection open, so the client never reconnects and never learns
+ * — every event of the run is swallowed until the log grows past the cursor. It is reachable
+ * without a malicious client: a restored or rebuilt DB, or an `EventSource` re-sending a
+ * `Last-Event-ID` it persisted against a run id that has since been re-minted.
+ *
+ * The check is the client's own claim, turned into a question the log can answer: "I have
+ * everything up to and including `since`" is false if the log holds no event at or past `since`.
+ * One indexed seek, only on a resumed tail — the same shape and cost as the silence probe, and it
+ * keeps the pruned-log case intact, where the first surviving row is PAST the cursor and the read
+ * comes back non-empty.
+ *
+ * Clamping to zero rather than to the tail exactly: the tail's seq is not on `RunsStore` and
+ * putting it there is a six-seam change across the broker and the app-side stores. Zero is a
+ * downward clamp reachable with the existing API which is provably at or below the tail, and it
+ * delivers strictly MORE than a tail clamp would — the client whose cursor belongs to a rebuilt log
+ * gets this run's history rather than only its future. See `DECISIONS-AUTO.md` (A-113-1).
+ */
+async function clampResumePoint(
+  store: RunsStore,
+  runId: string,
+  since: number,
+): Promise<{ since: number; clamped: boolean }> {
+  if (since <= 0) return { since, clamped: false };
+  let atOrPast: RunEvent[];
+  try {
+    atOrPast = await store.eventsSince(runId, since - 1, 1);
+  } catch (err) {
+    // A probe that could not run is not evidence of a bogus cursor. Resyncing every resumed tail
+    // the moment the store hiccups would spend a full replay on each one, so honour it as given —
+    // the same call the silence reconcile makes on the same failure.
+    log.warn('run tail could not check its resume point against the durable log; honouring it as given', {
+      runId,
+      since,
+      error: String(err),
+    });
+    return { since, clamped: false };
+  }
+  if (atOrPast.length > 0) return { since, clamped: false };
+  return { since: 0, clamped: true };
+}
+
+/**
  * The exactly-once door. Everything the stream writes — replayed or live — goes through `emit`, and
  * `offer` is what the live subscription calls.
  *
@@ -1014,6 +1062,16 @@ async function handleEvents(
     opts.sendError(invalidInput(resume.detail));
     return;
   }
+  // Runs inside the connection cap, for the same reason `exists` does: it is a store read reached
+  // from an un-authenticated URL, and one a caller could otherwise buy K of for the price of K
+  // sockets.
+  const resumed = await clampResumePoint(store, id, resume.since);
+  if (resumed.clamped) {
+    log.warn('run tail asked to resume past the end of the run log; replaying from the start instead', {
+      runId: id,
+      asked: resume.since,
+    });
+  }
 
   // This route deliberately escapes the request-work discipline the tool routes run under: a
   // deadline would 504 a healthy stream, and a concurrency slot held for the life of a tail would
@@ -1037,6 +1095,14 @@ async function handleEvents(
    * keeps the silence reconcile from issuing a second read across one that is already running.
    */
   let busy = true;
+  /**
+   * A heal that fired while another durable read held `busy`, waiting for its turn.
+   *
+   * Coalesced rather than queued: every hole reported while one read owns the stream is bounded by
+   * the earliest `from` and the furthest `arrivedAt` among them, and one `pumpDurable` from that
+   * earliest point covers the lot.
+   */
+  let pendingHeal: { from: number; arrivedAt: number } | null = null;
   const flushBytes = sseFlushBytes();
   const maxStalledBytes = sseMaxStalledBytes();
   const heartbeatMs = sseHeartbeatMs();
@@ -1066,7 +1132,7 @@ async function handleEvents(
   }, heartbeatMs);
   heartbeat.unref?.();
 
-  const emitter = createOrderedEmitter(resume.since, (event) => {
+  const emitter = createOrderedEmitter(resumed.since, (event) => {
     if (closed || stalled) return;
     // Built once per envelope and shared by every tail on the run — see `serializeRunEvent`, which
     // also carries the wire-safety argument for this interpolation. The bytes come off the same
@@ -1280,6 +1346,28 @@ async function handleEvents(
    */
   async function heal(from: number, arrivedAt: number): Promise<void> {
     if (closed || stalled) return;
+    // The hole is already on the wire. Only a heal that WAITED can be here — a fresh one is called
+    // from the gap door, which fires precisely because `arrivedAt > lastEmitted + 1` — and its
+    // `from`/`arrivedAt` are a snapshot of a state another durable read has since moved past.
+    if (emitter.lastEmitted() >= arrivedAt - 1) return;
+    /**
+     * The same gate `reconcile` takes, and the reason it needs one is the deferral above it: the
+     * gap door hands the heal to `setImmediate`, and a store read resolves in a MICROTASK, so a
+     * heartbeat-driven reconcile parked on its probe can wake, pass both of its own `busy` checks
+     * and be inside `pumpDurable` before the check phase this heal is queued in ever runs. Two
+     * concurrent pumps then interleave `emit` and `pace` — one shared byte budget spent from two
+     * places, and `healInner`'s end-of-stream decision read off a `lastEmitted` the other pump is
+     * moving underneath it.
+     *
+     * Deferred, never dropped: the waiting read may end without filling THIS hole, so the heal is
+     * re-dispatched by `releaseBusy` and re-checks the guard above when it gets its turn.
+     */
+    if (busy) {
+      pendingHeal = pendingHeal === null
+        ? { from, arrivedAt }
+        : { from: Math.min(pendingHeal.from, from), arrivedAt: Math.max(pendingHeal.arrivedAt, arrivedAt) };
+      return;
+    }
     log.warn('run tail saw a seq gap on the live stream; re-reading the durable log to fill it', {
       runId: id,
       from,
@@ -1290,11 +1378,33 @@ async function handleEvents(
     try {
       await healInner(from, arrivedAt);
     } finally {
-      busy = false;
+      releaseBusy();
     }
   }
 
+  /**
+   * Hand the durable-read gate back, and straight to a heal that arrived while it was held.
+   *
+   * Every path that clears `busy` goes through here, so a hole reported during a read cannot be
+   * left in the buffer with nobody coming for it. Re-dispatched through `setImmediate` for the
+   * reason the gap door defers in the first place — this runs in a `finally`, and a heal's first
+   * act is a store read.
+   */
+  function releaseBusy(): void {
+    busy = false;
+    const queued = pendingHeal;
+    if (queued === null) return;
+    pendingHeal = null;
+    if (closed || stalled) return;
+    setImmediate(() => { void heal(queued.from, queued.arrivedAt); });
+  }
+
   async function healInner(from: number, arrivedAt: number): Promise<void> {
+    // Back to holding before the read. The gap door already did this for a heal that ran straight
+    // away, but one that waited for the gate can be dispatched onto a LIVE emitter — the read it is
+    // about to run must not race the bus onto the wire. A no-op on an emitter that is already
+    // holding, which is why the immediate path can share it.
+    emitter.suspend();
     if (!(await pumpDurable(from, 'heal'))) return;
     if (closed || stalled) return;
     // The read did not reach the seq that exposed the hole, so the log cannot fill it — a notify
@@ -1369,7 +1479,7 @@ async function handleEvents(
       if (closed || stalled) return;
       await goLiveOrEnd('reconcile');
     } finally {
-      busy = false;
+      releaseBusy();
     }
   }
 
@@ -1393,17 +1503,22 @@ async function handleEvents(
   });
   res.flushHeaders?.();
   res.write(`retry: ${SSE_RETRY_MS}\n\n`);
+  // An SSE comment, so it reaches a raw reader and an operator's transcript without inventing an
+  // event type every client would have to learn. A client that de-duplicates on `seq` needs to know
+  // that the ids about to arrive are LOWER than the cursor it sent, because its cursor was for a log
+  // this run does not have. `resume.since` is a validated integer, so it cannot forge a field line.
+  if (resumed.clamped) res.write(`: resume point ${resume.since} is past the end of this run's log; replaying from the start\n\n`);
   lastWrite = Date.now();
 
   // Step 2 — the durable replay, a page at a time. Nothing is dropped here: the backing log is the
   // DB, not a ring. The yield between pages is what keeps a long log from freezing the daemon, and
   // is also what makes the emitter's overlap window real.
-  if (!(await pumpDurable(resume.since, 'replay'))) return;
+  if (!(await pumpDurable(resumed.since, 'replay'))) return;
 
   // Step 3 — release whatever arrived mid-replay through the same door, then run live.
   await goLiveOrEnd('replay');
   // The opening read is done, so the silence reconcile may now take its turn. Cleared only on this
   // path: every early return above leaves a stream that is closing, and a reconcile on one of those
   // has nothing to do that its own `closed` check does not already refuse.
-  busy = false;
+  releaseBusy();
 }

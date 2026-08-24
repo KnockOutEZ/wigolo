@@ -1539,6 +1539,300 @@ describe('the silence reconcile — a lost notify on a run\'s last event', () =>
 });
 
 /**
+ * WHY: the two ways this route's tail goes silent or doubles up on itself, both of which the wire
+ * cannot tell from a healthy stream.
+ *
+ * 1. `reconcile` documents that it must not run across a replay, a heal, or another reconcile, and
+ *    takes `busy` twice to make sure of it. `heal` checked only `closed || stalled`. The gap door
+ *    defers a heal by `setImmediate` — on purpose, so the store read does not land in the middle of
+ *    somebody's append — while a store read resolves in a MICROTASK, and microtasks drain before
+ *    the check phase. So a reconcile parked on its probe wakes, passes both of its `busy` checks
+ *    and is already inside `pumpDurable` when the deferred heal runs, and the heal starts a second
+ *    one across it. Two pumps then share one byte budget and one `lastEmitted`.
+ * 2. `resolveSince` validates the shape of a resume point and nothing else. A cursor past the end
+ *    of the log opens a stream that replays nothing, then drops every live event, forever: `last`
+ *    starts at the bogus cursor and the monotone door refuses everything at or below it. The
+ *    heartbeat keeps the connection up, so the client never reconnects and never finds out.
+ *
+ * Both rows force their interleave rather than waiting for one. Nothing about either defect is
+ * visible from the frames in the ordinary case, which is the whole reason they survived.
+ */
+describe('the SSE tail is durable at its two edges — the heal gate and a resume past the tail', () => {
+  const HEARTBEAT = 'WIGOLO_STUDIO_SSE_HEARTBEAT_MS';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[HEARTBEAT];
+    process.env[HEARTBEAT] = '30';
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[HEARTBEAT];
+    else process.env[HEARTBEAT] = saved;
+  });
+
+  /** A response that takes every byte, so nothing here is confused with back-pressure. */
+  function openExchange(): {
+    req: IncomingMessage;
+    res: ServerResponse;
+    written: () => string[];
+    frames: () => string[];
+    seqs: () => number[];
+    pings: () => number;
+    ended: () => boolean;
+    close: () => void;
+  } {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const written: string[] = [];
+    let ended = false;
+    const on = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      const list = listeners.get(event) ?? [];
+      list.push(fn);
+      listeners.set(event, list);
+      return undefined;
+    };
+    const off = (event: string, fn: (...args: unknown[]) => void): unknown => {
+      listeners.set(event, (listeners.get(event) ?? []).filter((f) => f !== fn));
+      return undefined;
+    };
+    const req = { headers: {}, destroyed: false, socket: { setTimeout: () => {} }, on, off } as unknown as IncomingMessage;
+    const res = {
+      destroyed: false,
+      headersSent: false,
+      setTimeout: () => {},
+      writeHead: () => {},
+      flushHeaders: () => {},
+      write: (chunk: string) => { written.push(chunk); return true; },
+      end: () => { ended = true; },
+      on,
+      off,
+    } as unknown as ServerResponse;
+    const frames = (): string[] => written.filter((c) => c.startsWith('id: '));
+    return {
+      req,
+      res,
+      written: () => [...written],
+      frames,
+      seqs: () => frames().map((f) => Number(f.slice('id: '.length, f.indexOf('\n')))),
+      pings: () => written.filter((c) => c.startsWith(': ping')).length,
+      ended: () => ended,
+      close: () => { for (const fn of [...(listeners.get('close') ?? [])]) fn(); },
+    };
+  }
+
+  function tail(
+    ex: { req: IncomingMessage; res: ServerResponse },
+    store: RunsStore,
+    id: string,
+    since?: number,
+  ): Promise<void> {
+    const query = since === undefined ? '' : `?since=${since}`;
+    return import('../../../src/daemon/rest/runs.js').then(({ handleRunsRequest }) =>
+      handleRunsRequest(ex.req, ex.res, {
+        pathname: `/v1/runs/${id}/events`,
+        method: 'GET',
+        url: new URL(`http://127.0.0.1/v1/runs/${id}/events${query}`),
+        respond: () => {},
+        sendError: () => {},
+        store,
+      }));
+  }
+
+  async function until(what: () => boolean, ms = 3000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!what()) {
+      if (Date.now() > deadline) throw new Error('condition never held');
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+  }
+
+  /**
+   * An in-memory log that can park its single-row PROBES on demand, and that holds every PAGE read
+   * open for a few milliseconds so two overlapping ones are observable as overlapping.
+   *
+   * Concurrency is counted on the page reads because that is what a pump issues; the probe is the
+   * one-row read `reconcile` makes while idle. Filtering AFTER the gate is what lets a row append to
+   * the log while a probe is parked and still have that probe see it.
+   */
+  function pumpCountingStore(log: RunEvent[]): {
+    store: RunsStore;
+    parkProbes: () => void;
+    releaseProbes: () => void;
+    probesParked: () => number;
+    maxConcurrentPages: () => number;
+    pageReads: () => number;
+  } {
+    let parked: Promise<void> | null = null;
+    let release = (): void => {};
+    let probesParked = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let pageReads = 0;
+    return {
+      store: {
+        create: async () => { throw new Error('not used'); },
+        list: async () => ({ runs: [] }),
+        get: async () => undefined,
+        exists: async () => true,
+        eventsSince: async (_id: string, cursor: number, limit?: number) => {
+          if (limit === 1) {
+            if (parked !== null) {
+              probesParked += 1;
+              await parked;
+            }
+            return log.filter((e) => e.seq > cursor).slice(0, 1);
+          }
+          pageReads += 1;
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          try {
+            // Long enough that a second pump entering during the check phase overlaps this one, and
+            // short enough that the row is a test rather than a wait.
+            await new Promise<void>((r) => setTimeout(r, 5));
+            const after = log.filter((e) => e.seq > cursor);
+            return limit === undefined ? after : after.slice(0, limit);
+          } finally {
+            inFlight -= 1;
+          }
+        },
+      },
+      parkProbes: () => { parked = new Promise<void>((resolve) => { release = resolve; }); },
+      releaseProbes: () => { const r = release; parked = null; r(); },
+      probesParked: () => probesParked,
+      maxConcurrentPages: () => maxInFlight,
+      pageReads: () => pageReads,
+    };
+  }
+
+  it('does not start a heal across a durable read that already owns the stream', async () => {
+    const id = '7fqe';
+    const log = [ev(1, 'run.created')];
+    const fixture = pumpCountingStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id);
+    await until(() => ex.seqs().length === 1);
+
+    // Park the silence probe FIRST, so the reconcile that finds the lost event is one this row can
+    // hold open with `busy` still false — the exact window the gap door's setImmediate lands in.
+    fixture.parkProbes();
+    await until(() => fixture.probesParked() >= 1);
+
+    // Committed and durable, and nobody is told: the lost-notify shape the silence door exists for.
+    log.push(ev(2, 'tab.attached'));
+    // And a LIVE event that skips it, so the gap door fires and defers a heal by setImmediate.
+    publishRunEvent(id, ev(3, 'tab.attached'));
+
+    // The probe resolves in a microtask, and microtasks drain before the check phase — so the
+    // reconcile is inside `pumpDurable` by the time the deferred heal runs. On tip the heal checks
+    // only `closed || stalled` and starts a second pump straight across it.
+    fixture.releaseProbes();
+
+    await until(() => ex.seqs().length === 3);
+    // The load-bearing assertion: one durable read owns the stream at a time. On tip this is 2.
+    expect(fixture.maxConcurrentPages()).toBe(1);
+    // Deferred, not dropped — the hole really was filled, in order, exactly once, in the stream.
+    expect(ex.seqs()).toEqual([1, 2, 3]);
+    expect(ex.ended()).toBe(false);
+    ex.close();
+  });
+
+  /**
+   * The must-not-fire half: a gap on a stream nothing else is touching still heals immediately.
+   * A gate that answered "busy" too readily would turn every hole into a heal that never runs.
+   */
+  it('still heals a hole straight away when no other read holds the gate', async () => {
+    const id = '7fqf';
+    const log = [ev(1, 'run.created'), ev(2, 'tab.attached')];
+    const fixture = pumpCountingStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id);
+    await until(() => ex.seqs().length === 2);
+
+    log.push(ev(3, 'tab.attached'));
+    // Seq 4 arrives live with 3 never delivered. Nothing else is reading, so the heal owns the gate.
+    publishRunEvent(id, ev(4, 'tab.attached'));
+
+    await until(() => ex.seqs().length === 4);
+    expect(ex.seqs()).toEqual([1, 2, 3, 4]);
+    expect(fixture.maxConcurrentPages()).toBe(1);
+    expect(ex.ended()).toBe(false);
+    ex.close();
+  });
+
+  it('clamps a resume point the log cannot back, instead of opening a stream that swallows everything', async () => {
+    const id = '7fqg';
+    const log = [ev(1, 'run.created'), ev(2, 'tab.attached')];
+    const fixture = pumpCountingStore(log);
+    const ex = openExchange();
+    // The rebuilt-log shape: a cursor from a log this daemon no longer has. On tip this is accepted
+    // as given, `last` starts at 900, and nothing this run ever emits gets past the monotone door.
+    await tail(ex, fixture.store, id, 900);
+
+    // Clamped DOWN to a point the log can back, so the client gets this run's history rather than
+    // a stream that is silent until the log grows past 900.
+    await until(() => ex.seqs().length === 2);
+    expect(ex.seqs()).toEqual([1, 2]);
+    // And it says so on the wire, because the ids it is about to send are LOWER than the cursor the
+    // client asked to resume from — a client de-duplicating on seq has to be able to tell.
+    expect(ex.written().some((c) => c.startsWith(': resume point 900 is past the end'))).toBe(true);
+
+    // The whole point of the clamp: subsequent LIVE events arrive instead of being swallowed.
+    publishRunEvent(id, ev(3, 'run.completed'));
+    await until(() => ex.seqs().length === 3);
+    expect(ex.seqs()).toEqual([1, 2, 3]);
+    expect(ex.ended()).toBe(false);
+    ex.close();
+  });
+
+  /**
+   * The must-not-fire control. Exactly-once and gapless resume for an IN-RANGE cursor are the
+   * properties the clamp is not allowed to cost, and a clamp keyed on anything a healthy resume also
+   * trips — a pruned log whose first surviving row is past the cursor, a cursor sitting exactly on
+   * the tail — would re-send the whole log to a client that already has it.
+   */
+  it('leaves an in-range resume alone — including one sitting exactly on the tail', async () => {
+    const id = '7fqh';
+    const log = [ev(1, 'run.created'), ev(2, 'tab.attached'), ev(3, 'tab.attached')];
+    const fixture = pumpCountingStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id, 2);
+    await until(() => ex.seqs().length === 1);
+    // Nothing at or below the resume point is re-sent.
+    expect(ex.seqs()).toEqual([3]);
+    expect(ex.written().some((c) => c.startsWith(': resume point'))).toBe(false);
+    ex.close();
+
+    // A cursor ON the tail: the log can back it, so it replays nothing and stays live.
+    const onTail = openExchange();
+    await tail(onTail, fixture.store, id, 3);
+    await until(() => onTail.pings() >= 1);
+    expect(onTail.seqs()).toEqual([]);
+    expect(onTail.written().some((c) => c.startsWith(': resume point'))).toBe(false);
+    publishRunEvent(id, ev(4, 'run.completed'));
+    await until(() => onTail.seqs().length === 1);
+    expect(onTail.seqs()).toEqual([4]);
+    onTail.close();
+  });
+
+  /**
+   * A pruned log is the case the clamp must not mistake for a bogus cursor: `?since=2` against a log
+   * whose first surviving row is seq 7 is a legitimate resume, and the check asks whether the log
+   * holds anything AT OR PAST the cursor rather than whether it holds the cursor itself.
+   */
+  it('does not read a pruned log as a resume point past the tail', async () => {
+    const id = '7fqj';
+    const log = [ev(7, 'tab.attached'), ev(8, 'tab.attached')];
+    const fixture = pumpCountingStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id, 2);
+    await until(() => ex.seqs().length === 2);
+    expect(ex.seqs()).toEqual([7, 8]);
+    expect(ex.written().some((c) => c.startsWith(': resume point'))).toBe(false);
+    ex.close();
+  });
+});
+
+/**
  * WHY: `publishRunEvent` is the post-commit hook of `appendEvent`, so the fan-out runs on the
  * WRITER's stack — every listener callback completes before the append returns. Building the SSE
  * frame inside that per-subscriber callback therefore charged whoever appended one full
