@@ -1912,9 +1912,10 @@ describe('the SSE tail is durable at its two edges — the heal gate and a resum
    * missing seq on the wire.
    *
    * What it pins is the gate under that shape: the deferred heal must not start its pump across the
-   * read that owns the stream, and the stream must still land gapless afterwards. It does NOT pin
-   * the pending-heal QUEUE — see `known-issues.md` (`SSE tail: pendingHeal re-dispatch is shadowed`)
-   * for why no wire-visible behaviour depends on it.
+   * read that owns the stream, and the stream must still land gapless afterwards. It does not pin
+   * the pending-heal QUEUE, and nothing can: the flush's door re-fires for the same hole and its
+   * `setImmediate` is queued before `releaseBusy`'s — everything between them is microtasks — so the
+   * fresh heal always takes the gate first and issues the read the queued one would have.
    */
   it('closes a hole with a second read when the holding read ends without filling it', async () => {
     const id = '7fqm';
@@ -2009,6 +2010,7 @@ describe('the SSE tail is durable at its two edges — the heal gate and a resum
     // deciding to end, rather than the stream ending on the reconcile's own empty page.
     expect(fixture.pageCursors()).toEqual([0, 1, 1, 2, 2]);
     expect(fixture.maxConcurrentPages()).toBe(1);
+    ex.close();
   });
 });
 
