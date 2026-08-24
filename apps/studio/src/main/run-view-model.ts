@@ -378,8 +378,8 @@ export class RunViewModel {
    * needs the projection current before it resolves can await the replay somebody else started.
    */
   private readonly adopting = new Map<string, AdoptState>();
-  /** One presentation transition at a time per run — see `setVisibility`. */
-  private readonly transitions = new Map<string, Promise<void>>();
+  /** One run-level write at a time per run — see `queueForRun`. */
+  private readonly runOps = new Map<string, Promise<unknown>>();
   /** One ownership change at a time per TAB — see `queueForTab`. */
   private readonly tabOps = new Map<string, Promise<unknown>>();
   /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
@@ -928,11 +928,12 @@ export class RunViewModel {
    * count exactly the way the state push did. A sealed run is skipped without projecting at all — its
    * kept projection states the terminal status, and no read can move that.
    *
-   * Narrowing it costs nothing observable. The one caller, `run-decisions`' `settle`, re-reads the
-   * status of whatever it gets back and refuses to write once the run is terminal — appending a
-   * `decision.resolved` after `run.completed` would be an out-of-order fact in an append-only log — so
-   * a terminal run was never an answer that could be acted on, only one more projection on the way
-   * past. Reverse this the moment some caller needs the run behind a card the log has already closed.
+   * Narrowing it costs nothing observable. The one caller, `run-decisions`' `settle`, hands whatever
+   * it gets back to `resolveDecision`, which refuses on the run lane once the run is terminal —
+   * appending a `decision.resolved` after `run.completed` would be an out-of-order fact in an
+   * append-only log — so a terminal run was never an answer that could be acted on, only one more
+   * projection on the way past. Reverse this the moment some caller needs the run behind a card the
+   * log has already closed.
    */
   runForDecision(decisionId: string): string | undefined {
     for (const [runId, log] of this.logs) {
@@ -1028,13 +1029,52 @@ export class RunViewModel {
   }
 
   /**
+   * Run one write after every write already queued for THAT run.
+   *
+   * The same shape as `queueForTab`, for the same reason and about the run rather than the tab: every
+   * write on this lane is a check-then-act across an await, the check reads the PROJECTION, and the
+   * append is a round-trip. `endRun` and `resolveDecision` are the pair that races — a two-minute
+   * auto-deny firing while `run.completed` is still on the wire read a not-yet-terminal projection,
+   * passed, and the store committed its `decision.resolved` AFTER the terminal event. That is an
+   * out-of-order fact in an append-only log: no replay repairs it, and every surface that reads the
+   * log afterwards — here, over REST, in a replay, in the audit — sees a run answering a card it had
+   * already finished.
+   *
+   * ONE lane for every kind, never one each. Two lanes would serialise each kind against itself and
+   * leave that pair exactly as unserialised as no lane at all — the same lesson `queueForTab` records
+   * for attach against detach. `setVisibility`'s idempotence check and its already-ended refusal are
+   * the same check-then-act against the same terminal append, so they ride here too.
+   *
+   * Per run, so one run's slow append never holds another's up. The rejection handler is the same
+   * call as the fulfilment one: a queued write runs whether the one before it committed or refused,
+   * because a refusal changed nothing for it to be behind.
+   */
+  private queueForRun<T>(runId: string, op: () => Promise<T>): Promise<T> {
+    const queued = (this.runOps.get(runId) ?? Promise.resolve()).then(op, op);
+    const tail = queued.then(
+      () => { if (this.runOps.get(runId) === tail) this.runOps.delete(runId); },
+      () => { if (this.runOps.get(runId) === tail) this.runOps.delete(runId); },
+    );
+    this.runOps.set(runId, tail);
+    return queued;
+  }
+
+  /**
    * Terminal transition: release the run's tabs first, so the log never ends owning a dead tab.
+   *
+   * On the run lane, which is what makes the terminal event an ORDERING every other write on the run
+   * is decided against rather than a fact they each race — see `queueForRun`. The tab detaches inside
+   * it take the per-tab lanes, which nothing on this lane holds, so the two never wait on each other.
    *
    * The membership read is deliberately taken here and not inside the lane: it names the tabs to TRY,
    * and `applyDetach` decides per tab, on the queue, whether there is still anything to release. A tab
    * a human closed in the meantime is folded to a no-op there rather than written twice here.
    */
-  async endRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
+  endRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
+    return this.queueForRun(runId, () => this.applyEndRun(runId, terminal, detail));
+  }
+
+  private async applyEndRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
     for (const tabId of this.tabsOf(runId)) await this.detachTab(tabId, 'run_ended');
     const payload: Record<string, unknown> =
       terminal === 'failed' ? { error: detail ?? 'the run ended unexpectedly' }
@@ -1056,20 +1096,11 @@ export class RunViewModel {
    * was appended, which is what a caller needs to know before it moves a window.
    */
   setVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
-    // Serialised per run, because the check below is against the PROJECTION: two clicks on the same
+    // Serialised per run, because the checks below are against the PROJECTION: two clicks on the same
     // menu item both read "hidden" before either append lands, and the log gets two promotes for one
-    // transition. A human double-clicking is the ordinary way to produce that. Per run, not global, so
-    // one run's slow append never holds another's up.
-    const queued = (this.transitions.get(runId) ?? Promise.resolve()).then(
-      () => this.applyVisibility(runId, next, by, surface),
-      () => this.applyVisibility(runId, next, by, surface),
-    );
-    const tail = queued.then(
-      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
-      () => { if (this.transitions.get(runId) === tail) this.transitions.delete(runId); },
-    );
-    this.transitions.set(runId, tail);
-    return queued;
+    // transition. A human double-clicking is the ordinary way to produce that. The run lane it shares
+    // with `endRun` is also what makes the already-ended refusal below true rather than likely.
+    return this.queueForRun(runId, () => this.applyVisibility(runId, next, by, surface));
   }
 
   private async applyVisibility(runId: string, next: Run['visibility'], by: PresentationBy, surface?: PromoteSurface): Promise<boolean> {
@@ -1086,8 +1117,21 @@ export class RunViewModel {
     return true;
   }
 
-  /** A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source). */
-  async requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+  /**
+   * A card the human has to answer, recorded on the run it blocks (law 10, and `needs_you`'s source).
+   *
+   * On the run lane and refused past the terminal event for the same reason its answer is — the same
+   * closing session that races a resolution races the card that raised it, and a `decision.requested`
+   * landing after `run.completed` is worse than an out-of-order envelope: it is the one event that
+   * projects to `needs_you`, so a finished run would ask for a human nobody can answer to.
+   */
+  requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    return this.queueForRun(runId, () => this.applyRequestDecision(runId, input));
+  }
+
+  private async applyRequestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void> {
+    const run = this.snapshot(runId);
+    if (!run || isTerminal(run.status)) return;
     const event = await this.store.appendEvent(runId, {
       actor: { kind: 'agent', driver: 'studio' },
       type: 'decision.requested',
@@ -1096,7 +1140,36 @@ export class RunViewModel {
     await this.fold(runId, event);
   }
 
-  async resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
+  /**
+   * The card's answer, refused where the refusal is SERIALISED against the terminal append rather
+   * than at a call site that races it.
+   *
+   * This used to append unconditionally, and the refusal lived in `run-decisions`' `settle`, which
+   * read `snapshot(runId)?.status` and then awaited this. Between that read and this append sits a
+   * round-trip, so the two-minute auto-deny of a card whose run was closing read a projection
+   * `endRun`'s append had not moved yet, passed, and wrote `decision.resolved` after
+   * `run.completed` — the exact out-of-order durable fact the check was there to prevent. A guard on
+   * one side of a race is not a guard.
+   *
+   * Deciding it here puts the read and the append on the run lane together (`queueForRun`), so the
+   * projection this reads is one no in-flight terminal append can be about to move: either `endRun`
+   * already ran and this refuses, or it is still queued and runs after. Nothing downstream has to
+   * remember to notify anybody, and every path in — timer, human, broker — is covered by one check.
+   */
+  resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
+    return this.queueForRun(runId, () => this.applyResolveDecision(runId, decisionId, outcome, by));
+  }
+
+  private async applyResolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void> {
+    const run = this.snapshot(runId);
+    // A run this process is not holding cannot be shown to be still open. The caller that used to
+    // decide this defaulted a missing status to `running` — a guard that passed hardest exactly where
+    // it knew least, and appended blind to a run that had fallen out of the projection entirely.
+    if (!run) return;
+    // The run is over, and the log says so. A resolution after the terminal event is out of order in a
+    // log with no prune path, and on a condensed run it forces a full re-read to absorb an envelope
+    // that should not exist.
+    if (isTerminal(run.status)) return;
     const event = await this.store.appendEvent(runId, {
       actor: { kind: by },
       type: 'decision.resolved',
