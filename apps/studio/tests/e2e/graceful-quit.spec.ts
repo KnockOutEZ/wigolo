@@ -147,8 +147,10 @@ describe.skipIf(!RUN)('a graceful quit lands the terminal event before the proce
   /**
    * The bug is a RACE, and one session does not force it: on a warm broker a single `run.cancelled`
    * lands inside the window Electron's own teardown leaves open, so a one-session arm passes on the
-   * broken build and proves nothing. `shutdown()` walks its live sessions SEQUENTIALLY — detach the
-   * tabs, then append — so the number of sessions is the length of the work the quit has to outlive.
+   * broken build and proves nothing. Every live session is a detach and a terminal append, so the
+   * number of sessions is the amount of work the quit has to outlive — that stays true now that
+   * `shutdown()` ends them concurrently rather than one after another (SD1 exit-9): the fleet's
+   * appends still have to land, they just no longer land in series.
    * Measured against the fire-and-forget tip, by reverting `preventDefault()` and rebuilding: one
    * session still lands and the arm passes; at eight, all eight come back `running`.
    *

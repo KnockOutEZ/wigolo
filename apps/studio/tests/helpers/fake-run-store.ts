@@ -88,8 +88,17 @@ export class FakeRunStore implements RunStoreClient {
     return (await this.getRun(id))!;
   }
 
+  /**
+   * Simulated cost of ONE append's broker round trip. Zero by default, so every arm that is not about
+   * timing is unaffected. A test that needs the wall-clock shape of a real append — the quit path's
+   * deadline is the one that does — sets it and drives the clock, because an in-memory append that
+   * resolves in the same tick makes a serial walk and a concurrent one indistinguishable.
+   */
+  appendDelayMs = 0;
+
   async appendEvent(runId: string, event: RunEventInput): Promise<RunEvent> {
     if (!this.log.has(runId)) throw new Error(`unknown run: ${runId}`);
+    if (this.appendDelayMs > 0) await new Promise((r) => setTimeout(r, this.appendDelayMs));
     this.appends.push({ runId, type: event.type, payload: event.payload ?? {} });
     return this.commit(runId, event);
   }

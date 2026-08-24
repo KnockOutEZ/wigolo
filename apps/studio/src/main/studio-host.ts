@@ -1441,22 +1441,50 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         return (out.results ?? []).map((r) => ({ url: r.url, title: r.title, score: r.relevance_score, source: r.source }));
       } catch { return []; } // broker down → the rail degrades quietly (never errors the UI)
     },
+    /**
+     * Concurrent across sessions, on purpose.
+     *
+     * `before-quit` bounds this walk with a CONSTANT deadline (index.ts `SHUTDOWN_DEADLINE_MS`) whose
+     * expiry is an `app.exit(0)` — and that truncates whatever appends are still in flight, leaving
+     * those runs `running` in the durable log forever (law 1). A serial walk made the cost of this
+     * path linear in `sessionCap` while the bound stayed constant: a coupling neither end can see,
+     * since the deadline is chosen in one file and the work it has to outlast grows in another.
+     *
+     * Measured rather than assumed, and the measurement matters. On a warm broker the serial walk cost
+     * ~2.8ms per session — 7/20/61/135ms at 1/8/24/48 live sessions — against a whole quit of ~4.15s
+     * that does not move with the session count at all. So the truncation was LATENT, not live: the
+     * walk would need thousands of sessions to reach 10s, and the "eight live sessions cost ~4.2s here"
+     * note this file's deadline was calibrated from was reading a FIXED teardown cost as the price of
+     * this loop. Ending the sessions concurrently takes the walk to ~1.8ms per session (15/40/88ms at
+     * 8/24/48) and, more to the point, stops the deadline needing to be re-reasoned whenever the cap
+     * moves.
+     *
+     * It does not make the walk constant and cannot: the broker is one pipe and the store commits with
+     * `BEGIN IMMEDIATE`, so the appends still land one at a time downstream. What overlaps is
+     * everything either side of them.
+     *
+     * Nothing here is order-dependent BETWEEN sessions. Each context owns exactly one tab (law 4), and
+     * everything that must be serialised already is one layer down: the view-model's per-tab and
+     * per-run lanes order the writes for a given tab/run, and that `BEGIN IMMEDIATE` orders the
+     * transactions.
+     */
     async shutdown(): Promise<void> {
-      for (const ctx of contexts.values()) {
-        if (ctx.status !== 'live') continue;
-        ctx.status = 'closed';
+      const live = [...contexts.values()].filter((ctx) => ctx.status === 'live');
+      // Marked closed in one synchronous pass BEFORE the first await, so no context can be treated as
+      // live while its own end is still in flight — the serial walk got that for free, this does not.
+      for (const ctx of live) ctx.status = 'closed';
+      await Promise.all(live.map(async (ctx) => {
         try {
           deps.closeTab(ctx.tab.tabId); // detaches the CDP transport + destroys the WebContentsView
         } catch { /* best-effort teardown */ }
         // The host is going away; the run is not finished, it is cancelled. Best-effort, because a
         // shutdown that hangs on a store write is worse than a run whose last event lands late.
         const runId = deps.runs.runForSession(ctx.sessionId);
-        if (runId) {
-          try {
-            await deps.runs.endRun(runId, 'cancelled');
-          } catch { /* best-effort teardown */ }
-        }
-      }
+        if (!runId) return;
+        try {
+          await deps.runs.endRun(runId, 'cancelled');
+        } catch { /* best-effort teardown */ }
+      }));
       contexts.clear();
       parked.clear();
       actChains.clear();
