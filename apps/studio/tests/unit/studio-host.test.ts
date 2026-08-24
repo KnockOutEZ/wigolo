@@ -176,32 +176,36 @@ describe('createStudioHost — session lifecycle', () => {
 });
 
 /**
- * SD1 exit-9 (P3). `before-quit` bounds `shutdown()` at a FIXED `SHUTDOWN_DEADLINE_MS` and, on expiry,
- * leaves via `app.exit(0)` — which truncates every append still in flight and leaves those runs
- * `running` in the durable log forever, the exact loss the handler exists to prevent (law 1). That
- * bound was calibrated against the DEFAULT cap of 8 over a SERIAL walk, so `sessionCap` — a supported
- * knob — quietly bought the defect back: raise it and the walk outgrows the deadline.
+ * SD1 exit-9 (P3). `shutdown()` used to walk its live sessions one after another, while `before-quit`
+ * bounded it with a CONSTANT `SHUTDOWN_DEADLINE_MS` whose expiry is an `app.exit(0)` — and that
+ * truncates every append still in flight, leaving those runs `running` in the durable log forever
+ * (law 1). The walk's cost was linear in `sessionCap` and the bound was not, so the two were coupled
+ * across two files with nothing holding them in step.
  *
- * The clock is virtual, and has to be. The claim is about ~12s of simulated broker round trips, which
- * is not time a unit test may actually spend; and an in-memory append that resolves in the same tick
- * makes a serial walk and a concurrent one indistinguishable, so a test without a cost model here
- * would pass against the defect.
+ * What this pins is that the walk OVERLAPS its sessions, which is the property that decouples them —
+ * not a latency figure. The per-append cost below is a deliberate cost MODEL rather than a
+ * measurement, and the distinction is load-bearing: a real append is milliseconds (measured on the
+ * built app: ~2.8ms per session serially against a ~4.15s quit that is flat in the session count), so
+ * the truncation this decoupling forecloses is latent rather than live — and an in-memory fake that
+ * resolves in the same tick makes a serial walk and a concurrent one indistinguishable, so a test with
+ * NO cost model would pass against the defect. The clock is virtual for the same reason the model is
+ * large: ~12s of simulated appends is not time a unit test may actually spend.
  *
- * Inversion (run against the serial `for` walk restored): 1 of 24 terminal appends inside the budget
- * below, and 19 of 24 by the full deadline — a partial flush, which is the shape of the bug.
+ * Inversion, measured against the serial `for` walk restored: 1 of 24 terminal appends inside the
+ * budget below, and 19 of 24 by the full deadline — a partial flush, which is the shape of the bug.
  */
 describe('createStudioHost — shutdown at a raised session cap', () => {
   /** index.ts's backstop, mirrored. The number the healthy path has to stay clear of. */
   const SHUTDOWN_DEADLINE_MS = 10_000;
   /**
-   * One append's broker round trip, taken from the shipped calibration: eight live sessions cost ~4.2s
-   * serially, and each session is two appends — the `run_ended` detach, then the terminal event.
+   * Modelled cost of ONE append. Two per session — the `run_ended` detach, then the terminal event.
+   * Far above the real broker's few milliseconds, on purpose: what has to be visible here is the SHAPE
+   * (does the fleet's cost add up, or overlap), and at the true latency both shapes finish instantly.
    */
   const APPEND_MS = 260;
   /**
-   * Above the default 8, and picked so a serial walk cannot pass by luck: 24 × 2 × 260ms ≈ 12.5s of
-   * appends against a 10s deadline. An operator raising `sessionCap` is the ordinary way to be here —
-   * this is a supported configuration, not a stress test.
+   * Sized so a serial walk cannot pass by luck: 24 × 2 × 260ms ≈ 12.5s of modelled appends against a
+   * 10s deadline. 24 is above the default cap of 8 and well inside what `sessionCap` accepts.
    */
   const RAISED_CAP = 24;
   /** What ONE session costs. A concurrent walk finishes the whole fleet in about this. */

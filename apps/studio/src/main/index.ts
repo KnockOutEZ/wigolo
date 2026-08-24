@@ -505,18 +505,19 @@ async function createWindow(): Promise<void> {
    *
    * The bound is a backstop for a WEDGED broker, so it must sit well clear of what a healthy quit
    * costs — a deadline ordinary use brushes against is not a backstop, it is a truncation with a
-   * timer. Measured: eight live sessions cost ~4.2s here while `shutdown()` still walked them
-   * serially, each detach and append being a broker round trip. That made a healthy quit's cost linear
-   * in `sessionCap`, which is a supported knob: at ~19 sessions the walk crossed this bound and the
-   * appends at the tail of it were truncated by the `app.exit(0)` below — the exact loss this handler
-   * exists to prevent. So the fix belongs in `shutdown()`, not here: it now ends its sessions
-   * concurrently, and a healthy quit costs about one session's round trips whatever the cap is.
+   * timer. Re-measured on a warm broker (SD1 exit-9): a whole quit is ~4.15s and does NOT move with
+   * the number of live sessions — 1, 8, 24 and 48 all land within noise of each other. An earlier note
+   * here read that ~4.2s as the cost of `shutdown()`'s session walk. It is not: the walk itself is
+   * milliseconds (~2.8ms per session while it was serial, ~1.8ms now that it ends its sessions
+   * concurrently), and the remainder is fixed teardown that no session count changes. 10s therefore
+   * keeps the headroom it was chosen for, and still sits under the 15s the e2e lane bounds `close()`
+   * at, so a slow quit cannot turn into a red lane either.
    *
-   * A cap-derived deadline would have been the other way to close it and is deliberately NOT what this
-   * is. Scaling the bound with `sessionCap` scales the WEDGED case too, and would push a stuck quit
-   * past the 15s the e2e lane bounds `close()` at — trading a truncated log for an unquittable app and
-   * a red lane. A constant is correct precisely because the healthy cost is now a constant too: 10s
-   * keeps the headroom and still sits under that 15s.
+   * `shutdown()` walking serially still had to go, because it put the healthy cost in step with
+   * `sessionCap` while this bound stayed constant — latent rather than live, but a coupling with
+   * nothing holding the two ends together. Deriving the deadline from the cap was the other way to
+   * break it and is deliberately NOT what this is: scaling the bound scales the WEDGED case too, and
+   * could push a stuck quit past that 15s — trading a truncated log for an unquittable app.
    */
   const SHUTDOWN_DEADLINE_MS = 10_000;
   let quitState: 'idle' | 'shutting-down' | 'cleared' = 'idle';

@@ -1444,18 +1444,29 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     /**
      * Concurrent across sessions, on purpose.
      *
-     * `before-quit` bounds this walk with a fixed deadline (index.ts `SHUTDOWN_DEADLINE_MS`) that was
-     * calibrated against the DEFAULT cap. A serial walk put a healthy quit's cost in step with
-     * `sessionCap` — two broker round trips per session, the detach and the terminal append — so a host
-     * configured above the default crossed the backstop, `app.exit(0)` fired, and the sessions at the
-     * TAIL of the walk lost the very append this path exists to land: a run left `running` in the
-     * durable log forever (law 1).
+     * `before-quit` bounds this walk with a CONSTANT deadline (index.ts `SHUTDOWN_DEADLINE_MS`) whose
+     * expiry is an `app.exit(0)` — and that truncates whatever appends are still in flight, leaving
+     * those runs `running` in the durable log forever (law 1). A serial walk made the cost of this
+     * path linear in `sessionCap` while the bound stayed constant: a coupling neither end can see,
+     * since the deadline is chosen in one file and the work it has to outlast grows in another.
      *
-     * Nothing here is order-dependent between sessions. Each context owns exactly one tab (law 4), and
-     * everything that must be serialised already is, one layer down: the view-model's per-tab and
-     * per-run lanes order the writes for a given tab/run, and the store's `BEGIN IMMEDIATE` orders the
-     * transactions. So the ends overlap and a healthy quit costs about one session's round trips
-     * rather than N of them — the cost no longer scales with the cap at all.
+     * Measured rather than assumed, and the measurement matters. On a warm broker the serial walk cost
+     * ~2.8ms per session — 7/20/61/135ms at 1/8/24/48 live sessions — against a whole quit of ~4.15s
+     * that does not move with the session count at all. So the truncation was LATENT, not live: the
+     * walk would need thousands of sessions to reach 10s, and the "eight live sessions cost ~4.2s here"
+     * note this file's deadline was calibrated from was reading a FIXED teardown cost as the price of
+     * this loop. Ending the sessions concurrently takes the walk to ~1.8ms per session (15/40/88ms at
+     * 8/24/48) and, more to the point, stops the deadline needing to be re-reasoned whenever the cap
+     * moves.
+     *
+     * It does not make the walk constant and cannot: the broker is one pipe and the store commits with
+     * `BEGIN IMMEDIATE`, so the appends still land one at a time downstream. What overlaps is
+     * everything either side of them.
+     *
+     * Nothing here is order-dependent BETWEEN sessions. Each context owns exactly one tab (law 4), and
+     * everything that must be serialised already is one layer down: the view-model's per-tab and
+     * per-run lanes order the writes for a given tab/run, and that `BEGIN IMMEDIATE` orders the
+     * transactions.
      */
     async shutdown(): Promise<void> {
       const live = [...contexts.values()].filter((ctx) => ctx.status === 'live');
