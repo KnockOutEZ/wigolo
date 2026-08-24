@@ -20,11 +20,24 @@
 import type { ChildProcess } from 'node:child_process';
 
 /**
- * How long the graceful door gets before the kill. Generous on purpose: the exit drain is synchronous
- * file I/O, so the only thing that can eat this budget is a machine under real load, and killing a
- * broker that was about to land its tail is exactly the failure this module exists to remove.
+ * How long the graceful door gets before the kill. The exit drain is synchronous file I/O behind an
+ * in-process event, so a healthy broker is gone in milliseconds and the only thing that can eat this
+ * budget is a machine under real load — killing a broker that was about to land its tail is the exact
+ * failure this module exists to remove.
+ *
+ * Sized against the app's quit, not in the abstract. `before-quit` bounds the whole shutdown at 10s
+ * and a healthy quit already costs ~4.15s of that, so this budget plus {@link BROKER_KILL_REAP_MS}
+ * has to leave the wedged-broker case comfortably inside it. Otherwise a broker that stops answering
+ * would push the quit past its deadline and cost the app the teardown that runs AFTER the stop.
  */
-export const BROKER_STOP_GRACE_MS = 5_000;
+export const BROKER_STOP_GRACE_MS = 3_000;
+
+/**
+ * How long to wait for the corpse after the escalation. A SIGKILLed process is reaped promptly or not
+ * at all, so this is a reap window rather than a second grace period — spending the full grace again
+ * here would double the wedged-broker cost for nothing.
+ */
+export const BROKER_KILL_REAP_MS = 500;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -59,5 +72,5 @@ export async function stopBrokerChild(
   // The graceful door did not land. SIGKILL, not SIGTERM: SIGTERM is the door we just found closed on
   // Windows, and on POSIX it would only re-enter the handler this child has evidently stopped serving.
   try { child.kill('SIGKILL'); } catch { /* raced its own exit */ }
-  await Promise.race([exited, sleep(graceMs)]);
+  await Promise.race([exited, sleep(BROKER_KILL_REAP_MS)]);
 }
