@@ -347,4 +347,59 @@ describe('the decision mirror, with an append still in flight', () => {
     expect(store.appends).toEqual([]);
     expect(vm.snapshot(runId)!.status).toBe('done');
   });
+
+  /**
+   * The same card, one round-trip earlier — the row above proves nothing about this one.
+   *
+   * There, `endRun` had already landed, so the projection the deadline read was already terminal. The
+   * refusal that covered it was a check-then-act in `settle`: read `snapshot(runId)?.status`, then
+   * await the append. Between those two sits a round-trip, and this is the interleaving inside it —
+   * the session closing while a two-minute clock runs out. The auto-deny reads a projection
+   * `run.completed` has not moved yet, passes, and the store commits both in arrival order, so the
+   * append-only log ends up carrying a card's resolution AFTER the run that owned it finished. No
+   * replay repairs that: every surface reading the log afterwards — here, over REST, in a replay, in
+   * the audit — sees a finished run answering a question.
+   *
+   * Only the TERMINAL append is parked, and that is deliberate: park the resolution too and it stays
+   * parked past the assertion, which would make this row pass because nothing was written rather than
+   * because the write was refused — a test that cannot fail. With one gate the deadline's append is
+   * free to commit, so the refusal is the only thing standing between this log and an out-of-order
+   * envelope. Release the guard at `RunViewModel.resolveDecision` and this row goes red with that
+   * envelope in it.
+   */
+  it('writes nothing for a deadline that fires while the run\'s terminal append is still in flight', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+
+    store.gate(1);
+    const ending = vm.endRun(runId, 'completed');
+    await settled(); // `run.completed` is on the wire; nothing is committed, so the projection still says running
+
+    nowMs += 120_000 + 1_000;
+    for (const t of [...timers]) t.fire();
+    await settled(); // the auto-deny has now decided, against that not-yet-terminal projection
+
+    await store.release();
+    await ending;
+
+    // The log's ORDER is the claim, not just the count: nothing may follow the terminal event.
+    expect(store.log.get(runId)!.map((e) => e.type)).toEqual(['run.created', 'decision.requested', 'run.completed']);
+    expect(store.appends.map((a) => a.type)).toEqual(['run.completed']);
+    expect(vm.snapshot(runId)!.status).toBe('done');
+  });
+
+  /**
+   * The vacuous half of the same guard: `settle` defaulted a missing status to `running`, so a run
+   * that had fallen out of the projection entirely passed the check it knew least about and got an
+   * append anyway. The store is the wrong place to find that out — a blind write to a run this process
+   * is not holding is a write it cannot say is legal.
+   */
+  it('writes nothing for a card whose run this process is not holding', async () => {
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+
+    await vm.resolveDecision('rZZZ', 'ap-1', 'approved', 'human');
+
+    expect(store.appends).toEqual([]);
+  });
 });
