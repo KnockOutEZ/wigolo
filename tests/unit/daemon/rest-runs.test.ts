@@ -1830,6 +1830,186 @@ describe('the SSE tail is durable at its two edges — the heal gate and a resum
     expect(ex.written().some((c) => c.startsWith(': resume point'))).toBe(false);
     ex.close();
   });
+
+  /**
+   * A log whose PAGE reads and single-row PROBES both park until this fixture is told to let one
+   * through, and that records the cursor every page read starts from.
+   *
+   * The cursor is what says WHICH read is running: every durable read on this route pumps from the
+   * point it was told about, so the reconcile's read, the flush's fresh heal and a re-dispatched
+   * pending heal are told apart by where they re-read from rather than by a spy on a private.
+   */
+  function gatedStore(log: RunEvent[]): {
+    store: RunsStore;
+    holdPages: () => void;
+    freePages: () => void;
+    parkedPages: () => number;
+    releasePage: () => void;
+    pageCursors: () => number[];
+    parkProbes: () => void;
+    releaseProbes: () => void;
+    probesParked: () => number;
+    maxConcurrentPages: () => number;
+  } {
+    let hold = false;
+    const parked: Array<() => void> = [];
+    const cursors: number[] = [];
+    let probeGate: Promise<void> | null = null;
+    let openProbes = (): void => {};
+    let probesParked = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    return {
+      store: {
+        create: async () => { throw new Error('not used'); },
+        list: async () => ({ runs: [] }),
+        get: async () => undefined,
+        exists: async () => true,
+        eventsSince: async (_id: string, cursor: number, limit?: number) => {
+          if (limit === 1) {
+            if (probeGate !== null) {
+              probesParked += 1;
+              await probeGate;
+            }
+            return log.filter((e) => e.seq > cursor).slice(0, 1);
+          }
+          cursors.push(cursor);
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          try {
+            // Filtering AFTER the gate is the point: it lets a row commit to the log while a read is
+            // parked, which is how a heal that could not fill a hole and one that can are staged.
+            if (hold) await new Promise<void>((resolve) => { parked.push(resolve); });
+            else await new Promise<void>((r) => setTimeout(r, 1));
+            const after = log.filter((e) => e.seq > cursor);
+            return limit === undefined ? after : after.slice(0, limit);
+          } finally {
+            inFlight -= 1;
+          }
+        },
+      },
+      holdPages: () => { hold = true; },
+      freePages: () => { hold = false; for (const release of parked.splice(0)) release(); },
+      parkedPages: () => parked.length,
+      releasePage: () => { const release = parked.shift(); if (release !== undefined) release(); },
+      pageCursors: () => [...cursors],
+      parkProbes: () => { probeGate = new Promise<void>((resolve) => { openProbes = resolve; }); },
+      releaseProbes: () => { const open = openProbes; probeGate = null; open(); },
+      probesParked: () => probesParked,
+      maxConcurrentPages: () => maxInFlight,
+    };
+  }
+
+  /**
+   * The case the two rows above cannot reach: the read that owns the stream ends WITHOUT filling the
+   * hole, so `goLive` is not what closes it.
+   *
+   * Both of those rows let the reconcile's own read cover the missing seq, which means the flush
+   * fills the hole and every later heal is a no-op — they would hold identically if the deferral
+   * were dropped on the floor. Here the missing row commits only AFTER the holding read has paged
+   * past it, so the holding read ends with the hole open, the flush's own gap door re-fires `onGap`
+   * from inside `goLive` while `busy` is still held, and a SECOND durable read is what puts the
+   * missing seq on the wire.
+   *
+   * What it pins is the gate under that shape: the deferred heal must not start its pump across the
+   * read that owns the stream, and the stream must still land gapless afterwards. It does NOT pin
+   * the pending-heal QUEUE — see `known-issues.md` (`SSE tail: pendingHeal re-dispatch is shadowed`)
+   * for why no wire-visible behaviour depends on it.
+   */
+  it('closes a hole with a second read when the holding read ends without filling it', async () => {
+    const id = '7fqm';
+    const log = [ev(1, 'run.created')];
+    const fixture = gatedStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id);
+    await until(() => ex.seqs().length === 1);
+
+    // From here every page read parks, so the interleave below is forced rather than raced.
+    fixture.holdPages();
+    fixture.parkProbes();
+    await until(() => fixture.probesParked() >= 1);
+
+    // Committed and durable with nobody told — the lost notify the silence door exists for.
+    log.push(ev(2, 'tab.attached'));
+    // And a live event that skips seq 3, which is in NO log yet: the gap door fires and defers its
+    // heal, and the read about to take the gate cannot possibly fill the hole it reported.
+    publishRunEvent(id, ev(4, 'tab.attached'));
+    fixture.releaseProbes();
+    // Re-parked immediately: a second reconcile would be a second way to close the hole, and the
+    // rows below would then pass on a stream this test never actually drove into the case.
+    fixture.parkProbes();
+
+    // The reconcile's read, page one — from its last delivered seq, and it hands back seq 2 only.
+    await until(() => fixture.parkedPages() >= 1);
+    fixture.releasePage();
+    // Page two is empty, so the read is over: seq 3 still missing, seq 4 still held behind the hole.
+    await until(() => fixture.parkedPages() >= 1);
+    fixture.releasePage();
+
+    // The heal the flush re-fired is now parked on its own first page. Only NOW does the missing row
+    // commit, so nothing the holding read did could have been what filled the hole.
+    await until(() => fixture.parkedPages() >= 1);
+    log.push(ev(3, 'tab.attached'));
+    fixture.freePages();
+
+    await until(() => ex.seqs().length === 4);
+    // Gapless, in order, exactly once: the hole was filled rather than written over or skipped.
+    expect(ex.seqs()).toEqual([1, 2, 3, 4]);
+    expect(ex.ended()).toBe(false);
+    // The load-bearing assertion. Without the `busy` gate the deferred heal starts its pump straight
+    // across the reconcile's and this is 2 — two reads spending one byte budget, each deciding
+    // whether to end the stream off a `lastEmitted` the other is moving.
+    expect(fixture.maxConcurrentPages()).toBe(1);
+    // And the stream did not heal itself by accident. Every page read this route made, in order:
+    // the replay (0 -> [1], 1 -> []), the reconcile's read that ENDED at seq 2 (1 -> [2], 2 -> []),
+    // then a second read re-reading from the same hole once the row existed (2 -> [3], 3 -> []).
+    expect(fixture.pageCursors()).toEqual([0, 1, 1, 2, 2, 3]);
+    ex.close();
+  });
+
+  /**
+   * The other end of the same shape: the holding read leaves the hole open and the log never grows
+   * the missing row, so no re-read can honestly fill it.
+   *
+   * `healInner` ends the stream rather than flushing what it has — the client comes back through the
+   * reconnect door with its `Last-Event-ID` and replays from the log. Writing the held seq 4 over a
+   * missing seq 3 is the one thing this route promises never to do, and it is exactly what a heal
+   * that skipped its own end-of-stream check would produce on this interleave.
+   */
+  it('ends the stream when the log cannot fill a hole the holding read left open', async () => {
+    const id = '7fqn';
+    const log = [ev(1, 'run.created')];
+    const fixture = gatedStore(log);
+    const ex = openExchange();
+    await tail(ex, fixture.store, id);
+    await until(() => ex.seqs().length === 1);
+
+    fixture.holdPages();
+    fixture.parkProbes();
+    await until(() => fixture.probesParked() >= 1);
+
+    log.push(ev(2, 'tab.attached'));
+    publishRunEvent(id, ev(4, 'tab.attached'));
+    fixture.releaseProbes();
+    fixture.parkProbes();
+
+    await until(() => fixture.parkedPages() >= 1);
+    fixture.releasePage();
+    await until(() => fixture.parkedPages() >= 1);
+    fixture.releasePage();
+
+    // Seq 3 never commits. Every read from here is honest and empty.
+    await until(() => fixture.parkedPages() >= 1);
+    fixture.freePages();
+
+    await until(() => ex.ended());
+    // Seq 4 was held and stays held: the wire ends where the log ran out, with no hole in it.
+    expect(ex.seqs()).toEqual([1, 2]);
+    // Non-vacuous: a heal really did re-read from the hole (the second read from cursor 2) before
+    // deciding to end, rather than the stream ending on the reconcile's own empty page.
+    expect(fixture.pageCursors()).toEqual([0, 1, 1, 2, 2]);
+    expect(fixture.maxConcurrentPages()).toBe(1);
+  });
 });
 
 /**
