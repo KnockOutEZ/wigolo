@@ -122,16 +122,25 @@ function carriesArticle(main: VisibilityElement): boolean {
  * `body` — the only root passed — is never a candidate because `STRUCTURAL` filters it out.
  */
 function hasVisibleTextOutside(root: VisibilityElement): boolean {
-  for (const child of Array.from(root.childNodes)) {
-    if (child.nodeType === TEXT_NODE) {
-      if ((child.textContent ?? '').trim() !== '') return true;
-      continue;
+  // An explicit stack rather than recursion, because the depth here is the page's nesting
+  // depth and the page picks it: ~40 KB of nested `<div>`s overflowed the call stack, and
+  // `cleanHtml` catches a throw from this pass and falls back to the RAW html — so the
+  // overflow switched BOTH pre-passes off and carried the page's hidden copy straight
+  // through. A WYSIWYG guard may fail closed; failing open on input the untrusted party
+  // authors is the one direction that cannot stand.
+  const stack: VisibilityParentNode[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === TEXT_NODE) {
+        if ((child.textContent ?? '').trim() !== '') return true;
+        continue;
+      }
+      if (child.nodeType !== ELEMENT_NODE) continue;
+      const el = child as VisibilityElement;
+      if (NON_RENDERED.has(el.tagName)) continue;
+      if (isHidden(el)) continue;
+      stack.push(el);
     }
-    if (child.nodeType !== ELEMENT_NODE) continue;
-    const el = child as VisibilityElement;
-    if (NON_RENDERED.has(el.tagName)) continue;
-    if (isHidden(el)) continue;
-    if (hasVisibleTextOutside(el)) return true;
   }
   return false;
 }

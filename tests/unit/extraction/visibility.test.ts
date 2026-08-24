@@ -177,6 +177,26 @@ describe('stripHiddenDom', () => {
     expect(out).not.toContain('LEAK beside the shell');
   });
 
+  it('deep nesting cannot make the pass throw, because a throw here fails OPEN', () => {
+    // Found while hoisting the walk (SD1 exit-final). The discriminator used to recurse per
+    // DOM level, and the page picks how many levels there are — ~40 KB of nested <div>s
+    // overflowed the call stack. That matters far more than a crash: `cleanHtml` catches a
+    // throw from this pass and returns the RAW html, so the overflow switched the whole
+    // WYSIWYG guard off and the hidden draft below rode through untouched. The nesting is
+    // FIRST on purpose: parked after the visible <p> the walk short-circuits on that text
+    // and never descends, and the row would pass with the recursion restored.
+    const out = strip(
+      '<html><body>' +
+        '<div>'.repeat(5000) +
+        '</div>'.repeat(5000) +
+        '<div hidden><main>a</main></div>' +
+        '<div hidden>SECRETDRAFT do not publish</div>' +
+        '<p>visible lead</p></body></html>',
+    );
+    expect(out).toContain('visible lead');
+    expect(out).not.toContain('SECRETDRAFT');
+  });
+
   it('never removes <body> or <html> themselves', () => {
     const { document } = parseHTML(
       '<html><body hidden><p>pre-hydration body copy</p></body></html>',
