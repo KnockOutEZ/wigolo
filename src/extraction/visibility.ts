@@ -99,8 +99,8 @@ function carriesArticle(main: VisibilityElement): boolean {
 }
 
 /**
- * True when the document paints any text OUTSIDE `excluded` — the discriminator between a
- * page that IS a pre-hydration shell and a page that merely contains one.
+ * True when the document paints any text outside its hidden subtrees — the discriminator
+ * between a page that IS a pre-hydration shell and a page that merely contains one.
  *
  * Narrowing the rescue to a non-empty `<main>` (A-92-1) did not take the switch away from
  * the untrusted party, because an injection payload is non-empty by construction:
@@ -115,19 +115,32 @@ function carriesArticle(main: VisibilityElement): boolean {
  * Hidden subtrees are skipped as they are elsewhere in this pass: counting a second hidden
  * node as "visible text outside" would break the rescue for genuine shells, which routinely
  * ship hidden chrome (GitHub's session banner is the canonical one) beside their wrapper.
+ *
+ * That skip is also why the candidate under test needs no exclusion of its own, and why the
+ * answer is one document-wide fact rather than one per candidate: a candidate only reaches
+ * this question after `isHidden` held for it, so the walk drops it below on its own, and
+ * `body` — the only root passed — is never a candidate because `STRUCTURAL` filters it out.
  */
-function hasVisibleTextOutside(root: VisibilityElement, excluded: VisibilityElement): boolean {
-  for (const child of Array.from(root.childNodes)) {
-    if (child === excluded) continue;
-    if (child.nodeType === TEXT_NODE) {
-      if ((child.textContent ?? '').trim() !== '') return true;
-      continue;
+function hasVisibleTextOutside(root: VisibilityElement): boolean {
+  // An explicit stack rather than recursion, because the depth here is the page's nesting
+  // depth and the page picks it: ~40 KB of nested `<div>`s overflowed the call stack, and
+  // `cleanHtml` catches a throw from this pass and falls back to the RAW html — so the
+  // overflow switched BOTH pre-passes off and carried the page's hidden copy straight
+  // through. A WYSIWYG guard may fail closed; failing open on input the untrusted party
+  // authors is the one direction that cannot stand.
+  const stack: VisibilityParentNode[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === TEXT_NODE) {
+        if ((child.textContent ?? '').trim() !== '') return true;
+        continue;
+      }
+      if (child.nodeType !== ELEMENT_NODE) continue;
+      const el = child as VisibilityElement;
+      if (NON_RENDERED.has(el.tagName)) continue;
+      if (isHidden(el)) continue;
+      stack.push(el);
     }
-    if (child.nodeType !== ELEMENT_NODE) continue;
-    const el = child as VisibilityElement;
-    if (NON_RENDERED.has(el.tagName)) continue;
-    if (isHidden(el)) continue;
-    if (hasVisibleTextOutside(el, excluded)) return true;
   }
   return false;
 }
@@ -165,6 +178,22 @@ export function stripHiddenDom(document: VisibilityDocument): void {
     }
   }
 
+  // The shell-vs-contains-shell question is one document-wide fact, not one per candidate:
+  // nothing this loop does can change the answer, because every node it removes lies inside
+  // a hidden subtree and the walk already skips those. Asking it per candidate made a page
+  // of K hidden `<main>` wrappers O(K × DOM) — a page-controlled synchronous stall on the
+  // unauthenticated fetch path, measured at 4.1 s for K=500 beside a 50 000-node body.
+  // Lazy, so an ordinary page — where no candidate ever reaches the question — never walks.
+  let paintsOutsideHidden: boolean | undefined;
+  const pageIsShell = (): boolean => {
+    // No body is no evidence of shell-ness, and this is a suppression gate: the absence of
+    // the signal declines the exemption rather than granting it. Honouring the page's own
+    // `hidden` is the safe direction to fall.
+    if (body === null) return false;
+    paintsOutsideHidden ??= hasVisibleTextOutside(body);
+    return !paintsOutsideHidden;
+  };
+
   for (const el of candidates) {
     if (STRUCTURAL.has(el.tagName)) continue;
     if (!isHidden(el)) continue;
@@ -180,15 +209,7 @@ export function stripHiddenDom(document: VisibilityDocument): void {
     // shell rather than merely contain one. Neither alone survives an author who wants the
     // exemption; the second is the one an injection payload cannot satisfy.
     const main = el.querySelector('main');
-    if (
-      main !== null &&
-      carriesArticle(main) &&
-      // No body is no evidence of shell-ness, and this is a suppression gate: the absence
-      // of the signal declines the exemption rather than granting it. Honouring the page's
-      // own `hidden` is the safe direction to fall.
-      body !== null &&
-      !hasVisibleTextOutside(body, el)
-    ) {
+    if (main !== null && carriesArticle(main) && pageIsShell()) {
       pruneToMain(el, main);
       continue;
     }
