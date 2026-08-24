@@ -951,13 +951,14 @@ export class RunViewModel {
    * Fold one envelope onto the projection a condensed run keeps, instead of asking the store for a
    * fresh one. Returns false when this envelope is not foldable, and the caller replays.
    *
-   * SD1 exit-12 bounded a live run's RETENTION by re-condensing at `REMATERIALIZE_MAX_EVENTS`, and accepted
-   * "one bounded `getRun` per burst" as the steady state. A burst window is one broker round-trip, so
-   * for a STREAM that is a round-trip per envelope, forever: `adopt`'s in-flight coalescing paces the
-   * loop at 1/RTT, it does not end it. And the read it paces is not small — `getRun` projects the run,
-   * which walks every `tab.attached`/`tab.detached` row the run has ever written plus the pending-card
-   * anti-join, on the broker child that serialises every other DB call. The run that pays it is the
-   * fifty-thousand-action one that emits a `cost.recorded` per browser action, for 48,000 envelopes.
+   * SD1 exit-12 bounded a live run's RETENTION by re-condensing at `REMATERIALIZE_MAX_EVENTS`, and
+   * accepted "one bounded `getRun` per burst" as the steady state. A burst window is one broker
+   * round-trip, so for a STREAM that is a round-trip per envelope, forever: `adopt`'s in-flight
+   * coalescing paces the loop at 1/RTT, it does not end it. And the read it paces is not small —
+   * `getRun` projects the run, which walks every `tab.attached`/`tab.detached` row the run has ever
+   * written plus the pending-card anti-join, on the broker child that serialises every other DB
+   * call. The run that pays it is the fifty-thousand-action one that emits a `cost.recorded` per
+   * browser action, for 48,000 envelopes.
    *
    * The envelope is at exactly `lastSeq + 1`, so nothing is missing and the projection can move by
    * itself. It moves by `projectRun`'s OWN rules rather than a second copy of them: the four seedable
