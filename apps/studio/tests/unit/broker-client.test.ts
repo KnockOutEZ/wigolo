@@ -91,6 +91,45 @@ describe('broker-client', () => {
     expect(seen).toEqual([{ id: 1, type: 'clip' }]);
   });
 
+  /**
+   * SD1 exit-9 finding K2. These loops run inside the child's `stdout` data callback, which is the
+   * Electron main's event loop and nothing else: there is no caller above them to catch anything, so
+   * an unisolated handler throw is an uncaught exception that takes the whole app down — the
+   * background service killing its host, the one thing §11 says it must never be able to do. The
+   * second half is quieter and just as bad: a notify is a live tail, not a request, so the handlers
+   * after the throwing one never get an envelope that will not be sent again.
+   *
+   * The `not.toThrow()` is the real assertion. Unisolated, the throw escapes `onLine`, then the
+   * `stdout.emit('data', …)` inside `line()`, and lands right here.
+   */
+  it('a throwing run-event handler kills neither the caller nor its siblings', () => {
+    const children: FakeChild[] = [];
+    const warnings: string[] = [];
+    const client = newClient({ children, warn: (l) => { warnings.push(l); } });
+    const seen: string[] = [];
+    client.onRunEvent(() => { seen.push('view-model'); });
+    client.onRunEvent(() => { throw new Error('the fold blew up'); });
+    client.onRunEvent((runId) => { seen.push(runId); });
+
+    expect(() => children[0].line({ notify: 'run-event', runId: 'rAB1', envelope: { seq: 1, type: 'run.created' } })).not.toThrow();
+    expect(seen, 'the throwing handler starved the one after it of an envelope nothing re-sends').toEqual(['view-model', 'rAB1']);
+    expect(warnings.join(''), 'the throw was swallowed silently').toMatch(/run-event listener threw/);
+  });
+
+  /** The artifact tail is the same loop with the same consequence, one line above it. */
+  it('a throwing artifact handler kills neither the caller nor its siblings', () => {
+    const children: FakeChild[] = [];
+    const warnings: string[] = [];
+    const client = newClient({ children, warn: (l) => { warnings.push(l); } });
+    const seen: unknown[] = [];
+    client.onArtifact(() => { throw new Error('the capture pane blew up'); });
+    client.onArtifact((d) => seen.push(d));
+
+    expect(() => children[0].line({ notify: 'artifact', delta: { id: 1, type: 'clip' } })).not.toThrow();
+    expect(seen).toEqual([{ id: 1, type: 'clip' }]);
+    expect(warnings.join('')).toMatch(/artifact listener threw/);
+  });
+
   it('fail-fast: a pending call rejects when the child exits', async () => {
     const children: FakeChild[] = [];
     const client = newClient({ children });

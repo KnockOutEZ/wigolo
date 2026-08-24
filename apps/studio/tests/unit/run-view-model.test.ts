@@ -1035,6 +1035,7 @@ describe('RunViewModel — the deadline announces itself', () => {
 class ParkableStore implements RunStoreClient {
   private readonly handlers: Array<(runId: string, event: RunEvent) => void> = [];
   private readonly parked = new Map<string, Promise<void>>();
+  private tailGate: Promise<void> | undefined;
   private drops = 0;
 
   constructor(private readonly inner: FakeRunStore) {
@@ -1046,6 +1047,22 @@ class ParkableStore implements RunStoreClient {
 
   /** The next `n` committed envelopes never reach the live tail — the dropped notify a gap means. */
   dropNextNotify(n = 1): void { this.drops = n; }
+
+  /**
+   * Hold the next EMPTY `eventsSince` answer — the last page of a replay, the one that tells
+   * `readLog` it has reached the tail.
+   *
+   * `park('eventsSince')` cannot express this: it holds the FIRST page, and `readLog` then asks for
+   * the next one against a store that has moved on, so the envelope the test is trying to lose gets
+   * picked up by the same read and the race never happens. The wire state that loses it is the other
+   * end of the same read — every page fetched, the terminating empty one still crossing the pipe —
+   * because that is the answer `retain` is about to pin `lastSeq` to.
+   */
+  parkTailPage(): () => void {
+    let release!: () => void;
+    this.tailGate = new Promise<void>((resolve) => { release = () => resolve(); });
+    return release;
+  }
 
   /** Hold the next call to `method` AFTER it has computed its answer. Returns the release. */
   park(method: 'runFacts' | 'listRunLogs' | 'eventsSince'): () => void {
@@ -1069,7 +1086,13 @@ class ParkableStore implements RunStoreClient {
   runExists(runId: string) { return this.inner.runExists(runId); }
   async listRunLogs(opts?: ListRunsOptions) { return this.hold('listRunLogs', await this.inner.listRunLogs(opts)); }
   async eventsSince(runId: string, since: number, limit: number) {
-    return this.hold('eventsSince', await this.inner.eventsSince(runId, since, limit));
+    const page = await this.inner.eventsSince(runId, since, limit);
+    if (page.length === 0 && this.tailGate) {
+      const gate = this.tailGate;
+      this.tailGate = undefined;
+      await gate;
+    }
+    return this.hold('eventsSince', page);
   }
   async runFacts(runId: string) { return this.hold('runFacts', await this.inner.runFacts(runId)); }
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void { this.handlers.push(handler); }
@@ -1134,5 +1157,112 @@ describe('RunViewModel — replays that race each other', () => {
 
     expect(vm.snapshot(run.id)?.status, 'a stale boot page rewound a fresher log').toBe('done');
     expect(vm.retainedEventCount(run.id), 'the rewound log kept envelopes a sealed run has already dropped').toBe(0);
+  });
+});
+
+/**
+ * SD1 exit-9 finding K2 — the OTHER adoption race, the one `describe` above did not cover.
+ *
+ * That one is about a gap: a replace replay deduped against a non-replace one. This one is about a
+ * run this projection has never seen at all, which `applyEvent` answers with a NON-replace adopt.
+ * That arm is reached once per envelope until the adoption retains a log, so a second envelope
+ * landing while the first one's read is on the wire used to coalesce into a replay that had already
+ * read past it — and `again` was set by `opts.replace` alone, so nothing asked for the pass that
+ * would have picked it up. `retain` then pins `lastSeq` below the envelope, and a heal needs a LATER
+ * envelope to open a gap, so when the lost one was the run's last there is no later envelope and
+ * never will be.
+ *
+ * A run created over REST reaches this path and only this path: its envelopes arrive through
+ * `store.onRunEvent` with nothing in this process having written them.
+ */
+describe('RunViewModel — an envelope that lands while an unknown run is being adopted', () => {
+  it('still heals when the racing envelope was the run’s last', async () => {
+    const inner = new FakeRunStore();
+    const store = new ParkableStore(inner);
+    // Created before this projection existed, by another writer. `hydrate` is never called, so the
+    // only way this run can ever appear here is the unknown-run arm of `applyEvent`.
+    const run = await inner.createRun({ task: 'settle the invoice' });
+    const vm = new RunViewModel(store);
+    expect(vm.list(), 'the run was already known, so the unknown-run arm is not what runs').toEqual([]);
+
+    const deliverTail = store.parkTailPage();
+    // A — the envelope that wakes the run. Its adoption pages to the tail and parks there.
+    await inner.appendEvent(run.id, { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId: 'tab-9' } });
+    await vi.waitFor(() => expect(inner.eventReads.map((r) => r.since)).toEqual([0, 2]));
+
+    // B — committed while that read is still on the wire. `applyEvent` finds no log yet, so it asks
+    // to adopt again; the store has moved, the read in flight has not, and B is terminal.
+    await inner.appendEvent(run.id, { actor: { kind: 'system' }, type: 'run.completed', payload: {} });
+    deliverTail();
+
+    await vi.waitFor(() => expect(vm.snapshot(run.id)?.status, 'the app said running for a run the store had already finished').toBe('done'));
+    expect(vm.ownerOf('tab-9'), 'the heal dropped the envelope that started the adoption').toBe(run.id);
+    // The REST surface projects the SAME log fresh on every request. One log, one answer (law 1).
+    expect(vm.snapshot(run.id)!.status).toBe((await inner.getRun(run.id))!.status);
+  });
+
+  it('ends the adopted log gapless when the racing envelope was not the last', async () => {
+    const inner = new FakeRunStore();
+    const store = new ParkableStore(inner);
+    const run = await inner.createRun({ task: 'reconcile the ledger' });
+    const vm = new RunViewModel(store);
+
+    const deliverTail = store.parkTailPage();
+    await inner.appendEvent(run.id, { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId: 'tab-9' } });
+    await vi.waitFor(() => expect(inner.eventReads.map((r) => r.since)).toEqual([0, 2]));
+
+    await inner.appendEvent(run.id, { actor: { kind: 'agent', driver: 'studio' }, type: 'tab.attached', payload: { tabId: 'tab-b' } });
+    deliverTail();
+
+    await vi.waitFor(() => expect(vm.tabsOf(run.id)).toEqual(['tab-9', 'tab-b']));
+    // The hole itself, not a symptom of it: a live run holds its envelopes, so what it holds and
+    // what the store holds are the same count or the log has a gap in it.
+    expect(vm.retainedEventCount(run.id), 'the adopted log is missing a seq').toBe(inner.log.get(run.id)!.length);
+  });
+});
+
+/**
+ * SD1 exit-9 finding K6 — a fan-out is not a request. Nothing retries it and nothing replays it.
+ *
+ * `publishRunEvent` on the core side has isolated its subscribers from each other since it was
+ * written, with the rationale in a comment above it. The Electron-main fan-out did not, and it is
+ * the one that matters more: it is called from `applyEvent`, which is the broker's live-tail
+ * callback, so a listener's throw had no caller to reach and became an uncaught exception on the
+ * main event loop — the process that owns the menu bar going down because a surface had a bug.
+ */
+describe('RunViewModel — one listener cannot take the fan-out down with it', () => {
+  const collect = (into: Array<{ ms: number; fire: () => void }>) => (cb: () => void, ms: number): (() => void) => {
+    const entry = { ms, fire: cb };
+    into.push(entry);
+    return () => { into.splice(into.indexOf(entry), 1); };
+  };
+
+  it('isolates every listener: a throw reaches neither the caller nor the siblings', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const store = new FakeRunStore();
+      // Collected timers, so the 16 ms coalescing window closes when this test says so and the
+      // second fold below is a second FAN-OUT rather than one folded into the first.
+      const timers: Array<{ ms: number; fire: () => void }> = [];
+      const vm = new RunViewModel(store, () => new Date(), collect(timers));
+      const fired: string[] = [];
+      // The three real subscribers, in the order `index.ts` registers them.
+      vm.onChange(() => { fired.push('state-push'); });
+      vm.onChange(() => { throw new Error('the menu template blew up'); });
+      vm.onChange(() => { fired.push('presentation'); });
+
+      const run = await vm.createRun({ task: 'fan out' });
+      expect(fired, 'the throwing listener starved the one after it').toEqual(['state-push', 'presentation']);
+
+      // …and the next fold too, which is the half a one-off try/catch at the call site would miss.
+      fired.length = 0;
+      await vm.attachTab(run.id, 'tab-a');
+      timers.filter((t) => t.ms === EMIT_COALESCE_MS).forEach((t) => { t.fire(); });
+      expect(fired).toEqual(['state-push', 'presentation']);
+
+      expect(stderr.mock.calls.join(''), 'the throw was swallowed silently').toMatch(/run-projection listener threw/);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
