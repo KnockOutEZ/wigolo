@@ -121,18 +121,26 @@ describe('browser-pool clearance persistence (S-A2 mint)', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.USE_PROXY;
+    delete process.env.PROXY_URL;
     resetConfig();
   });
 
   it('persists a minted cf_clearance with the STEALTH UA + tier:browser after a challenge clears', async () => {
+    process.env.USE_PROXY = 'true';
+    process.env.PROXY_URL = 'http://proxy.example:8080';
+    resetConfig();
     vi.useFakeTimers();
     state.status = 403;
     // First read = challenge; the poll then reads the clearance cookie.
     state.bodies = [CHALLENGE, REAL];
-    state.cookies = [{ name: 'cf_clearance', value: 'TOKEN123', domain: 'blocked.example', expires: 1893456000 }];
+    state.cookies = [
+      { name: 'cf_clearance', value: 'WRONG-HOST', domain: 'other.example', expires: 1893456000 },
+      { name: 'cf_clearance', value: 'TOKEN123', domain: '.blocked.example', expires: 1893456000 },
+    ];
 
     const pool = new MultiBrowserPool();
-    const p = pool.fetchWithBrowser('https://blocked.example/', { stealth: true });
+    const p = pool.fetchWithBrowser('https://blocked.example/', { stealth: true, forceNoProxy: true });
     await vi.advanceTimersByTimeAsync(2000);
     await p;
 
@@ -142,6 +150,7 @@ describe('browser-pool clearance persistence (S-A2 mint)', () => {
     expect(clearance.cookie).toBe('cf_clearance=TOKEN123');
     expect(clearance.tier).toBe('browser');
     expect(clearance.ua).toBe(resolveStealthUA());
+    expect(clearance.solvedRoute).toBe('direct');
     expect(Date.parse(clearance.expiresAt)).toBe(1893456000 * 1000);
 
     await pool.shutdown();
@@ -201,7 +210,10 @@ describe('browser-pool injected clearance reuse (S-A2 inject + re-validate)', ()
     const pool = new MultiBrowserPool();
     const p = pool.fetchWithBrowser('https://blocked.example/', {
       stealth: true,
-      injectedCookies: [{ name: 'cf_clearance', value: 'STALE', domain: 'blocked.example', path: '/' }],
+      injectedCookies: [
+        { name: 'cf_clearance', value: 'STALE', domain: 'blocked.example', path: '/' },
+        { name: 'cf_clearance', value: 'STALE-REDIRECT', domain: '.redirected.example', path: '/' },
+      ],
     });
     const captured = p.catch((e) => e);
     await vi.advanceTimersByTimeAsync(3000);
@@ -209,6 +221,8 @@ describe('browser-pool injected clearance reuse (S-A2 inject + re-validate)', ()
     // Escalation proceeds via the challenge error — the shell is NOT returned as content.
     expect((err as Error).name).toBe('ChallengeBlockedError');
     expect(clearDomainClearance).toHaveBeenCalledWith('blocked.example');
+    expect(clearDomainClearance).toHaveBeenCalledWith('redirected.example');
+    expect(clearDomainClearance).toHaveBeenCalledTimes(2);
 
     delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
     await pool.shutdown();
