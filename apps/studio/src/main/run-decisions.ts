@@ -1,5 +1,5 @@
-import { AUTO_DENY_MS, type Run } from 'wigolo/studio';
-import { isTerminal, unrefTimer } from './run-view-model';
+import { AUTO_DENY_MS } from 'wigolo/studio';
+import { unrefTimer } from './run-view-model';
 import type { ParkedApprovalNotice } from './studio-host';
 
 /**
@@ -18,11 +18,6 @@ import type { ParkedApprovalNotice } from './studio-host';
 export interface DecisionRuns {
   runForSession(sessionId: string): string | undefined;
   runForDecision(decisionId: string): string | undefined;
-  /**
-   * Read only to ask whether the run is over, through the same `isTerminal` every other seam here
-   * uses — so "over" has one definition rather than a second one this module keeps in step.
-   */
-  snapshot(runId: string): Run | undefined;
   requestDecision(runId: string, input: { decisionId: string; kind: string; prompt: string }): Promise<void>;
   resolveDecision(runId: string, decisionId: string, outcome: 'approved' | 'denied' | 'auto_denied', by: 'human' | 'system'): Promise<void>;
 }
@@ -97,16 +92,13 @@ export function createDecisionMirror(deps: DecisionMirrorDeps): DecisionMirror {
     const runId = runOf.get(decisionId) ?? deps.runs.runForDecision(decisionId);
     // Already resolved, or never recorded — either way there is nothing true left to write.
     if (!runId) return;
-    // The run is over. `endRun` has no channel into this module, so a card parked when the run ended
-    // still holds a two-minute timer, and firing it appends `decision.resolved` AFTER
-    // `run.completed`/`run.failed` — an out-of-order fact in an append-only log, and on a condensed
-    // run a forced full re-read to absorb an event that should not exist. Refused at the write rather
-    // than announced at the call site, so every path in (timer, human, broker) is covered by one
-    // check instead of by remembering to notify.
-    if (isTerminal(deps.runs.snapshot(runId)?.status ?? 'running')) {
-      runOf.delete(decisionId);
-      return;
-    }
+    // Whether the run is still open is NOT decided here. This module read `snapshot(runId)?.status`
+    // and then awaited the append, and the gap between the two is a round-trip: a card whose run was
+    // closing read a projection `endRun`'s append had not moved yet, passed, and the store committed
+    // `decision.resolved` after `run.completed`. A check on one side of a race is not a check, and a
+    // second copy of it here would only be a second way to be wrong — the refusal lives at the append,
+    // on the lane the terminal event is written on. See `RunViewModel.resolveDecision`.
+    //
     // Dropped before the append, not after: the link is what makes a second settle for one card
     // write a second resolution, and there is an await between here and the log.
     runOf.delete(decisionId);
