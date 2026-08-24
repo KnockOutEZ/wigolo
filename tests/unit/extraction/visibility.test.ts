@@ -315,6 +315,140 @@ describe('the shell discriminator costs one document walk, whatever K the page p
 });
 
 /**
+ * The candidate list is collected up front from a document-wide `querySelectorAll`, so it
+ * still holds every hidden node the page shipped after the pass has started removing them.
+ * Two shapes then made the pass superlinear in a number the PAGE picks — K nested hidden
+ * wrappers around one constant element budget, measured on the fetch path, synchronous:
+ *
+ *   - removing an outer wrapper detaches every hidden wrapper below it, but each one was
+ *     still asked `querySelector('main')` over its own detached-but-populated subtree
+ *     (K=1 → 7 ms, K=1 000 → 795 ms, K=5 000 → 3.8 s at a 40 000-element budget);
+ *   - a nest that takes the pre-hydration-shell rescue keeps its wrappers ATTACHED, so
+ *     every one of them re-scanned the same surviving subtree and re-ran a prune the first
+ *     one had already finished (K=1 → 5 ms, K=1 000 → 1.2 s, K=5 000 → 10.6 s).
+ *
+ * Counted rather than timed, for the reason the walk pin above gives: a wall-clock bound
+ * turns a DoS regression into a flake on a loaded machine, and the shape is the thing being
+ * pinned. The count is `querySelector` calls, which is the subtree scan itself — the pass
+ * makes exactly one per candidate that reaches the rescue question and none anywhere else.
+ */
+describe('a nest of hidden wrappers costs one subtree scan, whatever K the page picks', () => {
+  const BUDGET = 4000;
+
+  const filler = (k: number, budget: number): string =>
+    '<p>filler copy</p>'.repeat(Math.max(0, budget - k));
+
+  /** K nested hidden wrappers, all removed: the page paints an article of its own. */
+  const detached = (k: number, budget = BUDGET): string =>
+    '<html><body><p>visible lead</p>' +
+    '<div hidden>'.repeat(k) +
+    `SECRETDRAFT do not publish${filler(k, budget)}` +
+    '</div>'.repeat(k) +
+    '</body></html>';
+
+  /** K nested hidden wrappers that all survive: the shell rescue fires on every one. */
+  const rescued = (k: number, budget = BUDGET): string =>
+    '<html><body>' +
+    '<div hidden>'.repeat(k) +
+    `<main>the entire body${filler(k, budget)}</main>LEAK beside the shell` +
+    '</div>'.repeat(k) +
+    '</body></html>';
+
+  const probe = (html: string): { scans: number; out: string } => {
+    const { document } = parseHTML(html);
+    let scans = 0;
+    // An own property shadowing the prototype's, rather than a stand-in object: the pass
+    // dedupes candidates by identity and hands them back to their real parent to remove,
+    // so a wrapper would have to forge both and could pass with the guard deleted.
+    const count = (el: VisibilityElement): VisibilityElement => {
+      if (Object.prototype.hasOwnProperty.call(el, 'querySelector')) return el;
+      const original = el.querySelector.bind(el);
+      Object.defineProperty(el, 'querySelector', {
+        configurable: true,
+        value: (selector: string) => {
+          scans++;
+          return original(selector);
+        },
+      });
+      return el;
+    };
+    stripHiddenDom({
+      body: document.body as unknown as VisibilityElement,
+      querySelectorAll: (selector: string) =>
+        Array.from(
+          document.querySelectorAll(selector) as unknown as ArrayLike<VisibilityElement>,
+        ).map(count),
+    });
+    return { scans, out: document.body.innerHTML };
+  };
+
+  it('scans once for a single hidden wrapper', () => {
+    const { scans, out } = probe(detached(1));
+    expect(scans).toBe(1);
+    expect(out).toContain('visible lead');
+    expect(out).not.toContain('SECRETDRAFT');
+  });
+
+  it('still scans once when a thousand of them are nested', () => {
+    // The detached arm: the outer removal takes all 999 below it out of the document, and a
+    // node that is no longer in the document cannot affect the output, so scanning it buys
+    // nothing and costs its whole subtree.
+    const { scans, out } = probe(detached(1000));
+    expect(scans).toBe(1);
+    expect(out).toContain('visible lead');
+    expect(out).not.toContain('SECRETDRAFT');
+  });
+
+  it('still scans once when a thousand nested wrappers all take the shell rescue', () => {
+    // The attached arm, which the detachment guard alone does not cover: these wrappers
+    // survive on the kept path, so each re-asked the same question about the same <main>
+    // and re-ran a prune that was already finished.
+    const { scans, out } = probe(rescued(1000));
+    expect(scans).toBe(1);
+    expect(out).toContain('the entire body');
+    expect(out).not.toContain('LEAK beside the shell');
+  });
+
+  it('still removes a hidden node INSIDE a rescued <main>', () => {
+    // The must-not-fire direction for the kept-path skip, and the reason it is scoped to the
+    // wrappers BETWEEN the rescued <main> and the outer wrapper rather than to every
+    // descendant of a settled candidate: a hidden node inside the article is not on that
+    // path, its own declaration still has to be honoured, and a skip written as
+    // "descendant of something already handled" would leak it.
+    const { out } = probe(
+      '<html><body><div hidden><div hidden><main><p>the entire body</p>' +
+        '<span hidden>SECRETDRAFT do not publish</span></main></div></div></body></html>',
+    );
+    expect(out).toContain('the entire body');
+    expect(out).not.toContain('SECRETDRAFT');
+  });
+
+  it('stays within a small multiple of K=1 on the clock, on a constant element budget', () => {
+    // The counted pins above are the ones that cannot flake, but the finding was a stall,
+    // so one row measures the stall. Both sides parse the same number of elements and differ
+    // only in how deeply the page nests them; the bound is a multiple of the K=1 measurement
+    // on THIS machine plus a floor, because a constant taken from a sample maximum is a
+    // constant that expires. The shapes it is protecting against were 100x-plus over the
+    // floor on the machine that filed the finding, so the headroom is real in both
+    // directions: noise cannot reach it and the regression cannot hide under it.
+    const clock = (html: string): number => {
+      const { document } = parseHTML(html);
+      const started = performance.now();
+      stripHiddenDom(document);
+      return performance.now() - started;
+    };
+    // A wider budget than the counted rows use, because the cost being bounded is K times
+    // the subtree, so at 4 000 elements the detached arm's regression lands under any floor
+    // loose enough to survive a shared CI runner and the row could not go red for it.
+    const wide = 20000;
+    const one = Math.max(clock(detached(1, wide)), clock(rescued(1, wide)));
+    const bound = Math.max(one * 20, 400);
+    expect(clock(detached(2000, wide))).toBeLessThan(bound);
+    expect(clock(rescued(2000, wide))).toBeLessThan(bound);
+  });
+});
+
+/**
  * The inline test is a regex over an attribute a page author writes, so the shapes that
  * matter are the ones the CSS declaration grammar ACCEPTS — not the one spelling a bug
  * report happened to arrive with. `!important` is the whole point of the escape: it is
