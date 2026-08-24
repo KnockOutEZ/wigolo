@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stopBrokerChild } from 'wigolo/studio';
+import { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds';
 import type { ArtifactDelta, RunEvent } from 'wigolo/studio';
 
 /**
@@ -242,22 +243,8 @@ function describeNoRuntime(rejected: readonly NodeRuntimeRejection[]): string {
   return `studio local database service cannot start: no usable Node runtime.\nTried:\n${tried}\n${remedy}`;
 }
 
-/**
- * The most one answer may occupy in this process before it is treated as a protocol failure.
- *
- * The reads that could produce an unbounded frame are bounded at the source now, which is where a
- * policy bound belongs — this is not that. It is the backstop for the case the source bound cannot
- * cover: a child that is broken, wedged mid-write, or newer than this host. Deliberately far above
- * any legitimate answer (a synthesized brief, a page of artifacts with their bodies), because the
- * cost of cutting a real answer short is a failed call and the cost of not cutting a runaway one is
- * the window.
- *
- * Exported because the OTHER side of this pipe has to be sized against it. The child's own page
- * ceilings were set independently of this number and its worst legal `runEventsSince` answer was
- * twice it — a legitimate page killed as an oversized frame. `tests/integration/studio-broker-frame-budget.test.ts`
- * asserts the relation, so a bump here reds a test naming the child's constants and vice versa.
- */
-export const DEFAULT_MAX_FRAME_CHARS = 64 * 1024 * 1024;
+/** Re-exported so this module stays the one place a reader looks for the client's wire bounds. */
+export { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds';
 
 /** A client that only ever reports why it is dead. Loud (the reason travels to every caller), not fatal. */
 function deadClient(reason: string): BrokerClient {

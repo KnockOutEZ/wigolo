@@ -14,7 +14,7 @@ import {
   MAX_EVENTS_PAGE,
   MAX_EVENTS_PAGE_CHARS,
 } from '../../src/daemon/studio-db-broker.js';
-import { DEFAULT_MAX_FRAME_CHARS } from '../../apps/studio/src/main/broker-client.js';
+import { DEFAULT_MAX_FRAME_CHARS } from '../../apps/studio/src/main/broker-frame-bounds.js';
 
 /**
  * SD1 exit-13 — `runEventsSince` is a FRAME, and a frame is bounded in characters or it is not
