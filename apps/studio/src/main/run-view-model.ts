@@ -216,6 +216,42 @@ export const MAX_BOOT_HYDRATION_EVENTS = 20_000;
  */
 export const REMATERIALIZE_MAX_EVENTS = 2_000;
 
+/**
+ * How long after a refused adoption the run is re-adopted, in ms. Doubles per attempt, up to
+ * `ADOPT_RETRY_MAX_MS`, for at most `MAX_ADOPT_RETRIES` attempts.
+ *
+ * `replay` used to swallow the store's failure on the grounds that a later event retries. That is
+ * true for a run this projection is already folding — the next envelope arrives with a seq beyond
+ * `lastSeq`, which opens a gap, which replays. It is FALSE for the one class of run the unknown-run
+ * arm exists to catch. A run created over REST has exactly one envelope the REST surface will ever
+ * append, its `run.created`, so a broker read that fails at that moment has no successor to heal it:
+ * the run is in the store, in REST's own answer, and in no surface this app owns — not `list`, not
+ * `listLive`, not the tray, not the state push — until the app is restarted. One log, two answers;
+ * law 1, and the SD1 exit clause "run id visible everywhere" failing for exactly the run class the
+ * gate is about.
+ *
+ * So the failure is remembered and re-attempted instead, bounded on both axes. The COUNT is bounded
+ * so a permanently dead broker stops rather than spins, and an exhausted chain is not re-armed by
+ * the next envelope that fails the same way — a half-dead broker, one still fanning notifies out
+ * while its reads refuse, would otherwise buy a fresh chain per envelope, which is more spin than
+ * the swallow this replaces. The STEP is bounded so a store that comes back after a minute is still
+ * picked up inside one, rather than after a backoff that has doubled its way into the hours.
+ *
+ * A health signal from the broker would be the sharper trigger, and there is no such signal to
+ * subscribe to: the client is request/response plus a notify tail, and the tail says nothing about
+ * whether a READ would succeed. Backoff asks the only question that can be asked. Reverse this the
+ * day the broker publishes a reachability event.
+ *
+ * The timer is the INJECTED one, for both of the reasons the constructor gives: unreffed, so a
+ * pending retry can never be why the app stays alive, and drivable, so a test can force the race
+ * rather than sleep through the backoff.
+ */
+export const ADOPT_RETRY_BASE_MS = 250;
+/** The longest one backoff step may become — see `ADOPT_RETRY_BASE_MS`. */
+export const ADOPT_RETRY_MAX_MS = 30_000;
+/** How many times a refused adoption is re-attempted before the run waits for a later envelope. */
+export const MAX_ADOPT_RETRIES = 8;
+
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
   run: Run;
@@ -378,6 +414,15 @@ export class RunViewModel {
    * needs the projection current before it resolves can await the replay somebody else started.
    */
   private readonly adopting = new Map<string, AdoptState>();
+  /**
+   * A refused adoption: which attempt its chain is on, and how to cancel the one it has scheduled.
+   *
+   * Keyed by run, so a burst of failures for one run is one chain rather than one per envelope, and
+   * so the attempt count survives across attempts — that count is the whole bound. An entry is left
+   * in place once the chain is exhausted (see `scheduleRetry`) and removed only by `clearRetry`,
+   * which runs the moment the run is materialized by ANY path.
+   */
+  private readonly adoptRetries = new Map<string, { attempt: number; stop: () => void }>();
   /** One run-level write at a time per run — see `queueForRun`. */
   private readonly runOps = new Map<string, Promise<unknown>>();
   /** One ownership change at a time per TAB — see `queueForTab`. */
@@ -415,6 +460,10 @@ export class RunViewModel {
   dispose(): void {
     for (const { stop } of this.horizons.values()) stop();
     this.horizons.clear();
+    // A pending re-adoption counts for the same reason: it would go to a broker this process is
+    // done with and fan its result out into listeners that have already been torn down.
+    for (const { stop } of this.adoptRetries.values()) stop();
+    this.adoptRetries.clear();
     this.closeWindow?.();
     this.closeWindow = undefined;
     this.coalescing = false;
@@ -812,7 +861,10 @@ export class RunViewModel {
       inFlight.again = true;
       return inFlight.promise;
     }
-    if (this.logs.has(runId) && !opts.replace) return Promise.resolve();
+    // Already held, and nothing asked for a re-read — so a retry chain owed to an earlier refusal is
+    // owed nothing now, whichever path materialized the run (`createRun`, `hydrate`, a later
+    // envelope). This is the arm a fired retry lands on when it has been overtaken.
+    if (this.logs.has(runId) && !opts.replace) { this.clearRetry(runId); return Promise.resolve(); }
     const state: AdoptState = { promise: Promise.resolve(), again: false };
     const drain = async (): Promise<void> => {
       await this.replay(runId, opts);
@@ -828,18 +880,63 @@ export class RunViewModel {
     return state.promise;
   }
 
+  /**
+   * One replay, plus what to do when the store refuses it.
+   *
+   * A refusal is not an answer, so it is re-attempted rather than swallowed — see
+   * `ADOPT_RETRY_BASE_MS` for why "a later event retries" was false for the run class this arm
+   * exists to catch. Anything that is not a throw is an answer and ends the chain, including the two
+   * ways `replayOnce` returns without retaining: the run does not exist in the store, or it has
+   * already been materialized by a shorter path. Neither leaves anything owed.
+   */
   private async replay(runId: string, opts: { replace?: boolean }): Promise<void> {
     try {
-      if (opts.replace && this.overBound(runId)) { await this.recondense(runId); return; }
-      const facts = await this.readFacts(runId);
-      if (!facts || (this.logs.has(runId) && !opts.replace)) return;
-      const events = await this.readLog(runId);
-      if (this.logs.has(runId) && !opts.replace) return;
-      this.retain(facts, events);
-      this.emit();
+      await this.replayOnce(runId, opts);
     } catch {
-      // The store is unreachable; the run is not lost, only unseen. A later event retries.
+      // The store is unreachable; the run is not lost, only unseen — so remember it and ask again.
+      this.scheduleRetry(runId, opts);
+      return;
     }
+    this.clearRetry(runId);
+  }
+
+  private async replayOnce(runId: string, opts: { replace?: boolean }): Promise<void> {
+    if (opts.replace && this.overBound(runId)) { await this.recondense(runId); return; }
+    const facts = await this.readFacts(runId);
+    if (!facts || (this.logs.has(runId) && !opts.replace)) return;
+    const events = await this.readLog(runId);
+    if (this.logs.has(runId) && !opts.replace) return;
+    this.retain(facts, events);
+    this.emit();
+  }
+
+  /**
+   * Ask for this run again after a backoff, a bounded number of times.
+   *
+   * The attempt count is read off the entry rather than reset per call, so a chain that keeps
+   * failing walks to the cap and stops. At the cap the entry STAYS — with nothing scheduled — so a
+   * later envelope that fails the same way finds an exhausted chain instead of buying a fresh one.
+   * `clearRetry` is the only thing that resets it, and it runs whenever the run is materialized.
+   */
+  private scheduleRetry(runId: string, opts: { replace?: boolean }): void {
+    const held = this.adoptRetries.get(runId);
+    held?.stop();
+    const attempt = (held?.attempt ?? 0) + 1;
+    if (attempt > MAX_ADOPT_RETRIES) {
+      this.adoptRetries.set(runId, { attempt, stop: () => {} });
+      return;
+    }
+    const delay = Math.min(ADOPT_RETRY_BASE_MS * 2 ** (attempt - 1), ADOPT_RETRY_MAX_MS);
+    const stop = this.setTimer(() => { void this.adopt(runId, opts); }, delay);
+    this.adoptRetries.set(runId, { attempt, stop });
+  }
+
+  /** This run has an answer — materialized, or known not to exist. Nothing is owed it. */
+  private clearRetry(runId: string): void {
+    const held = this.adoptRetries.get(runId);
+    if (!held) return;
+    held.stop();
+    this.adoptRetries.delete(runId);
   }
 
   /**

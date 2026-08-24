@@ -7,7 +7,16 @@ import {
   type RunEvent,
   type RunEventInput,
 } from 'wigolo/studio';
-import { EMIT_COALESCE_MS, REMATERIALIZE_MAX_EVENTS, RunViewModel, TabOwnedError, type RunStoreClient } from '../../src/main/run-view-model';
+import {
+  ADOPT_RETRY_BASE_MS,
+  ADOPT_RETRY_MAX_MS,
+  EMIT_COALESCE_MS,
+  MAX_ADOPT_RETRIES,
+  REMATERIALIZE_MAX_EVENTS,
+  RunViewModel,
+  TabOwnedError,
+  type RunStoreClient,
+} from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
 describe('RunViewModel — tab↔run ownership is the run log, not registry state', () => {
@@ -1364,5 +1373,205 @@ describe('RunViewModel — the boot allowance is carried across pages, not reset
     await vm.hydrate({ eventBudget: PER_CALL + 1 });
     expect(store.reads.filter((r) => r === 'listRuns').length, 'no page fell back to projections, so this arm proves nothing').toBeGreaterThan(0);
     expect(vm.runForSession(session), 'the re-hydration dropped a session link it already had').toBe(last);
+  });
+});
+
+/**
+ * A store that can be taken away and given back, so a read failure is a state a test can FORCE
+ * rather than a flake it has to wait for.
+ *
+ * The notify tail keeps working while the reads are down, which is the shape that matters: the
+ * broker fans an envelope out over its notify channel before — and independently of — answering any
+ * read, so "the run's only envelope arrived" and "the read that would adopt it failed" are two
+ * facts that coincide rather than contradict. A store that lost its notifies at the same moment
+ * would never deliver the envelope at all, and the defect would be unreachable.
+ */
+class UnreachableStore implements RunStoreClient {
+  private readonly handlers: Array<(runId: string, event: RunEvent) => void> = [];
+  /** Every read refused while the store was down, in order — the instrument for "it really failed". */
+  readonly refused: string[] = [];
+  down = false;
+
+  constructor(private readonly inner: FakeRunStore) {
+    this.inner.onRunEvent((runId, event) => { for (const h of this.handlers) h(runId, event); });
+  }
+
+  private guard(method: string): void {
+    if (!this.down) return;
+    this.refused.push(method);
+    throw new Error('broker unreachable');
+  }
+
+  createRun(input: CreateRunInput) { return this.inner.createRun(input); }
+  appendEvent(runId: string, event: RunEventInput) { return this.inner.appendEvent(runId, event); }
+  listRuns(opts?: ListRunsOptions) { return this.inner.listRuns(opts); }
+  runExists(runId: string) { return this.inner.runExists(runId); }
+  async getRun(runId: string) { this.guard('getRun'); return this.inner.getRun(runId); }
+  async runFacts(runId: string) { this.guard('runFacts'); return this.inner.runFacts(runId); }
+  async listRunLogs(opts?: ListRunsOptions) { this.guard('listRunLogs'); return this.inner.listRunLogs(opts); }
+  async eventsSince(runId: string, since: number, limit: number) {
+    this.guard('eventsSince');
+    return this.inner.eventsSince(runId, since, limit);
+  }
+  onRunEvent(handler: (runId: string, event: RunEvent) => void): void { this.handlers.push(handler); }
+}
+
+/** A drivable clock for the retry backoff — the retries are the only timers these arms schedule. */
+function retryTimers() {
+  const pending: Array<{ ms: number; fire: () => void; cancelled: boolean }> = [];
+  const setTimer = (cb: () => void, ms: number): (() => void) => {
+    const entry = { ms, fire: cb, cancelled: false };
+    pending.push(entry);
+    return () => { entry.cancelled = true; };
+  };
+  /** Fire every timer scheduled so far, oldest first, skipping the ones that were cancelled. */
+  const fireDue = (): number => {
+    const due = pending.splice(0);
+    let fired = 0;
+    for (const t of due) if (!t.cancelled) { t.fire(); fired++; }
+    return fired;
+  };
+  const live = () => pending.filter((t) => !t.cancelled);
+  return { pending, setTimer, fireDue, live };
+}
+
+/**
+ * Let an adoption finish failing.
+ *
+ * `refused` is pushed inside the store's guard, BEFORE the throw has propagated back through
+ * `replay`'s catch to the line that schedules the retry — so waiting on the refusal count can arrive
+ * a microtask early and read a chain that has not been armed yet. Everything between the two is a
+ * microtask (the fake store does no I/O), so one macrotask turn drains all of it; several, so the
+ * arms below never depend on counting the hops.
+ */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => { setTimeout(resolve, 0); });
+}
+
+/**
+ * SD1 exit-final-1 — a failed adoption was never retried, so a REST-created run could be invisible
+ * for the life of the app.
+ *
+ * `replay` swallowed the store's failure with "a later event retries", which is true for a run this
+ * projection is already folding — the next envelope opens a gap and heals it — and FALSE for the one
+ * class of run the unknown-run arm exists to catch. A run created over REST has exactly one envelope
+ * the REST surface will ever append: its `run.created`. If the broker read that would adopt it fails
+ * at that moment, no later envelope is coming, so nothing ever retries and the run is in the store,
+ * in REST's own answer, and in no surface this app owns — not `list`, not `listLive`, not the tray,
+ * not the state push — until the app is restarted. One log, two answers; law 1, and the SD1 exit
+ * clause "run id visible everywhere" failing for exactly the run class the gate is about.
+ */
+describe('RunViewModel — an adoption the store refused is retried, not dropped', () => {
+  it('makes a run visible once the store is reachable again, with no further envelope and no restart', async () => {
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+    let pushes = 0;
+    vm.onChange(() => { pushes++; });
+
+    // The race, forced: the broker's reads are down at the moment the run's ONLY envelope is fanned
+    // out. Nothing else will ever append to this run — that is what makes it the REST-created class.
+    store.down = true;
+    const run = await inner.createRun({ task: 'created over REST' });
+
+    await settle();
+    expect(store.refused.length, 'the read never actually failed, so this arm proves nothing').toBeGreaterThan(0);
+    expect(vm.list(), 'the adoption succeeded despite the store being down').toEqual([]);
+    expect(vm.listLive(), 'the run was live somewhere while the adoption had failed').toEqual([]);
+
+    // The store comes back — and stays silent. Only the retry the failure scheduled can find the run.
+    const scheduled = timers.live().map((t) => t.ms);
+    store.down = false;
+    timers.fireDue();
+    await settle();
+
+    expect(vm.list().map((r) => r.id), 'the run stayed invisible after the store recovered').toEqual([run.id]);
+    expect(scheduled, 'the run was found by something other than one backoff step').toEqual([ADOPT_RETRY_BASE_MS]);
+    expect(vm.snapshot(run.id)?.task).toBe('created over REST');
+    expect(vm.listLive().map((r) => r.id), 'the run recovered into `list` but not into the live set the tray reads').toEqual([run.id]);
+    expect(pushes, 'the surfaces were never told the projection had moved').toBeGreaterThan(0);
+  });
+
+  it('stops retrying a store that never comes back, rather than spinning on a dead broker', async () => {
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    store.down = true;
+    const run = await inner.createRun({ task: 'the broker is gone' });
+    await settle();
+    expect(store.refused.length, 'the read never actually failed, so this arm proves nothing').toBeGreaterThan(0);
+
+    // Drive the whole chain. Each attempt fails and schedules the next, so this terminates only
+    // because the count is bounded — the loop guard is what would catch it if it were not.
+    const delays: number[] = [];
+    for (let round = 0; round <= MAX_ADOPT_RETRIES + 2; round++) {
+      const next = timers.live();
+      if (next.length === 0) break;
+      expect(next, 'one failure scheduled more than one retry').toHaveLength(1);
+      delays.push(next[0]!.ms);
+      timers.fireDue();
+      await settle();
+    }
+
+    expect(delays, 'the backoff neither doubled nor stopped at the ceiling').toEqual([250, 500, 1000, 2000, 4000, 8000, 16000, 30000]);
+    expect(delays).toHaveLength(MAX_ADOPT_RETRIES);
+    expect(delays[delays.length - 1]).toBe(ADOPT_RETRY_MAX_MS);
+    expect(timers.live(), 'the retry chain never terminated').toHaveLength(0);
+    expect(vm.list()).toEqual([]);
+
+    // …and an exhausted chain is not re-armed by the next envelope that fails the same way, or a
+    // half-dead broker — one that still fans notifies out while its reads refuse — would buy a fresh
+    // chain of eight timers per envelope, which is more spin than the swallow it replaced.
+    const refusedBefore = store.refused.length;
+    await inner.appendEvent(run.id, { actor: { kind: 'daemon' }, type: 'tab.attached', payload: { tabId: 'tab-1' } });
+    await settle();
+    expect(store.refused.length, 'the later envelope did not reach the store at all').toBeGreaterThan(refusedBefore);
+    expect(timers.live(), 'an exhausted chain was re-armed by a later failing envelope').toHaveLength(0);
+  });
+
+  it('cancels a pending retry once the run has been adopted by some other path', async () => {
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    store.down = true;
+    const run = await inner.createRun({ task: 'adopted from elsewhere' });
+    await vi.waitFor(() => expect(timers.live()).toHaveLength(1));
+
+    // A boot reconcile finds the run first. The scheduled retry is now owed nothing, and firing it
+    // must neither re-read the store nor leave a chain behind it.
+    store.down = false;
+    await vm.hydrate();
+    expect(vm.list().map((r) => r.id)).toEqual([run.id]);
+
+    const readsBefore = inner.reads.length;
+    timers.fireDue();
+    await vi.waitFor(() => expect(timers.live()).toHaveLength(0));
+    expect(inner.reads.length, 'the cancelled retry still went to the store').toBe(readsBefore);
+  });
+
+  it('lets go of a pending retry at shutdown', async () => {
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    store.down = true;
+    await inner.createRun({ task: 'quit while unreachable' });
+    await vi.waitFor(() => expect(timers.live()).toHaveLength(1));
+
+    vm.dispose();
+
+    // A retry that outlives the app would read the store and fan out into torn-down listeners — the
+    // same reason `dispose` already releases the horizons and the coalescing window.
+    expect(timers.live(), 'a retry survived dispose').toHaveLength(0);
+    store.down = false;
+    const readsBefore = inner.reads.length;
+    timers.fireDue();
+    await vi.waitFor(() => expect(inner.reads.length).toBe(readsBefore));
   });
 });
