@@ -5,9 +5,33 @@ import { join } from 'node:path';
 import type { SearchEngine } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
 import { resetConfig } from '../../../src/config.js';
+import type DatabaseType from 'better-sqlite3';
 import { initDatabase, getDatabase, closeDatabase } from '../../../src/cache/db.js';
-import { createBrokerHandlers } from '../../../src/daemon/studio-db-broker.js';
+import { createBrokerHandlers, MAX_BOOT_FRAME_CHARS } from '../../../src/daemon/studio-db-broker.js';
 import type { RunEvent } from '../../../src/studio/run-store.js';
+
+/**
+ * Grow a run's log by the same INSERT the store makes, and place it at the head of the listing.
+ *
+ * Not `runAppend` in a loop: forcing a real `MAX_BOOT_*` constant needs millions of characters, and
+ * each append is its own transaction plus a status fold. `created_at` is pinned because the listing
+ * orders by it — an arm about what the FIRST run on a page does to the ones behind it cannot depend
+ * on two runs created in the same millisecond tie-breaking the way it hoped.
+ */
+function seedOversizedRun(db: DatabaseType.Database, runId: string, rows: number, payloadChars: number): void {
+  const insert = db.prepare('INSERT INTO studio_run_events (run_id, seq, ts, actor, type, payload) VALUES (?, ?, ?, ?, ?, ?)');
+  const actor = JSON.stringify({ kind: 'agent' });
+  const payload = JSON.stringify({ blob: 'x'.repeat(payloadChars) });
+  const head = db.prepare('SELECT last_seq FROM studio_runs WHERE id = ?').get(runId) as { last_seq: number };
+  let seq = head.last_seq;
+  db.transaction(() => {
+    for (let i = 0; i < rows; i++) {
+      seq += 1;
+      insert.run(runId, seq, new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), actor, 'run.progress', payload);
+    }
+    db.prepare('UPDATE studio_runs SET last_seq = ?, created_at = ? WHERE id = ?').run(seq, '2099-01-01T00:00:00.000Z', runId);
+  })();
+}
 
 /**
  * SD1 — the run store behind the broker. A run lives in the process that owns the DB handle, so
@@ -107,6 +131,46 @@ describe('studio-db-broker — run store methods', () => {
     const page = await handlers.runListLogs({});
     expect(page.eventsSpent).toBe(2);
     expect(page.charsSpent).toBeGreaterThan(0);
+  });
+
+  /**
+   * The size probe is itself a read of every payload byte the run has, and the page pays for it.
+   *
+   * The charge used to sit INSIDE the branch the probe guards, so a run the probe ITSELF ruled out —
+   * few envelopes, large payloads, `SUM(LENGTH(payload))` over the frame budget — was condensed and
+   * charged nothing. The scan happened; the page reported zero. And zero is what the hydration's
+   * allowance is decremented by, so every one of its pages kept taking the log branch and every one
+   * re-ran the same full-payload scan against a freshly reset per-call budget.
+   *
+   * So the arm is a page whose head run is rejected by the probe alone, and the claim is that the
+   * page states what that scan cost and stops reading behind it — the same termination the accepted
+   * path already had.
+   */
+  it('charges the size probe at the read, so a run the probe rejects is not free', async () => {
+    const trailing = await handlers.runCreate({ input: { task: 'behind the overrun' } });
+    await handlers.runAppend({ runId: trailing.id, event: { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: 'tab-1' } } });
+    const oversized = await handlers.runCreate({ input: { task: 'over the frame budget' } });
+    // Rejected by the SUM ALONE: 111 envelopes is far under the per-run event bound, and the stored
+    // payloads are over the frame budget — so the event bound cannot be what condenses this run.
+    seedOversizedRun(getDatabase(), oversized.id, 110, 40_000);
+
+    const page = await handlers.runListLogs({});
+    const head = page.entries.find((e) => e.facts.id === oversized.id)!;
+    const behind = page.entries.find((e) => e.facts.id === trailing.id)!;
+
+    // The premise: this run really was ruled out by the probe, before a single envelope was read.
+    expect(head.events, 'the run fitted, so the probe is not what rejected it').toEqual([]);
+    expect(head.projection).toBeDefined();
+    expect(page.eventsSpent, 'an envelope was materialized, so this is not the probe-only path').toBe(0);
+
+    // The scan is on the books…
+    expect(page.charsSpent, 'the page scanned every stored payload byte and reported spending none')
+      .toBeGreaterThan(MAX_BOOT_FRAME_CHARS);
+    // …and because it is, the budget is gone and the reads stop for the rest of the page. Without the
+    // charge the allowance was still whole here, this run shipped its envelopes, and — the part that
+    // multiplies — the next hydration page started from four million again.
+    expect(behind.events, 'the overrun left the budget whole, so the page kept reading behind it').toEqual([]);
+    expect(behind.projection, 'a run answered with no envelopes must still be answered').toBeDefined();
   });
 
   it('surfaces a refusal instead of silently dropping a malformed append', async () => {
