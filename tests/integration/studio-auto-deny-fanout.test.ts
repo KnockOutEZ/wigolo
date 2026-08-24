@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { resetConfig } from '../../src/config.js';
 import { initDatabase, getDatabase, closeDatabase } from '../../src/cache/db.js';
-import { AUTO_DENY_MS, appendEvent, createRun, eventsSince, listRuns, runEventsFile, type Run } from '../../src/studio/run-store.js';
+import { AUTO_DENY_MS, appendEvent, createRun, eventsSince, flushRunEventProjections, listRuns, runEventsFile, type Run } from '../../src/studio/run-store.js';
 
 /**
  * §7's "auto-deny after 2m" where only a real store can show it: the cached `studio_runs.status`
@@ -96,7 +96,9 @@ describe('the auto-deny, as the REST list filter sees it', () => {
 
     const resolved = eventsSince(db, runId, 0, 100).filter((e) => e.type === 'decision.resolved');
     expect(resolved).toHaveLength(1);
-    // …on disk as well, which is what law 11 means by inspectable.
+    // …on disk as well, which is what law 11 means by inspectable. The projection is drained off
+    // the append's stack now, so the read has to wait for it rather than race it.
+    await flushRunEventProjections();
     expect(readFileSync(runEventsFile(runId, dataDir), 'utf-8')).toContain('"outcome":"auto_denied"');
 
     // The K1 row: filter and payload now say the same thing.

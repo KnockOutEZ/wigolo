@@ -14,7 +14,8 @@
  */
 import type Database from 'better-sqlite3';
 import { randomInt } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { createLogger } from '../logger.js';
 import { studioStateDir } from './paths.js';
 
@@ -480,24 +481,158 @@ function projectToDisk(runId: string, event: RunEvent, dataDir?: string): void {
   const line = JSON.stringify(event) + '\n';
   // Inside the try with everything else: `runDir` throws on an id that could not have been minted,
   // and a disk projection is never allowed to unwind an event that has already committed.
-  let dir: string | undefined;
   try {
-    dir = runDir(runId, dataDir);
-    ensureRunDir(dir);
-    try {
-      appendFileSync(runEventsFile(runId, dataDir), line, { mode: 0o600 });
-    } catch {
-      // The memo is an optimisation, never a claim: the tree can be moved, cleaned or unmounted
-      // between two appends. Any write failure retires it and re-creates the directory once, so the
-      // observable behaviour is the unmemoised one — a deleted run directory is back on the NEXT
-      // append, not the one after it.
-      ensuredRunDirs.delete(dir);
-      ensureRunDir(dir);
-      appendFileSync(runEventsFile(runId, dataDir), line, { mode: 0o600 });
+    const file = runEventsFile(runId, dataDir);
+    let projection = runProjections.get(file);
+    if (projection === undefined) {
+      projection = { dir: runDir(runId, dataDir), file, pending: [], inFlight: undefined, draining: undefined };
+      runProjections.set(file, projection);
+      armProjectionExitDrain();
     }
+    projection.pending.push(line);
+    if (projection.draining === undefined) projection.draining = drainProjection(projection);
   } catch (err) {
-    if (dir !== undefined) ensuredRunDirs.delete(dir);
     log.warn('run event disk projection failed', { runId, seq: event.seq, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * One run's un-landed tail. The append path only ever pushes a string onto `pending`; every syscall
+ * happens in `drainProjection`, off the caller's stack.
+ *
+ * `inFlight` is the batch currently handed to the kernel, held separately from `pending` because the
+ * exit drain has to distinguish "queued and definitely not written" from "may or may not have landed".
+ */
+interface RunProjection {
+  dir: string;
+  file: string;
+  pending: string[];
+  inFlight: string | undefined;
+  draining: Promise<void> | undefined;
+}
+
+/**
+ * Keyed by the events file, so a `dataDir` swap (tests, a second store) never shares a queue with the
+ * default tree. Entries are created on the first un-landed line and DELETED once the queue empties,
+ * which is what bounds the map: it holds one entry per run with writes still in the air, not one per
+ * run this process has ever touched.
+ */
+const runProjections = new Map<string, RunProjection>();
+
+/**
+ * The append was three synchronous syscalls per event — open, write, close — on whichever loop the
+ * append is on: the daemon's REST loop, or the broker child's, where it serialises every other DB
+ * call the app makes. Measured over 5,000 appends of a 246-char payload, `appendFileSync` alone was
+ * 34.1 µs of an 80.6 µs append, ~4× the held-lock DB work it sits behind, and `cost.recorded` is one
+ * event per browser action by design.
+ *
+ * The file is a projection that is never read back, so line ORDER is its only correctness
+ * constraint. A single-flight drain per run gives exactly that — one batch in the kernel at a time,
+ * appended in the order the lines were pushed — and coalesces a burst of events raised in one tick
+ * into ONE open/write/close instead of one each.
+ */
+async function drainProjection(projection: RunProjection): Promise<void> {
+  try {
+    while (projection.pending.length > 0) {
+      projection.inFlight = projection.pending.join('');
+      projection.pending = [];
+      try {
+        await appendProjectionBatch(projection);
+      } catch (err) {
+        // Same contract as before: the DB is the source of truth, so a failed write costs a
+        // `cat`-able copy and never an event. The memo is retired so the next batch re-creates the
+        // directory rather than believing a tree that has moved.
+        ensuredRunDirs.delete(projection.dir);
+        log.warn('run event disk projection failed', { file: projection.file, error: err instanceof Error ? err.message : String(err) });
+      }
+      projection.inFlight = undefined;
+    }
+  } finally {
+    projection.draining = undefined;
+    // Nothing can have been pushed since the loop's last check — the two are separated by no await.
+    runProjections.delete(projection.file);
+  }
+}
+
+async function appendProjectionBatch(projection: RunProjection): Promise<void> {
+  const batch = projection.inFlight!;
+  try {
+    ensureRunDir(projection.dir);
+    await appendFile(projection.file, batch, { mode: 0o600 });
+  } catch {
+    // The memo is an optimisation, never a claim: the tree can be moved, cleaned or unmounted
+    // between two batches. Any write failure retires it and re-creates the directory once, so the
+    // observable behaviour is the unmemoised one — a deleted run directory is back on the NEXT
+    // batch, not the one after it.
+    ensuredRunDirs.delete(projection.dir);
+    ensureRunDir(projection.dir);
+    await appendFile(projection.file, batch, { mode: 0o600 });
+  }
+}
+
+/**
+ * Await every line raised so far reaching disk. Callers that read `events.jsonl` back — tests, and a
+ * shutdown that wants the tail before the process goes — need this, because the append itself no
+ * longer touches the filesystem at all.
+ */
+export async function flushRunEventProjections(): Promise<void> {
+  // Bounded: a caller appending faster than the disk drains would otherwise spin here forever, and a
+  // flush that gives up is a far better failure than a hung shutdown.
+  for (let round = 0; round < 1000 && runProjections.size > 0; round++) {
+    await Promise.all([...runProjections.values()].map((p) => p.draining));
+  }
+}
+
+let projectionExitDrainArmed = false;
+
+function armProjectionExitDrain(): void {
+  if (projectionExitDrainArmed) return;
+  projectionExitDrainArmed = true;
+  // The broker child hard-exits on SIGTERM and on the parent closing its stdin pipe (no-orphan,
+  // spec §11), so the graceful-quit tail — the `run.cancelled` every run gets on the way out — would
+  // die in the queue without this. `exit` is the one hook that fires on `process.exit()` as well as
+  // on a drained loop, and it is the one place a synchronous write is the right tool.
+  //
+  // `on`, not `once`: anything else in the process emitting `exit` would otherwise consume the
+  // listener and silently disarm the real one. The drain clears its queue, so firing twice is a no-op.
+  process.on('exit', drainRunProjectionsOnExit);
+}
+
+function drainRunProjectionsOnExit(): void {
+  for (const projection of runProjections.values()) {
+    const parts: string[] = [];
+    // `pending` was never handed to the kernel, so it definitely has not landed. `inFlight` may have
+    // been written by a call whose completion callback the exit beat; asking the file settles it, and
+    // a duplicated event line is worse than the cost of one read at exit.
+    if (projection.inFlight !== undefined && !endsWithBatch(projection.file, projection.inFlight)) parts.push(projection.inFlight);
+    parts.push(...projection.pending);
+    if (parts.length === 0) continue;
+    try {
+      ensuredRunDirs.delete(projection.dir);
+      ensureRunDir(projection.dir);
+      appendFileSync(projection.file, parts.join(''), { mode: 0o600 });
+    } catch {
+      // Exiting: there is no next append to retry on and no listener left to tell.
+    }
+  }
+  runProjections.clear();
+}
+
+/** Did this batch already land? Event lines carry a unique `seq`, so a tail match is an identity. */
+function endsWithBatch(file: string, batch: string): boolean {
+  const expected = Buffer.from(batch);
+  let fd: number | undefined;
+  try {
+    const size = statSync(file).size;
+    if (size < expected.length) return false;
+    fd = openSync(file, 'r');
+    const got = Buffer.allocUnsafe(expected.length);
+    readSync(fd, got, 0, expected.length, size - expected.length);
+    return got.equals(expected);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
