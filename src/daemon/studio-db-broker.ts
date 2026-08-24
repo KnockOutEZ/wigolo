@@ -90,7 +90,42 @@ export const MAX_BOOT_FRAME_CHARS = 4_000_000;
  * well. A client that asks for more gets a short page, which is why the paged reader upstream stops
  * on an EMPTY page rather than on a short one.
  */
-const MAX_EVENTS_PAGE = 2_000;
+export const MAX_EVENTS_PAGE = 2_000;
+
+/**
+ * The same ceiling in the unit the frame actually grows in.
+ *
+ * A count alone bounds the wrong thing — `MAX_BOOT_*` says so above, and `DEFAULT_MAX_HELD_BYTES` in
+ * `rest/runs.ts` says it again for the SSE hold buffer — and this read was the one place that had the
+ * count and nothing else. One payload may be `MAX_EVENT_PAYLOAD_CHARS` (64k), so a page of 2,000 rows
+ * is up to 128M characters: TWICE the host's own `DEFAULT_MAX_FRAME_CHARS` backstop. A legitimate
+ * page could therefore be killed as an oversized frame and take the broker down with it, and a replay
+ * paging through such a log would restart the child on every page and never finish.
+ *
+ * Four million, matching `MAX_BOOT_FRAME_CHARS`: the same host, the same thread, the same reason.
+ */
+export const MAX_EVENTS_PAGE_CHARS = 4_000_000;
+
+/**
+ * Cut the page at the character budget, never below one event.
+ *
+ * ALWAYS at least one: an empty page is how every paged reader here recognises end-of-log, so a
+ * budget that could answer "nothing" would end a replay in the middle of a run rather than bound it.
+ * One event cannot approach the frame cap on its own — `MAX_EVENT_PAYLOAD_CHARS` is 64k — so the
+ * worst page this can return is the budget plus one event, which is what
+ * `tests/integration/studio-broker-frame-budget.test.ts` pins against the host's ceiling.
+ *
+ * The serialization stops at the budget rather than measuring the whole page first: measuring 128M
+ * characters to decide not to send them is the work being bounded.
+ */
+function clampPageChars(events: RunEvent[]): RunEvent[] {
+  let chars = 0;
+  for (let i = 0; i < events.length; i++) {
+    chars += JSON.stringify(events[i]).length;
+    if (chars > MAX_EVENTS_PAGE_CHARS) return events.slice(0, i + 1);
+  }
+  return events;
+}
 
 /** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
 export interface BrokerRunLogEntry {
@@ -377,13 +412,15 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
     // and the view-model's gap replay called it exactly that way.
     //
-    // CONTRACT: the returned page is clamped to `MAX_EVENTS_PAGE` whatever `limit` says, so a SHORT
-    // page never means end-of-log. Callers must page until an EMPTY one — a caller that stops on a
-    // short page silently truncates every log longer than the clamp.
+    // CONTRACT: the returned page is clamped to `MAX_EVENTS_PAGE` rows AND `MAX_EVENTS_PAGE_CHARS`
+    // characters whatever `limit` says, so a SHORT page never means end-of-log. Callers must page
+    // until an EMPTY one — a caller that stops on a short page silently truncates every log longer
+    // than either clamp. Both clamps are here because neither bounds a frame alone: rows say nothing
+    // about size, and the size is what the host has to accumulate and parse on the thread that paints.
     runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
       const limit = Math.floor(Number(p.limit));
       if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
-      return eventsSince(deps.db, p.runId, p.since ?? 0, Math.min(limit, MAX_EVENTS_PAGE));
+      return clampPageChars(eventsSince(deps.db, p.runId, p.since ?? 0, Math.min(limit, MAX_EVENTS_PAGE)));
     },
   };
 }
