@@ -619,6 +619,22 @@ describe('isHidden — CSS identifier escapes are resolved before the property i
     // really does start a new declaration. Reading it as a string opener swallowed the
     // suppression written after it.
     ['an escaped quote is ident content, so it never opens a string', "content:\\';display:none"],
+    // Also not one of the six. The tokenizer consumes an ident sequence and THEN asks whether
+    // it reads `url`, so an escaped spelling opens a url token like any other — and the
+    // apostrophe inside it ends that token at the `)`, leaving the declaration after the `;`
+    // to be applied. Missing the escaped spelling handed the apostrophe to the string
+    // scanner, which swallowed the suppression to end-of-attribute.
+    [
+      'an escaped `url(` is still a url token, so its apostrophe ends the token, not a string',
+      "background:\\75 rl(a'b);display:none",
+    ],
+    // ...and the mirror of that row, which is what keeps the recognition honest: an ESCAPED
+    // paren is ident content, so `url\28 a` is one ident and opens no token at all. The `;`
+    // after it therefore ends the declaration and the suppression behind it is real.
+    [
+      'an escaped paren opens no url token, so the `;` after it separates declarations',
+      'background:url\\28 a;display:none',
+    ],
   ])('hides: %s', (_why, style) => {
     const { byIsHidden, byStrip } = reads(style);
     expect(byIsHidden).toBe(true);
@@ -633,6 +649,12 @@ describe('isHidden — CSS identifier escapes are resolved before the property i
     [
       '`\\d` is a hex escape (U+000D), so `\\display` is CR + `isplay` — not `display`',
       '\\display:none',
+    ],
+    // The other direction of the escaped url token: recognising it must mean consuming the
+    // WHOLE token, so the `;` inside it still belongs to the url and separates nothing.
+    [
+      'the `;` inside a well-formed escaped url() is part of the url token',
+      'background:\\75 rl(a;display:none)',
     ],
   ])('keeps: %s', (_why, style) => {
     const { byIsHidden, byStrip } = reads(style);

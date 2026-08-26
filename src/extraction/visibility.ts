@@ -191,6 +191,37 @@ function endOfString(style: string, open: number, quote: number): number {
 }
 
 /**
+ * The index just past the ident starting at `at` when that ident spells `url`, else `-1`.
+ *
+ * Spelled out rather than compared three characters at a time because the tokenizer consumes
+ * the ident sequence — escapes resolved — BEFORE asking whether it reads `url`, so `\75 rl(`
+ * opens a url token exactly as `url(` does. Reading only the literal spelling left the
+ * escaped one to the string scanner, whose apostrophe rule then ate the `;display:none`
+ * written after the bad-url recovery: verified in Chromium, which paints nothing for
+ * `background:\75 rl(a'b);display:none` while the pass kept the element.
+ *
+ * Bounded work — three code points, each at most a seven-character escape — so asking it at
+ * every index leaves the scan one visit per character.
+ */
+function endOfUrlIdent(style: string, at: number): number {
+  let i = at;
+  for (const want of [LOWER_U, LOWER_R, LOWER_L]) {
+    if (i >= style.length) return -1;
+    let code = style.charCodeAt(i);
+    if (code === BACKSLASH) {
+      const escape = consumeEscape(style, i);
+      if (escape.text.length !== 1) return -1;
+      code = escape.text.charCodeAt(0);
+      i = escape.next;
+    } else {
+      i++;
+    }
+    if ((code | 0x20) !== want) return -1;
+  }
+  return i;
+}
+
+/**
  * The index just past a url token starting at `at`, or `-1` when nothing starts there.
  *
  * `url(` with an unquoted argument is not a function call the tokenizer parses in the ordinary
@@ -205,12 +236,16 @@ function endOfString(style: string, open: number, quote: number): number {
  * recovery included.
  */
 function endOfUrlToken(style: string, at: number): number {
-  if ((style.charCodeAt(at) | 0x20) !== LOWER_U) return -1;
-  if ((style.charCodeAt(at + 1) | 0x20) !== LOWER_R) return -1;
-  if ((style.charCodeAt(at + 2) | 0x20) !== LOWER_L) return -1;
-  if (style.charCodeAt(at + 3) !== PAREN_OPEN) return -1;
+  const lead = style.charCodeAt(at);
+  // The one cheap rejection that keeps this affordable at every index: a url token can only
+  // begin with `u` or with the backslash of an escape that resolves to one.
+  if ((lead | 0x20) !== LOWER_U && lead !== BACKSLASH) return -1;
+  const afterIdent = endOfUrlIdent(style, at);
+  if (afterIdent === -1) return -1;
+  // A LITERAL paren. An escaped one is ident content, so `url\28x)` is an ident, not a token.
+  if (style.charCodeAt(afterIdent) !== PAREN_OPEN) return -1;
   if (at > 0 && isIdentChar(style.charCodeAt(at - 1))) return -1;
-  let i = at + 4;
+  let i = afterIdent + 1;
   while (i < style.length && isCssWhitespace(style.charCodeAt(i))) i++;
   const first = style.charCodeAt(i);
   if (first === QUOTE_DOUBLE || first === QUOTE_SINGLE) return -1;
@@ -279,10 +314,21 @@ function resolveDeclarationText(style: string): string {
   let i = 0;
   while (i < style.length) {
     const ch = style.charCodeAt(i);
-    // First, because it is what makes every branch below it read the right characters: an
-    // escaped quote opens no string and an escaped `/` opens no comment, so asking those
-    // questions of the raw text one index later answered them about characters the
-    // tokenizer had already spent.
+    // Ahead of the escape branch, because an escape can BE the start of a url token —
+    // `\75 rl(` is one — and resolving its first code point in isolation would hand the
+    // rest to the string scanner. Cheap to ask at every index all the same: the first
+    // comparison rejects every character that is neither `u` nor a backslash.
+    const url = endOfUrlToken(style, i);
+    if (url !== -1) {
+      out += style.slice(kept, i);
+      i = url;
+      kept = i;
+      continue;
+    }
+    // Then the escape, because it is what makes every branch below it read the right
+    // characters: an escaped quote opens no string and an escaped `/` opens no comment, so
+    // asking those questions of the raw text one index later answered them about characters
+    // the tokenizer had already spent.
     if (ch === BACKSLASH) {
       const escape = consumeEscape(style, i);
       out += style.slice(kept, i) + escape.text;
@@ -300,15 +346,6 @@ function resolveDeclarationText(style: string): string {
       out += style.slice(kept, i);
       const close = style.indexOf('*/', i + 2);
       i = close === -1 ? style.length : close + 2;
-      kept = i;
-      continue;
-    }
-    // Cheap to ask at every index: the first comparison rejects every character that is not
-    // a `u`, so the scan stays one visit per character and the wall-clock pin stays green.
-    const url = endOfUrlToken(style, i);
-    if (url !== -1) {
-      out += style.slice(kept, i);
-      i = url;
       kept = i;
       continue;
     }
