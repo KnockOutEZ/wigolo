@@ -167,9 +167,19 @@ export class FakeRunStore implements RunStoreClient {
     return this.page(opts);
   }
 
-  /** Keyset paging over the id order, which is insertion order here — enough to exercise a cursor. */
+  /**
+   * Keyset paging, NEWEST FIRST — the store's own `ORDER BY created_at DESC, id DESC`.
+   *
+   * A third rule that was easy to fake wrong, and was: this listed in insertion order, which is
+   * oldest-first, and every decision the host makes about a boot page is about the newest runs being
+   * the ones it can afford to hold. `MAX_BOOT_HYDRATION_EVENTS`'s note turns on it directly ("the
+   * listing is newest-first, so the allowance is spent on the runs a surface is most likely to name,
+   * and the ones answered by projection are the oldest"), and so does the retention bound's eviction
+   * order — a fixture listing the other way makes both of those unfalsifiable, because every arm
+   * exercises the direction the real store never takes.
+   */
   private page(opts: ListRunsOptions): ListRunsResult {
-    const ids = [...this.facts.keys()];
+    const ids = [...this.facts.keys()].reverse();
     const start = opts.cursor ? ids.indexOf(opts.cursor) + 1 : 0;
     const limit = Math.min(opts.limit ?? this.listLimit, this.listLimit);
     const slice = ids.slice(start, start + limit);

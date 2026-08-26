@@ -506,10 +506,11 @@ describe('RunViewModel — boot hydration is one bounded, concurrent read', () =
     store.reads.length = 0;
     await vm.hydrate();
 
-    // One hop for five runs — not one listing plus five reads, and not the same events twice.
+    // One hop for five runs — not one listing plus five reads, and not the same events twice. The
+    // order is the STORE's — `ORDER BY created_at DESC` — so a boot names the newest run first.
     expect(store.reads).toEqual(['listRunLogs']);
-    expect(vm.list().map((r) => r.task)).toEqual(['run 0', 'run 1', 'run 2', 'run 3', 'run 4']);
-    expect(vm.ownerOf('tab-3')).toBe(vm.list()[3].id);
+    expect(vm.list().map((r) => r.task)).toEqual(['run 4', 'run 3', 'run 2', 'run 1', 'run 0']);
+    expect(vm.ownerOf('tab-3')).toBe(vm.list()[1].id);
   });
 
   it('reads every run at once, not one after another, against a store with no combined read', async () => {
@@ -1632,12 +1633,13 @@ describe('RunViewModel — the boot allowance is carried across pages, not reset
     expect(vm.list()).toHaveLength(ids.length);
     for (const id of ids) expect(vm.snapshot(id)).toEqual(await store.getRun(id));
 
-    // The run on the LAST page is the one the allowance never reached, so it is held as a projection
-    // — and its tabs are still indexed from that projection, which is law 4 answered off a run whose
-    // envelopes this process never saw.
-    const last = ids[ids.length - 1]!;
-    expect(vm.retainedEventCount(last), 'the last page kept its envelopes, so the allowance never tripped').toBe(0);
-    expect(vm.ownerOf(`tab-${ids.length - 1}-1`)).toBe(last);
+    // The listing is newest-first, so the run the allowance never reached is the OLDEST one — the
+    // last page of a boot, and the first run seeded here. It is held as a projection, and its tabs
+    // are still indexed from that projection, which is law 4 answered off a run whose envelopes this
+    // process never saw.
+    const oldest = ids[0]!;
+    expect(vm.retainedEventCount(oldest), 'the last page kept its envelopes, so the allowance never tripped').toBe(0);
+    expect(vm.ownerOf('tab-0-1')).toBe(oldest);
   });
 
   it('does not lose a session link a previous hydration already found', async () => {
@@ -1852,6 +1854,15 @@ class UnreachableStore implements RunStoreClient {
     return this.inner.eventsSince(runId, since, limit);
   }
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void { this.handlers.push(handler); }
+
+  private readonly readyHandlers: Array<() => void> = [];
+  onReady(handler: () => void): void { this.readyHandlers.push(handler); }
+  /**
+   * The respawn edge, driven by hand. The real client publishes this on the child's `ready` notify,
+   * which arrives at boot and again after every respawn — so firing it is reproducing "the background
+   * service came back", which is the one fact backoff could never learn.
+   */
+  announceReady(): void { for (const h of [...this.readyHandlers]) h(); }
 }
 
 /** A drivable clock for the retry backoff — the retries are the only timers these arms schedule. */
@@ -1968,6 +1979,105 @@ describe('RunViewModel — an adoption the store refused is retried, not dropped
     await settle();
     expect(store.refused.length, 'the later envelope did not reach the store at all').toBeGreaterThan(refusedBefore);
     expect(timers.live(), 'an exhausted chain was re-armed by a later failing envelope').toHaveLength(0);
+  });
+
+  /**
+   * SD1 exit-16 — the hole the count bound left, and the trigger that closes it.
+   *
+   * Eight attempts is about 62 seconds. A run created over REST has exactly one envelope the REST
+   * surface will ever append, so a brownout that outlasts the chain leaves it with nothing to
+   * re-trigger the adoption: the arm above pins that a later FAILING envelope must not re-arm it, and
+   * for this run class there is no later envelope at all. The run is then in the store, in REST's own
+   * answer, and in no surface this app owns until the app is restarted — which is the exact defect
+   * the retry chain was added to remove, arriving one brownout later.
+   *
+   * `ADOPT_RETRY_BASE_MS` names the missing signal itself: "a health signal from the broker would be
+   * the sharper trigger, and there is no such signal to subscribe to… reverse this the day the broker
+   * publishes a reachability event." This is that day, and it is a strictly narrower trigger than the
+   * one the arm above refuses — once per respawn, not once per refused envelope.
+   */
+  it('re-arms an exhausted adoption when the background service comes back, with no further envelope and no restart', async () => {
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    // The REST-created class: the reads are down when the run's ONLY envelope is fanned out.
+    store.down = true;
+    const run = await inner.createRun({ task: 'created over REST during a brownout' });
+    await settle();
+
+    // Force the exhaustion rather than wait for it — eight real backoff steps are 62 seconds.
+    for (let round = 0; round <= MAX_ADOPT_RETRIES; round++) {
+      if (timers.live().length === 0) break;
+      timers.fireDue();
+      await settle();
+    }
+    expect(timers.live(), 'the chain had not actually run out, so this arm proves nothing').toHaveLength(0);
+    expect(store.refused.length, 'the reads never failed, so nothing was exhausted').toBeGreaterThan(MAX_ADOPT_RETRIES);
+    expect(vm.list(), 'the run was adopted despite every read failing').toEqual([]);
+    expect(vm.listLive(), 'the run was live somewhere while every adoption had failed').toEqual([]);
+
+    // The service comes back and says so. Nothing else happens: no envelope is appended, no timer is
+    // outstanding, and the app is not restarted — the respawn edge is the only thing that can find it.
+    store.down = false;
+    store.announceReady();
+    await settle();
+
+    expect(vm.list().map((r) => r.id), 'the run stayed invisible after the service came back').toEqual([run.id]);
+    expect(vm.listLive().map((r) => r.id), 'the run recovered into `list` but not into the live set the tray reads').toEqual([run.id]);
+    expect(vm.snapshot(run.id)?.task).toBe('created over REST during a brownout');
+  });
+
+  it('starts a fresh chain if the service goes down again, rather than re-arming into an exhausted one', async () => {
+    // The re-arm is a new question, not a continuation: the store answered its `ready`, so a refusal
+    // after it is a new outage. A re-arm that left the attempt count at nine would have been a single
+    // no-op — one read per respawn forever, with the run never recovering from the second brownout.
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    store.down = true;
+    const run = await inner.createRun({ task: 'two brownouts' });
+    await settle();
+    for (let round = 0; round <= MAX_ADOPT_RETRIES; round++) {
+      if (timers.live().length === 0) break;
+      timers.fireDue();
+      await settle();
+    }
+    expect(timers.live()).toHaveLength(0);
+
+    // The service announces itself while still refusing reads — a respawn into a second brownout.
+    store.announceReady();
+    await settle();
+    expect(timers.live().map((t) => t.ms), 'the re-armed chain did not restart at the base backoff').toEqual([ADOPT_RETRY_BASE_MS]);
+
+    store.down = false;
+    timers.fireDue();
+    await settle();
+    expect(vm.list().map((r) => r.id)).toEqual([run.id]);
+  });
+
+  it('leaves a live chain alone when the service announces itself', async () => {
+    // The trigger is for chains that have GIVEN UP. A re-arm that fired for every entry would cancel
+    // a scheduled retry and issue an immediate read in its place — a broker flapping through respawns
+    // would then be read once per flap, which is the spin the count bound exists to prevent.
+    const inner = new FakeRunStore();
+    const store = new UnreachableStore(inner);
+    const timers = retryTimers();
+    const vm = new RunViewModel(store, () => new Date(), timers.setTimer);
+
+    store.down = true;
+    await inner.createRun({ task: 'still retrying' });
+    await vi.waitFor(() => expect(timers.live()).toHaveLength(1));
+
+    const readsBefore = inner.reads.length;
+    store.announceReady();
+    await settle();
+
+    expect(timers.live(), 'the pending retry was cancelled by an unrelated respawn').toHaveLength(1);
+    expect(inner.reads.length, 'a respawn read the store behind a chain that was already going to').toBe(readsBefore);
   });
 
   it('cancels a pending retry once the run has been adopted by some other path', async () => {
