@@ -154,7 +154,11 @@ describe('studio-db-broker — a condensed boot projection is charged and bounde
     const CARDS_PER_RUN = 30;
     for (let r = 0; r < RUNS; r++) {
       const run = await handlers.runCreate({ input: { task: `run ${r}` } });
-      bulkInsert(getDatabase(), run.id, [...filler(FILLER_EVENTS), ...pendingCards(CARDS_PER_RUN)]);
+      bulkInsert(getDatabase(), run.id, [
+        ...filler(FILLER_EVENTS),
+        { type: 'tab.attached', payload: { tabId: `tab-${r}` } },
+        ...pendingCards(CARDS_PER_RUN),
+      ]);
     }
 
     const page = await handlers.runListLogs({});
@@ -176,6 +180,15 @@ describe('studio-db-broker — a condensed boot projection is charged and bounde
     expect(page.charsSpent, 'the page shipped characters it did not charge for').toBeGreaterThanOrEqual(
       page.entries.reduce((n, e) => n + JSON.stringify(e.projection).length, 0),
     );
+    // Law 4, and the reason the budget may not take it: the host seeds `tab.attached` from exactly
+    // this array to rebuild which run owns which tab (`run-view-model.ts`'s `keptSeed`). A run whose
+    // projection under-reports its held tabs has not given a smaller answer — it has told the app
+    // those tabs belong to nobody, and the next run to ask for one is not refused. Every entry here
+    // is past the budget, which is precisely where a cut would be tempting.
+    expect(
+      page.entries.map((e) => e.projection!.tabIds.length),
+      'the character budget cut a run’s held-tab list — two runs can now hold the same tab',
+    ).toEqual(page.entries.map(() => 1));
   });
 
   it('caps the pending-card listing by count and says how many it dropped', async () => {

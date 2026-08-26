@@ -81,7 +81,8 @@ type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
  * branch ship uncharged. Two of a projection's fields grow without a count bound of their own — the
  * held-tab list grows with an ordinary run's lifetime, and `pendingDecisions` is windowed by time
  * and never by count with each prompt up to `MAX_EVENT_PAYLOAD_CHARS` — so the condensed answer is
- * charged against the same character budget as a log, and cut to fit it: see `condenseProjection`.
+ * charged against the same character budget as a log. Only one of the two may be cut to fit it, and
+ * `condenseProjection` says which and why.
  */
 export const MAX_BOOT_EVENTS_PER_RUN = 2_000;
 export const MAX_BOOT_EVENTS_TOTAL = 20_000;
@@ -223,10 +224,13 @@ export interface BrokerRunLogEntry {
    *
    * Present ONLY when something was dropped, so an ordinary condensed entry is byte-for-byte what
    * it was. A truncation the host cannot see is one it cannot replay: the run's log still holds
-   * every card and every tab, and this is how the host knows to go and get them rather than treat a
-   * shortened list as the run's actual state.
+   * every card, and this is how the host knows to go and get them rather than treat a shortened
+   * list as the run's actual state.
+   *
+   * `pendingDecisions` is the only field that can appear here, and `condenseProjection` says why:
+   * `tabIds` is law 4's ownership index and is never cut.
    */
-  projectionOmitted?: { pendingDecisions: number; tabIds: number };
+  projectionOmitted?: { pendingDecisions: number };
   /**
    * The daemon studio session this run was born from. Normally the host replays it from the
    * `run.created` envelope; a condensed entry carries no envelopes, and losing it would cost the
@@ -289,35 +293,43 @@ function storedPayloadChars(db: Database.Database, runId: string): number {
 interface CondensedProjection {
   projection: Run;
   chars: number;
-  omitted?: { pendingDecisions: number; tabIds: number };
+  omitted?: { pendingDecisions: number };
 }
 
 /**
  * The projection a condensed entry may ship, given what the page has left.
  *
- * Two cuts, in order. The count cap is unconditional — it bounds ONE run's projection, which is the
- * case the page-wide charge cannot reach, because the first run of a page is offered the whole
- * budget and a single hostile card list exceeds the host's frame bound on its own. The skeleton is
- * the fallback for everything the cap does not bound: a held-tab list grows with an ordinary run's
- * lifetime and has no natural count, so a run that still cannot fit gives up its two variable-length
- * fields rather than the page giving up its bound.
+ * Two cuts, in order, and BOTH of them only ever touch `pendingDecisions`. The count cap is
+ * unconditional — it bounds ONE run's projection, which is the case the page-wide charge cannot
+ * reach, because the first run of a page is offered the whole budget and a single hostile card list
+ * exceeds the host's own frame bound on its own. Dropping the cards entirely is the fallback for a
+ * run that still does not fit what the page has left.
  *
- * The skeleton is a `Run`, not an absence. The host keeps a condensed entry exactly the way it keeps
- * a finished run's projection, so the fields have to be there and be honest — empty plus a stated
- * count of what is missing, never a short list presented as the whole one.
+ * `tabIds` is NEVER cut, however large it grows. The host rebuilds law 4's tab→run index by seeding
+ * `tab.attached` from exactly this array (`run-view-model.ts`'s `keptSeed`), so a projection that
+ * under-reports a run's held tabs does not shrink an answer — it tells the app those tabs belong to
+ * nobody, and the next run to ask for one is not refused. A read bound may not manufacture a chance
+ * for two runs to hold the same tab. What bounds it instead is the charge: a large tab list spends
+ * the page's budget and the runs behind it condense harder, and past that the host's own
+ * `DEFAULT_MAX_FRAME_CHARS` stays the last line of defence, which is where `#132` left it.
+ *
+ * Cards can go because nothing downstream infers ownership from them: the run's `status` carries
+ * `needs_you` on its own, the cards are re-read from the log the moment the run speaks, and the
+ * count of what was dropped travels with the entry — empty plus a stated number, never a short list
+ * presented as the whole one.
  */
 function condenseProjection(run: Run, charsLeft: number): CondensedProjection {
   const dropped = Math.max(0, run.pendingDecisions.length - MAX_BOOT_PENDING_CARDS);
   const capped = dropped === 0 ? run : { ...run, pendingDecisions: run.pendingDecisions.slice(0, MAX_BOOT_PENDING_CARDS) };
   const chars = JSON.stringify(capped).length;
   if (chars <= charsLeft) {
-    return { projection: capped, chars, ...(dropped ? { omitted: { pendingDecisions: dropped, tabIds: 0 } } : {}) };
+    return { projection: capped, chars, ...(dropped ? { omitted: { pendingDecisions: dropped } } : {}) };
   }
-  const skeleton: Run = { ...run, pendingDecisions: [], tabIds: [] };
+  const cardless: Run = { ...run, pendingDecisions: [] };
   return {
-    projection: skeleton,
-    chars: JSON.stringify(skeleton).length,
-    omitted: { pendingDecisions: run.pendingDecisions.length, tabIds: run.tabIds.length },
+    projection: cardless,
+    chars: JSON.stringify(cardless).length,
+    omitted: { pendingDecisions: run.pendingDecisions.length },
   };
 }
 
