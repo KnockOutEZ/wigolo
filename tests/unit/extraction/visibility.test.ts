@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHTML } from 'linkedom';
-import { stripHiddenDom, HIDDEN_SELECTORS } from '../../../src/extraction/visibility.js';
+import { stripHiddenDom, isHidden, HIDDEN_SELECTORS } from '../../../src/extraction/visibility.js';
 import type {
   VisibilityElement,
   VisibilityNode,
@@ -566,6 +566,82 @@ describe('isHidden — the inline-style shapes the CSS grammar accepts', () => {
 });
 
 /**
+ * Every row above spells its property and value in ASCII. CSS does not require that: a
+ * backslash followed by 1–6 hex digits and one optional trailing whitespace is an escaped
+ * code point (css-syntax-3 §4.3.7, "consume an escaped code point"), and an ident sequence
+ * is consumed with its escapes RESOLVED (§4.3.11) before the cascade ever compares the
+ * property name. `\64 isplay:none` is therefore not a lookalike of `display:none` — to
+ * every engine it IS `display:none`, computed style and all.
+ *
+ * A pattern matching only the literal spellings hands the page a one-character bypass of
+ * the WYSIWYG guard: verified against Chromium at SD1 exit-16, which reports
+ * `getClientRects().length === 0` for all six spellings below while this pass kept the
+ * element for every one of them. Both entry points are pinned because both are load-bearing
+ * — `stripHiddenDom` is the removal, and `isHidden` is additionally the skip test inside
+ * `hasVisibleTextOutside`, so an escaped hide that reads visible also mis-feeds the
+ * shell discriminator's one document-wide fact.
+ *
+ * The negative rows are the reason this cannot be a blind unescape. A decoded code point is
+ * ident CONTENT, never syntax — that is the entire purpose of escaping it — so a decoded
+ * `:` does not separate a property from a value and a decoded newline does not delimit
+ * anything. Browsers drop both of those declarations, so suppressing them would delete copy
+ * a reader can actually see, which is the more damaging direction of the two.
+ */
+describe('isHidden — CSS identifier escapes are resolved before the property is matched', () => {
+  const reads = (style: string): { byIsHidden: boolean; byStrip: boolean } => {
+    const { document } = parseHTML(
+      '<html><body><p>visible lead</p><div id="t">secret draft copy</div></body></html>',
+    );
+    const el = document.getElementById('t') as unknown as VisibilityElement & {
+      setAttribute(n: string, v: string): void;
+    };
+    // Set through the DOM, so backslashes in the value are the value rather than something
+    // the HTML parser has already had an opinion about.
+    el.setAttribute('style', style);
+    return {
+      byIsHidden: isHidden(el),
+      byStrip: (() => {
+        stripHiddenDom(document);
+        return !document.body.innerHTML.includes('secret draft copy');
+      })(),
+    };
+  };
+
+  it.each([
+    ['`\\64 ` is `d`: the hex escape opens the property name', '\\64 isplay:none'],
+    ['...and it can sit mid-ident just as legally — `\\70 ` is `p`', 'dis\\70 lay:none'],
+    ['six hex digits is the maximum an escape consumes, zero-padded here', '\\000064 isplay:none'],
+    ['hex is case-insensitive and `\\44 ` decodes to `D`, which CSS folds', '\\44 isplay:none'],
+    ['the VALUE is an ident too, so `\\6e ` is `n` in `none`', 'display:\\6e one'],
+    ['the visibility spelling escapes identically — `\\76 ` is `v`', '\\76 isibility:hidden'],
+    // Not one of the six, but the same decode step is what settles it: a backslash outside a
+    // string escapes the quote into ident content, so `\'` opens nothing and the `;` after it
+    // really does start a new declaration. Reading it as a string opener swallowed the
+    // suppression written after it.
+    ['an escaped quote is ident content, so it never opens a string', "content:\\';display:none"],
+  ])('hides: %s', (_why, style) => {
+    const { byIsHidden, byStrip } = reads(style);
+    expect(byIsHidden).toBe(true);
+    expect(byStrip).toBe(true);
+  });
+
+  it.each([
+    [
+      '`\\3a ` escapes the COLON into the ident, so `display\\3a none` is one property name and no declaration',
+      'display\\3a none',
+    ],
+    [
+      '`\\d` is a hex escape (U+000D), so `\\display` is CR + `isplay` — not `display`',
+      '\\display:none',
+    ],
+  ])('keeps: %s', (_why, style) => {
+    const { byIsHidden, byStrip } = reads(style);
+    expect(byIsHidden).toBe(false);
+    expect(byStrip).toBe(false);
+  });
+});
+
+/**
  * The inline test resolves strings and comments out before it runs, and the two patterns that
  * did it were quadratic in a length the PAGE picks — not by backtracking but by repeated
  * failed starts. `'` followed by a run of `\'` gives `/'(?:[^'\\]|\\.)*'/g` a quote to open at
@@ -596,6 +672,12 @@ describe('a hostile style attribute cannot stall the pass, whatever length the p
    * once. A filler char between openers keeps every `*` from ever being followed by `/`.
    */
   const commentRun = (bytes: number): string => '/*a'.repeat(Math.floor(bytes / 3));
+  /**
+   * Resolving an escape reads its hex digits and stops — six of them at the most — so a run
+   * of escapes is still one visit per character. Written as `\41` rather than `\\`, because
+   * a run of backslashes is a run of escaped BACKSLASHES and would pin half the characters.
+   */
+  const escapeRun = (bytes: number): string => 'color:' + '\\41'.repeat(Math.floor(bytes / 3));
   /** The same length in characters the sanitizer has no reason to look twice at. */
   const benign = (bytes: number): string => 'color:red;' + 'x'.repeat(bytes);
 
@@ -621,6 +703,7 @@ describe('a hostile style attribute cannot stall the pass, whatever length the p
   it.each([
     ['unclosed quote followed by an escaped-quote run', quoteRun],
     ['unclosed comment openers with no close anywhere', commentRun],
+    ['a run of hex escapes, each one resolved', escapeRun],
   ])('stays linear on %s', (_name, make) => {
     const visible = clock(make(ATTR_BYTES));
     expect(visible.ms).toBeLessThan(bound);
