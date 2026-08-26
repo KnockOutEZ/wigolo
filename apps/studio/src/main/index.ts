@@ -449,7 +449,9 @@ async function createWindow(): Promise<void> {
     },
     resurface: (id) => {
       const card = parkedCards.get(id);
-      if (card) win.webContents.send(IPC.approvalParked, card);
+      // A quit is one of the ways durability fails — `dispose` wakes a sleeping retry and it reports
+      // unrecorded — so the window this would put the card back on may already be gone.
+      if (card && !win.isDestroyed()) win.webContents.send(IPC.approvalParked, card);
     },
     onError: onDecisionError,
   });
