@@ -33,6 +33,121 @@ const QUOTE_SINGLE = 0x27;
 const SLASH = 0x2f;
 const STAR = 0x2a;
 const BACKSLASH = 0x5c;
+const PAREN_OPEN = 0x28;
+const PAREN_CLOSE = 0x29;
+const LINE_FEED = 0x0a;
+const CARRIAGE_RETURN = 0x0d;
+const FORM_FEED = 0x0c;
+const TAB = 0x09;
+const SPACE = 0x20;
+const LOWER_U = 0x75;
+const LOWER_R = 0x72;
+const LOWER_L = 0x6c;
+const HYPHEN = 0x2d;
+const UNDERSCORE = 0x5f;
+const DIGIT_0 = 0x30;
+const DIGIT_9 = 0x39;
+const LOWER_A = 0x61;
+const LOWER_Z = 0x7a;
+const UPPER_A = 0x41;
+const UPPER_Z = 0x5a;
+const NON_ASCII = 0x80;
+
+/** The three code points CSS calls a newline — CR and FF are newlines before any preprocessing. */
+function isNewline(code: number): boolean {
+  return code === LINE_FEED || code === CARRIAGE_RETURN || code === FORM_FEED;
+}
+
+function isCssWhitespace(code: number): boolean {
+  return code === SPACE || code === TAB || isNewline(code);
+}
+
+/**
+ * Ident code points, asked only of the character BEFORE `url(` — `burl(` and `--url(` are
+ * function tokens, not url tokens, and only an ident boundary tells them apart. A backslash
+ * counts because an escape sequence ends in ident characters.
+ */
+function isIdentChar(code: number): boolean {
+  return (
+    (code >= LOWER_A && code <= LOWER_Z) ||
+    (code >= UPPER_A && code <= UPPER_Z) ||
+    (code >= DIGIT_0 && code <= DIGIT_9) ||
+    code === HYPHEN ||
+    code === UNDERSCORE ||
+    code === BACKSLASH ||
+    code >= NON_ASCII
+  );
+}
+
+/**
+ * The index just past a string token opened at `open` — or the index OF the newline that
+ * ended it as a `<bad-string-token>`, which the tokenizer reconsumes rather than swallows.
+ *
+ * The two endings are not the same parse event and must not be given the same behaviour. A
+ * raw newline inside a string is a parse error: the token ends there, the declaration holding
+ * it is discarded up to the next `;`, and everything after that `;` is applied normally. EOF
+ * with the string still open is NOT an error — a string open at EOF is a perfectly good
+ * `<string-token>` — so its contents stay contents and declare nothing, which is why this
+ * returns end-of-attribute there and the caller drops the lot.
+ */
+function endOfString(style: string, open: number, quote: number): number {
+  for (let i = open + 1; i < style.length; i++) {
+    const ch = style.charCodeAt(i);
+    // A backslash escapes whatever follows, the delimiter included, so the pair is consumed
+    // whole and a trailing lone backslash simply ends the attribute. A backslash before a
+    // newline is the escaped newline that continues a string across lines — CRLF is one
+    // newline, so the pair goes together and the LF is not left behind to end the token.
+    if (ch === BACKSLASH) {
+      if (style.charCodeAt(i + 1) === CARRIAGE_RETURN && style.charCodeAt(i + 2) === LINE_FEED) {
+        i += 2;
+      } else {
+        i++;
+      }
+      continue;
+    }
+    if (isNewline(ch)) return i;
+    if (ch === quote) return i + 1;
+  }
+  return style.length;
+}
+
+/**
+ * The index just past a url token starting at `at`, or `-1` when nothing starts there.
+ *
+ * `url(` with an unquoted argument is not a function call the tokenizer parses in the ordinary
+ * way — it switches to a mode where quotes are not string delimiters. An apostrophe inside one
+ * ends it as a `<bad-url-token>`, and the recovery from that consumes to the `)` and no
+ * further, so a `;display:none` written after the closing paren is a declaration the browser
+ * applies. Treating that apostrophe as a string opener instead ate the rest of the attribute
+ * and lost the suppression — `background:url(a'b);display:none` is the whole finding.
+ *
+ * A quote as the FIRST argument character is the opposite case: `url('…')` really is a function
+ * token holding an ordinary string, so this declines and the string scanner handles it, newline
+ * recovery included.
+ */
+function endOfUrlToken(style: string, at: number): number {
+  if ((style.charCodeAt(at) | 0x20) !== LOWER_U) return -1;
+  if ((style.charCodeAt(at + 1) | 0x20) !== LOWER_R) return -1;
+  if ((style.charCodeAt(at + 2) | 0x20) !== LOWER_L) return -1;
+  if (style.charCodeAt(at + 3) !== PAREN_OPEN) return -1;
+  if (at > 0 && isIdentChar(style.charCodeAt(at - 1))) return -1;
+  let i = at + 4;
+  while (i < style.length && isCssWhitespace(style.charCodeAt(i))) i++;
+  const first = style.charCodeAt(i);
+  if (first === QUOTE_DOUBLE || first === QUOTE_SINGLE) return -1;
+  for (; i < style.length; i++) {
+    const ch = style.charCodeAt(i);
+    if (ch === BACKSLASH) {
+      i++;
+      continue;
+    }
+    // Both a well-formed url token and the remnants of a bad one end at the first unescaped
+    // `)`, so one scan covers the pair; only whether the browser KEEPS the declaration
+    // differs, and a declaration this pass has resolved away declares nothing either way.
+    if (ch === PAREN_CLOSE) return i + 1;
+  }
+  return style.length;
+}
 
 /**
  * Strings and comments are removed before the test, exactly as a CSS tokenizer resolves
@@ -52,11 +167,22 @@ const BACKSLASH = 0x5c;
  * A cap on the attribute length would have bought the same latency with a constant that
  * expires; a scan that visits each character once has no constant to expire.
  *
- * An unterminated string or comment consumes to the end of the attribute, which is what a
- * browser does with an unclosed comment and what makes the surviving text the declarations
- * a browser would actually apply. The two `replace` passes left an unterminated construct
- * in place instead, so `style="display:none/*"` read as VISIBLE — the trailing `/` denied
- * the pattern the `;`-or-end it requires — and the page's own suppression went unhonoured.
+ * An unterminated COMMENT consumes to the end of the attribute, which is what a browser does
+ * with an unclosed comment and what makes the surviving text the declarations a browser would
+ * actually apply. The two `replace` passes left an unterminated construct in place instead, so
+ * `style="display:none/*"` read as VISIBLE — the trailing `/` denied the pattern the `;`-or-end
+ * it requires — and the page's own suppression went unhonoured.
+ *
+ * An unterminated STRING or `url(` does not, and generalising the comment rule to them was the
+ * defect this scanner shipped. The tokenizer has two distinct recoveries there, and both hand
+ * the rest of the attribute BACK to the declaration parser rather than swallowing it: a raw
+ * newline ends a string as a `<bad-string-token>`, an apostrophe inside an unquoted `url()`
+ * ends it as a `<bad-url-token>` at the `)`, and in each case only the declaration up to the
+ * next `;` is discarded — what follows that `;` is applied. Consuming to end-of-attribute ate
+ * the suppression written after the break, and the spellings that produced it were ordinary:
+ * a font stack broken across two lines with an apostrophe in a family name is one, so this
+ * leaked on hand-formatted CSS and not merely on an attack. EOF is the exception that stays,
+ * because it is not a parse error — see `endOfString`.
  */
 function stripStringsAndComments(style: string): string {
   let out = '';
@@ -66,16 +192,7 @@ function stripStringsAndComments(style: string): string {
     const ch = style.charCodeAt(i);
     if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
       out += style.slice(kept, i);
-      for (i++; i < style.length; i++) {
-        const inner = style.charCodeAt(i);
-        // A backslash escapes whatever follows, the delimiter included, so the pair is
-        // consumed whole and a trailing lone backslash simply ends the attribute.
-        if (inner === BACKSLASH) i++;
-        else if (inner === ch) {
-          i++;
-          break;
-        }
-      }
+      i = endOfString(style, i, ch);
       kept = i;
       continue;
     }
@@ -83,6 +200,15 @@ function stripStringsAndComments(style: string): string {
       out += style.slice(kept, i);
       const close = style.indexOf('*/', i + 2);
       i = close === -1 ? style.length : close + 2;
+      kept = i;
+      continue;
+    }
+    // Cheap to ask at every index: the first comparison rejects every character that is not
+    // a `u`, so the scan stays one visit per character and the wall-clock pin stays green.
+    const url = endOfUrlToken(style, i);
+    if (url !== -1) {
+      out += style.slice(kept, i);
+      i = url;
       kept = i;
       continue;
     }

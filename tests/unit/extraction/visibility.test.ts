@@ -501,6 +501,68 @@ describe('isHidden — the inline-style shapes the CSS grammar accepts', () => {
   ])('keeps: %s', (style) => {
     expect(strippedWithStyle(style)).toBe(false);
   });
+
+  /**
+   * The rows above all close what they open. A page — hostile or merely hand-formatted —
+   * does not have to, and Chromium does not treat an unterminated construct as running to
+   * the end of the attribute. Its tokenizer ends a string at a raw newline as a
+   * `<bad-string-token>` and ends an unquoted `url(` at the `)` as a `<bad-url-token>`; the
+   * declaration parser then discards only up to the next `;` and applies whatever follows.
+   * So the suppression AFTER the broken construct is one a reader really does not see.
+   *
+   * Both spellings are ordinary, not exotic: a font stack written across two lines with an
+   * apostrophe in a family name produces the first, and any unquoted `url()` with an
+   * apostrophe in the path produces the second. Consuming to end-of-attribute instead
+   * swallowed the `display:none` sitting after them and the page's own suppression went
+   * unhonoured — on benign markup, not only on an attack.
+   *
+   * Labelled rather than spelled into the test name because the value carries a real
+   * newline, and a multi-line test name is unreadable in every reporter.
+   */
+  it.each([
+    ['a newline ends a string, so the `;` after it separates declarations', "content:'x\n;display:none"],
+    ['...the double-quoted twin tokenizes identically', 'content:"x\n;display:none'],
+    ['...and the surviving declaration can be the visibility spelling', "content:'x\n;visibility:hidden"],
+    [
+      'a two-line font stack with an apostrophe in a family name — benign, not hostile',
+      "font-family: Bob's Font,\n serif;\n display:none",
+    ],
+    ['an apostrophe in an unquoted url() ends the token at the `)`', "background:url(a'b);display:none"],
+    ['...the same bad-url ahead of the visibility spelling', "background:url(a'b);visibility:hidden"],
+    ['a comment opened and never closed runs to EOF, so what precedes it stands', 'display:none/*'],
+  ])('hides: %s', (_why, style) => {
+    expect(strippedWithStyle(style)).toBe(true);
+  });
+
+  /**
+   * The same tokenizer read in the other direction, which no row above pinned. A string still
+   * open at EOF is NOT a parse error the way a newline is — the tokenizer returns a perfectly
+   * good `<string-token>` — so a declaration-shaped substring inside one is content, exactly
+   * as it is inside a closed string, and the browser applies nothing. Recovering at the
+   * newline without also keeping that direction would invent a suppression the page never
+   * declared, which is the mirror defect and the more damaging one: it deletes copy a reader
+   * CAN see.
+   */
+  it.each([
+    [
+      'a string open at EOF is a valid string token, so its contents stay contents',
+      "content:'unclosed; display:none",
+    ],
+    [
+      'the `;` inside a well-formed url() belongs to the url token, not to the declaration list',
+      'background:url(a;display:none)',
+    ],
+    [
+      'a `;` before the newline is inside the bad-string, so it separates nothing',
+      "content:'a;display:none\n",
+    ],
+    [
+      'with no `;` after it, the bad-string`s own declaration swallows what follows',
+      "content:'x\ndisplay:none",
+    ],
+  ])('keeps: %s', (_why, style) => {
+    expect(strippedWithStyle(style)).toBe(false);
+  });
 });
 
 /**
