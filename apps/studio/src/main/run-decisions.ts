@@ -126,6 +126,15 @@ export function createDecisionMirror(deps: DecisionMirrorDeps): DecisionMirror {
    * set — which only ever grows on a COMMITTED write — is what a second settle for one card checks.
    */
   const settled = new Set<string>();
+  /**
+   * Cards whose retries ran out, and the seq FLOOR their attempts probed from.
+   *
+   * A repeat answer for one of these cannot assume nothing was written: an earlier attempt may have
+   * committed and lost its reply at a moment the probe could not reach the store either. So it probes
+   * before appending — and it has to probe from the ORIGINAL floor, because a floor taken now could
+   * already sit above the envelope it is looking for.
+   */
+  const abandoned = new Map<string, number>();
   /** Wake-ups for retry backoffs in flight, so `dispose` never leaves one sleeping. */
   const waiting = new Set<() => void>();
   let disposed = false;
@@ -184,27 +193,42 @@ export function createDecisionMirror(deps: DecisionMirrorDeps): DecisionMirror {
     // on the lane the terminal event is written on. See `RunViewModel.resolveDecision`.
     //
     // The floor for the lost-reply probe, read BEFORE the first attempt so the window it opens starts
-    // strictly below the envelope it is looking for.
-    const since = deps.runs.lastSeqOf(runId);
+    // strictly below the envelope it is looking for. A card whose earlier attempts were abandoned
+    // reuses THEIR floor: one of those may have committed, and a floor taken now could sit above it.
+    const since = abandoned.get(decisionId) ?? deps.runs.lastSeqOf(runId);
     let attempt = 0;
     for (;;) {
+      // Asked before an append rather than only after a failed one, because the write and the probe can
+      // fail together: an append commits, the pipe dies before its reply AND before the probe, and by
+      // the time the store is back the only thing standing between the log and a second resolution for
+      // one card is a probe on THIS side of the sleep. Skipped on a card's first ever attempt, so the
+      // ordinary answer still costs one round-trip.
+      if ((attempt > 0 || abandoned.has(decisionId)) && await landed(runId, decisionId, since)) {
+        settled.add(decisionId);
+        runOf.delete(decisionId);
+        abandoned.delete(decisionId);
+        return { durable: true };
+      }
       try {
         await deps.runs.resolveDecision(runId, decisionId, outcome, by);
         // Committed — or legally refused on the run lane, which is the same durable outcome from here.
         settled.add(decisionId);
         runOf.delete(decisionId);
+        abandoned.delete(decisionId);
         return { durable: true };
       } catch (err) {
         if (await landed(runId, decisionId, since)) {
           settled.add(decisionId);
           runOf.delete(decisionId);
+          abandoned.delete(decisionId);
           return { durable: true };
         }
         if (disposed || attempt >= APPEND_RETRY_DELAYS_MS.length) {
-          // The link is KEPT. A repeat answer has to be able to write what this could not, and the
-          // projection cannot supply it — `runForDecision` reads `pendingDecisions`, which drops the
-          // card at its deadline, so past two minutes this module is the only thing that still knows
-          // which run the card belongs to.
+          // The link is KEPT, and so is the floor. A repeat answer has to be able to write what this
+          // could not, and the projection cannot supply the link — `runForDecision` reads
+          // `pendingDecisions`, which drops the card at its deadline, so past two minutes this module
+          // is the only thing that still knows which run the card belongs to.
+          abandoned.set(decisionId, since);
           return { durable: false, reason: err instanceof Error ? err.message : String(err) };
         }
         deps.onError(err);
@@ -226,6 +250,7 @@ export function createDecisionMirror(deps: DecisionMirrorDeps): DecisionMirror {
         // fresh resolution: leaving the id in `settled` would make this module answer "already
         // durable" to an answer it never wrote.
         settled.delete(notice.approval_id);
+        abandoned.delete(notice.approval_id);
         await deps.runs.requestDecision(runId, { decisionId: notice.approval_id, kind: notice.risk, prompt: notice.action });
         runOf.set(notice.approval_id, runId);
         pending.set(
@@ -252,6 +277,7 @@ export function createDecisionMirror(deps: DecisionMirrorDeps): DecisionMirror {
       runOf.clear();
       chain.clear();
       settled.clear();
+      abandoned.clear();
     },
   };
 }

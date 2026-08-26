@@ -654,6 +654,34 @@ describe('a human answer whose run store is down at the append', () => {
     expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
   });
 
+  /**
+   * The write and the probe failing TOGETHER — the one interleaving a post-failure probe alone cannot
+   * cover.
+   *
+   * The append commits, the pipe dies before its reply AND before the probe can be made, and the store
+   * comes back later. By then the log already holds the resolution, so the next attempt must ask before
+   * it writes rather than only after it fails — otherwise one card gets two resolutions. The floor that
+   * probe reads from has to be the ORIGINAL one too: a floor taken after the heal sits above the
+   * envelope it is looking for, and would answer "not landed" over a log that has it.
+   */
+  it('writes no second resolution when the committing attempt and its probe both died', async () => {
+    store.loseReplyFor = 1;
+    store.down = true; // the probe after the failure cannot reach the store either
+    const answering = mirror.resolved('ap-1', 'approved');
+    for (let i = 0; i < APPEND_RETRY_DELAYS_MS.length; i += 1) {
+      await settled();
+      await fireAll();
+    }
+    // The write DID land — the mirror just has no way to know it yet.
+    expect((await answering).durable).toBe(false);
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+
+    store.down = false;
+    expect(await mirror.resolved('ap-1', 'approved')).toEqual({ durable: true });
+
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+  });
+
   it('answers a card it has already recorded without writing a second resolution', async () => {
     expect(await mirror.resolved('ap-1', 'approved')).toEqual({ durable: true });
     expect(await mirror.resolved('ap-1', 'denied')).toEqual({ durable: true });
