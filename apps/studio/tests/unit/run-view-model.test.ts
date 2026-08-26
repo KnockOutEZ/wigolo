@@ -13,6 +13,7 @@ import {
   EMIT_COALESCE_MS,
   MAX_ADOPT_RETRIES,
   REMATERIALIZE_MAX_EVENTS,
+  RunNotOpenError,
   RunViewModel,
   TabOwnedError,
   type RunStoreClient,
@@ -104,6 +105,64 @@ describe('RunViewModel — tab↔run ownership is the run log, not registry stat
     expect(store.appends).toEqual([]); // the refusal left the append-only log untouched
     expect(vm.ownerOf('tab-shared')).toBe(a.id); // and did not steal the tab
     expect(vm.tabsOf(b.id)).toEqual([]);
+  });
+
+  /**
+   * SD1 exit-16, arm 1. `applyAttach` was the one lifecycle write on this class with no terminal-run
+   * guard — its three siblings (`applyVisibility`, `applyRequestDecision`, `applyResolveDecision`) all
+   * refuse past the terminal event per `wigolo-studio-run` issue 112, and the store below checks only that the run row exists.
+   * So a run that had already ended could take a `tab.attached`, which is an out-of-order fact in an
+   * append-only log with no prune path: `agentVisibleTabs` lists a tab on a cancelled run, `promote()`
+   * focuses it, and every later replay reads a finished run owning a page.
+   *
+   * The refusal is a THROW rather than the silent return `requestDecision` uses, because attach is the
+   * one of the four whose caller acts on the answer: `open()` hands the agent a `session_id` on the
+   * strength of it, and a session id naming a run that never took the tab is a success response for
+   * work that did not happen.
+   */
+  it('refuses to attach a tab to a run that has already ended, and writes no event', async () => {
+    const run = await vm.createRun({ task: 'over already' });
+    await vm.endRun(run.id, 'cancelled');
+    store.appends.length = 0;
+
+    await expect(vm.attachTab(run.id, 'tab-late')).rejects.toBeInstanceOf(RunNotOpenError);
+    await expect(vm.attachTab(run.id, 'tab-late')).rejects.toMatchObject({ reason: 'ended' });
+    expect(store.appends, 'a tab.attached landed past the terminal event').toEqual([]);
+    expect(vm.ownerOf('tab-late')).toBeUndefined();
+    expect(vm.tabsOf(run.id)).toEqual([]);
+    // The claim is about ORDER in the log, not just about the count.
+    expect(store.log.get(run.id)!.map((e) => e.type)).toEqual(['run.created', 'run.cancelled']);
+  });
+
+  /**
+   * The vacuous half of the same guard, and the shape `applyResolveDecision` records for its own: a run
+   * this process is not holding cannot be shown to be open, so law 4's ownership read below has nothing
+   * to decide against. Appending anyway claims a tab for a run no reader here can see.
+   */
+  it('refuses to attach a tab to a run this process is not holding', async () => {
+    store.appends.length = 0;
+    await expect(vm.attachTab('rZZZ', 'tab-orphan')).rejects.toMatchObject({ name: 'RunNotOpenError', reason: 'unknown' });
+    expect(store.appends).toEqual([]);
+    expect(vm.ownerOf('tab-orphan')).toBeUndefined();
+  });
+
+  /**
+   * SD1 exit-16. A second terminal append is the same defect from the other side, and the quit path
+   * reaches it: `open()`'s rollback ends the run it created, and a `shutdown()` that already cancelled
+   * that run leaves the rollback writing `run.cancelled` on top of `run.cancelled`. Decided on the run
+   * lane, so it is serialised against the terminal append rather than racing it.
+   */
+  it('writes nothing when a run that has already ended is ended again', async () => {
+    const run = await vm.createRun({ task: 'ends once' });
+    await vm.attachTab(run.id, 'tab-a');
+    await vm.endRun(run.id, 'cancelled');
+    store.appends.length = 0;
+
+    await vm.endRun(run.id, 'completed');
+    expect(store.appends, 'the log took a second terminal event for one ending').toEqual([]);
+    expect(vm.snapshot(run.id)!.status).toBe('cancelled');
+    expect(store.log.get(run.id)!.map((e) => e.type))
+      .toEqual(['run.created', 'tab.attached', 'tab.detached', 'run.cancelled']);
   });
 
   it('treats re-attaching a tab to the run that already owns it as a no-op, not a second event', async () => {
