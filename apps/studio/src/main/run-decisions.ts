@@ -63,14 +63,19 @@ export interface DecisionMirror {
 }
 
 /**
- * The append is retried on the mirror's own injected clock, and the schedule is bounded WELL under
- * `AUTO_DENY_MS` on purpose: the whole window has to close while the card is still inside its
- * two-minute life, because `projectRun` drops an expired card from `pendingDecisions` and past that
- * point "no longer pending" no longer means "resolved" to anything reading the projection.
+ * The append is retried on the mirror's own injected clock: six attempts over 15.5s of backoff.
  *
- * Six attempts over 15.5s. Not a generic retry framework — a broker respawn is the failure this is
- * sized for, and a respawn that has not happened in fifteen seconds is one the human should be told
- * about rather than one a longer sleep would fix.
+ * Not a generic retry framework — a run-store respawn is the failure this is sized for, and a respawn
+ * that has not happened in fifteen seconds is one the human should be told about rather than one a
+ * longer sleep would fix. The real wall clock is longer than the backoff, because a HUNG store costs
+ * a per-call timeout per attempt rather than an immediate rejection.
+ *
+ * Correctness does NOT depend on the window closing inside `AUTO_DENY_MS`, and it deliberately must
+ * not: `projectRun` drops an expired card from `pendingDecisions`, so anything that located the card
+ * through the projection would stop being able to place the answer at the two-minute mark. Both of the
+ * things this retry needs are independent of expiry instead — the card→run link is held here, and the
+ * lost-reply probe reads the durable log rather than the projection. The row that pins that is "still
+ * knows which run an unrecorded card belongs to after its deadline has passed".
  */
 export const APPEND_RETRY_DELAYS_MS: readonly number[] = [500, 1_000, 2_000, 4_000, 8_000];
 
