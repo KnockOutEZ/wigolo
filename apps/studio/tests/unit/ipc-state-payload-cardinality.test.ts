@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn() } }));
 
 import { registerIpc } from '../../src/main/ipc-host';
-import { MAX_RETAINED_SEALED_RUNS, RunViewModel } from '../../src/main/run-view-model';
+import { MAX_RETAINED_SEALED_RUNS, RunViewModel, SEALED_EVICTION_SLACK } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 import type { StudioState } from '../../src/shared/ipc';
 
@@ -79,7 +79,7 @@ describe('the IPC state push carries live runs, not lifetime runs', () => {
     // happened to be large. Asserted here as well, because a regression that un-bounded retention
     // would otherwise show up as this arm getting "healthier".
     expect(vm.retainedRunCount(), 'retention is unbounded again — the lifetime listing has no ceiling')
-      .toBe(MAX_RETAINED_SEALED_RUNS + liveIds.length);
+      .toBeLessThanOrEqual(MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK + liveIds.length);
     const before = JSON.stringify(vm.list()).length;
     const after = JSON.stringify(pushed.runs).length;
     expect(before, 'the lifetime listing got cheap — this bound no longer measures anything').toBeGreaterThan(50_000);

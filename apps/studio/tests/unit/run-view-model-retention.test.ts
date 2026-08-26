@@ -4,9 +4,13 @@ import {
   MAX_RETAINED_SEALED_RUNS,
   REMATERIALIZE_MAX_EVENTS,
   RunViewModel,
+  SEALED_EVICTION_SLACK,
   type RunLogPage,
 } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
+
+/** The real ceiling on retained sealed runs: the bound plus the slack the batched cut leaves. */
+const CEILING = MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK;
 
 /**
  * SD1 exit-16 — what this projection host RETAINS, and what it walks to answer a fan-out.
@@ -37,18 +41,44 @@ describe('RunViewModel — retention is bounded by the runs a surface can reach,
     const store = new FakeRunStore();
     const vm = new RunViewModel(store);
 
-    const finished = await seedTerminal(vm, MAX_RETAINED_SEALED_RUNS + 250);
+    const finished = await seedTerminal(vm, CEILING + 250);
     const live = await vm.createRun({ task: 'still going' });
 
     // The bound, counted. On the tip this was `finished.length + 1` and rose forever.
     expect(vm.retainedRunCount(), 'retention is a function of the lifetime run count again')
-      .toBe(MAX_RETAINED_SEALED_RUNS + 1);
+      .toBeLessThanOrEqual(CEILING + 1);
+    expect(vm.retainedRunCount(), 'the bound cut deeper than it promises, so a history read lost runs it should hold')
+      .toBeGreaterThanOrEqual(MAX_RETAINED_SEALED_RUNS);
 
-    // Oldest first, and the live one is never a candidate whatever its age.
+    // Oldest go first, and the live one is never a candidate whatever its age.
     expect(vm.snapshot(finished[0]!), 'the oldest finished run survived the bound').toBeUndefined();
     expect(vm.snapshot(finished.at(-1)!)?.status, 'the newest finished run was evicted before the oldest').toBe('done');
     expect(vm.snapshot(live.id)?.status).toBe('running');
     expect(vm.listLive().map((r) => r.id), 'the live run was lost with the finished ones').toEqual([live.id]);
+  });
+
+  it('keeps the most recently BORN finished runs when boot hands them over newest-first', async () => {
+    // The order this process files a run in is not the order it was born in, and the difference is not
+    // academic: `hydrate` pages the listing NEWEST-FIRST, so an eviction that dropped the
+    // least-recently-filed run would keep the machine's oldest finished runs and evict everything a
+    // human might still be looking for — the exact inverse of the intent, invisible to any assertion
+    // about the COUNT.
+    const store = new FakeRunStore();
+    const ids: string[] = [];
+    for (let i = 0; i < CEILING + 200; i++) {
+      const run = await store.createRun({ task: `${TASK} #${i}` });
+      await store.appendEvent(run.id, { actor: { kind: 'system' }, type: 'run.completed', payload: {} });
+      ids.push(run.id);
+    }
+
+    // A fresh projection, hydrating the whole corpus the way boot does — the listing is newest-first.
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+
+    // Boot ends with a cut that takes no slack, so this is the bound exactly.
+    expect(vm.retainedRunCount()).toBe(MAX_RETAINED_SEALED_RUNS);
+    expect(vm.snapshot(ids.at(-1)!)?.status, 'the NEWEST finished run on the machine was evicted').toBe('done');
+    expect(vm.snapshot(ids[0]!), 'the oldest finished run on the machine survived').toBeUndefined();
   });
 
   it('re-adopts an evicted run from the store when a later envelope arrives for it', async () => {
@@ -58,7 +88,7 @@ describe('RunViewModel — retention is bounded by the runs a surface can reach,
     const store = new FakeRunStore();
     const vm = new RunViewModel(store);
 
-    const finished = await seedTerminal(vm, MAX_RETAINED_SEALED_RUNS + 1);
+    const finished = await seedTerminal(vm, CEILING + 1);
     const evicted = finished[0]!;
     expect(vm.snapshot(evicted)).toBeUndefined();
 
@@ -85,7 +115,7 @@ describe('RunViewModel — retention is bounded by the runs a surface can reach,
     await new Promise((r) => { setTimeout(r, 0); });
     expect(vm.ownerOf('tab-held')).toBe(holder.id);
 
-    await seedTerminal(vm, MAX_RETAINED_SEALED_RUNS + 50);
+    await seedTerminal(vm, CEILING + 50);
 
     expect(vm.snapshot(holder.id)?.status, 'a run holding a page was evicted by the retention bound').toBe('done');
     expect(vm.ownerOf('tab-held'), 'the tab silently became the human’s when its run was evicted').toBe(holder.id);
@@ -105,7 +135,7 @@ describe('RunViewModel — retention is bounded by the runs a surface can reach,
     await new Promise((r) => { setTimeout(r, 0); });
     expect(vm.runForSession('sess-evicted')).toBe(first.id);
 
-    await seedTerminal(vm, MAX_RETAINED_SEALED_RUNS + 5);
+    await seedTerminal(vm, CEILING + 5);
 
     expect(vm.snapshot(first.id)).toBeUndefined();
     expect(vm.runForSession('sess-evicted'), 'the session index kept pointing at an evicted run').toBeUndefined();

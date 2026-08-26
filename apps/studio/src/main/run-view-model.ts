@@ -399,6 +399,28 @@ export const MAX_ADOPT_RETRIES = 8;
  */
 export const MAX_RETAINED_SEALED_RUNS = 500;
 
+/**
+ * How far past the bound the sealed set is allowed to drift before it is cut back to it.
+ *
+ * The cut chooses what to drop by the run's OWN `createdAt` rather than by the order this process
+ * happened to file it, and that is not a refinement — filing order is wrong in the direction that
+ * matters. `hydrate` pages the listing NEWEST-FIRST, so an eviction that dropped the
+ * least-recently-filed run would drop the newest finished run on the machine and keep the oldest five
+ * hundred, which is the opposite of what any history read wants. Live folding files in the other
+ * order again, so no single filing rule is right for both producers; the run's birth is right for
+ * both, because it is a fact about the run rather than about the walk that found it.
+ *
+ * Ordering by it costs a sort, so the cut is BATCHED rather than run per sealed run: at the bound a
+ * per-run sort is ~500 log 500 every time a run ends, which is nothing, and at boot it is that once
+ * per hydrated run — the 10,000-run shape that already measured 1.3 s of nothing but map deletion in
+ * `tabsByRun`'s note. The slack turns that into one cut per hundred, on the thread that paints, for a
+ * hundred extra projections held.
+ *
+ * So the real ceiling on retained sealed runs is `MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK`,
+ * and the bound this class actually promises is that ceiling, not the round number in it.
+ */
+export const SEALED_EVICTION_SLACK = 100;
+
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
   run: Run;
@@ -577,11 +599,14 @@ export class RunViewModel {
    */
   private readonly live = new Set<string>();
   /**
-   * Terminal, unwatched, sealed runs in the order they became so — the eviction queue for
-   * `MAX_RETAINED_SEALED_RUNS`. A `Set` because membership is asked on every fold and order is what
-   * the bound is spent in; insertion order is the JS `Set`'s own, and a run is added exactly once.
+   * The terminal, unwatched, sealed runs — the candidates for `MAX_RETAINED_SEALED_RUNS`.
+   *
+   * A `Set` because membership is asked on every fold and a run is added exactly once. Deliberately
+   * NOT the eviction order: which of these goes is decided by the run's own `createdAt` at the cut,
+   * for the reason `SEALED_EVICTION_SLACK` records — filing order is newest-first at boot and
+   * oldest-first while folding, so it is wrong in one direction whichever way it is read.
    */
-  private readonly sealedOrder = new Set<string>();
+  private readonly sealed = new Set<string>();
   /**
    * §7.3's session link, read the other way: which run a daemon session spawned.
    *
@@ -769,6 +794,9 @@ export class RunViewModel {
       if (!nextCursor || nextCursor === cursor) break;
       cursor = nextCursor;
     }
+    // The cut with no slack — see `evictSealed`. The pages arrived newest-first, so whatever is left
+    // in the slack at the end of a boot is the oldest run on the machine rather than a recent one.
+    this.evictSealed(true);
     this.emit();
   }
 
@@ -932,7 +960,7 @@ export class RunViewModel {
     // can change it, so this costs a map lookup rather than a projection. A run this process is still
     // folding is listable by definition of not being terminal-and-hidden, and asking would project it.
     if (log.kept === undefined || isListable(log.kept)) {
-      this.sealedOrder.delete(runId);
+      this.sealed.delete(runId);
       this.live.add(runId);
       return;
     }
@@ -940,23 +968,38 @@ export class RunViewModel {
     // A run that still holds a tab keeps its rows whatever the bound says — see
     // `MAX_RETAINED_SEALED_RUNS`. It becomes evictable the moment the tab is released, which folds
     // back through here.
-    if (this.tabsByRun.has(runId) || this.sealedOrder.has(runId)) return;
-    this.sealedOrder.add(runId);
+    if (this.tabsByRun.has(runId) || this.sealed.has(runId)) return;
+    this.sealed.add(runId);
     this.evictSealed();
   }
 
   /**
-   * Spend the retention bound, oldest sealed run first.
+   * Cut the sealed set back to the bound, dropping the runs that were BORN earliest.
    *
-   * A `while` rather than a single drop, because a boot can retain a whole page of finished runs
-   * before this is first reached, and because eviction is the only thing that removes a key.
+   * By birth rather than by when this process filed them, because the two producers file in opposite
+   * orders and only one of them is the ordinary case: `hydrate` pages the listing newest-first, so
+   * dropping the least-recently-filed run would keep the machine's five hundred OLDEST finished runs
+   * and evict everything a human might still be looking for. See `SEALED_EVICTION_SLACK` for why the
+   * cut is batched rather than run once per sealed run.
+   *
+   * `createdAt` is ISO-8601, so string order is chronological order. A run whose log has already gone
+   * sorts first and is dropped first, which is right: there is nothing left to keep.
+   *
+   * `force` cuts to the bound with no slack, and `hydrate` ends with one. Without it the slack is not
+   * merely slack at boot, it is a hole: the pages arrive newest-first, so the runs still sitting in
+   * the slack when the last page lands are the OLDEST on the machine — the hundred this bound most
+   * wants gone. Every cut before that one was correct and the tail undid them.
    */
-  private evictSealed(): void {
-    while (this.sealedOrder.size > MAX_RETAINED_SEALED_RUNS) {
-      const oldest = this.sealedOrder.values().next().value;
-      if (oldest === undefined) return;
-      this.sealedOrder.delete(oldest);
-      this.forget(oldest);
+  private evictSealed(force = false): void {
+    if (this.sealed.size <= (force ? MAX_RETAINED_SEALED_RUNS : MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK)) return;
+    const bornAt = (runId: string): string => this.logs.get(runId)?.facts.createdAt ?? '';
+    const byAge = [...this.sealed].sort((a, b) => {
+      const [x, y] = [bornAt(a), bornAt(b)];
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    for (const runId of byAge.slice(0, byAge.length - MAX_RETAINED_SEALED_RUNS)) {
+      this.sealed.delete(runId);
+      this.forget(runId);
     }
   }
 
@@ -978,6 +1021,7 @@ export class RunViewModel {
     this.projected.delete(runId);
     this.statusRereads.delete(runId);
     this.live.delete(runId);
+    this.sealed.delete(runId);
     this.horizons.get(runId)?.stop();
     this.horizons.delete(runId);
     this.clearRetry(runId);

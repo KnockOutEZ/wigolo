@@ -506,10 +506,11 @@ describe('RunViewModel — boot hydration is one bounded, concurrent read', () =
     store.reads.length = 0;
     await vm.hydrate();
 
-    // One hop for five runs — not one listing plus five reads, and not the same events twice.
+    // One hop for five runs — not one listing plus five reads, and not the same events twice. The
+    // order is the STORE's — `ORDER BY created_at DESC` — so a boot names the newest run first.
     expect(store.reads).toEqual(['listRunLogs']);
-    expect(vm.list().map((r) => r.task)).toEqual(['run 0', 'run 1', 'run 2', 'run 3', 'run 4']);
-    expect(vm.ownerOf('tab-3')).toBe(vm.list()[3].id);
+    expect(vm.list().map((r) => r.task)).toEqual(['run 4', 'run 3', 'run 2', 'run 1', 'run 0']);
+    expect(vm.ownerOf('tab-3')).toBe(vm.list()[1].id);
   });
 
   it('reads every run at once, not one after another, against a store with no combined read', async () => {
@@ -1632,12 +1633,13 @@ describe('RunViewModel — the boot allowance is carried across pages, not reset
     expect(vm.list()).toHaveLength(ids.length);
     for (const id of ids) expect(vm.snapshot(id)).toEqual(await store.getRun(id));
 
-    // The run on the LAST page is the one the allowance never reached, so it is held as a projection
-    // — and its tabs are still indexed from that projection, which is law 4 answered off a run whose
-    // envelopes this process never saw.
-    const last = ids[ids.length - 1]!;
-    expect(vm.retainedEventCount(last), 'the last page kept its envelopes, so the allowance never tripped').toBe(0);
-    expect(vm.ownerOf(`tab-${ids.length - 1}-1`)).toBe(last);
+    // The listing is newest-first, so the run the allowance never reached is the OLDEST one — the
+    // last page of a boot, and the first run seeded here. It is held as a projection, and its tabs
+    // are still indexed from that projection, which is law 4 answered off a run whose envelopes this
+    // process never saw.
+    const oldest = ids[0]!;
+    expect(vm.retainedEventCount(oldest), 'the last page kept its envelopes, so the allowance never tripped').toBe(0);
+    expect(vm.ownerOf('tab-0-1')).toBe(oldest);
   });
 
   it('does not lose a session link a previous hydration already found', async () => {
