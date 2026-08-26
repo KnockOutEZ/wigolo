@@ -298,8 +298,12 @@ describe('run-store — derived fields are projections of the log (law 1)', () =
     expect(run.driver).toEqual({ kind: 'cli', client: { name: 'a-harness', version: '2.1.0' } });
     expect(run.visibility).toBe('visible');
     expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d2']);
+    // The DERIVATION is what this shape test is about — that `autoDenyAt` is one window past the
+    // request. The window's own value is pinned absolutely, once, by the named row in `pin 3`, so a
+    // bare literal here would only make a window change fail in a test whose subject is not the
+    // window.
     expect(run.pendingDecisions[0].autoDenyAt).toBe(
-      new Date(new Date(run.pendingDecisions[0].requestedAt).getTime() + 120_000).toISOString(),
+      new Date(new Date(run.pendingDecisions[0].requestedAt).getTime() + AUTO_DENY_MS).toISOString(),
     );
   });
 
@@ -381,6 +385,17 @@ describe('run-store — a pending decision expires on its own clock (pin 3)', ()
     }, { ...opts(), now: () => t0 });
     return run.id;
   }
+
+  /**
+   * WHY: every other assertion in this block computes its expectation FROM `AUTO_DENY_MS`, so all of
+   * them stay green if the window becomes 12 s or 20 min — they pin the derivation, not the number.
+   * The number is itself a contract: §7's row "Approval pending — blocks that run only; other runs
+   * keep working; auto-deny after 2m". This is the one row that fails when the window moves, so it
+   * carries the literal and no arithmetic on the symbol it guards.
+   */
+  it('holds the consent window at the two minutes the contract promises', () => {
+    expect(AUTO_DENY_MS).toBe(120_000);
+  });
 
   it('still needs you while the card can be answered', () => {
     const run = getRun(db, runNeedingADecision(), { now: at(AUTO_DENY_MS - 1) })!;
@@ -1854,14 +1869,17 @@ describe('run-store — a projection costs its answer, not its history (SD1 exit
   });
 });
 
-describe('run-store — the tab fold is a set question, not a walk (SD1 exit-5, perf #3)', () => {
+describe('run-store — the tab fold is a set question, not a walk (SD1 exit-5, perf #3; exit-16, #138)', () => {
   /**
-   * WHY: `tabIds.includes` is O(held) per `tab.attached`, so a run holding many tabs at once paid
-   * O(held squared) to project — measured 112 ms of blocked event loop at 16k attach-only events.
-   * A Set answers membership in constant time; the array stays because law 4's order is the answer.
+   * WHY: the fold was O(held squared) at BOTH ends. `tabIds.includes` was O(held) per `tab.attached`
+   * (measured 112 ms of blocked event loop at 16k attach-only events, fixed at exit-5), and
+   * `indexOf` + `splice` was O(held) per `tab.detached` whatever the index, because one of the two
+   * always walks (297 ms at 64k attach-then-detach, fixed at exit-16). The Set carries order itself,
+   * so it is now the only structure and the array is materialized once on the way out.
    *
    * A counter cannot see the difference and a wall-clock constant is a flake, so what is pinned here
    * is that the cheaper structure folds IDENTICALLY — every shape the O(n squared) walk could reach.
+   * Order is the part that a Set is easy to get wrong about, so it is asserted, never assumed.
    */
   const fold = (events: Array<[string, Record<string, unknown>?]>): string[] => {
     const run = createRun(db, { task: 'tabs' }, opts());
@@ -1917,6 +1935,29 @@ describe('run-store — the tab fold is a set question, not a walk (SD1 exit-5, 
     }
     expect(expected.length).toBeGreaterThan(1); // control: the script actually holds tabs
     expect(fold(script)).toEqual(expected);
+  });
+
+  it('detaching out of the middle leaves the survivors in attach order', () => {
+    // The exit-16 arm. `splice` kept order by shifting, which is what made it O(held); the Set keeps
+    // it by not having positions to shift. Detaching from the front, the middle and the back in one
+    // log is the shape that tells the two apart if the Set ever stopped iterating in insertion order.
+    expect(fold([att('a'), att('b'), att('c'), att('d'), att('e'), det('a'), det('c'), det('e')])).toEqual(['b', 'd']);
+    // ...and a survivor re-attached still goes to the end, not back to the hole it left.
+    expect(fold([att('a'), att('b'), att('c'), det('b'), att('b')])).toEqual(['a', 'c', 'b']);
+  });
+
+  it('drains a fully held run in the order that cost the most, and reports nothing held', () => {
+    // Front-first is the worst order for the array fold: every detach shifted the whole remainder.
+    // 300 tabs is far past the point where a surviving O(held squared) walk would show up in the
+    // suite's own runtime, and the fold is asserted at three points, not just at the empty end.
+    const script: Array<[string, Record<string, unknown>?]> = [];
+    const ids = Array.from({ length: 300 }, (_, i) => `t${i}`);
+    for (const id of ids) script.push(att(id));
+    expect(fold(script)).toEqual(ids);
+    for (const id of ids.slice(0, 150)) script.push(det(id));
+    expect(fold(script)).toEqual(ids.slice(150));
+    for (const id of ids.slice(150)) script.push(det(id));
+    expect(fold(script)).toEqual([]);
   });
 });
 
