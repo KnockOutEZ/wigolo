@@ -72,14 +72,40 @@ type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
  * overrun cannot be repeated by every run behind it.
  *
  * A run past either bound is answered with its PROJECTION instead of its envelopes. That is not a
- * degraded answer: `listRuns` has already computed it by the bounded path, it is field-for-field the
- * answer REST gives for the same run, and it is a few hundred bytes. The host keeps it exactly the
- * way it keeps a finished run's projection — every read stays correct — and replays the log in
- * bounded pages when the run next speaks.
+ * degraded answer: `listRuns` has already computed it by the bounded path, and it is field-for-field
+ * the answer REST gives for the same run. The host keeps it exactly the way it keeps a finished
+ * run's projection — every read stays correct — and replays the log in bounded pages when the run
+ * next speaks.
+ *
+ * It is NOT "a few hundred bytes", which is what this note used to claim and what let the condensed
+ * branch ship uncharged. Two of a projection's fields grow without a count bound of their own — the
+ * held-tab list grows with an ordinary run's lifetime, and `pendingDecisions` is windowed by time
+ * and never by count with each prompt up to `MAX_EVENT_PAYLOAD_CHARS` — so the condensed answer is
+ * charged against the same character budget as a log. Only one of the two may be cut to fit it, and
+ * `condenseProjection` says which and why.
  */
 export const MAX_BOOT_EVENTS_PER_RUN = 2_000;
 export const MAX_BOOT_EVENTS_TOTAL = 20_000;
 export const MAX_BOOT_FRAME_CHARS = 4_000_000;
+
+/**
+ * How many unresolved decision cards ONE condensed projection may relay.
+ *
+ * The projection was the budget's unmetered door. `pendingDecisions` is windowed by TIME and never
+ * by count — `PENDING_DECISION_SQL` asks for every in-window `decision.requested` a run has not
+ * resolved — and each prompt may be `MAX_EVENT_PAYLOAD_CHARS`. So "how many cards can be in the
+ * window" is a question about the writer, not about this read, and a run that raises a thousand of
+ * them in two minutes produces a projection larger than the host's whole frame bound. Charging the
+ * projection bounds the PAGE; a count cap is what bounds a SINGLE run's, which is the case charging
+ * alone cannot reach.
+ *
+ * Twenty because the cards are a boot-screen surface — the panel shows the ones that need you, and
+ * a human answers them one at a time. Dropped cards are REPORTED (`projectionOmitted`), never
+ * silently lost: the run's log still holds every one of them, and the host replays it in bounded
+ * pages when the run next speaks. Reverse this if a surface is ever built that must enumerate every
+ * pending card at boot, from the projection, without reading the log.
+ */
+export const MAX_BOOT_PENDING_CARDS = 20;
 
 /**
  * The ceiling on ONE `runEventsSince` frame, whatever the caller asks for.
@@ -107,24 +133,75 @@ export const MAX_EVENTS_PAGE = 2_000;
 export const MAX_EVENTS_PAGE_CHARS = 4_000_000;
 
 /**
- * Cut the page at the character budget, never below one event.
+ * Prepared-statement cache, keyed by connection.
  *
- * ALWAYS at least one: an empty page is how every paged reader here recognises end-of-log, so a
- * budget that could answer "nothing" would end a replay in the middle of a run rather than bound it.
- * One event cannot approach the frame cap on its own — `MAX_EVENT_PAYLOAD_CHARS` is 64k — so the
- * worst page this can return is the budget plus one event, which is what
- * `tests/integration/studio-broker-frame-budget.test.ts` pins against the host's ceiling.
+ * The append path has had one since F1 — see the sibling note in `run-store.ts`, which owns the
+ * same map for its own statements and does not export it. Compiling constant SQL per call is a
+ * parse, a name resolution and a plan for a statement that never changes, and the reads below are
+ * on the hot boot page and the hot gap replay.
  *
- * The serialization stops at the budget rather than measuring the whole page first: measuring 128M
- * characters to decide not to send them is the work being bounded.
+ * Keyed by handle because a `Statement` belongs to the connection that compiled it — the broker
+ * child, the daemon and every test database must never be handed each other's. A `WeakMap` so a
+ * closed connection's statements go with it. Only CONSTANT sql goes through this, and nothing may
+ * call `pluck`/`expand`/`safeIntegers` on what it returns: those are sticky modes on a shared
+ * object.
  */
-function clampPageChars(events: RunEvent[]): RunEvent[] {
-  let chars = 0;
-  for (let i = 0; i < events.length; i++) {
-    chars += JSON.stringify(events[i]).length;
-    if (chars > MAX_EVENTS_PAGE_CHARS) return events.slice(0, i + 1);
+const preparedByDb = new WeakMap<Database.Database, Map<string, Database.Statement>>();
+
+function stmt(db: Database.Database, sql: string): Database.Statement {
+  let statements = preparedByDb.get(db);
+  if (statements === undefined) {
+    statements = new Map<string, Database.Statement>();
+    preparedByDb.set(db, statements);
   }
-  return events;
+  const hit = statements.get(sql);
+  if (hit) return hit;
+  const prepared = db.prepare(sql);
+  statements.set(sql, prepared);
+  return prepared;
+}
+
+/**
+ * `{"seq":`, `,"ts":"…"`, `,"actor":`, `,"type":"…"`, `,"payload":`, `}` — the keys, quotes, commas
+ * and braces `JSON.stringify` puts around one envelope's four stored columns. Fixed by the shape of
+ * `RunEvent`, so the only per-row variable left is the seq's digit count.
+ */
+const EVENT_ENVELOPE_CHARS = 46;
+
+const PAGE_MEASURE_SQL =
+  'SELECT seq, LENGTH(ts) + LENGTH(actor) + LENGTH(type) + LENGTH(payload) AS chars' +
+  '  FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?';
+
+/**
+ * How many of the next `limit` rows fit the character budget — asked of SQLite, not of the page.
+ *
+ * ALWAYS at least one when there is one: an empty page is how every paged reader here recognises
+ * end-of-log, so a budget that could answer "nothing" would end a replay in the middle of a run
+ * rather than bound it. One event cannot approach the frame cap on its own —
+ * `MAX_EVENT_PAYLOAD_CHARS` is 64k — so the worst page this admits is the budget plus one event,
+ * which is what `tests/integration/studio-broker-frame-budget.test.ts` pins against the host's
+ * ceiling.
+ *
+ * The measure used to be `JSON.stringify` per event over the materialized page, and then `send`
+ * serialized the whole frame again — two full serializations of the same characters, 3.29 ms +
+ * 1.66 ms on a 733 KB page, on the child's only thread, and a hundred-thousand-event gap replay
+ * pays it once per page. `LENGTH()` reads the stored bytes without copying them into a JS string,
+ * so the frame is now serialized exactly once, by the transport.
+ *
+ * Sound in the same direction as `storedPayloadChars`: SQLite's `length()` counts code points where
+ * JS `.length` counts UTF-16 units, so an astral character makes this smaller than the truth and
+ * never larger, and the payload each row stores is the same JSON text `JSON.stringify` reproduces.
+ * A bound that can only UNDER-state admits at most a little more than the old measure did — never
+ * a page the old one would have cut short of the budget.
+ */
+function pageRowsWithinChars(db: Database.Database, runId: string, since: number, limit: number): number {
+  const rows = stmt(db, PAGE_MEASURE_SQL).all(runId, since, limit) as Array<{ seq: number; chars: number | null }>;
+  let chars = 0;
+  for (let i = 0; i < rows.length; i++) {
+    chars += (rows[i].chars ?? 0) + EVENT_ENVELOPE_CHARS + String(rows[i].seq).length;
+    if (chars > MAX_EVENTS_PAGE_CHARS) return i + 1;
+  }
+  return rows.length;
 }
 
 /** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
@@ -142,6 +219,18 @@ export interface BrokerRunLogEntry {
   lastSeq: number;
   /** The bounded projection, sent IN PLACE of a log too large for one frame. */
   projection?: Run;
+  /**
+   * What `projection` had to leave out to stay inside the page's character budget, per field.
+   *
+   * Present ONLY when something was dropped, so an ordinary condensed entry is byte-for-byte what
+   * it was. A truncation the host cannot see is one it cannot replay: the run's log still holds
+   * every card, and this is how the host knows to go and get them rather than treat a shortened
+   * list as the run's actual state.
+   *
+   * `pendingDecisions` is the only field that can appear here, and `condenseProjection` says why:
+   * `tabIds` is law 4's ownership index and is never cut.
+   */
+  projectionOmitted?: { pendingDecisions: number };
   /**
    * The daemon studio session this run was born from. Normally the host replays it from the
    * `run.created` envelope; a condensed entry carries no envelopes, and losing it would cost the
@@ -169,6 +258,9 @@ export interface BrokerRunLogPage {
    * same reason: the cost is paid at materialization, and a caller that can only see the acceptance
    * cannot bound the work. Both dimensions travel, because neither alone bounds a frame — see
    * `MAX_BOOT_*`.
+   *
+   * `charsSpent` also carries what a condensed entry SHIPS. A projection is not a read, but it is
+   * characters in the same frame, and it was the one door in this call that nothing metered.
    */
   eventsSpent: number;
   charsSpent: number;
@@ -192,10 +284,53 @@ export interface BrokerRunLogPage {
  * then bounded by `MAX_BOOT_FRAME_CHARS` — the run it rejects as much as the one it lets through.
  */
 function storedPayloadChars(db: Database.Database, runId: string): number {
-  const row = db
-    .prepare('SELECT SUM(LENGTH(payload)) AS chars FROM studio_run_events WHERE run_id = ?')
+  const row = stmt(db, 'SELECT SUM(LENGTH(payload)) AS chars FROM studio_run_events WHERE run_id = ?')
     .get(runId) as { chars: number | null } | undefined;
   return row?.chars ?? 0;
+}
+
+/** A condensed entry's projection, already cut to what the page can afford, and what that cost. */
+interface CondensedProjection {
+  projection: Run;
+  chars: number;
+  omitted?: { pendingDecisions: number };
+}
+
+/**
+ * The projection a condensed entry may ship, given what the page has left.
+ *
+ * Two cuts, in order, and BOTH of them only ever touch `pendingDecisions`. The count cap is
+ * unconditional — it bounds ONE run's projection, which is the case the page-wide charge cannot
+ * reach, because the first run of a page is offered the whole budget and a single hostile card list
+ * exceeds the host's own frame bound on its own. Dropping the cards entirely is the fallback for a
+ * run that still does not fit what the page has left.
+ *
+ * `tabIds` is NEVER cut, however large it grows. The host rebuilds law 4's tab→run index by seeding
+ * `tab.attached` from exactly this array (`run-view-model.ts`'s `keptSeed`), so a projection that
+ * under-reports a run's held tabs does not shrink an answer — it tells the app those tabs belong to
+ * nobody, and the next run to ask for one is not refused. A read bound may not manufacture a chance
+ * for two runs to hold the same tab. What bounds it instead is the charge: a large tab list spends
+ * the page's budget and the runs behind it condense harder, and past that the host's own
+ * `DEFAULT_MAX_FRAME_CHARS` stays the last line of defence, which is where `#132` left it.
+ *
+ * Cards can go because nothing downstream infers ownership from them: the run's `status` carries
+ * `needs_you` on its own, the cards are re-read from the log the moment the run speaks, and the
+ * count of what was dropped travels with the entry — empty plus a stated number, never a short list
+ * presented as the whole one.
+ */
+function condenseProjection(run: Run, charsLeft: number): CondensedProjection {
+  const dropped = Math.max(0, run.pendingDecisions.length - MAX_BOOT_PENDING_CARDS);
+  const capped = dropped === 0 ? run : { ...run, pendingDecisions: run.pendingDecisions.slice(0, MAX_BOOT_PENDING_CARDS) };
+  const chars = JSON.stringify(capped).length;
+  if (chars <= charsLeft) {
+    return { projection: capped, chars, ...(dropped ? { omitted: { pendingDecisions: dropped } } : {}) };
+  }
+  const cardless: Run = { ...run, pendingDecisions: [] };
+  return {
+    projection: cardless,
+    chars: JSON.stringify(cardless).length,
+    omitted: { pendingDecisions: run.pendingDecisions.length },
+  };
 }
 
 /** The session link, as one row. Only read when the entry has no envelopes to replay it from. */
@@ -288,8 +423,7 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     // The flow's highest stored seq, so a restarted host resumes numbering instead of colliding on 1
     // (the unique (flow_id, seq) index would otherwise silently drop the collision).
     flowMaxSeq: async (p: { flowId: string }): Promise<{ seq: number }> => {
-      const rows = deps.db
-        .prepare('SELECT MAX(seq) AS m FROM studio_flow_steps WHERE flow_id = ?')
+      const rows = stmt(deps.db, 'SELECT MAX(seq) AS m FROM studio_flow_steps WHERE flow_id = ?')
         .all(p.flowId) as Array<{ m: number | null }>;
       return { seq: rows[0]?.m ?? 0 };
     },
@@ -343,7 +477,7 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     runFacts: async (p: { runId: string }): Promise<StoredRunFacts | undefined> => {
       const id = resolveRunId(p.runId);
       if (id === undefined) return undefined;
-      const row = deps.db.prepare('SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as
+      const row = stmt(deps.db, 'SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as
         { id: string; task: string; space_id: string; created_at: string } | undefined;
       return row ? { id: row.id, task: row.task, spaceId: row.space_id, createdAt: row.created_at } : undefined;
     },
@@ -405,7 +539,25 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
             if (fits) return { facts, events, lastSeq: run.lastSeq };
           }
         }
-        return { facts, events: [], lastSeq: run.lastSeq, projection: run, ...sessionLinkOf(deps.db, run.id) };
+        // The condensed answer is still an ANSWER, and it ships characters. It used to ship them
+        // free: the event budget was decided first, so every run past `MAX_BOOT_EVENTS_PER_RUN`
+        // took this branch without one comparison against `MAX_BOOT_FRAME_CHARS`, and the two
+        // fields that grow — the held-tab list, and a pending-card list windowed by time and never
+        // by count — were relayed in full at `charsSpent: 0`. Fifty such runs is a frame the host
+        // kills, on a boot that produces the same frame every time it retries: a restart loop, not
+        // a slow start. Charged here, on the same rule as the reads above — the page's own bound is
+        // what makes the overrun terminate.
+        const condensed = condenseProjection(run, charsLeft);
+        charsLeft -= condensed.chars;
+        charsSpent += condensed.chars;
+        return {
+          facts,
+          events: [],
+          lastSeq: run.lastSeq,
+          projection: condensed.projection,
+          ...(condensed.omitted ? { projectionOmitted: condensed.omitted } : {}),
+          ...sessionLinkOf(deps.db, run.id),
+        };
       });
       return { entries, eventsSpent, charsSpent, ...(nextCursor ? { nextCursor } : {}) };
     },
@@ -420,7 +572,14 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
       const limit = Math.floor(Number(p.limit));
       if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
-      return clampPageChars(eventsSince(deps.db, p.runId, p.since ?? 0, Math.min(limit, MAX_EVENTS_PAGE)));
+      const id = resolveRunId(p.runId);
+      if (id === undefined) return [];
+      const since = p.since ?? 0;
+      // Measure, then read exactly what fits. The clamp used to read the whole row page and
+      // `JSON.stringify` its way down it, which is the second of two serializations of the same
+      // characters — see `pageRowsWithinChars`.
+      const rows = pageRowsWithinChars(deps.db, id, since, Math.min(limit, MAX_EVENTS_PAGE));
+      return rows === 0 ? [] : eventsSince(deps.db, id, since, rows);
     },
   };
 }
