@@ -487,14 +487,59 @@ describe('017-studio-run-cost', () => {
     db.close();
   });
 
-  it('keeps the .sql grep-mirror in step with the TS constant', async () => {
+});
+
+/**
+ * runner.ts promises that every migration's `sql` "is also mirrored in
+ * src/cache/migrations/NNN-*.sql for grep-ability and review". Pinning that promise on one
+ * migration at a time is how 009-content-completeness and 018-studio-runs-list-index both shipped
+ * without a mirror while the suite stayed green: the assertion named 017, so only 017 was checked.
+ *
+ * These derive the list from MIGRATIONS itself, so a future 019 that lands without a mirror reds
+ * here without anyone remembering to add a case.
+ */
+describe('.sql grep-mirrors', () => {
+  const MIRROR_DIR = new URL('../../../src/cache/migrations/', import.meta.url);
+
+  /**
+   * Comments carry the rationale and the postStep's statements as prose, and whitespace is
+   * cosmetic — neither is the migration. What remains is the executable text, which is the thing
+   * that has to stay in step.
+   */
+  const sqlOnly = (text: string) => text.replace(/^--.*$/gm, '').replace(/\s+/g, ' ').trim();
+
+  const readMirror = async (name: string) => {
     const { readFile } = await import('node:fs/promises');
-    const mirror = await readFile(new URL('../../../src/cache/migrations/017-studio-run-cost.sql', import.meta.url), 'utf8');
-    const entry = MIGRATIONS.find((m) => m.name === NAME_017);
-    expect(mirror.replace(/^--.*$/gm, '').trim()).toBe(entry!.sql.replace(/^--.*$/gm, '').trim());
-    // ...and this migration's statements live in the postStep, so the mirror carries them as prose.
-    // A reviewer who greps for the index by name must land in this file.
-    expect(mirror).toContain('idx_studio_run_events_type_seq');
-    expect(mirror).toContain('cost_browser_actions');
+    return readFile(new URL(`${name}.sql`, MIRROR_DIR), 'utf8');
+  };
+
+  it.each(MIGRATIONS.map((m) => m.name))('%s has a mirror file with content', async (name) => {
+    const mirror = await readMirror(name);
+    // A migration whose SQL is empty because its statements live in a postStep still owes the
+    // reader that prose — an empty file would satisfy "exists" and grep for nothing.
+    expect(mirror.trim().length).toBeGreaterThan(0);
+  });
+
+  it.each(MIGRATIONS.map((m) => m.name))('%s mirror carries its TS constant verbatim', async (name) => {
+    const entry = MIGRATIONS.find((m) => m.name === name)!;
+    const mirror = await readMirror(name);
+    // Containment, not equality: a postStep migration's mirror carries statements the constant
+    // does not (the postStep's), so the invariant is that the mirror is a superset. Drifting the
+    // constant — renaming a column, dropping a statement — still reds, because the drifted text is
+    // no longer found in the file.
+    expect(sqlOnly(mirror)).toContain(sqlOnly(entry.sql));
+  });
+
+  it('mirrors postStep-only statements as grep-able prose', async () => {
+    // Two migrations whose whole effect is in a postStep: the constant is comment-only, so
+    // containment above is trivially satisfied and only these greps say the file is worth opening.
+    const cost = await readMirror(NAME_017);
+    expect(cost).toContain('idx_studio_run_events_type_seq');
+    expect(cost).toContain('cost_browser_actions');
+
+    const listIndex = await readMirror('018-studio-runs-list-index');
+    expect(listIndex).toContain('idx_studio_runs_created_at');
+    expect(listIndex).toContain('idx_studio_runs_space_created_at');
+    expect(listIndex).toContain('idx_studio_runs_status');
   });
 });
