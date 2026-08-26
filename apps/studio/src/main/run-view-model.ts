@@ -122,6 +122,23 @@ export class TabOwnedError extends Error {
   }
 }
 
+/**
+ * `attachTab`'s other refusal: the run cannot take an ownership fact at all.
+ *
+ * A THROW rather than the silent return `requestDecision`/`resolveDecision` use, because attach is the
+ * one lifecycle write whose caller acts on the answer — `studio-host`'s `open()` hands the agent a
+ * `session_id` on the strength of it, and a session id naming a run that never took the tab is a
+ * success response for work that did not happen (law 9). `reason` separates the two ways a run can be
+ * unable to own a page, because they unwind differently upstream: `ended` means somebody already wrote
+ * the terminal event, `unknown` means this process is not holding the run and so cannot say.
+ */
+export class RunNotOpenError extends Error {
+  constructor(readonly runId: string, readonly reason: 'ended' | 'unknown') {
+    super(reason === 'ended' ? `run ${runId} has already ended` : `no such run: ${runId}`);
+    this.name = 'RunNotOpenError';
+  }
+}
+
 export type TabDetachReason = 'closed' | 'run_ended';
 export type RunTerminal = 'completed' | 'failed' | 'cancelled';
 /** §8 — where a promote was asked for. Demote carries no surface; only who did it matters. */
@@ -525,6 +542,12 @@ export class RunViewModel {
   private readonly runOps = new Map<string, Promise<unknown>>();
   /** One ownership change at a time per TAB — see `queueForTab`. */
   private readonly tabOps = new Map<string, Promise<unknown>>();
+  /**
+   * Attach appends still on the wire, per RUN — the one-directional barrier `applyEndRun` waits on so a
+   * tab cannot become owned after its run's terminal event. Not a lane: the tab lane still orders this
+   * write against the same tab's detach, and joining the two lanes would deadlock. See `applyAttach`.
+   */
+  private readonly attachesInFlight = new Map<string, Set<Promise<void>>>();
   /** The scheduled fan-out for each run's earliest auto-deny — see `trackHorizon`. */
   private readonly horizons = new Map<string, { at: number; stop: () => void }>();
   /** How to cancel the open coalescing window, while one is open — see `emit` and `dispose`. */
@@ -1276,6 +1299,17 @@ export class RunViewModel {
   }
 
   private async applyAttach(runId: string, tabId: string, url?: string): Promise<void> {
+    // Refused past the terminal event, the same way `applyVisibility`, `applyRequestDecision` and
+    // `applyResolveDecision` are (`wigolo-studio-run` issue 112). This was the one lifecycle write with
+    // no such guard, and the store below checks only that the run row exists — so an attach on a run
+    // that had already ended committed, and the append-only log came out saying a cancelled run owns a
+    // page. `agentVisibleTabs` then lists that tab and `promote()` focuses it, and no replay repairs
+    // it. A missing projection is refused for the reason `applyResolveDecision` records for its own:
+    // a run this process is not holding cannot be shown to be open, and law 4's ownership read below is
+    // decided on that same projection, so appending anyway is a blind write.
+    const run = this.snapshot(runId);
+    if (!run) throw new RunNotOpenError(runId, 'unknown');
+    if (isTerminal(run.status)) throw new RunNotOpenError(runId, 'ended');
     const owner = this.ownerOf(tabId);
     if (owner === runId) return;
     if (owner !== undefined) throw new TabOwnedError(tabId, owner);
@@ -1284,12 +1318,30 @@ export class RunViewModel {
     // the SSE tail, so a query string that gets in is a secret stored forever and handed to every client
     // past the REST gate. The agent supplies this url (`studio_open`'s startUrl), and an agent handed a
     // magic link is the ordinary case, not the adversarial one. Same rule the audit path already applies.
-    const event = await this.store.appendEvent(runId, {
-      actor: { kind: 'agent', driver: 'studio' },
-      type: 'tab.attached',
-      payload: { tabId, ...(url ? { url: originOnly(url) } : {}) },
-    });
-    await this.fold(runId, event);
+    //
+    // The append is PUBLISHED while it is on the wire (`attachesInFlight`), because the guard above is a
+    // check-then-act and the lanes cannot close the other half of it: this write is ordered per TAB and
+    // the terminal event is ordered per RUN, so an attach whose append is still travelling when
+    // `endRun` decides has passed a projection `run.cancelled` is about to move. Joining the two lanes
+    // would deadlock — `applyEndRun` holds the run lane while awaiting the per-tab lanes its detaches
+    // take — so `applyEndRun` waits for what is registered here instead, one-directionally.
+    const landing = (async () => {
+      const event = await this.store.appendEvent(runId, {
+        actor: { kind: 'agent', driver: 'studio' },
+        type: 'tab.attached',
+        payload: { tabId, ...(url ? { url: originOnly(url) } : {}) },
+      });
+      await this.fold(runId, event);
+    })();
+    const inFlight = this.attachesInFlight.get(runId) ?? new Set<Promise<void>>();
+    inFlight.add(landing);
+    this.attachesInFlight.set(runId, inFlight);
+    try {
+      await landing;
+    } finally {
+      inFlight.delete(landing);
+      if (inFlight.size === 0) this.attachesInFlight.delete(runId);
+    }
   }
 
   /**
@@ -1365,6 +1417,19 @@ export class RunViewModel {
   }
 
   private async applyEndRun(runId: string, terminal: RunTerminal, detail?: string): Promise<void> {
+    // A run ends once. A second terminal append is the same out-of-order durable fact the writes above
+    // refuse, from the other side, and the quit path reaches it: `shutdown()` cancels a run whose
+    // `open()` is still in flight, and that open's rollback then ends the run it created. Decided here,
+    // on the run lane, so the check is serialised against the terminal append rather than racing it —
+    // and silently, because every caller of this is a teardown that wants the run over, not a report.
+    const current = this.snapshot(runId);
+    if (current && isTerminal(current.status)) return;
+    // The barrier `applyAttach` registers for. Waited on BEFORE the membership read below, so a tab
+    // whose attach was travelling when this ran is a tab this release can see — without it the read
+    // finds nothing, the terminal event lands, and the attach then commits behind it, leaving a
+    // cancelled run owning a page. `allSettled`, because a refused attach owes this nothing.
+    const landing = this.attachesInFlight.get(runId);
+    if (landing) await Promise.allSettled([...landing]);
     for (const tabId of this.tabsOf(runId)) await this.detachTab(tabId, 'run_ended');
     const payload: Record<string, unknown> =
       terminal === 'failed' ? { error: detail ?? 'the run ended unexpectedly' }

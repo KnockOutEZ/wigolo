@@ -42,7 +42,7 @@ const viewport = () => ({ width: 800, height: 600 });
  * — created, painting, and with no ownership recorded. `nextTabId` lets a test hand the host a tab id
  * that is already spoken for, which is the only way to reach the double-attach refusal from outside.
  */
-function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; breakAttach?: boolean } = {}) {
+function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; breakAttach?: boolean; onNavigate?: (url: string) => Promise<void> } = {}) {
   const engine = createDriveEngine();
   const store = new FakeRunStore();
   if (opts.breakRunStore) store.createRun = async () => { throw new Error('studio background service unavailable'); };
@@ -61,6 +61,8 @@ function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; bre
   const universe: string[] = [];
   /** The per-tab drive, so a test can watch the preemption FSM the human-input route reaches. */
   const drives = new Map<string, Awaited<ReturnType<typeof engine.attachTab>>>();
+  /** Every url the host actually asked a tab to load — the instrument for work done on a dead session. */
+  const navigations: string[] = [];
   let n = 0;
   const host = createStudioHost({
     runs,
@@ -71,7 +73,10 @@ function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; bre
       const drive = await engine.attachTab(tabId, { debugger: fakeDebugger(), viewport, grant, initialHolder });
       drives.set(tabId, drive);
       universe.push(tabId);
-      const state = { navigate: vi.fn(async (_u: string) => {}), url: 'about:blank' };
+      const state = {
+        navigate: vi.fn(async (u: string) => { navigations.push(u); await opts.onNavigate?.(u); }),
+        url: 'about:blank',
+      };
       const tab: HostTab = {
         tabId,
         drive,
@@ -87,7 +92,7 @@ function makeHost(opts: { nextTabId?: () => string; breakRunStore?: boolean; bre
     closeTab: (tabId) => { const at = universe.indexOf(tabId); if (at >= 0) universe.splice(at, 1); void engine.detachTab(tabId); },
   });
   const openUserTab = (id: string): string => { universe.push(id); return id; };
-  return { host, runs, store, universe, openUserTab, drives };
+  return { host, runs, store, universe, openUserTab, drives, navigations };
 }
 
 describe('studio host — a run owns its tabs (law 4)', () => {
@@ -276,6 +281,255 @@ describe('studio host — a run owns its tabs (law 4)', () => {
     const out = await host.handlers.close({ session_id }) as StudioCloseOutput;
     expect(out.closed).toBe(true);
     expect(host.sessions.getSessionDrive(session_id), 'the session survived its own close').toBeUndefined();
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
+  });
+});
+
+/**
+ * SD1 exit-16. `open()` publishes the session BEFORE the run exists: `contexts.set(sessionId, ctx)` with
+ * status `live` happens ahead of the `createRun`/`attachTab` awaits, and there was no re-check when those
+ * awaits resumed. `shutdown()` snapshots whatever is live at the instant it runs, so a user quitting
+ * inside that window is not exotic — it is one ⌘Q against a session that is still standing up.
+ *
+ * Both arms are FORCED interleaves rather than repeated clean runs: the quit is driven from inside the
+ * run-spine call `open()` is parked on, which is where a broker round-trip puts it in the real app. N
+ * clean opens prove nothing about either window, because neither is reachable without the delay.
+ */
+describe('studio host — a quit racing an in-flight open (SD1 exit-16)', () => {
+  /**
+   * Arm 1. The run is created and folded, the quit lands, `shutdown()` finds the live context and ends
+   * the run `cancelled` — and then `open()` resumed and attached a tab to it. The durable log read
+   * `['run.created','run.cancelled','tab.attached']`: a cancelled run owning a page, in an append-only
+   * log with no prune path, which every later replay and every REST reader sees. The agent's half was
+   * worse than the log's — it got `{ session_id }` naming a session `contexts.clear()` had already
+   * destroyed, so its every next call failed `wrong_session` with nothing saying why.
+   *
+   * The assertions are on the LOG's order and on the handler's answer together, because either alone
+   * passes at base: a refusal with the attach still in it is the same zombie, and a clean log handed
+   * back as a session id is a success response for a session that does not exist.
+   */
+  it('reports a structured failure instead of a session id when the quit lands between open’s awaits', async () => {
+    const { host, runs, store, universe } = makeHost();
+    let quit: Promise<void> | undefined;
+    const realCreate = runs.createRun.bind(runs);
+    // The quit lands after the run is durable and folded — `runForSession` answers, so `shutdown()`
+    // ends it — but before `open()` resumes into the attach.
+    runs.createRun = async (input) => {
+      const run = await realCreate(input);
+      quit ??= host.shutdown();
+      await quit;
+      return run;
+    };
+
+    const out = await host.handlers.spawn({ startUrl: 'https://example.com/' });
+
+    expect('session_id' in out, 'the agent got a session id for a session the quit already destroyed').toBe(false);
+    expect((out as StudioToolError).error_reason).toBe('host_closing');
+    const ids = [...store.facts.keys()];
+    expect(ids, 'the arm is only interesting if the run was created before the quit').toHaveLength(1);
+    expect(
+      store.log.get(ids[0]!)!.map((e) => e.type),
+      'a tab.attached landed past the terminal event',
+    ).toEqual(['run.created', 'run.cancelled']);
+    expect((await store.getRun(ids[0]!))!.status).toBe('cancelled');
+    expect(runs.ownerOf('t1'), 'a cancelled run still owns a tab').toBeUndefined();
+    expect(universe, 'the half-open session left its tab in the window').toEqual([]);
+  });
+
+  /**
+   * Arm 2, and the worse one: the quit lands BEFORE `createRun` resolves. `shutdown()`'s
+   * `runForSession(ctx.sessionId)` finds nothing — the run is still on the wire — so it returns without
+   * ending anything, and the run `open()` then creates sits `running` forever. Nothing reaps it: it is
+   * counted by the tray and returned by `GET /v1/runs?status=running`, describing a session the quit
+   * destroyed and owning no tab. Exactly the orphan `open()`'s own rollback comment exists to prevent.
+   *
+   * Fixed by the resumed `open()` ending what it created rather than by `shutdown()` awaiting in-flight
+   * opens: the quit walk is bounded by a constant deadline (`SHUTDOWN_DEADLINE_MS`) and an open can be
+   * parked in `gatedNavigate` for seconds, so awaiting it there would spend a budget `wigolo-studio-run` issues 98 and 119
+   * calibrated — and this issue's non-goals keep that budget fixed.
+   */
+  it('leaves no run stuck running when the quit lands before createRun resolves', async () => {
+    const { host, runs, store, universe } = makeHost();
+    let quit: Promise<void> | undefined;
+    const realCreate = runs.createRun.bind(runs);
+    runs.createRun = async (input) => {
+      quit ??= host.shutdown();
+      await quit;
+      return realCreate(input);
+    };
+
+    const out = await host.handlers.spawn({});
+
+    expect('session_id' in out).toBe(false);
+    expect((out as StudioToolError).error_reason).toBe('host_closing');
+    const ids = [...store.facts.keys()];
+    expect(ids, 'the arm is only interesting if the run was created after the quit').toHaveLength(1);
+    // The claim REST serves: the orphan is invisible to any assertion about the handler's answer.
+    const running = (await store.listRuns()).runs.filter((r) => r.status === 'running');
+    expect(running.map((r) => r.id), 'a run the quit never ended is still running on every surface').toEqual([]);
+    expect((await store.getRun(ids[0]!))!.status).toBe('cancelled');
+    expect(store.log.get(ids[0]!)!.map((e) => e.type)).toEqual(['run.created', 'run.cancelled']);
+    expect(universe).toEqual([]);
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
+  });
+
+  /**
+   * The half of arm 1 that the guard on `applyAttach` cannot reach, and the reason `endRun` waits for
+   * attaches on the wire.
+   *
+   * Here the quit lands while the `tab.attached` append is TRAVELLING. The attach's terminal check has
+   * already passed against a projection `run.cancelled` is about to move, so a refusal there is a guard
+   * on one side of a race — and the lanes cannot close the other side, since this write is ordered per
+   * tab and the terminal event per run. Unbarriered, `endRun`'s membership read finds no tab, the
+   * terminal event lands, the attach commits behind it, and the durable log reads
+   * `['run.created','run.cancelled','tab.attached']` — a cancelled run owning a page, permanently.
+   *
+   * The ORDER is the whole claim; a count passes either way. And the parked append is what makes this
+   * the in-flight window rather than the settled one, which the `run.cancelled`-is-last assertion is
+   * the control for.
+   */
+  it('never lets an attach on the wire commit behind the terminal event a quit writes', async () => {
+    const { host, runs, store, universe } = makeHost();
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    let quit: Promise<void> | undefined;
+    const append = store.appendEvent.bind(store);
+    store.appendEvent = async (rid, event) => {
+      if (event.type === 'tab.attached') {
+        // The quit is issued while this append is still on the wire, and only released afterwards.
+        quit ??= host.shutdown();
+        await parked;
+      }
+      return append(rid, event);
+    };
+
+    const opening = host.handlers.spawn({});
+    await new Promise((r) => setTimeout(r, 10)); // let the attach reach the store and the quit start
+    release();
+    const out = await opening;
+    await quit;
+
+    expect('session_id' in out).toBe(false);
+    expect((out as StudioToolError).error_reason).toBe('host_closing');
+    const ids = [...store.facts.keys()];
+    expect(ids).toHaveLength(1);
+    expect(
+      store.log.get(ids[0]!)!.map((e) => e.type),
+      'a tab.attached committed behind the terminal event',
+    ).toEqual(['run.created', 'tab.attached', 'tab.detached', 'run.cancelled']);
+    expect((await store.getRun(ids[0]!))!.status).toBe('cancelled');
+    expect(runs.ownerOf('t1'), 'a cancelled run still owns the tab').toBeUndefined();
+    expect(universe).toEqual([]);
+  });
+
+  /**
+   * The claim the row above cannot make, and the one the re-check AFTER the attach is for.
+   *
+   * There the session had no startUrl, so nothing was left to do and the final check caught it. With a
+   * startUrl there is: a profile load and a real page load, both against a `WebContentsView` the quit
+   * already destroyed. Refusing only at the END of `open()` still returns the right answer, so every
+   * assertion in the row above passes with this check gone — while the host drives a torn-down tab on
+   * the way there, which surfaces as an engine error rather than as a designed one (law 9). The
+   * navigation is the observable: it is the last thing `open()` does and the only one a test can see.
+   *
+   * `navigations` is asserted against the CONTROL below, not merely as empty, because an arm where the
+   * nav never got as far as being attempted would pass vacuously.
+   */
+  it('never navigates a session the quit destroyed while its attach was on the wire', async () => {
+    const { host, store, navigations } = makeHost();
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => { release = resolve; });
+    let quit: Promise<void> | undefined;
+    const append = store.appendEvent.bind(store);
+    store.appendEvent = async (rid, event) => {
+      if (event.type === 'tab.attached') {
+        quit ??= host.shutdown();
+        await parked;
+      }
+      return append(rid, event);
+    };
+
+    const opening = host.handlers.spawn({ startUrl: 'https://example.com/' });
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    const out = await opening;
+    await quit;
+
+    expect((out as StudioToolError).error_reason).toBe('host_closing');
+    expect(navigations, 'the host loaded a page into a tab the quit had already destroyed').toEqual([]);
+
+    // The control: the same startUrl on a session no quit touches IS navigated, so the assertion above
+    // is about the refusal rather than about a nav this fixture never performs.
+    const clean = makeHost();
+    await clean.host.handlers.spawn({ startUrl: 'https://example.com/' });
+    expect(clean.navigations).toEqual(['https://example.com/']);
+  });
+
+  /**
+   * The third window, and the widest: the gated navigation of the agent's `startUrl` is a real page
+   * load, so it is where a quit is likeliest to land — and it sits OUTSIDE the try/catch on purpose,
+   * because a blocked or failed nav still opens the session. Both awaits before it can be re-checked by
+   * the catch; this one cannot, so an unwind here is the only thing standing between the agent and a
+   * session id into a cleared host. The run really is attached by this point, so this is also the arm
+   * where the rollback has a tab to release.
+   */
+  it('reports a structured failure when the quit lands during the gated startUrl navigation', async () => {
+    let quitting: (() => Promise<void>) | undefined;
+    const { host, runs, store, universe } = makeHost({ onNavigate: async () => { await quitting?.(); } });
+    let quit: Promise<void> | undefined;
+    quitting = async () => { quit ??= host.shutdown(); await quit; };
+
+    const out = await host.handlers.spawn({ startUrl: 'https://example.com/' });
+
+    expect('session_id' in out, 'the agent got a session id after the window closed under the nav').toBe(false);
+    expect((out as StudioToolError).error_reason).toBe('host_closing');
+    const ids = [...store.facts.keys()];
+    expect(ids).toHaveLength(1);
+    expect((await store.getRun(ids[0]!))!.status).toBe('cancelled');
+    // The attach DID commit here, so the terminal event owes the tab a release — and exactly one.
+    expect(store.log.get(ids[0]!)!.map((e) => e.type))
+      .toEqual(['run.created', 'tab.attached', 'tab.detached', 'run.cancelled']);
+    expect(runs.ownerOf('t1')).toBeUndefined();
+    expect(universe).toEqual([]);
+    expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
+  });
+
+  /**
+   * Both interleaves at once, against ONE quit — the shape the session cap makes ordinary, since a host
+   * can be standing several sessions up when the window closes. One open is parked before its run
+   * exists and the other after, so `shutdown()` sees one context it can end and one it cannot, and both
+   * resume into a cleared map. Neither may come back as a session id and neither run may be left
+   * running.
+   */
+  it('leaves neither run running when one quit races two opens in different interleaves', async () => {
+    const { host, runs, store } = makeHost();
+    let quit: Promise<void> | undefined;
+    const realCreate = runs.createRun.bind(runs);
+    let nth = 0;
+    runs.createRun = async (input) => {
+      const first = ++nth === 1;
+      if (first) {
+        // Parked after the run is folded: this is the context `shutdown()` can find a run for.
+        const run = await realCreate(input);
+        quit ??= host.shutdown();
+        await quit;
+        return run;
+      }
+      // Parked before the run exists: `runForSession` will answer nothing for this one.
+      quit ??= host.shutdown();
+      await quit;
+      return realCreate(input);
+    };
+
+    const [a, b] = await Promise.all([host.handlers.spawn({}), host.handlers.spawn({})]);
+
+    expect('session_id' in a).toBe(false);
+    expect('session_id' in b).toBe(false);
+    expect((a as StudioToolError).error_reason).toBe('host_closing');
+    expect((b as StudioToolError).error_reason).toBe('host_closing');
+    expect([...store.facts.keys()], 'both opens should have minted a run before they unwound').toHaveLength(2);
+    const runs_ = (await store.listRuns()).runs;
+    expect(runs_.map((r) => r.status), 'a quit racing two opens left a run behind').toEqual(['cancelled', 'cancelled']);
     expect(((await host.handlers.list()) as StudioListOutput).sessions).toEqual([]);
   });
 });

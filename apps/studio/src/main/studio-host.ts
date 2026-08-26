@@ -1025,6 +1025,71 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     hint: 'No session is open — call studio_open first.',
   });
 
+  /**
+   * SD1 exit-16. Thrown by `open()`'s post-await re-checks, and never escapes this file: the catch below
+   * turns it into the designed refusal `hostClosing()` returns. A distinct type rather than a flag,
+   * because it has to travel through the same catch as `TabOwnedError` and a broker failure and be
+   * answered differently from both — an open the user cancelled by quitting is not a store that refused.
+   */
+  class HostClosingError extends Error {
+    constructor() {
+      super('the studio host is shutting down');
+      this.name = 'HostClosingError';
+    }
+  }
+
+  const hostClosing = (): StudioToolError => ({
+    error_reason: 'host_closing',
+    hint: 'The studio window closed while the session was starting, so no session was opened and its run was ended — nothing is left to resume.',
+  });
+
+  /**
+   * Has this context been snapshotted away while an `open()` await was in flight?
+   *
+   * `open()` publishes the context — `contexts.set` at status `live` — BEFORE the run exists, because
+   * the run records the session id and the tab it is standing up. Everything after that point is a
+   * check-then-act across a broker round-trip, and `shutdown()` is the writer on the other side of it:
+   * it takes one synchronous snapshot of what is live, marks those closed, and then clears the map.
+   *
+   * Both halves of that are read, and each catches a window the other does not. The `status` flip covers
+   * a context shutdown DID see — it is closed, its tab is destroyed and its run is being cancelled, so
+   * nothing may be handed back for it. The identity check covers one shutdown did not: an `open()` whose
+   * `contexts.set` landed after the snapshot was taken is still `live` on an object no map holds, so a
+   * status read alone would call it healthy and return a session id into a cleared host.
+   */
+  function abandoned(ctx: SessionContext): boolean {
+    return ctx.status !== 'live' || contexts.get(ctx.sessionId) !== ctx;
+  }
+
+  /**
+   * Undo a half-built session: the in-memory half here, the DURABLE half by ending the run.
+   *
+   * The run is the part that cannot be dropped. The session and the tab are process state and go away
+   * with the process; the run is in an append-only log with no reaper, so one created and then abandoned
+   * sits at `running` forever — counted by the tray, returned by `GET /v1/runs?status=running`, listed
+   * in the renderer, describing a session that no longer exists and owning no tab. The only way to
+   * retract a fact from an append-only log is to write its terminal one, and `endRun` releases whatever
+   * the run still holds first, so law 4 never ends up with a run on a dead tab. It is also idempotent
+   * against the terminal event, which is what makes calling it here safe when a quit already cancelled
+   * the same run.
+   *
+   * Best-effort on the store, deliberately: the caller's answer is a refusal either way, and a run left
+   * running is visible and recoverable while a throw here would replace a designed refusal with an
+   * unhandled one at the gateway (law 9).
+   */
+  async function unwindOpen(ctx: SessionContext, tab: HostTab, run: { id: string } | undefined): Promise<void> {
+    ctx.status = 'closed';
+    if (contexts.get(ctx.sessionId) === ctx) contexts.delete(ctx.sessionId);
+    if (activeSessionId === ctx.sessionId) activeSessionId = null;
+    try { deps.closeTab(tab.tabId); } catch { /* best-effort teardown */ }
+    if (!run) return;
+    try {
+      await deps.runs.endRun(run.id, 'cancelled');
+    } catch (endErr) {
+      process.stderr.write(`[studio] could not end run ${run.id} after a refused open: ${endErr instanceof Error ? endErr.message : String(endErr)}\n`);
+    }
+  }
+
   async function open(input: StudioSpawnInput): Promise<StudioSpawnOutput | StudioToolError> {
     if ([...contexts.values()].filter((c) => c.status === 'live').length >= cap) {
       return { error_reason: 'studio_session_limit', hint: `The per-host session limit (${cap}) is reached — close a session before opening another.` };
@@ -1054,32 +1119,26 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // Both failures are REFUSALS, not exceptions: the agent gets a designed tool result rather than an
     // unhandled throw at the gateway (law 9). And both roll the half-open session back, because a session
     // whose tabs no run owns is one law 4 cannot police and no surface can see.
+    //
+    // Every await below is re-checked against `abandoned(ctx)` when it resumes (SD1 exit-16). The
+    // context went live before the run existed, so a user quitting inside this window used to be read
+    // two ways, both wrong: `shutdown()` cancelled the run and this resumed to attach a tab to it —
+    // `['run.created','run.cancelled','tab.attached']` in a log with no prune path — or `shutdown()`
+    // arrived before `createRun` resolved, found no run for the session, and left the one this created
+    // at `running` forever. Either way the agent got `{ session_id }` for a session `contexts.clear()`
+    // had already destroyed, so its every next call failed `wrong_session` with nothing saying why.
     let run: { id: string } | undefined;
     try {
       run = await deps.runs.createRun({ task: name, sessionId });
+      if (abandoned(ctx)) throw new HostClosingError();
       await deps.runs.attachTab(run.id, tab.tabId, typeof input.startUrl === 'string' ? input.startUrl : undefined);
+      if (abandoned(ctx)) throw new HostClosingError();
     } catch (err) {
-      ctx.status = 'closed';
-      contexts.delete(sessionId);
-      try { deps.closeTab(tab.tabId); } catch { /* best-effort teardown */ }
-      // The session and the tab above are in-memory, but the run is DURABLE and the log is append-only
-      // with no reaper — so a run created before the attach failed would sit at `running` forever,
-      // counted in the tray, returned by `GET /v1/runs?status=running` and listed in the renderer, while
-      // describing a session that no longer exists and owning no tab. Rolling it back means ending it,
-      // because the only way to retract a fact from an append-only log is to write its terminal one.
-      // `endRun` releases anything it still owns first, so law 4 never ends up with a run on a dead tab.
-      //
-      // Best-effort like `close`'s, and for the same reason: the refusal below is the answer the agent
-      // gets either way, and the store that cannot take this terminal event is the very store that just
-      // refused the attach. A run left running is visible and recoverable; a throw here would replace a
-      // designed refusal with an unhandled one at the gateway (law 9).
-      if (run) {
-        try {
-          await deps.runs.endRun(run.id, 'cancelled');
-        } catch (endErr) {
-          process.stderr.write(`[studio] could not end run ${run.id} after a refused open: ${endErr instanceof Error ? endErr.message : String(endErr)}\n`);
-        }
-      }
+      await unwindOpen(ctx, tab, run);
+      // A quit is the user's answer, not a fault: naming it separately is what lets the agent tell
+      // "the window closed under me" from "the run store is down", which are the same retry decision
+      // only if you cannot see the difference.
+      if (err instanceof HostClosingError) return hostClosing();
       if (err instanceof TabOwnedError) {
         return { error_reason: 'tab_already_owned', hint: 'That tab already belongs to another run — two runs never share a tab.' };
       }
@@ -1093,6 +1152,15 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // opens the session (on the safe blank page); the agent sees the outcome on its next observe/act.
     if (typeof input.startUrl === 'string' && input.startUrl.trim()) {
       await ctx.drive.gatedNavigate(input.startUrl);
+    }
+    // The last check, and the one the two awaits above cannot make: a profile load and a gated
+    // navigation are the LONGEST waits in this function — the nav is a real page load — so they are the
+    // likeliest place for a quit to land. They stay OUTSIDE the try on purpose (a blocked or failed nav
+    // still opens the session, per the comment above), which is exactly why the check has to be here
+    // rather than left to the catch.
+    if (abandoned(ctx)) {
+      await unwindOpen(ctx, tab, run);
+      return hostClosing();
     }
     return { session_id: sessionId };
   }
