@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { RunEvent } from 'wigolo/studio';
 import { RunViewModel } from '../../src/main/run-view-model';
-import { createDecisionMirror, type DecisionMirror } from '../../src/main/run-decisions';
+import {
+  APPEND_RETRY_DELAYS_MS,
+  createApprovalDecider,
+  createDecisionMirror,
+  type DecisionDurability,
+  type DecisionMirror,
+} from '../../src/main/run-decisions';
 import { FakeRunStore } from '../helpers/fake-run-store';
 
 /**
@@ -422,5 +429,317 @@ describe('the decision mirror, with an append still in flight', () => {
 
     expect(store.appends.map((a) => a.type)).toEqual(['run.completed']);
     expect(vm.snapshot(runId)!.status).toBe('done');
+  });
+});
+
+/**
+ * The store that cannot take the write.
+ *
+ * SD1 exit-16: the approval handler released the parked action synchronously and fired the append off
+ * behind it, so a broker that was down at that moment left the run log holding `decision.requested`
+ * with no resolution of ANY kind — the two-minute timer that would eventually have written
+ * `auto_denied` had just been cancelled by the answer — while the approved action was already
+ * running. One stderr line, nothing retried, and a repeat answer had nothing left to write against
+ * because `settle` dropped the card→run link before the append and the projection drops the card at
+ * its deadline. The run log is law 1's source of truth and what REST and the SSE tail both serve, so
+ * a log that omits an approval a human gave and an action already took is the worst shape it can be
+ * in.
+ *
+ * These rows force that failure rather than describe it: the append rejects until the test heals it.
+ */
+describe('a human answer whose run store is down at the append', () => {
+  let store: BrokerDownRunStore;
+  let vm: RunViewModel;
+  let mirror: DecisionMirror;
+  let timers: Array<{ ms: number; fire: () => void }>;
+  let errors: unknown[];
+  let runId: string;
+  let nowMs: number;
+
+  /**
+   * Two distinct failures, because a retry that cannot tell them apart is a defect of its own:
+   *  - `down` — the round-trip never reached the log. Retrying is the only way the answer lands.
+   *  - `loseReplyFor` — the append COMMITTED and its reply was lost. Retrying double-writes.
+   * Reads fail while `down` too, which is what a dead broker child actually looks like: the
+   * lost-reply probe rides the same pipe as the append, so it cannot be assumed to answer.
+   */
+  class BrokerDownRunStore extends FakeRunStore {
+    down = false;
+    loseReplyFor = 0;
+    override async appendEvent(runId: string, event: Parameters<FakeRunStore['appendEvent']>[1]): ReturnType<FakeRunStore['appendEvent']> {
+      if (this.loseReplyFor > 0) {
+        this.loseReplyFor -= 1;
+        await super.appendEvent(runId, event);
+        throw new Error('broker: the reply was lost');
+      }
+      if (this.down) throw new Error('broker: not running');
+      return super.appendEvent(runId, event);
+    }
+    override async eventsSince(runId: string, since = 0, limit?: number): Promise<RunEvent[]> {
+      if (this.down) throw new Error('broker: not running');
+      return super.eventsSince(runId, since, limit);
+    }
+  }
+
+  const collect = (into: Array<{ ms: number; fire: () => void }>) => (cb: () => void, ms: number): (() => void) => {
+    const t = { ms, fire: cb };
+    into.push(t);
+    return () => { const at = into.indexOf(t); if (at >= 0) into.splice(at, 1); };
+  };
+
+  beforeEach(async () => {
+    nowMs = Date.now();
+    store = new BrokerDownRunStore();
+    timers = [];
+    errors = [];
+    vm = new RunViewModel(store, () => new Date(nowMs), collect([]));
+    await vm.hydrate();
+    mirror = createDecisionMirror({ runs: vm, onError: (e) => errors.push(e), setTimer: collect(timers) });
+    runId = (await vm.createRun({ task: 'buy the thing', sessionId: 'sess-1' })).id;
+    await mirror.parked({ approval_id: 'ap-1', action: 'pay $40', risk: 'money', session_id: 'sess-1' });
+    store.appends.length = 0;
+  });
+
+  /** Drain the microtask queue. Two hops, because a failed attempt probes before it sleeps. */
+  const settled = async (): Promise<void> => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  const fireAll = async (): Promise<void> => {
+    for (const t of [...timers]) t.fire();
+    await settled();
+  };
+
+  const resolutions = (): Array<Record<string, unknown>> =>
+    store.appends.filter((a) => a.type === 'decision.resolved').map((a) => a.payload);
+
+  it('lands exactly one resolution once the store heals, and the projection agrees', async () => {
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    await settled();
+
+    // The append failed, and the ONLY timer left is the retry — the two-minute auto-deny is already
+    // gone, cancelled by the answer rather than by the answer landing.
+    expect(timers.map((t) => t.ms)).toEqual([APPEND_RETRY_DELAYS_MS[0]]);
+    expect(resolutions()).toEqual([]);
+    expect(vm.snapshot(runId)!.status).toBe('needs_you');
+
+    store.down = false;
+    await fireAll();
+
+    expect(await answering).toEqual({ durable: true });
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+    // The projection is the second half of the claim: a log nothing folded is a log no surface reads.
+    expect(vm.snapshot(runId)!.pendingDecisions).toEqual([]);
+    expect(vm.snapshot(runId)!.status).toBe('running');
+  });
+
+  /**
+   * The half a retry gets WRONG unless it asks the durable log.
+   *
+   * The append committed and only its reply was lost, so the projection has already folded the
+   * resolution off the live tail — and a retry that trusted "the call threw" would append a second
+   * `decision.resolved` for one card. `pendingDecisions` cannot answer it either: it drops a card at
+   * its two-minute deadline as well as at its resolution, so "no longer pending" conflates the two.
+   */
+  it('writes no second resolution when the append committed and its reply was lost', async () => {
+    store.loseReplyFor = 1;
+    const answering = mirror.resolved('ap-1', 'approved');
+    await settled();
+
+    expect(await answering).toEqual({ durable: true });
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+    // And no retry was ever armed, because there was nothing left to write.
+    expect(timers).toEqual([]);
+  });
+
+  /**
+   * Pin the ORDERING the reproduction turned on: the answer cancels the auto-deny at the moment it is
+   * ACCEPTED, so no `auto_denied` can be written for a card a human has answered — not even while the
+   * answer's append is still being retried past the card's own deadline. The clock is advanced past
+   * `AUTO_DENY_MS` here on purpose: that is the point at which the projection stops listing the card,
+   * so the run→card link this module keeps is the only thing that can still place the resolution.
+   */
+  it('never writes a contradictory auto-deny while a human answer is still being retried', async () => {
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    await settled();
+
+    nowMs += 120_000 + 1_000; // past the deadline: the card is gone from the projection
+    expect(vm.snapshot(runId)!.pendingDecisions).toEqual([]);
+    store.down = false;
+    await fireAll();
+
+    expect(await answering).toEqual({ durable: true });
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+  });
+
+  /**
+   * Contract row "an approval pending blocks THAT run only" — during the retry window as well as
+   * during the wait. The retry sleeps on the mirror's own clock and never holds the run lane, so a
+   * second run raises and answers a card of its own while the first one's answer is still in the air.
+   */
+  it('lets other runs raise and answer their own cards while one card is retrying', async () => {
+    const other = await vm.createRun({ task: 'unrelated', sessionId: 'sess-2' });
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    await settled();
+    store.down = false;
+
+    await mirror.parked({ approval_id: 'ap-2', action: 'pay $9', risk: 'money', session_id: 'sess-2' });
+    expect(vm.snapshot(other.id)!.status).toBe('needs_you');
+    expect(await mirror.resolved('ap-2', 'denied')).toEqual({ durable: true });
+    expect(vm.snapshot(other.id)!.status).toBe('running');
+
+    await fireAll();
+    expect(await answering).toEqual({ durable: true });
+    expect(resolutions()).toEqual([
+      { decisionId: 'ap-2', outcome: 'denied', by: 'human' },
+      { decisionId: 'ap-1', outcome: 'approved', by: 'human' },
+    ]);
+  });
+
+  /**
+   * The bound, and what survives it. An answer the schedule could not land is reported as UNRECORDED
+   * rather than swallowed — and the card→run link is kept, so the repeat answer that used to write
+   * nothing writes the resolution the first attempt could not.
+   */
+  it('reports an unrecordable answer, and lets a repeat answer land it after the heal', async () => {
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    for (let i = 0; i < APPEND_RETRY_DELAYS_MS.length; i += 1) {
+      await settled();
+      await fireAll();
+    }
+
+    const failure = await answering;
+    expect(failure.durable).toBe(false);
+    expect(resolutions()).toEqual([]);
+    // Beyond stderr is the whole point, but the attempts are logged too — a silent retry loop is a
+    // silent failure with extra steps.
+    expect(errors.length).toBeGreaterThan(0);
+
+    store.down = false;
+    expect(await mirror.resolved('ap-1', 'approved')).toEqual({ durable: true });
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+  });
+
+  /**
+   * The card→run link, and why it survives the append rather than being dropped before it.
+   *
+   * `settle` used to delete the link and THEN await the write, so a failed append erased the card from
+   * this module entirely — and the fallback that would have replaced it cannot: `runForDecision` reads
+   * `pendingDecisions`, which drops the card at its two-minute deadline. Past that point this map is
+   * the ONLY thing that still knows which run the card belongs to, so a repeat answer after a long
+   * outage had nowhere to write and recorded nothing at all.
+   */
+  it('still knows which run an unrecorded card belongs to after its deadline has passed', async () => {
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    for (let i = 0; i < APPEND_RETRY_DELAYS_MS.length; i += 1) {
+      await settled();
+      await fireAll();
+    }
+    expect((await answering).durable).toBe(false);
+
+    // The outage outlasted the card: the projection no longer lists it, so nothing derived from the
+    // projection can place the answer.
+    nowMs += 120_000 + 1_000;
+    expect(vm.snapshot(runId)!.pendingDecisions).toEqual([]);
+    expect(vm.runForDecision('ap-1')).toBeUndefined();
+
+    store.down = false;
+    expect(await mirror.resolved('ap-1', 'approved')).toEqual({ durable: true });
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+  });
+
+  it('answers a card it has already recorded without writing a second resolution', async () => {
+    expect(await mirror.resolved('ap-1', 'approved')).toEqual({ durable: true });
+    expect(await mirror.resolved('ap-1', 'denied')).toEqual({ durable: true });
+
+    expect(resolutions()).toEqual([{ decisionId: 'ap-1', outcome: 'approved', by: 'human' }]);
+  });
+
+  it('wakes a sleeping retry when it is torn down rather than holding the answer open', async () => {
+    store.down = true;
+    const answering = mirror.resolved('ap-1', 'approved');
+    await settled();
+
+    mirror.dispose();
+
+    expect((await answering).durable).toBe(false);
+    expect(resolutions()).toEqual([]);
+  });
+});
+
+/**
+ * The ordering itself, at the seam the human's click actually arrives on.
+ *
+ * `resolveApproval` releases the parked action SYNCHRONOUSLY — one line earlier than the append, in
+ * the shipped code — so no amount of retrying behind it can help: by the time the first attempt
+ * fails, the action has run. The fix is the order, and this is where it is pinned.
+ */
+describe('the human card click, ordered so the log cannot lie about it', () => {
+  const stub = (durability: DecisionDurability) => {
+    const released: Array<[string, string]> = [];
+    const resurfaced: string[] = [];
+    const errors: unknown[] = [];
+    const asked: Array<[string, string]> = [];
+    /**
+     * One interleaved trace rather than two independent tallies, because the claim is the ORDER. Two
+     * call logs both say "it happened", which is exactly what the defect also said.
+     */
+    const trace: string[] = [];
+    const decide = createApprovalDecider({
+      decisions: {
+        resolved: (id, outcome) => {
+          asked.push([id, outcome]);
+          trace.push(`recorded:${durability.durable}`);
+          return Promise.resolve(durability);
+        },
+      },
+      release: (id, decision) => { released.push([id, decision]); trace.push('released'); },
+      resurface: (id) => { resurfaced.push(id); trace.push('resurfaced'); },
+      onError: (e) => errors.push(e),
+    });
+    return { decide, released, resurfaced, errors, asked, trace };
+  };
+
+  it('records the answer first, then releases the action', async () => {
+    const s = stub({ durable: true });
+
+    expect(await s.decide('ap-1', 'allow')).toEqual({ recorded: true });
+
+    expect(s.asked).toEqual([['ap-1', 'approved']]);
+    // The whole fix, as a sequence: nothing is let go before the log has the answer.
+    expect(s.trace).toEqual(['recorded:true', 'released']);
+    expect(s.released).toEqual([['ap-1', 'allow']]);
+    expect(s.errors).toEqual([]);
+  });
+
+  it('maps a deny to the outcome the log records for it', async () => {
+    const s = stub({ durable: true });
+    await s.decide('ap-1', 'deny');
+    expect(s.asked).toEqual([['ap-1', 'denied']]);
+    expect(s.trace).toEqual(['recorded:true', 'released']);
+    expect(s.released).toEqual([['ap-1', 'deny']]);
+  });
+
+  /**
+   * Fail closed. An answer that could not be recorded releases NOTHING — this is the row that stops
+   * the run log lying by omission about an action that already happened.
+   */
+  it('releases nothing when the answer could not be recorded, and says so to the surface that answered', async () => {
+    const s = stub({ durable: false, reason: 'broker: not running' });
+
+    const reply = await s.decide('ap-1', 'allow');
+
+    expect(reply).toEqual({ recorded: false, reason: 'broker: not running' });
+    expect(s.released).toEqual([]);
+    expect(s.trace).toEqual(['recorded:false', 'resurfaced']);
+    // Beyond stderr, twice: a structured reply to the caller, and the card back in front of the human.
+    expect(s.resurfaced).toEqual(['ap-1']);
+    expect(s.errors).toHaveLength(1);
   });
 });
