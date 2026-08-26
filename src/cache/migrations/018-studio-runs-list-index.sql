@@ -1,0 +1,28 @@
+-- 018-studio-runs-list-index
+-- Mirror of MIGRATION_018_STUDIO_RUNS_LIST_INDEX in runner.ts (grep-ability + review). Keep in step.
+--
+-- SD1 exit-7 perf. The list page reads `studio_runs` by keyset and orders by (created_at, id); with
+-- no index over those columns SQLite planned SCAN + TEMP B-TREE — a full table read and a full sort
+-- per page, on a table that grows forever by design.
+--
+-- Every statement is applied by the guarded postStep in runner.ts rather than from here, for the
+-- reason 017's are: an unguarded CREATE INDEX in this file would make the migration require 016 to
+-- have run first. What it does, in order, and grep-able from this file:
+--
+--   CREATE INDEX IF NOT EXISTS idx_studio_runs_created_at       ON studio_runs(created_at, id);
+--   CREATE INDEX IF NOT EXISTS idx_studio_runs_space_created_at ON studio_runs(space_id, created_at, id);
+--   DROP INDEX IF EXISTS idx_studio_runs_status;
+--
+-- Two indexes and not one because the page read has two live shapes and neither can use the other's
+-- index: the space-scoped read needs `space_id` leading to seek at all, and the unscoped read cannot
+-- use an index whose leading column it does not constrain. Both end in `id` so the keyset predicate
+-- `(created_at < ? OR (created_at = ? AND id < ?))` and the `ORDER BY created_at DESC, id DESC` are
+-- the same traversal — no sort step survives.
+--
+-- They cost a b-tree write only at INSERT, once per run: `created_at`, `id` and `space_id` are fixed
+-- at creation, so the status/last_seq UPDATE every append makes does not touch either.
+--
+-- `idx_studio_runs_status` is the opposite trade and is now dead: since the status filter moved onto
+-- the projection nothing selects `studio_runs` by status, but the index still had to be rewritten on
+-- every one of those appends. 016 keeps creating it — an applied migration is history and is not
+-- edited — so a fresh database creates it and drops it in the same pass.
