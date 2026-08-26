@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn() } }));
 
 import { registerIpc } from '../../src/main/ipc-host';
-import { RunViewModel } from '../../src/main/run-view-model';
+import { MAX_RETAINED_SEALED_RUNS, RunViewModel } from '../../src/main/run-view-model';
 import { FakeRunStore } from '../helpers/fake-run-store';
 import type { StudioState } from '../../src/shared/ipc';
 
@@ -71,9 +71,18 @@ describe('the IPC state push carries live runs, not lifetime runs', () => {
     // The demo, as an assertion rather than a claim. `list()` is what the tip pushed; the payload is
     // what it pushes now. Bounds are loose enough that a task string's length cannot flip them and
     // tight enough that dropping the narrowing reds.
+    //
+    // The lifetime listing no longer grows without limit: `MAX_RETAINED_SEALED_RUNS` evicts terminal,
+    // unwatched, sealed runs, so 2,000 finished runs are held as 500 plus the live ones rather than
+    // as all 2,000. That does not weaken this bound, it gives it a ceiling — the claim was always the
+    // RATIO between what a broadcast used to carry and what it carries now, not a number that
+    // happened to be large. Asserted here as well, because a regression that un-bounded retention
+    // would otherwise show up as this arm getting "healthier".
+    expect(vm.retainedRunCount(), 'retention is unbounded again — the lifetime listing has no ceiling')
+      .toBe(MAX_RETAINED_SEALED_RUNS + liveIds.length);
     const before = JSON.stringify(vm.list()).length;
     const after = JSON.stringify(pushed.runs).length;
-    expect(before, 'the lifetime listing got cheap — this bound no longer measures anything').toBeGreaterThan(200_000);
+    expect(before, 'the lifetime listing got cheap — this bound no longer measures anything').toBeGreaterThan(50_000);
     expect(after, `the broadcast still carries the lifetime listing (${before} → ${after} bytes)`).toBeLessThan(1_000);
   });
 

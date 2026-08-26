@@ -17,6 +17,16 @@ export interface BrokerClient {
   onArtifact(handler: (delta: ArtifactDelta) => void): void;
   /** Live tail of the run log — one call per committed envelope, in seq order. */
   onRunEvent(handler: (runId: string, event: RunEvent) => void): void;
+  /**
+   * The child announced itself — at boot, and again after every respawn.
+   *
+   * `ready()` resolves once per client lifetime as far as its callers are concerned; this is the
+   * EDGE, and the difference matters to anything that gave up while the service was down. A read that
+   * failed during a brownout has no other way to learn the service came back: the tail carries
+   * committed envelopes, and a run that emitted none while nobody was holding it produces none
+   * afterwards either.
+   */
+  onReady(handler: () => void): void;
   stop(): Promise<void>;
 }
 
@@ -253,6 +263,7 @@ function deadClient(reason: string): BrokerClient {
     call: () => Promise.reject(new Error(reason)),
     onArtifact: () => { /* never fires */ },
     onRunEvent: () => { /* never fires */ },
+    onReady: () => { /* never fires — a dead client never becomes reachable */ },
     stop: async () => { /* nothing to stop */ },
   };
 }
@@ -311,6 +322,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const artifactHandlers: Array<(d: ArtifactDelta) => void> = [];
   const runEventHandlers: Array<(runId: string, e: RunEvent) => void> = [];
+  const readyHandlers: Array<() => void> = [];
 
   const rejectAllPending = (reason: string): void => {
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(new Error(reason)); }
@@ -344,7 +356,11 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     if (!line.trim()) return;
     let msg: Record<string, unknown>;
     try { msg = JSON.parse(line) as Record<string, unknown>; } catch { return; }
-    if (msg.notify === 'ready') { readyResolve?.(); return; }
+    // Through `notifyAll` for the reason it exists: this runs inside the child's `stdout` data
+    // callback, so a handler that throws would be an uncaught exception on the Electron main's event
+    // loop — the background service killing its host. Announced AFTER the promise is resolved, so a
+    // handler that calls straight back into the client finds it reachable.
+    if (msg.notify === 'ready') { readyResolve?.(); notifyAll(readyHandlers, (h) => h(), 'ready'); return; }
     if (msg.notify === 'artifact') { notifyAll(artifactHandlers, (h) => h(msg.delta as ArtifactDelta), 'artifact'); return; }
     if (msg.notify === 'run-event') { notifyAll(runEventHandlers, (h) => h(msg.runId as string, msg.envelope as RunEvent), 'run-event'); return; }
     const id = msg.id as number | undefined;
@@ -446,6 +462,7 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     },
     onArtifact(handler) { artifactHandlers.push(handler); },
     onRunEvent(handler) { runEventHandlers.push(handler); },
+    onReady(handler) { readyHandlers.push(handler); },
     // A kill here used to be the whole stop, and on Windows that is a `TerminateProcess` — the child
     // never runs its exit hook, so the tail of `events.jsonl` (law 11's readable-without-our-tooling
     // copy of the run) dies in the queue on a perfectly ordinary app quit. `stopBrokerChild` ends the

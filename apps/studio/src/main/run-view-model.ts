@@ -95,6 +95,18 @@ export interface RunStoreClient {
    * away. Optional for the same reason as `listRunLogs`; `getRun` is the fallback.
    */
   runFacts?(runId: string): Promise<StoredRunFacts | undefined>;
+  /**
+   * The store became reachable — at boot, and again after every respawn.
+   *
+   * `ADOPT_RETRY_BASE_MS` records that backoff asks the only question that could be asked, because
+   * the client was request/response plus a notify tail and the tail said nothing about whether a READ
+   * would succeed. This is that missing signal, and it is the store's own `ready`: a chain that walked
+   * to `MAX_ADOPT_RETRIES` while the store was down has no later envelope to heal it when the run's
+   * only envelope is its `run.created`, so the run stays invisible to every surface until the app is
+   * restarted. Optional for the same reason as `listRunLogs` — a binding without a respawn has nothing
+   * to announce, and the backoff chain alone is what it had before.
+   */
+  onReady?(handler: () => void): void;
 }
 
 export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient {
@@ -108,6 +120,7 @@ export function createBrokerRunStoreClient(broker: BrokerClient): RunStoreClient
     runExists: (runId) => broker.call<boolean>('runExists', { runId }),
     runFacts: (runId) => broker.call<StoredRunFacts | undefined>('runFacts', { runId }),
     onRunEvent: (handler) => broker.onRunEvent(handler),
+    onReady: (handler) => broker.onReady(handler),
   };
 }
 
@@ -359,6 +372,33 @@ export const ADOPT_RETRY_MAX_MS = 30_000;
 /** How many times a refused adoption is re-attempted before the run waits for a later envelope. */
 export const MAX_ADOPT_RETRIES = 8;
 
+/**
+ * How many TERMINAL, unwatched, sealed runs this process keeps the projection of.
+ *
+ * Sealing bounded what a finished run COSTS — its envelopes go, its projection stays — and left the
+ * count itself unbounded. Runs are never deleted, `hydrate` deliberately keeps runs a later listing
+ * did not name, and nothing ever removed a key: `logs` and `statusRereads` gained one entry per run
+ * this process had ever seen and gave none of it back, for the life of the app. That is the only
+ * monotonic retention left here, and it is the one every walk over `logs` is charged for.
+ *
+ * A terminal, hidden, sealed run is the one class that can be dropped without changing an answer,
+ * because it can never become listable again: `isListable` re-opens only on `visibility === 'visible'`
+ * and `applyVisibility` refuses to promote a run that has ended. So the projection a surface would
+ * ask for is one no surface can reach. Anything that DOES ask afterwards — a later envelope, a REST
+ * read, a replay — takes `applyEvent`'s unknown-run arm and re-adopts it from the store, which is the
+ * same path a run created by another writer already takes.
+ *
+ * A run that still OWNS a tab is never dropped whatever its status, because dropping it would drop
+ * its rows from the tab index too, and a tab with no owner is the human's (law 4). That is a fact
+ * about ownership, not about memory, so it outranks the bound.
+ *
+ * Five hundred rather than a round thousand for no deeper reason than that no surface here names more
+ * than a page of runs and the projections are kept for `list()`, the history read. The bound is on the
+ * COUNT and not on bytes because a projection's size is a function of the task string, which the
+ * agent writes and this process cannot bound.
+ */
+export const MAX_RETAINED_SEALED_RUNS = 500;
+
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
   run: Run;
@@ -519,6 +559,42 @@ export class RunViewModel {
    * tail moving is what makes a new answer possible, so the tail is what re-opens the question.
    */
   private readonly statusRereads = new Map<string, number>();
+  /**
+   * The runs a surface could still render, so `listLive` walks what it answers with rather than
+   * everything this process has ever held.
+   *
+   * Three listeners call `listLive` on every fan-out — the state push, the tray menu and the
+   * presentation controller — at up to one fan-out per frame, on the thread that paints, and the walk
+   * was over `logs`, which grows with the machine's LIFETIME run count. So the cost of watching one
+   * live run was a function of how many runs had finished beside it.
+   *
+   * A candidate set rather than an exact one, and pruned on the read. It can only ever be too LARGE:
+   * listability is `!terminal || visible`, `applyVisibility` refuses to promote a terminal run, and
+   * the clock cannot move either input — `withoutExpiredDecisions` only downgrades `needs_you` to
+   * `running`, both listable. So a run leaves this set once and never re-enters except by a replay,
+   * which goes through `retain` and re-adds it. Nothing is ever missed by pruning late; the walk is
+   * amortised O(1) per run instead of O(retained runs) per fan-out.
+   */
+  private readonly live = new Set<string>();
+  /**
+   * Terminal, unwatched, sealed runs in the order they became so — the eviction queue for
+   * `MAX_RETAINED_SEALED_RUNS`. A `Set` because membership is asked on every fold and order is what
+   * the bound is spent in; insertion order is the JS `Set`'s own, and a run is added exactly once.
+   */
+  private readonly sealedOrder = new Set<string>();
+  /**
+   * §7.3's session link, read the other way: which run a daemon session spawned.
+   *
+   * `runForSession` walked every run this process held and asked each for its link, and it is asked
+   * once per session per `studio_list` and on every approval notice — a second O(lifetime runs) scan
+   * beside `listLive`'s. Written from the same `run.created` fact `sessionId` is replayed from, in
+   * `retain`, so it is derived rather than a second account of the linkage.
+   *
+   * FIRST writer wins, which is the answer the scan gave: it returned the first run in insertion
+   * order holding the link, so a second run reusing one session never shadowed the first. The entry
+   * is dropped only when the run it names is evicted.
+   */
+  private readonly runsBySession = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
   /** True while a fan-out window is open — see `emit`. */
   private coalescing = false;
@@ -537,7 +613,7 @@ export class RunViewModel {
    * in place once the chain is exhausted (see `scheduleRetry`) and removed only by `clearRetry`,
    * which runs the moment the run is materialized by ANY path.
    */
-  private readonly adoptRetries = new Map<string, { attempt: number; stop: () => void }>();
+  private readonly adoptRetries = new Map<string, { attempt: number; stop: () => void; opts: { replace?: boolean } }>();
   /** One run-level write at a time per run — see `queueForRun`. */
   private readonly runOps = new Map<string, Promise<unknown>>();
   /** One ownership change at a time per TAB — see `queueForTab`. */
@@ -566,6 +642,9 @@ export class RunViewModel {
     private readonly setTimer: (cb: () => void, ms: number) => () => void = unrefTimer,
   ) {
     this.store.onRunEvent((runId, event) => this.applyEvent(runId, event));
+    // The reachability signal `ADOPT_RETRY_BASE_MS` says does not exist. It does now — see
+    // `RunStoreClient.onReady` and `rearmExhaustedAdoptions`.
+    this.store.onReady?.(() => this.rearmExhaustedAdoptions());
   }
 
   /**
@@ -763,14 +842,21 @@ export class RunViewModel {
    * It stops on an EMPTY page rather than a short one on purpose. The store enforces its own per-frame
    * ceiling regardless of what is asked for, so a short page is the ordinary shape of a capped read,
    * and treating it as the end would silently drop the rest of a log.
+   *
+   * `stopAfter` bounds the WHOLE read rather than one page of it, and it is the caller's answer to
+   * "what would I do with more than this": `replayOnce` passes the retention bound, so a log past it
+   * stops being paged the moment that is known instead of being read to the end and then thrown away.
+   * A read that stops early returns MORE than `stopAfter` — one page more — so the caller can tell
+   * "exactly at the bound" from "past it" without a second read.
    */
-  private async readLog(runId: string, since = 0): Promise<RunEvent[]> {
+  private async readLog(runId: string, since = 0, stopAfter = Number.POSITIVE_INFINITY): Promise<RunEvent[]> {
     const events: RunEvent[] = [];
     let cursor = since;
     for (;;) {
       const page = await this.store.eventsSince(runId, cursor, REPLAY_PAGE_SIZE);
       if (page.length === 0) return events;
       for (const event of page) events.push(event);
+      if (events.length > stopAfter) return events;
       const tail = page[page.length - 1]!.seq;
       // A store that ignored `since` would hand back the same page forever. Nothing legitimate
       // produces that; an infinite loop on the thread that paints is what it would cost if anything did.
@@ -816,6 +902,10 @@ export class RunViewModel {
       ...(typeof sessionId === 'string' ? { sessionId } : {}),
     });
     this.projected.delete(facts.id);
+    // First writer wins, and re-taking the same run's own entry is not a second writer — see
+    // `runsBySession`. Written here rather than in `reindex` because this is the only place a session
+    // link is ever learned.
+    if (typeof sessionId === 'string' && !this.runsBySession.has(sessionId)) this.runsBySession.set(sessionId, facts.id);
     if (opts.projection) this.condense(facts.id, opts.projection);
     else if (events.some((e) => TERMINAL_EVENT_TYPES.has(e.type))) this.seal(facts.id);
     // After the log is in its final shape, never before: a replaced log is a wholesale change of
@@ -823,6 +913,75 @@ export class RunViewModel {
     // one. Cheap here in a way it is not on the fold — a replay is rare, and the projection it costs
     // is memoised for the read that follows it.
     this.indexTabs(facts.id);
+    // After `indexTabs`, because a run that owns a tab is never evicted and this is where that becomes
+    // known for a replaced log.
+    this.reindex(facts.id);
+  }
+
+  /**
+   * Re-file one run in the two derived indexes, after anything that could have moved its listability
+   * or its status — a replaced log, a folded envelope, a seal.
+   *
+   * Not a third source of truth: both answers are read off the projection this class already holds,
+   * by `isListable`, which is the same one rule every surface narrows with.
+   */
+  private reindex(runId: string): void {
+    const log = this.logs.get(runId);
+    if (!log) return;
+    // A sealed run's kept projection is the whole answer — its status can never move again and no read
+    // can change it, so this costs a map lookup rather than a projection. A run this process is still
+    // folding is listable by definition of not being terminal-and-hidden, and asking would project it.
+    if (log.kept === undefined || isListable(log.kept)) {
+      this.sealedOrder.delete(runId);
+      this.live.add(runId);
+      return;
+    }
+    this.live.delete(runId);
+    // A run that still holds a tab keeps its rows whatever the bound says — see
+    // `MAX_RETAINED_SEALED_RUNS`. It becomes evictable the moment the tab is released, which folds
+    // back through here.
+    if (this.tabsByRun.has(runId) || this.sealedOrder.has(runId)) return;
+    this.sealedOrder.add(runId);
+    this.evictSealed();
+  }
+
+  /**
+   * Spend the retention bound, oldest sealed run first.
+   *
+   * A `while` rather than a single drop, because a boot can retain a whole page of finished runs
+   * before this is first reached, and because eviction is the only thing that removes a key.
+   */
+  private evictSealed(): void {
+    while (this.sealedOrder.size > MAX_RETAINED_SEALED_RUNS) {
+      const oldest = this.sealedOrder.values().next().value;
+      if (oldest === undefined) return;
+      this.sealedOrder.delete(oldest);
+      this.forget(oldest);
+    }
+  }
+
+  /**
+   * Drop every row this process holds for one run.
+   *
+   * EVERY row, not just the log: `statusRereads`, the memo, the live candidate, a scheduled horizon
+   * and an owed retry are all keyed by run id, and a bound that left any of them would have moved the
+   * leak rather than closed it. The session link goes only if it still names this run, so evicting an
+   * old run cannot unlink a newer one that reused the session.
+   *
+   * Nothing observable is lost — see `MAX_RETAINED_SEALED_RUNS` for why this run cannot be asked for
+   * — and anything that does ask re-adopts it from the store.
+   */
+  private forget(runId: string): void {
+    const log = this.logs.get(runId);
+    for (const tabId of [...(this.tabsByRun.get(runId) ?? [])]) this.disownTab(runId, tabId);
+    this.logs.delete(runId);
+    this.projected.delete(runId);
+    this.statusRereads.delete(runId);
+    this.live.delete(runId);
+    this.horizons.get(runId)?.stop();
+    this.horizons.delete(runId);
+    this.clearRetry(runId);
+    if (log?.sessionId !== undefined && this.runsBySession.get(log.sessionId) === runId) this.runsBySession.delete(log.sessionId);
   }
 
   /**
@@ -932,6 +1091,15 @@ export class RunViewModel {
    * reconnecting tail replays — applying an envelope twice would double-count a `tab.attached`.
    */
   applyEvent(runId: string, event: RunEvent): void {
+    // The envelope comes off the broker's `run-event` notify, which is JSON cast to `RunEvent` with
+    // nothing between the wire and the cast. A missing `seq` is not caught by either comparison
+    // below — `undefined <= n` and `undefined > n + 1` are both false — so it folded, set
+    // `lastSeq = undefined`, and left gap detection dead for that run with nothing able to heal it:
+    // every later comparison against `undefined` is false too, so no gap ever opens again. Routed to
+    // a replace-adoption rather than dropped, because an envelope this process cannot place is
+    // exactly the case a full re-read answers. Ahead of the unknown-run arm so the internal `fold`
+    // path is covered by the same guard.
+    if (!Number.isInteger(event.seq)) { void this.adopt(runId, { replace: true }); return; }
     const log = this.logs.get(runId);
     // A run this projection has never seen — created by the REST surface, or by another writer in this
     // process. Folding one mid-stream envelope in would leave a run whose history starts at seq 9, so
@@ -948,6 +1116,7 @@ export class RunViewModel {
     // sealed run and a short condensed one are both in.
     if (log.kept) {
       if (!this.foldCondensed(runId, log, event)) { void this.adopt(runId, { replace: true }); return; }
+      this.reindex(runId);
       this.emit();
       return;
     }
@@ -967,6 +1136,7 @@ export class RunViewModel {
     // otherwise buy its own. Every caller that arrives mid-flight asks for one more pass instead, so a
     // burst costs one read plus one, and the run is condensed by the time it settles.
     else if (this.overBound(runId)) void this.adopt(runId, { replace: true });
+    this.reindex(runId);
     this.emit();
   }
 
@@ -1105,12 +1275,32 @@ export class RunViewModel {
     this.clearRetry(runId);
   }
 
+  /**
+   * The read itself, and the bound the UNKNOWN-run arm never had.
+   *
+   * `overBound` above opens `if (!log) return false`, so it can only ever speak for a run this
+   * process is already holding — which means no short-circuit was available on the one path that
+   * reaches here for a run it is not: `applyEvent`'s unknown-run arm, taken for a run created over
+   * REST or by another writer. That path read the ENTIRE log with no total cap and retained every
+   * envelope of it. The live-run bound then fired only on the NEXT envelope, so a long run that went
+   * quiet after being adopted held its whole log for as long as it stayed quiet — measured at 2,501
+   * envelopes retained until an envelope arrived to condense them.
+   *
+   * So the read is capped at the same bound the fold uses, and a log past it is answered the way boot
+   * answers one: with the store's own projection, for one round-trip. The cap is on the read as well
+   * as on what is kept, because the frame is what blocks the thread that paints — skipping the
+   * retention alone would still have paged and parsed the whole log.
+   *
+   * The `replace` short-circuit above is untouched: it answers for a log already known to be over the
+   * bound, and this answers for one whose length is not known until it has been read.
+   */
   private async replayOnce(runId: string, opts: { replace?: boolean }): Promise<void> {
     if (opts.replace && this.overBound(runId)) { await this.recondense(runId); return; }
     const facts = await this.readFacts(runId);
     if (!facts || (this.logs.has(runId) && !opts.replace)) return;
-    const events = await this.readLog(runId);
+    const events = await this.readLog(runId, 0, REMATERIALIZE_MAX_EVENTS);
     if (this.logs.has(runId) && !opts.replace) return;
+    if (events.length > REMATERIALIZE_MAX_EVENTS) { await this.recondense(runId); return; }
     this.retain(facts, events);
     this.emit();
   }
@@ -1128,12 +1318,38 @@ export class RunViewModel {
     held?.stop();
     const attempt = (held?.attempt ?? 0) + 1;
     if (attempt > MAX_ADOPT_RETRIES) {
-      this.adoptRetries.set(runId, { attempt, stop: () => {} });
+      this.adoptRetries.set(runId, { attempt, stop: () => {}, opts });
       return;
     }
     const delay = Math.min(ADOPT_RETRY_BASE_MS * 2 ** (attempt - 1), ADOPT_RETRY_MAX_MS);
     const stop = this.setTimer(() => { void this.adopt(runId, opts); }, delay);
-    this.adoptRetries.set(runId, { attempt, stop });
+    this.adoptRetries.set(runId, { attempt, stop, opts });
+  }
+
+  /**
+   * The store came back — ask again for every run whose chain had already given up.
+   *
+   * `ADOPT_RETRY_BASE_MS` bounds the COUNT so a permanently dead broker stops rather than spins, and
+   * deliberately does NOT let the next envelope re-arm an exhausted chain, because a half-dead broker
+   * still fanning notifies out would buy a fresh chain per envelope. That bound is right and it left a
+   * hole its own note names: eight attempts is about 62 seconds, and the run class the whole arm
+   * exists for — one created over REST, whose only envelope is its `run.created` — has no later
+   * envelope at all. A brownout longer than the chain therefore left that run in the store, in REST's
+   * answer, and in no surface this app owns until the app was restarted. One log, two answers; law 1.
+   *
+   * Reachability is the missing signal the note asked for, and it is a strictly narrower trigger than
+   * the envelope that was refused: it fires once per respawn rather than once per envelope, so the
+   * spin the count bound exists to prevent is not reintroduced. `clearRetry` before the ask, so a
+   * chain that fails again starts from attempt one — the store answered since, so this is a new
+   * question, not a continuation of the old one. The ORIGINAL opts are replayed, because a gap replay
+   * and an unknown-run adoption unwind differently.
+   */
+  private rearmExhaustedAdoptions(): void {
+    for (const [runId, held] of [...this.adoptRetries]) {
+      if (held.attempt <= MAX_ADOPT_RETRIES) continue;
+      this.clearRetry(runId);
+      void this.adopt(runId, held.opts);
+    }
   }
 
   /** This run has an answer — materialized, or known not to exist. Nothing is owed it. */
@@ -1218,6 +1434,17 @@ export class RunViewModel {
   }
 
   /**
+   * How many runs this process holds rows for at all — the quantity `MAX_RETAINED_SEALED_RUNS` bounds.
+   *
+   * Exposed for the same reason `retainedEventCount` is: "memory is no longer a function of the
+   * machine's lifetime run count" is a claim nothing about a projection can show, and a bound that
+   * cannot be counted is a comment.
+   */
+  retainedRunCount(): number {
+    return this.logs.size;
+  }
+
+  /**
    * The daemon studio session that spawned this run (§7.3's linkage), replayed from `run.created`.
    * A session is how a client connects; a run is the task — so the link is a recorded fact, not a
    * second map for the host to keep in step with the log.
@@ -1226,9 +1453,9 @@ export class RunViewModel {
     return this.logs.get(runId)?.sessionId;
   }
 
+  /** The run a session spawned, from the index rather than by sweeping every run — see `runsBySession`. */
   runForSession(sessionId: string): string | undefined {
-    for (const runId of this.logs.keys()) if (this.sessionIdOf(runId) === sessionId) return runId;
-    return undefined;
+    return this.runsBySession.get(sessionId);
   }
 
   /**
@@ -1638,20 +1865,28 @@ export class RunViewModel {
    * holds the projection it ended with, and neither of the two things a read can still change about it
    * — `withoutExpiredDecisions` only ever drops a card and downgrades `needs_you` to `running` — can
    * move a terminal status or a visibility. So a finished, unwatched run costs a map lookup and a
-   * comparison here instead of a `snapshot` call. The WALK is still over every run this process
-   * retains — nothing evicts a finished run, and `hydrate` deliberately keeps what a later listing did
-   * not name — so this is O(retained runs) with a live run's projection paid for only by the live
-   * ones. A terminal run that is NOT sealed (adopted mid-flight, say) falls through to the correct arm
-   * rather than to a wrong answer.
+   * comparison here instead of a `snapshot` call. A terminal run that is NOT sealed (adopted
+   * mid-flight, say) falls through to the correct arm rather than to a wrong answer.
+   *
+   * The WALK is over the `live` candidate set rather than over every run this process retains, which
+   * is the difference between "costs what the human is looking at" and "costs what the machine has
+   * ever run". Both narrowings are needed and neither replaces the other: the set bounds how many runs
+   * are visited, the log check bounds what visiting one costs. A run that has left the set is dropped
+   * from it HERE, on the read, rather than at the fold that made it non-listable — a candidate can
+   * only ever be stale in the one direction, so a late prune answers identically and the fold stays a
+   * `Set.add`.
    */
   listLive(): RunSummary[] {
     const out: RunSummary[] = [];
-    for (const [id, log] of this.logs) {
-      if (log.kept && !isListable(log.kept)) continue;
+    const stale: string[] = [];
+    for (const id of this.live) {
+      const log = this.logs.get(id);
+      if (!log || (log.kept && !isListable(log.kept))) { stale.push(id); continue; }
       const run = this.snapshot(id)!;
-      if (!isListable(run)) continue;
+      if (!isListable(run)) { stale.push(id); continue; }
       out.push(summaryOf(run));
     }
+    for (const id of stale) this.live.delete(id);
     return out;
   }
 
