@@ -298,8 +298,12 @@ describe('run-store — derived fields are projections of the log (law 1)', () =
     expect(run.driver).toEqual({ kind: 'cli', client: { name: 'a-harness', version: '2.1.0' } });
     expect(run.visibility).toBe('visible');
     expect(run.pendingDecisions.map((d) => d.decisionId)).toEqual(['d2']);
+    // The DERIVATION is what this shape test is about — that `autoDenyAt` is one window past the
+    // request. The window's own value is pinned absolutely, once, by the named row in `pin 3`, so a
+    // bare literal here would only make a window change fail in a test whose subject is not the
+    // window.
     expect(run.pendingDecisions[0].autoDenyAt).toBe(
-      new Date(new Date(run.pendingDecisions[0].requestedAt).getTime() + 120_000).toISOString(),
+      new Date(new Date(run.pendingDecisions[0].requestedAt).getTime() + AUTO_DENY_MS).toISOString(),
     );
   });
 
@@ -381,6 +385,17 @@ describe('run-store — a pending decision expires on its own clock (pin 3)', ()
     }, { ...opts(), now: () => t0 });
     return run.id;
   }
+
+  /**
+   * WHY: every other assertion in this block computes its expectation FROM `AUTO_DENY_MS`, so all of
+   * them stay green if the window becomes 12 s or 20 min — they pin the derivation, not the number.
+   * The number is itself a contract: §7's row "Approval pending — blocks that run only; other runs
+   * keep working; auto-deny after 2m". This is the one row that fails when the window moves, so it
+   * carries the literal and no arithmetic on the symbol it guards.
+   */
+  it('holds the consent window at the two minutes the contract promises', () => {
+    expect(AUTO_DENY_MS).toBe(120_000);
+  });
 
   it('still needs you while the card can be answered', () => {
     const run = getRun(db, runNeedingADecision(), { now: at(AUTO_DENY_MS - 1) })!;
