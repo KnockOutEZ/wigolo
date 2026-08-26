@@ -3,12 +3,12 @@ import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { RunPresentationController } from './run-presentation';
-import { createDecisionMirror } from './run-decisions';
+import { createApprovalDecider, createDecisionMirror } from './run-decisions';
 import { createRunTray, TRAY_ICON_1X, TRAY_ICON_2X, type RunTrayHandle, type TrayPort } from './run-tray';
 import { livingTrayPort } from './tray-lifetime';
 import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
-import { RunViewModel, createBrokerRunStoreClient } from './run-view-model';
+import { RunViewModel, createBrokerRunStoreClient, unrefTimer } from './run-view-model';
 import { bridgeRunEventsToBus, createBrokerRunsStore } from './run-rest-store';
 import { registerIpc, registerMarksIpc } from './ipc-host';
 import { createDriveEngine } from './drive-engine';
@@ -19,7 +19,7 @@ import { readStorageState, applyStorageState, type CookieJar } from './electron-
 import type { DebuggerLike } from './cdp-transport';
 import { IPC, type PendingApprovalDto, type CaptureDto, type ChatMsgDto } from '../shared/ipc';
 import { tokenValue, type Register } from '../renderer/tokens';
-import { ProfileStore } from 'wigolo/studio';
+import { AUTO_DENY_MS, ProfileStore } from 'wigolo/studio';
 import type { ControlParty, NavGrant } from 'wigolo/studio';
 
 const CHROME_HEIGHT = 88; // titlebar (40) + toolbar (48)
@@ -237,6 +237,17 @@ async function createWindow(): Promise<void> {
     process.stderr.write(`[studio] could not record an approval on its run: ${err instanceof Error ? err.message : String(err)}\n`);
   };
   const decisions = createDecisionMirror({ runs, onError: onDecisionError });
+  /**
+   * The card as the renderer was told about it, kept only so a durability failure can put it BACK.
+   * An answer that could not be written released nothing, so the card is still parked in the host and
+   * still the human's to give — and re-sending the notice it already handles is what says so without
+   * inventing a channel or a card UI.
+   *
+   * Each entry is dropped at the card's own deadline as well as on its release, so this cannot grow
+   * with the number of cards the app has ever raised: past `AUTO_DENY_MS` the card is gone from the
+   * projection and there is nothing left to put back.
+   */
+  const parkedCards = new Map<string, PendingApprovalDto>();
 
   // Resolved after the shell loads (below) and read pull-at-eval by createTab. A tab created before the
   // shell finishes loading simply omits the high-entropy hints rather than waiting on them.
@@ -263,6 +274,8 @@ async function createWindow(): Promise<void> {
     approvalSurfaceAttached: () => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
+      parkedCards.set(notice.approval_id, dto);
+      unrefTimer(() => parkedCards.delete(notice.approval_id), AUTO_DENY_MS);
       // Onto the run FIRST, so a run with a card waiting reads `needs_you` everywhere — including the
       // dock badge, which is the only attention affordance a withheld window has.
       //
@@ -425,10 +438,24 @@ async function createWindow(): Promise<void> {
   ipcMain.handle(IPC.synthesize, () => studioHost.synthesizeSession());
   ipcMain.handle(IPC.knowledgeSimilar, (_e, concept: string) => studioHost.knowledgeSimilar(String(concept ?? '')));
 
-  ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {
-    studioHost.resolveApproval(id, decision);
-    void decisions.resolved(id, decision === 'allow' ? 'approved' : 'denied').catch(onDecisionError);
+  // Durable BEFORE the release, because the release is the irreversible half: `resolveApproval` lets the
+  // parked action go synchronously, and an append fired off behind it left the run log holding a card it
+  // never resolved while the approved action was already running. See `createApprovalDecider`.
+  const decideApproval = createApprovalDecider({
+    decisions,
+    release: (id, decision) => {
+      parkedCards.delete(id);
+      studioHost.resolveApproval(id, decision);
+    },
+    resurface: (id) => {
+      const card = parkedCards.get(id);
+      // A quit is one of the ways durability fails — `dispose` wakes a sleeping retry and it reports
+      // unrecorded — so the window this would put the card back on may already be gone.
+      if (card && !win.isDestroyed()) win.webContents.send(IPC.approvalParked, card);
+    },
+    onError: onDecisionError,
   });
+  ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => decideApproval(id, decision));
 
   ipcMain.handle(IPC.setRailOpen, (_e, open: boolean) => {
     railOpen = !!open;

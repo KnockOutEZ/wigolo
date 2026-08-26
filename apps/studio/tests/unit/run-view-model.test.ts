@@ -2013,3 +2013,60 @@ describe('RunViewModel — an adoption the store refused is retried, not dropped
     await vi.waitFor(() => expect(inner.reads.length).toBe(readsBefore));
   });
 });
+
+/**
+ * Did a resolution actually COMMIT, whatever its reply did?
+ *
+ * A broker round-trip can fail after the write landed, and the retry behind `run-decisions`' durable
+ * answer needs to tell that apart from a write that never happened — a retry that cannot appends a
+ * second `decision.resolved` for one card. The projection cannot answer it: `pendingDecisions` drops
+ * a card at its two-minute deadline as well as at its resolution.
+ */
+describe('RunViewModel — has a card\'s resolution reached the durable log', () => {
+  let store: FakeRunStore;
+  let vm: RunViewModel;
+  let runId: string;
+
+  beforeEach(async () => {
+    store = new FakeRunStore();
+    vm = new RunViewModel(store);
+    await vm.hydrate();
+    runId = (await vm.createRun({ task: 'buy the thing', sessionId: 'sess-1' })).id;
+  });
+
+  it('says no while the card is only requested, and yes once it is resolved', async () => {
+    const floor = vm.lastSeqOf(runId);
+    await vm.requestDecision(runId, { decisionId: 'ap-1', kind: 'money', prompt: 'pay $40' });
+
+    expect(await vm.resolutionLanded(runId, 'ap-1', floor)).toBe(false);
+
+    await vm.resolveDecision(runId, 'ap-1', 'approved', 'human');
+
+    expect(await vm.resolutionLanded(runId, 'ap-1', floor)).toBe(true);
+    // Scoped to the card, not to the run: a resolution for a DIFFERENT card is not this one's.
+    expect(await vm.resolutionLanded(runId, 'ap-2', floor)).toBe(false);
+  });
+
+  /**
+   * The trap `REPLAY_PAGE_SIZE` already records, on a second read: a SHORT page is what a server-side
+   * per-frame ceiling looks like from here, so a probe that stopped on one would answer "not landed"
+   * for a resolution sitting one envelope past the ceiling — and buy the double-append it exists to
+   * prevent. It stops on an EMPTY page instead.
+   */
+  it('reads past a server-side page ceiling instead of stopping at the first short page', async () => {
+    const floor = vm.lastSeqOf(runId);
+    await vm.requestDecision(runId, { decisionId: 'ap-1', kind: 'money', prompt: 'pay $40' });
+    // Filler envelopes between the floor and the resolution, so the window has to be PAGED to reach
+    // it. Appended through the store because this is about the read, not about who wrote them.
+    for (let i = 0; i < 6; i += 1) {
+      await store.appendEvent(runId, { actor: { kind: 'system' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
+    }
+    await vm.resolveDecision(runId, 'ap-1', 'approved', 'human');
+
+    store.eventsPageCeiling = 1; // every page the store can send is one envelope long
+    store.eventReads.length = 0;
+
+    expect(await vm.resolutionLanded(runId, 'ap-1', floor)).toBe(true);
+    expect(store.eventReads.length).toBeGreaterThan(1);
+  });
+});
