@@ -1259,6 +1259,45 @@ export class RunViewModel {
   }
 
   /**
+   * The newest seq this projection has folded for that run — the FLOOR a lost-reply probe reads from.
+   *
+   * Taken before an append is attempted, so `resolutionLanded` reads a window that starts strictly
+   * below the envelope it is looking for. Without a floor the probe would have to re-materialize the
+   * whole log to answer, which is the read every bound in this class exists to avoid.
+   */
+  lastSeqOf(runId: string): number {
+    return this.logs.get(runId)?.lastSeq ?? 0;
+  }
+
+  /**
+   * Did a resolution for this card actually COMMIT, whatever its reply did?
+   *
+   * A broker round-trip can fail after the write landed — the append committed and the reply was lost
+   * — and a retry that cannot tell that apart appends a second `decision.resolved` for one card. The
+   * projection cannot answer it: `pendingDecisions` drops a card at its two-minute deadline as well
+   * as at its resolution, so "no longer pending" conflates a resolved card with an expired one. The
+   * durable log distinguishes them, and it is the only thing that does.
+   *
+   * Paged rather than capped, because a truncated page that happens to stop one envelope short of the
+   * resolution would answer "no" and buy the double-append this exists to prevent. It stops on an
+   * EMPTY page rather than a short one, for the reason `REPLAY_PAGE_SIZE` records: a short page is
+   * what a server-side per-frame ceiling looks like from here, and stopping on it would truncate the
+   * window. A seq that failed to advance ends the loop too, so a stalled store cannot spin it.
+   */
+  async resolutionLanded(runId: string, decisionId: string, since: number): Promise<boolean> {
+    let from = since;
+    for (;;) {
+      const events = await this.store.eventsSince(runId, from, REPLAY_PAGE_SIZE);
+      for (const event of events) {
+        if (event.type === 'decision.resolved' && String(event.payload.decisionId) === decisionId) return true;
+      }
+      const newest = events[events.length - 1];
+      if (!newest || newest.seq <= from) return false;
+      from = newest.seq;
+    }
+  }
+
+  /**
    * Run one ownership change for a tab after every change already queued for THAT tab, and hand back
    * its result.
    *
