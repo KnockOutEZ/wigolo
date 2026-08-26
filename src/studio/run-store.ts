@@ -1391,11 +1391,12 @@ export function projectRun(
 ): Run {
   let driver: Driver = { kind: 'api' };
   let visibility: 'hidden' | 'visible' = opts.visibility ?? 'hidden';
-  // The array is the answer — law 4's tabs in the order the run took them. The Set is only the
-  // membership question the array cannot answer cheaply: `includes` is O(held) per attach, so a run
-  // holding many tabs at once paid O(held squared) to project (measured 112 ms at 16k attach-only).
-  // A detach that names a tab the run does not hold now costs nothing rather than a full walk.
-  const tabIds: string[] = [];
+  // The Set IS law 4's answer, order included: a Set iterates in insertion order, `add` on a key it
+  // already holds does not move it, and a key re-added after `delete` lands at the end — exactly the
+  // three rules the array encoded. Keeping both cost O(held squared) per fold at each end: `includes`
+  // was O(held) per attach (measured 112 ms at 16k attach-only), and `indexOf` + `splice` is O(held)
+  // per detach whatever the index, since one of the two always walks (297 ms at 64k attach+detach).
+  // Order is materialized once, on the way out.
   const held = new Set<string>();
   const pending = new Map<string, PendingDecision>((opts.pendingDecisions ?? []).map((d) => [d.decisionId, d]));
   const cost: RunCost = { ...(opts.cost ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 }) };
@@ -1417,12 +1418,12 @@ export function projectRun(
       // which `foldStatus` owns below. They stay listed in PROJECTION_EVENT_TYPES all the same.
       case 'tab.attached': {
         const tabId = str(p.tabId);
-        if (tabId && !held.has(tabId)) { held.add(tabId); tabIds.push(tabId); }
+        if (tabId) held.add(tabId);
         break;
       }
       case 'tab.detached': {
         const tabId = str(p.tabId);
-        if (tabId && held.delete(tabId)) tabIds.splice(tabIds.indexOf(tabId), 1);
+        if (tabId) held.delete(tabId);
         break;
       }
       case 'presentation.promoted': visibility = 'visible'; break;
@@ -1465,7 +1466,7 @@ export function projectRun(
     createdAt: facts.createdAt,
     status: projected,
     driver,
-    tabIds,
+    tabIds: [...held],
     pendingDecisions,
     cost,
     visibility,
