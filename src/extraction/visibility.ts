@@ -48,10 +48,20 @@ const UNDERSCORE = 0x5f;
 const DIGIT_0 = 0x30;
 const DIGIT_9 = 0x39;
 const LOWER_A = 0x61;
+const LOWER_F = 0x66;
 const LOWER_Z = 0x7a;
 const UPPER_A = 0x41;
+const UPPER_F = 0x46;
 const UPPER_Z = 0x5a;
 const NON_ASCII = 0x80;
+
+/** An escape carries at most six hex digits — the seventh is ordinary ident text. */
+const MAX_HEX_DIGITS = 6;
+const MAX_CODE_POINT = 0x10ffff;
+const SURROGATE_FIRST = 0xd800;
+const SURROGATE_LAST = 0xdfff;
+/** What the spec substitutes for an escape it cannot represent, used here for more. */
+const REPLACEMENT = '�';
 
 /** The three code points CSS calls a newline — CR and FF are newlines before any preprocessing. */
 function isNewline(code: number): boolean {
@@ -77,6 +87,75 @@ function isIdentChar(code: number): boolean {
     code === BACKSLASH ||
     code >= NON_ASCII
   );
+}
+
+function isHexDigit(code: number): boolean {
+  return (
+    (code >= DIGIT_0 && code <= DIGIT_9) ||
+    (code >= LOWER_A && code <= LOWER_F) ||
+    (code >= UPPER_A && code <= UPPER_F)
+  );
+}
+
+function hexValue(code: number): number {
+  return code <= DIGIT_9 ? code - DIGIT_0 : (code | 0x20) - LOWER_A + 10;
+}
+
+/**
+ * What a resolved escape contributes to the text the declaration test then reads.
+ *
+ * A decoded code point is ident CONTENT and never syntax — escaping a character is precisely
+ * how an author writes one the grammar would otherwise read as punctuation. So `display\3a none`
+ * is a single property name that happens to contain a colon, not a `display` declaration, and
+ * every engine drops it for want of a colon TOKEN; emitting a real `:` there would invent a
+ * suppression and delete copy a reader can see, which is the more damaging of the two
+ * directions. The same holds for whitespace: `display\9 :none` names the property `display<TAB>`,
+ * which is not `display`. Anything decoded that is not an ident code point is therefore folded
+ * to U+FFFD — the substitution the spec itself makes for an unrepresentable escape — which
+ * leaves the surrounding ident intact while matching nothing.
+ */
+function identContent(code: number): string {
+  if (code === 0 || code > MAX_CODE_POINT) return REPLACEMENT;
+  if (code >= SURROGATE_FIRST && code <= SURROGATE_LAST) return REPLACEMENT;
+  return isIdentChar(code) ? String.fromCodePoint(code) : REPLACEMENT;
+}
+
+/**
+ * The text an escape sequence beginning at the backslash `at` resolves to, and the index just
+ * past it — css-syntax-3 §4.3.7 "consume an escaped code point", which §4.3.11 applies while
+ * consuming an ident sequence. The cascade compares property and value names AFTER that
+ * resolution, so `\64 isplay:none` is not a lookalike of `display:none`: it is that
+ * declaration, and a test that reads only the literal spelling is a one-character bypass of
+ * this whole pass.
+ *
+ * A hex escape is one to six hex digits plus, optionally, ONE trailing whitespace that
+ * terminates the escape and is not itself part of the ident — that space in `\64 isplay` is
+ * punctuation, not a gap, so dropping it is what joins `d` to `isplay`. CRLF is one newline
+ * before any of this, so the pair goes together. A backslash at EOF, and the zero, surrogate
+ * and out-of-range values, are U+FFFD by the spec.
+ *
+ * A backslash before a raw newline is NOT an escape at all outside a string — it is a parse
+ * error that invalidates the declaration holding it — so the newline is left where it is and
+ * only the backslash is consumed, which is enough to keep the surrounding text from matching.
+ */
+function consumeEscape(style: string, at: number): { text: string; next: number } {
+  if (at + 1 >= style.length) return { text: REPLACEMENT, next: at + 1 };
+  const first = style.charCodeAt(at + 1);
+  if (isHexDigit(first)) {
+    let value = 0;
+    let i = at + 1;
+    const limit = Math.min(style.length, at + 1 + MAX_HEX_DIGITS);
+    while (i < limit && isHexDigit(style.charCodeAt(i))) {
+      value = value * 16 + hexValue(style.charCodeAt(i));
+      i++;
+    }
+    if (style.charCodeAt(i) === CARRIAGE_RETURN && style.charCodeAt(i + 1) === LINE_FEED) i += 2;
+    else if (isCssWhitespace(style.charCodeAt(i))) i += 1;
+    return { text: identContent(value), next: i };
+  }
+  if (isNewline(first)) return { text: REPLACEMENT, next: at + 1 };
+  const literal = style.codePointAt(at + 1) ?? 0;
+  return { text: identContent(literal), next: at + 1 + (literal > 0xffff ? 2 : 1) };
 }
 
 /**
@@ -112,6 +191,37 @@ function endOfString(style: string, open: number, quote: number): number {
 }
 
 /**
+ * The index just past the ident starting at `at` when that ident spells `url`, else `-1`.
+ *
+ * Spelled out rather than compared three characters at a time because the tokenizer consumes
+ * the ident sequence — escapes resolved — BEFORE asking whether it reads `url`, so `\75 rl(`
+ * opens a url token exactly as `url(` does. Reading only the literal spelling left the
+ * escaped one to the string scanner, whose apostrophe rule then ate the `;display:none`
+ * written after the bad-url recovery: verified in Chromium, which paints nothing for
+ * `background:\75 rl(a'b);display:none` while the pass kept the element.
+ *
+ * Bounded work — three code points, each at most a seven-character escape — so asking it at
+ * every index leaves the scan one visit per character.
+ */
+function endOfUrlIdent(style: string, at: number): number {
+  let i = at;
+  for (const want of [LOWER_U, LOWER_R, LOWER_L]) {
+    if (i >= style.length) return -1;
+    let code = style.charCodeAt(i);
+    if (code === BACKSLASH) {
+      const escape = consumeEscape(style, i);
+      if (escape.text.length !== 1) return -1;
+      code = escape.text.charCodeAt(0);
+      i = escape.next;
+    } else {
+      i++;
+    }
+    if ((code | 0x20) !== want) return -1;
+  }
+  return i;
+}
+
+/**
  * The index just past a url token starting at `at`, or `-1` when nothing starts there.
  *
  * `url(` with an unquoted argument is not a function call the tokenizer parses in the ordinary
@@ -126,12 +236,16 @@ function endOfString(style: string, open: number, quote: number): number {
  * recovery included.
  */
 function endOfUrlToken(style: string, at: number): number {
-  if ((style.charCodeAt(at) | 0x20) !== LOWER_U) return -1;
-  if ((style.charCodeAt(at + 1) | 0x20) !== LOWER_R) return -1;
-  if ((style.charCodeAt(at + 2) | 0x20) !== LOWER_L) return -1;
-  if (style.charCodeAt(at + 3) !== PAREN_OPEN) return -1;
+  const lead = style.charCodeAt(at);
+  // The one cheap rejection that keeps this affordable at every index: a url token can only
+  // begin with `u` or with the backslash of an escape that resolves to one.
+  if ((lead | 0x20) !== LOWER_U && lead !== BACKSLASH) return -1;
+  const afterIdent = endOfUrlIdent(style, at);
+  if (afterIdent === -1) return -1;
+  // A LITERAL paren. An escaped one is ident content, so `url\28x)` is an ident, not a token.
+  if (style.charCodeAt(afterIdent) !== PAREN_OPEN) return -1;
   if (at > 0 && isIdentChar(style.charCodeAt(at - 1))) return -1;
-  let i = at + 4;
+  let i = afterIdent + 1;
   while (i < style.length && isCssWhitespace(style.charCodeAt(i))) i++;
   const first = style.charCodeAt(i);
   if (first === QUOTE_DOUBLE || first === QUOTE_SINGLE) return -1;
@@ -150,11 +264,21 @@ function endOfUrlToken(style: string, at: number): number {
 }
 
 /**
- * Strings and comments are removed before the test, exactly as a CSS tokenizer resolves
- * them: a `/*` inside a string is not a comment, a quote inside a comment is not a string,
- * and a declaration inside either is not a declaration. Removing them cuts both ways on
- * purpose — `display:/*x*\/none` is a real suppression the raw text hides, and
+ * The declarations a browser would actually apply, spelled the way it would compare them —
+ * the text the inline test reads instead of the attribute as written.
+ *
+ * Strings and comments are removed, exactly as a CSS tokenizer resolves them: a `/*` inside a
+ * string is not a comment, a quote inside a comment is not a string, and a declaration inside
+ * either is not a declaration. Removing them cuts both ways on purpose —
+ * `display:/*x*\/none` is a real suppression the raw text hides, and
  * `content:"display:none"` is a false one it would otherwise invent.
+ *
+ * Escapes are resolved for the same reason and in the same scan — see `consumeEscape`. A
+ * version of this that removed strings and comments but never unescaped matched only the
+ * literal spellings, so six spellings of an escaped hide (`\64 isplay:none` and its
+ * relatives) read as VISIBLE while Chromium computed `display:none` and painted nothing.
+ * That is one backslash between a page and smuggling copy past the WYSIWYG guard, which is
+ * the guarantee this whole pass exists to make.
  *
  * Written as one left-to-right scan rather than the two `String.replace` passes it replaces,
  * because those were quadratic in a length the PAGE picks. Not by backtracking: by repeated
@@ -184,12 +308,34 @@ function endOfUrlToken(style: string, at: number): number {
  * leaked on hand-formatted CSS and not merely on an attack. EOF is the exception that stays,
  * because it is not a parse error — see `endOfString`.
  */
-function stripStringsAndComments(style: string): string {
+function resolveDeclarationText(style: string): string {
   let out = '';
   let kept = 0;
   let i = 0;
   while (i < style.length) {
     const ch = style.charCodeAt(i);
+    // Ahead of the escape branch, because an escape can BE the start of a url token —
+    // `\75 rl(` is one — and resolving its first code point in isolation would hand the
+    // rest to the string scanner. Cheap to ask at every index all the same: the first
+    // comparison rejects every character that is neither `u` nor a backslash.
+    const url = endOfUrlToken(style, i);
+    if (url !== -1) {
+      out += style.slice(kept, i);
+      i = url;
+      kept = i;
+      continue;
+    }
+    // Then the escape, because it is what makes every branch below it read the right
+    // characters: an escaped quote opens no string and an escaped `/` opens no comment, so
+    // asking those questions of the raw text one index later answered them about characters
+    // the tokenizer had already spent.
+    if (ch === BACKSLASH) {
+      const escape = consumeEscape(style, i);
+      out += style.slice(kept, i) + escape.text;
+      i = escape.next;
+      kept = i;
+      continue;
+    }
     if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
       out += style.slice(kept, i);
       i = endOfString(style, i, ch);
@@ -200,15 +346,6 @@ function stripStringsAndComments(style: string): string {
       out += style.slice(kept, i);
       const close = style.indexOf('*/', i + 2);
       i = close === -1 ? style.length : close + 2;
-      kept = i;
-      continue;
-    }
-    // Cheap to ask at every index: the first comparison rejects every character that is not
-    // a `u`, so the scan stays one visit per character and the wall-clock pin stays green.
-    const url = endOfUrlToken(style, i);
-    if (url !== -1) {
-      out += style.slice(kept, i);
-      i = url;
       kept = i;
       continue;
     }
@@ -267,7 +404,7 @@ export function isHidden(el: VisibilityElement): boolean {
   if (hidden !== null && hidden.trim().toLowerCase() !== 'until-found') return true;
   const style = el.getAttribute('style');
   if (style === null) return false;
-  return INLINE_HIDDEN.test(stripStringsAndComments(style));
+  return INLINE_HIDDEN.test(resolveDeclarationText(style));
 }
 
 /**
