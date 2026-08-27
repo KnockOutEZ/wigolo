@@ -12,9 +12,13 @@ import { openMigrationTestDb } from '../../helpers/migration-test-db.js';
  *
  * The pre-flight #2 merge unioned two independently-released MIGRATIONS arrays. These
  * are the exact names each branch had shipped at its tip immediately before the merge
- * (`origin/main` @ b3ccf92b, `studio-handoff` @ 013ae226). They are hard-coded rather
- * than derived so that dropping, renaming or reordering an entry in runner.ts fails
- * here instead of silently re-running migrations on users' DBs.
+ * (`origin/main` @ b3ccf92b, the studio program branch @ 013ae226). They are hard-coded
+ * rather than derived so that dropping, renaming or reordering an entry in runner.ts
+ * fails here instead of silently re-running migrations on users' DBs.
+ *
+ * The studio program branch was named `studio-handoff` and PX0 deleted it from `origin`;
+ * `013ae226` is unaffected because `studio-handoff-core` descends from that branch's tip,
+ * so the commit stays reachable and this record stays checkable against real history.
  */
 const MAIN_RELEASED = [
   '001-sqlite-vec',
@@ -133,7 +137,7 @@ function schemaSnapshot(db: Database.Database): string {
   return lines.join('\n');
 }
 
-describe('MIGRATIONS — merged union of origin/main and studio-handoff (D15)', () => {
+describe('MIGRATIONS — merged union of origin/main and the studio program branch (D15)', () => {
   let dir: string;
 
   beforeEach(() => {
