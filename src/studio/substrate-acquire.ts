@@ -219,6 +219,13 @@ function findEscapingLink(destDir: string): string | null {
       const child = join(dir, entry.name);
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(child);
+        // Absolute is judged by SPELLING, and that is not the resolve check wearing a second hat.
+        // For a link that resolves, the two agree and this line is redundant. Where they part is a
+        // DANGLING absolute link: it resolves to nothing, so the fallback below judges it
+        // lexically, and an absolute target spelt inside today's substrate root would pass — while
+        // being a machine-specific path the substrate follows the instant anything appears there,
+        // and one that silently points elsewhere the moment the data dir moves. A bundle's links
+        // are relative by construction, so refusing it costs a legitimate substrate nothing.
         if (isAbsolute(target)) return `${relative(destDir, child)} -> ${target}`;
         // The lexical fallback anchors at the parent's REAL path, not its spelling: `destDir`
         // sits under `/var` on macOS while `root` resolved to `/private/var`, and comparing the

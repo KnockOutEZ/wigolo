@@ -451,6 +451,28 @@ describe('the install refuses a tree whose links leave it', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('refuses a DANGLING absolute link even when it is spelt inside the root', async () => {
+    // THE ARM THAT MAKES THE ABSOLUTE RULE ITS OWN MECHANISM. For a link that resolves, the
+    // absolute rule and the resolve rule agree and either alone would do. They part exactly here:
+    // this link resolves to nothing, so a walk that judged only by resolution would fall back to
+    // judging it lexically, find it spelt inside today's substrate root, and admit it — leaving an
+    // absolute path baked into the installed tree that the substrate follows the moment anything
+    // appears there, and that points somewhere else entirely the moment the data dir moves.
+    // Without the absolute rule this arm goes green with the hole open.
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    const inside = join(realpathSync(substrateRoot(dataDir)), '3.3.6', 'lib', 'not-here-yet');
+    expect(isAbsolute(inside)).toBe(true);
+    const src = makeLinkedSourceDir('3.3.6', inside, { realExecutable: true });
+    try {
+      const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+      expect(r.outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      expect(existsSync(join(substrateRoot(dataDir), '3.3.6'))).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('refuses a RELATIVE link that climbs out of the installed tree', async () => {
     // Not the reported vector — a relative link re-anchors at the destination and usually dangles.
     // It is here because the rule is "where does this resolve", and a fix that only banned a
