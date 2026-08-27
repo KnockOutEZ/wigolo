@@ -30,7 +30,12 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
+      # The explicit build below is the one that produces the published dist/. Without the
+      # opt-out the root `prepare` hook builds during `npm ci` too, so the leg that matters
+      # most — publish — pays for two full builds.
       - run: npm ci
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       - run: npm run build
 

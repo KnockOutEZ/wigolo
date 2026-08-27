@@ -102,8 +102,12 @@ jobs:
         with:
           node-version: '22'
 
+      # Opt out of the root `prepare` hook's build: the next step builds explicitly, and this
+      # is a 5-target matrix, so the duplicate install-time build is paid five times.
       - name: Install dependencies
         run: npm ci
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       - name: Build dist + CJS bundle
         run: |

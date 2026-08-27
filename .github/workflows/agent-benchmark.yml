@@ -23,7 +23,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # The explicit build below is the only build this job needs; without the opt-out the
+      # root `prepare` hook builds again during `npm ci`.
       - run: npm ci
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       - run: npm run build
 
