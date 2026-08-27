@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 import {
@@ -234,7 +234,9 @@ describe('a record must name something inside the substrate root', () => {
     // It is refused anyway, and the file is planted at exactly that nonsense location so the
     // refusal cannot be the pre-existing "the executable is not on disk" arm wearing a new name.
     const dir = join(substrateRoot(dataDir), '1.2.3');
-    const absolute = join(tmpdir(), 'wigolo-elsewhere', 'run');
+    // Root-relative rather than drive-qualified, so `join` produces a real path on win32 too and
+    // the arm is asserting the RULE on every platform instead of an EINVAL from mkdir.
+    const absolute = `${sep}wigolo-elsewhere${sep}run`;
     plantRecord({ version: '1.2.3', path: dir, executable: absolute }, join(dir, absolute));
     expect(existsSync(join(dir, absolute))).toBe(true);
     expect(readSubstrateRecord(dataDir)).toBeNull();
