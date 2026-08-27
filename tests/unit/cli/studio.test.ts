@@ -29,9 +29,15 @@ function fakeSpawn(calls: SpawnCall[]): (c: string, a: string[], o: SpawnCall['o
   };
 }
 
-/** Plant a valid acquisition record — valid means the executable it names is really on disk. */
+/**
+ * Plant a valid acquisition record — valid means the executable it names is really on disk AND
+ * sits under `substrateRoot()`, which is the only place `acquireSubstrate` ever installs to. This
+ * used to plant at `<dataDir>/installed`, a location the acquirer never writes; the containment
+ * rule in `readSubstrateRecord` reads such a record as absent, so the fixture would have been
+ * pinning `runStudio` against a record the product cannot produce.
+ */
 function plantRecord(dataDir: string, executable = 'wigolo-studio'): string {
-  const substrateDir = join(dataDir, 'installed');
+  const substrateDir = join(dataDir, 'substrate', 'installed');
   mkdirSync(substrateDir, { recursive: true });
   writeFileSync(join(substrateDir, executable), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   mkdirSync(join(dataDir, 'substrate'), { recursive: true });
