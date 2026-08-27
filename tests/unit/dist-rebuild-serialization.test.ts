@@ -34,15 +34,30 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const REBUILD_TOKENS = ['npm run build', 'npm pack', 'npx tsup', 'budget/measure.mjs'];
 
 /**
- * Parallel-lane files that name a token without rebuilding anything. Each entry states WHY,
+ * A token handed to a child-process API. This is the shape that actually rebuilds, as opposed
+ * to a file that merely names a build command in a comment or an assertion — and it is checked
+ * even in exempted files, so an exemption granted for a mention cannot later cover a real
+ * rebuild that gets added underneath it.
+ */
+const EXECUTES = new RegExp(
+  `(?:execSync|execFileSync|spawnSync|execFile|spawn|exec)\\s*\\(` +
+    `[^;]{0,200}?(?:${REBUILD_TOKENS.map((t) => t.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')).join('|')})`,
+  's'
+);
+
+/**
+ * Parallel-lane files that NAME a token without rebuilding anything. Each entry states WHY,
  * and the set is asserted to be exactly the set that still matches — a stale exemption is a
- * failure, so this cannot rot into a blanket mute.
+ * failure, so this cannot rot into a blanket mute. Note what an exemption does and does not
+ * buy: it excuses the mention, never an `EXECUTES` match.
  */
 const EXEMPT: Record<string, string> = {
   'tests/unit/dist-rebuild-serialization.test.ts':
     'this file — it names every token in order to search for them',
   'tests/unit/budget-protocol.test.ts':
     'reads measure.mjs as TEXT to assert which reducer it calls; never executes it',
+  'tests/unit/electron-quarantine.test.ts':
+    'asserts that the CI gate job has NO build step; the token appears inside that negative assertion',
   'tests/unit/prepare-build.test.ts':
     'runs a copy of the prepare hook against a scratch tree under $TMPDIR, with a fake toolchain and a marker-writing `build`; the working tree is never touched',
 };
@@ -72,12 +87,24 @@ function parallelLaneFiles(): string[] {
 }
 
 describe('no parallel-lane test can rebuild or clean dist/', () => {
-  const offenders = parallelLaneFiles().filter((file) =>
-    REBUILD_TOKENS.some((token) => readFileSync(join(ROOT, file), 'utf8').includes(token))
-  );
+  const scanned = parallelLaneFiles().map((file) => {
+    const source = readFileSync(join(ROOT, file), 'utf8');
+    return {
+      file,
+      mentions: REBUILD_TOKENS.some((token) => source.includes(token)),
+      executes: EXECUTES.test(source),
+    };
+  });
+  const offenders = scanned.filter((f) => f.mentions).map((f) => f.file);
 
   it('the parallel lane is clean apart from the stated exemptions', () => {
     expect(offenders.filter((f) => !(f in EXEMPT))).toEqual([]);
+  });
+
+  it('no parallel-lane file hands a build to a child process, exempt or not', () => {
+    // The exemptions above are for files that NAME a build command — in a comment, or inside
+    // an assertion about CI's shape. None of them may grow a real one later under that cover.
+    expect(scanned.filter((f) => f.executes).map((f) => f.file)).toEqual([]);
   });
 
   it('every exemption is still load-bearing', () => {
