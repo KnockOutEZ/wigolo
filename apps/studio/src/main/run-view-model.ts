@@ -255,6 +255,10 @@ const REPLAY_PAGE_SIZE = 500;
  * binding that returned a cursor forever would spin on the thread that paints. Reaching this means a
  * broken store rather than a large one: it is `DEFAULT_LIST_LIMIT` × this, which is far more runs
  * than any surface here can name.
+ *
+ * A SPIN GUARD, and only that. It was standing in for a bound on what boot reads and it is eight times
+ * too large to be one — see `MAX_BOOT_HYDRATION_RUNS`, which is the bound derived from what retention
+ * can hold and the one that stops an ordinary boot.
  */
 const MAX_HYDRATION_PAGES = 200;
 
