@@ -80,6 +80,20 @@ export default defineConfig({
           ...shared,
           name: 'spawn-serial',
           // The spawn-heavy lane: one fork, no file parallelism.
+          //
+          // DO NOT move a dist/-touching test back out of this lane. It is also the ONLY
+          // lane in which rebuilding `dist/` is safe. tsup runs `clean: true`, so a rebuild
+          // DELETES dist/ before writing it, while `tests/e2e/mcp-startup.test.ts` spawns
+          // `dist/index.js`, `tests/integration/build-output.test.ts` asserts over dist/
+          // files and `tests/integration/studio-runs-proxy.test.ts` imports dist/ in a child.
+          // Serialised here they take turns; in the parallel `unit` project — which vitest
+          // runs CONCURRENTLY with this one — a rebuild deletes dist/ under a test that has
+          // just spawned it, and the red lands in an unrelated file with nothing pointing at
+          // the cause. That shipped once: the G-TARBALL measurement sat in
+          // tests/unit/budget-protocol.test.ts, and the `prepare` hook turned its
+          // `npm pack --dry-run` into a full build. It now lives in
+          // tests/integration/budget-tarball-gate.test.ts, and the rule is enforced by
+          // tests/unit/dist-rebuild-serialization.test.ts rather than by memory.
           include: [
             'tests/integration/**/*.test.ts',
             'tests/integration/**/*.test.tsx',

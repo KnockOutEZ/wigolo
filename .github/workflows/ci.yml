@@ -50,8 +50,16 @@ jobs:
           node-version: 22
           cache: npm
 
+      # `WIGOLO_SKIP_PREPARE=1` suppresses the root `prepare` hook's build (see
+      # scripts/prepare-build.mjs). Without it this job builds TWICE — once during install,
+      # once at the explicit Build step below — and, worse, the install-time build lands
+      # ahead of Lint, which is the exact "type error hidden behind a build failure" ordering
+      # the step order here exists to prevent. Not `--ignore-scripts`: that would also skip
+      # dependencies' native install scripts, which the unit tests need.
       - name: Install dependencies
         shell: bash
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
         run: npm ci
 
       - name: Check no NUL bytes (grep-integrity)
@@ -206,8 +214,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Skip the `prepare` hook's build; the explicit build below is this job's one build.
       - run: npm ci
         shell: bash
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       - run: npm run lint
         shell: bash
@@ -349,8 +360,15 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # `WIGOLO_SKIP_PREPARE=1` keeps this to ONE build: the `prepare` hook would otherwise
+      # full-build during `npm ci`, and this is the 3-OS × Node-22/24 matrix where that costs
+      # the most. It does not weaken the clean-machine claim — this job installs from the
+      # working tree and then builds explicitly; the git-dependency install path that `prepare`
+      # exists for is a different consumer and is covered by tests/unit/prepare-build.test.ts.
       - name: Install + build
         shell: bash
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
         run: npm ci && npm run build
 
       - name: Pack + global install (fresh `npm i -g wigolo`)

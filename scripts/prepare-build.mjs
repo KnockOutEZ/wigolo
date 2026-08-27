@@ -23,11 +23,27 @@
  * The CI `gate` job is the third case and is handled at the call site instead: it needs
  * devDependencies (it is a `tsc --noEmit` gate) but must not build, so it passes
  * `--ignore-scripts` to `npm ci` and keeps its stated no-build invariant verbatim.
+ *
+ * The fourth case is every OTHER CI job. They all have devDependencies AND a resolvable
+ * toolchain, so `prepare` fires on their plain `npm ci` and full-builds — and then they run
+ * their own explicit `npm run build` and build a second time, on a 3-OS matrix, for minutes
+ * apiece. Worse, in `lint-build-unit` it inverts the fail-fast order the job is built around:
+ * lint is supposed to precede the build so a type error cannot hide behind a build failure,
+ * and an install-time build puts a build first regardless of step order. Those jobs opt out
+ * with `WIGOLO_SKIP_PREPARE=1`, which is deliberately NOT `--ignore-scripts`: that flag would
+ * also skip DEPENDENCIES' install scripts (native module builds the test jobs need), whereas
+ * this variable is read by this script alone and suppresses exactly one build.
  */
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+
+/** Opt-out for a caller that will build explicitly itself. Any non-empty value counts. */
+if (process.env.WIGOLO_SKIP_PREPARE) {
+  console.log('prepare: no build — WIGOLO_SKIP_PREPARE is set; the caller builds explicitly.');
+  process.exit(0);
+}
 
 /** `npm run build` is `tsup && tsc`; both halves must be resolvable or the build cannot run. */
 const TOOLCHAIN = ['tsup', 'typescript'];
