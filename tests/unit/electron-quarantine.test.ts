@@ -159,5 +159,23 @@ describe('electron quarantine guard (scripts/check-src-no-electron.mjs)', () => 
     const ci = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain('npm run gate:studio');
     expect(ci).toMatch(/pull_request:[\s\S]*branches: \[main, studio-handoff-core\]/);
+    // `push` too. It was unpinned, and it is the trigger that ran this gate at all before
+    // `pull_request` covered the program branch — dropping `studio-handoff-core` from it would
+    // silently stop gating the branch every slice merges into, with no test to say so.
+    expect(ci).toMatch(/push:\s*\n\s*branches: \[main, studio-handoff-core\]/);
+  });
+
+  it('the gate job installs with --ignore-scripts, which is what keeps it a no-build job', () => {
+    // The root package now has a `prepare` script that BUILDS (scripts/prepare-build.mjs), so
+    // this job's stated "no build step" invariant no longer follows from the absence of a build
+    // step — a plain `npm ci` would build during install. `--ignore-scripts` is the only thing
+    // still holding it, and it is a flag, so it is one careless edit from gone. Every check in
+    // this job is `tsc --noEmit`-class over source: a build here would put a build failure
+    // ahead of the type errors this gate exists to surface.
+    const ci = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const gate = ci.slice(ci.indexOf('\n  gate:'), ci.indexOf('\n  full-suite:'));
+    expect(gate).toContain('npm run gate:studio'); // control: this really is the gate job
+    expect(gate).toContain('npm ci --ignore-scripts');
+    expect(gate).not.toMatch(/run: npm run build/);
   });
 });
