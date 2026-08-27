@@ -19,7 +19,19 @@
       "import": "./dist/studio/index.js",
       "types": "./dist/studio/index.d.ts"
     },
-    "./studio-db-broker": "./dist/daemon/studio-db-broker.js"
+    "./studio-db-broker": "./dist/daemon/studio-db-broker.js",
+    "./cache/db": {
+      "import": "./dist/cache/db.js",
+      "types": "./dist/cache/db.d.ts"
+    },
+    "./studio/run-bus": {
+      "import": "./dist/studio/run-bus.js",
+      "types": "./dist/studio/run-bus.d.ts"
+    },
+    "./studio-mcp-contract": {
+      "import": "./dist/contracts/studio-mcp/index.js",
+      "types": "./dist/contracts/studio-mcp/index.d.ts"
+    }
   },
   "types": "dist/types.d.ts",
   "bin": {
@@ -50,8 +62,10 @@
     "agent-tools"
   ],
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json && npm run build:contract",
+    "build:contract": "tsc -p contracts/studio-mcp/tsconfig.build.json",
     "postinstall": "node scripts/prune/run.mjs",
+    "prepare": "node scripts/prepare-build.mjs",
     "build:binary": "npm run build && node packaging/binary/bundle.mjs && bash packaging/binary/pack.sh",
     "build:watch": "tsup --watch",
     "dev": "tsx src/index.ts",

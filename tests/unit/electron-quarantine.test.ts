@@ -133,6 +133,16 @@ describe('electron quarantine guard (scripts/check-src-no-electron.mjs)', () => 
     expect(r.out).toMatch(/electron/);
   });
 
+  it('is not vacuous: fires on the synthetic electron-importing fixture', () => {
+    // The same outside signal as the apps/studio arm above, but not conditional on the app
+    // tree being present in this repo. `tests/fixtures/electron-quarantine/electron-host.mjs`
+    // is a real file the detector really scans (see its header for why it is `.mjs`), so this
+    // reds the moment the detector stops detecting — on any branch.
+    const r = runGuard([join(ROOT, 'tests', 'fixtures', 'electron-quarantine')]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('electron-host.mjs');
+  });
+
   it('scopes itself to src/ by default, so apps/studio stays legal', () => {
     const r = runGuard([]);
     expect(r.status).toBe(0);

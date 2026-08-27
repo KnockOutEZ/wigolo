@@ -19,8 +19,8 @@
  */
 import { createServer } from 'node:http';
 import { DaemonHttpServer } from 'wigolo/studio';
-import { getDatabase } from '../../../../dist/cache/db.js';
-import { appendRunEventWithTail } from '../../../../dist/studio/run-bus.js';
+import { getDatabase } from 'wigolo/cache/db';
+import { appendRunEventWithTail } from 'wigolo/studio/run-bus';
 
 const rest = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: null });
 const restUrl = await rest.start();

@@ -58,6 +58,21 @@ import {
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DIST_ENTRY = join(ROOT, 'dist', 'index.js');
 
+/**
+ * Run npm, synchronously, and hand back whatever the caller's `stdio` asked for.
+ *
+ * WHY IT IS A HELPER AND NOT TWO INLINE TERNARIES: `shell` is not optional on win32. Node's
+ * CVE-2024-27980 hardening refuses to `spawnSync` a `.cmd` or `.bat` at all — `npm.cmd` comes
+ * back `EINVAL`, as "never ran" rather than as a failed npm — so every npm call in this file
+ * needs the same flag, and the two that existed both lacked it. That went unnoticed because the
+ * budget gates are wired on the macOS runner only; it surfaced the moment a test started running
+ * one of them cross-OS. One spawn seam, so a third call site cannot reintroduce it.
+ */
+function npmRun(args, options) {
+  const win = process.platform === 'win32';
+  return execFileSync(win ? 'npm.cmd' : 'npm', args, { ...options, shell: win });
+}
+
 /** `du -sm` in MiB. A path that does not exist measures 0 rather than throwing. */
 function duMiB(path) {
   if (!existsSync(path)) return 0;
@@ -104,8 +119,7 @@ function measureInstallSize() {
   try {
     copyFileSync(join(ROOT, 'package.json'), join(dir, 'package.json'));
     copyFileSync(join(ROOT, 'package-lock.json'), join(dir, 'package-lock.json'));
-    execFileSync(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    npmRun(
       ['install', '--omit=dev', '--ignore-scripts', '--no-workspaces', '--no-audit', '--no-fund'],
       {
         cwd: dir,
@@ -140,13 +154,41 @@ function measureInstallSize() {
 
 // -------------------------------------------------------------------- tarball
 
+/**
+ * npm's `--json` payload, dug out of a stdout that is not only JSON.
+ *
+ * `npm pack` runs the `prepare` lifecycle hook — even under `--dry-run`, and even under
+ * `--ignore-scripts` (verified on npm 10.9.2: the flag does not suppress the packed project's
+ * own prepare). Since `prepare` builds (it has to; a pinned git-dependency install has no other
+ * hook — see scripts/prepare-build.mjs), the builder's progress lands on the same stream ahead
+ * of the JSON and a bare `JSON.parse(out)` dies on it.
+ *
+ * npm writes its payload LAST, so the parse walks candidate `[` line-starts from the end and
+ * takes the first that parses to completion. Anchoring on the end rather than the first `[`
+ * matters: build output is full of bracketed prefixes, and the first one that happens to parse
+ * would be a wrong answer rather than an error.
+ */
+function parseTrailingJsonArray(out) {
+  const lines = out.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].startsWith('[')) continue;
+    try {
+      const parsed = JSON.parse(lines.slice(i).join('\n'));
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      /* not the payload — keep walking back */
+    }
+  }
+  throw new Error(`npm pack --json produced no parsable JSON array (${out.length} bytes of stdout)`);
+}
+
 function measureTarball() {
-  const out = execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--json'], {
+  const out = npmRun(['pack', '--dry-run', '--json'], {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   });
-  const meta = JSON.parse(out)[0];
+  const meta = parseTrailingJsonArray(out)[0];
   const mib = Math.round((meta.unpackedSize / 1048576) * 10) / 10;
   return report('G-TARBALL', mib, `${meta.entryCount} files, ${Math.round(meta.size / 1048576 * 10) / 10} MiB packed`);
 }

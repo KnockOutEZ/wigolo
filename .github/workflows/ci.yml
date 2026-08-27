@@ -130,9 +130,14 @@ jobs:
           node-version: 22
           cache: npm
 
+      # `--ignore-scripts` is what preserves the no-build invariant below now that the root
+      # package has a `prepare` script (it builds `dist/` so a pinned git-dependency install
+      # resolves — see scripts/prepare-build.mjs). devDependencies still install; only the
+      # lifecycle hooks are skipped, which is exactly right here: every check in this job is
+      # `tsc --noEmit`-class over source and needs no built output and no native modules.
       - name: Install dependencies
         shell: bash
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # No build step: every check here is `tsc --noEmit`-class over source, and adding a build
       # would hide a type error behind a build failure.
