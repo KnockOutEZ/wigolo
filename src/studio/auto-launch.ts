@@ -1,7 +1,5 @@
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawn, type SpawnOptions } from 'node:child_process';
+import { join } from 'node:path';
 import { readHandle, type SessionHandle } from './handle.js';
 import { readSubstrateRecord, substratePresent } from './substrate-acquire.js';
 import { createLogger } from '../logger.js';
@@ -46,14 +44,41 @@ const DEFAULT_POLL_MS = 250;
 
 export interface AutoLaunchDeps {
   dataDir?: string;
-  /** Start the substrate. Injectable so tests never spawn a real process. */
-  launch?: () => void;
+  /**
+   * Start the substrate. Injectable so tests never spawn a real process.
+   *
+   * Returning `false` means DECLINED — nothing was started, so there is nothing to wait for. Any
+   * other return (including `void`) means a start was attempted and the handle poll is worth
+   * running. See {@link defaultLaunch} for why a launcher that answered `launchable` can still
+   * decline.
+   */
+  launch?: () => boolean | void;
   /** True when the substrate can actually be started on this machine. Injectable. */
   launchable?: () => boolean;
   timeoutMs?: number;
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
   readHandleFn?: (dataDir?: string) => SessionHandle | null;
+}
+
+/**
+ * The narrowest shape of `child_process.spawn` this module uses. Narrow ON PURPOSE: a test seam
+ * that had to build a whole `ChildProcess` would be a mock of Node rather than of the one call
+ * being made, and the launcher only ever needs to unreference what it started.
+ */
+export type SpawnStudio = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions
+) => { unref(): void };
+
+const defaultSpawn: SpawnStudio = (command, args, options) => spawn(command, args, options);
+
+export interface DefaultLaunchDeps {
+  /** Where the acquisition record lives. Defaults to the configured data dir. */
+  dataDir?: string;
+  /** Injectable so a test asserts the spawn arms without starting a desktop app. */
+  spawnFn?: SpawnStudio;
 }
 
 /**
@@ -105,22 +130,32 @@ export function studioLaunchable(): boolean {
  * holds a lock between the two, and `deps.launchable` is injectable, so this function must be able to
  * find nothing. It declines rather than throwing, for the same reason `ensureStudioRunning` never throws —
  * a launch problem must not become the caller's error.
+ *
+ * ⚠ THE DECLINE IS RETURNED, and that return is load-bearing. `studioLaunchable()` answers from
+ * `substratePresent()`, which memoizes for 5 s; this function reads the record uncached. Uninstall the
+ * substrate and for the rest of that TTL window the gate says yes and the launcher finds nothing —
+ * so a decline here is a NORMAL outcome, not a defect. When it was a bare `return`, the caller could
+ * not tell it apart from a spawn that had yet to publish and sat out the entire 30 s poll budget with
+ * no process running, once per TTL window, on the fetch path. Saying "declined" costs one boolean and
+ * closes the window; widening the presence TTL or plumbing a shared probe would both reach further
+ * than this file.
  */
-function defaultLaunch(): void {
-  const acquired = readSubstrateRecord();
+export function defaultLaunch(deps: DefaultLaunchDeps = {}): boolean {
+  const acquired = readSubstrateRecord(deps.dataDir);
   if (!acquired) {
     log.debug('studio auto-launch found no acquired substrate to start — declining');
-    return;
+    return false;
   }
   // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for. The
   // human summons a visible one themselves; a card that needs answering is surfaced by the app.
   const hidden = { ...process.env, WIGOLO_STUDIO_HIDDEN: '1' };
-  const child = spawn(join(acquired.path, acquired.executable), [], {
+  const child = (deps.spawnFn ?? defaultSpawn)(join(acquired.path, acquired.executable), [], {
     detached: true,
     stdio: 'ignore',
     env: hidden,
   });
   child.unref();
+  return true;
 }
 
 let inFlight: Promise<SessionHandle | null> | null = null;
@@ -147,7 +182,13 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
     const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); if (typeof t.unref === 'function') t.unref(); }));
     try {
-      (deps.launch ?? defaultLaunch)();
+      const started = (deps.launch ?? (() => defaultLaunch({ dataDir: deps.dataDir })))();
+      // An explicit decline means nothing was started, so there is nothing the poll below could ever
+      // see. Waiting out the budget on it is the 30 s stall this branch exists to prevent.
+      if (started === false) {
+        log.debug('studio auto-launch declined — nothing was started, so nothing is polled for');
+        return null;
+      }
     } catch (err) {
       log.debug('studio auto-launch failed to spawn', { error: err instanceof Error ? err.message : String(err) });
       return null;

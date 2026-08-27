@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureStudioRunning, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
+import { defaultLaunch, ensureStudioRunning, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
+import { readSubstrateRecord, SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
 import type { SessionHandle } from '../../../src/studio/handle.js';
 
 /**
@@ -22,6 +23,29 @@ const HANDLE: SessionHandle = { id: 's1', endpoint: 'http://127.0.0.1:1/mcp', to
 function publishHandle(): void {
   mkdirSync(join(dir, 'studio'), { recursive: true });
   writeFileSync(join(dir, 'studio', 'current.json'), JSON.stringify(HANDLE));
+}
+
+/**
+ * Plant a valid acquisition record under an ISOLATED data dir and hand back the executable path it
+ * names.
+ *
+ * `readSubstrateRecord` insists the executable the record names is still on disk, so writing the
+ * JSON alone would read as absent and prove nothing. Unlike the ceiling suite's helper further down
+ * — which must plant at `substrateRoot()`'s own memoized answer, because `studioLaunchable()` takes
+ * no data dir — this one writes under the per-test temp dir, so it cannot leak a record into any
+ * test that runs after it.
+ */
+function plantSubstrateRecord(dataDir: string): string {
+  const root = join(dataDir, 'substrate');
+  const componentDir = join(root, 'component');
+  mkdirSync(componentDir, { recursive: true });
+  const executable = join(componentDir, 'studio-app');
+  writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+  writeFileSync(
+    join(root, SUBSTRATE_RECORD),
+    JSON.stringify({ version: '0.0.1', path: componentDir, executable: 'studio-app' })
+  );
+  return executable;
 }
 
 beforeEach(() => {
@@ -182,5 +206,97 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     const launch = vi.fn();
     expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep })).toBeNull();
     expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('a launch that declines must not be polled for', () => {
+  /**
+   * THE WINDOW THIS CLOSES. `studioLaunchable()` answers from a 5-second-memoized presence probe;
+   * the launcher re-reads the record uncached. Uninstall the substrate and for the rest of that TTL
+   * the two disagree: the gate says "launchable", the launcher finds nothing and declines. Before
+   * this, a decline was indistinguishable from a spawn that had not published yet, so the caller
+   * entered the handle poll with no process started and burned the entire 30 s budget — once per
+   * TTL window, on the fetch path.
+   *
+   * The tick counter is the assertion, not the wall clock: a decline costs zero polls, the stall
+   * costs `timeoutMs / pollMs` of them. The fake clock is what makes the difference readable in
+   * milliseconds instead of thirty seconds.
+   */
+  it('resolves in zero poll ticks when the record is gone under a launchable that says yes', async () => {
+    // Force the precondition and prove the forcing took: the launch path must genuinely find
+    // nothing, or the test passes for the wrong reason.
+    expect(readSubstrateRecord(dir)).toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        vi.advanceTimersByTime(ms);
+      };
+      // No `deps.launch`: this drives the REAL launcher, which is the half of the pair that declines.
+      const h = await ensureStudioRunning({ dataDir: dir, launchable: () => true, pollMs: 250, sleep });
+      expect(h).toBeNull();
+      expect(ticks).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still polls when the launcher did start something', async () => {
+    // The other side of the branch: a decline short-circuits, a real spawn does not. Without this,
+    // "return null immediately" would satisfy the test above forever.
+    let ticks = 0;
+    const sleep = async (): Promise<void> => { if (++ticks === 2) publishHandle(); };
+    const h = await ensureStudioRunning({ dataDir: dir, launch: () => {}, launchable: () => true, pollMs: 1, sleep });
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+    expect(ticks).toBe(2);
+  });
+});
+
+/**
+ * THE REAL LAUNCHER, not an injected stand-in.
+ *
+ * Every case above hands `ensureStudioRunning` a `deps.launch`, which is right for testing the
+ * poll contract and means this function's own body never ran in the suite: the decline, the spawn
+ * target derived from the record, `detached`/`unref`, and the hidden-window env were all unasserted
+ * — `WIGOLO_STUDIO_HIDDEN` appeared only in `src/`. The spawn seam is what makes running it safe.
+ */
+describe('defaultLaunch', () => {
+  it('declines and spawns nothing when no substrate has been acquired', () => {
+    const spawnFn = vi.fn();
+    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('spawns the executable the record names, hidden, detached and unreferenced', () => {
+    const executable = plantSubstrateRecord(dir);
+    const unref = vi.fn();
+    const spawnFn = vi.fn(() => ({ unref }));
+
+    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(true);
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+
+    const [command, args, options] = spawnFn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    // The target comes from the record, not from a path this module guesses at.
+    expect(command).toBe(executable);
+    expect(args).toEqual([]);
+    // Detached, stdio ignored and unref'd: the session outlives this process and never holds it open.
+    expect(options.detached).toBe(true);
+    expect(options.stdio).toBe('ignore');
+    expect(unref).toHaveBeenCalledTimes(1);
+    // Hidden: an auto-launched session is for the agent's benefit, so it must not steal the human's focus.
+    expect((options.env as NodeJS.ProcessEnv).WIGOLO_STUDIO_HIDDEN).toBe('1');
+    // …and it INHERITS the rest of the environment rather than replacing it.
+    expect((options.env as NodeJS.ProcessEnv).PATH).toBe(process.env.PATH);
+  });
+
+  it('declines when the record survives but the executable it names does not', () => {
+    // The uninstall shape the stall came from: half the evidence is still on disk.
+    const executable = plantSubstrateRecord(dir);
+    rmSync(executable, { force: true });
+    const spawnFn = vi.fn();
+    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });
