@@ -36,7 +36,9 @@ import { execSync } from 'node:child_process';
 // pin, and produced 21 of the errors. Binding it to MockedFunction<EmbedProvider['embed']>
 // (plus the vi.fn<EmbedFn>() construction sites, without which the annotation still
 // does not discriminate) cleared all 21. The fix and this lowering ship in one PR, so a
-// branch that merges studio-handoff cannot pick up the lower baseline without the fix.
+// branch that merges the studio program branch cannot pick up the lower baseline without
+// the fix. (That branch was `studio-handoff`, deleted from `origin` at PX0 exit; the
+// invariant is about the pairing, not about the name, and outlives it.)
 const BASELINE = 363;
 
 let count = 0;

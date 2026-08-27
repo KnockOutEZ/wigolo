@@ -22,7 +22,9 @@ jobs:
   lint-build-unit:
     name: lint + build + unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Fail loudly instead of burning the 6-hour default. On `studio-handoff` the
+    # Fail loudly instead of burning the 6-hour default. On the predecessor program
+    # branch (`studio-handoff`, deleted from `origin` at PX0 exit — this branch descends
+    # from its tip, so the measurements below still describe this history) the
     # ubuntu-latest leg of this job hangs indefinitely while the macOS and Windows
     # legs finish the same commit in 4-6 min; measured at 360 min (killed by the
     # default) as far back as 4eec8848, so it predates the CI-trigger and
@@ -172,8 +174,8 @@ jobs:
   #     succeeds — verified by re-running it against a deleted backstop, which stays red.
   #
   # The former "ubuntu-only hang" note here is retired: it described a state that no longer
-  # reproduces — this job completes in ~8 min on `studio-handoff`. The timeout stays at 30
-  # min as a cap, not as a workaround.
+  # reproduces — this job completes in ~8 min on this branch's line of history. The timeout
+  # stays at 30 min as a cap, not as a workaround.
   full-suite:
     # The label is carried in the matrix rather than derived from `matrix.os` so the ubuntu
     # leg keeps the EXACT name `full test suite (ubuntu)`. That string is a required status
