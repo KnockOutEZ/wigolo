@@ -2,14 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main, studio-handoff]
+    branches: [main, studio-handoff-core]
   pull_request:
-    # `studio-handoff` is listed because the Studio v2 program merges slice PRs into
-    # it, not into main. Without it, `pull_request` never fired for a slice PR: the
-    # 3-OS unit matrix, the gate:studio type gate and the studio e2e job all ran on
-    # PUSH — i.e. AFTER merge — so every slice merged with scrape-quality as its only
-    # check. That silently defeated the type gate, which exists to BLOCK a PR.
-    branches: [main, studio-handoff]
+    # `studio-handoff-core` is listed because the program merges slice PRs into it, not
+    # into main. Without it, `pull_request` never fired for a slice PR: the 3-OS unit
+    # matrix and the gate:studio type gate both ran on PUSH — i.e. AFTER merge — so every
+    # slice merged with scrape-quality as its only check. That silently defeated the type
+    # gate, which exists to BLOCK a PR. (It was `studio-handoff` until the studio app
+    # moved to its own private repo; `tests/unit/electron-quarantine.test.ts` pins both
+    # lines, so the rename and its assertion travel together.)
+    branches: [main, studio-handoff-core]
   workflow_call:
 
 concurrency:
@@ -81,27 +83,21 @@ jobs:
   # `check:no-electron` holds the src/ electron quarantine (the core consumes no desktop shell, so a
   # Studio repo split stays a substitution rather than a rewrite), `typecheck:studio` type-checks the
   # safety-critical test files, `check:typecheck-gate` proves none of them silently dropped out of
-  # that project, `check:studio-typecheck` proves the Electron app's own type-check still covers the
-  # app (known issue P7 — see below), and `typecheck:debt` ratchets the remaining untyped-test debt.
+  # that project, `typecheck:contract` type-checks the studio_* wire contract over its source, and
+  # `typecheck:debt` ratchets the remaining untyped-test debt.
   # Until this job existed those gated NOTHING on a PR — a safety test could sit outside the type
   # gate and CI stayed green.
   #
-  # `check:studio-typecheck` runs here in its `--shape-only` mode for the same reason as its
-  # siblings: that half is a path/AST walk needing no build, and this job deliberately has no build
-  # step. It does NOT type-check the app (that is `studio-unit`'s `npm run lint -w apps/studio`); it
-  # asserts that arrangement is still intact — `apps/studio/tsconfig.json` covers every TypeScript
-  # file under the app, is strict, the app's `lint` script actually runs `tsc --noEmit`, and an
-  # enabled `run:` step in this workflow invokes it. That last check parses this file as YAML and
-  # requires a real step, so neither this paragraph nor a disabled step can stand in for it.
-  #
-  # The guard's other half plants a type error and requires the app lint to report it. That needs the
-  # built `dist/` the app resolves `wigolo/studio` through, so it rides `studio-unit`'s
-  # `check:studio-typecheck-runs` step instead of forcing a build into this job.
+  # `check:studio-typecheck` is deliberately NOT in this chain any more. It guarded the Electron
+  # app's own type-check — the only thing covering `apps/studio/**` (known issue P7) — and both the
+  # app and that guard now live in the private studio repo, where P7 is a live concern and the
+  # guard has a CI job with a build step to plant errors into. Re-adding it here would assert on a
+  # tree this repo no longer contains.
   #
   # Runs on all three desktop OS. Every check in `gate:studio` other than `lint` is a tsconfig
   # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a
   # node script that walks the tree by path — `check-typecheck-gate.mjs`,
-  # `check-studio-typecheck-coverage.mjs`, `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
+  # `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
   # globs and hand-rolled path walks resolve differently per platform, so an ubuntu-only
   # gate was checking the one platform least likely to break them.
   #
@@ -141,7 +137,7 @@ jobs:
 
       # No build step: every check here is `tsc --noEmit`-class over source, and adding a build
       # would hide a type error behind a build failure.
-      - name: gate:studio (electron quarantine + lint + typecheck:studio + typecheck-gate + studio typecheck coverage + debt ratchet)
+      - name: gate:studio (electron quarantine + lint + typecheck:studio + typecheck-gate + debt ratchet + contract)
         shell: bash
         run: npm run gate:studio
 
@@ -230,115 +226,6 @@ jobs:
 
       - run: npm test
         shell: bash
-
-  # Studio unit tests are pure (no Electron binary launched) — run on all 3 OS
-  # and skip the ~150MB electron binary download to avoid its install flakiness.
-  studio-unit:
-    name: studio unit (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        shell: bash
-        run: npm ci
-
-      # The app imports the built core via the `wigolo/studio` exports subpath,
-      # so core dist must exist before the app's tsc lint + unit tests resolve it.
-      - name: Build core (for wigolo/studio types)
-        shell: bash
-        run: npm run build
-
-      # THE type-check for the Electron app — the only gate that covers `apps/studio/src/**` and
-      # `apps/studio/tests/**` (known issue P7). The root `lint`/`typecheck:studio` projects both
-      # exclude the app, so a type error here is invisible to every other job. Removing this step
-      # reopens P7; `gate:studio`'s `check:studio-typecheck` fails if anyone does, which is why the
-      # invocation below is asserted as a parsed `run:` step rather than a line of text.
-      #
-      # Weakening it also reopens P7, and the guard fails on that too: the invocation must sit in
-      # command position (not commented out, quoted or substituted), must keep its exit code (no
-      # `|| …`, no pipe, no `&`, no preceding `set +e`), and neither this step nor this job may carry
-      # `continue-on-error`. The workflow's own `on:` triggers are asserted for the same reason — a
-      # step that is present, enabled and correct still enforces nothing if the run never starts.
-      - name: Lint studio (tsc --noEmit)
-        shell: bash
-        run: npm run lint -w apps/studio
-
-      # The half of the P7 guard that proves the step above actually catches a type error, rather
-      # than describing a check that runs. It plants one error per strict flag into a mirror of the
-      # app and requires the command above to report every one of them, so a decoy project or a
-      # switched-off strict member fails here. It lives in THIS job because it runs the app lint,
-      # which needs the `dist/` the build step above produces; the `gate` job runs the same guard
-      # with `--shape-only` on three OS, having no build step on purpose.
-      - name: Studio type-check actually runs (P7 planted-error check)
-        shell: bash
-        run: npm run check:studio-typecheck-runs
-
-      - name: Unit tests (studio)
-        shell: bash
-        run: npm test -w apps/studio
-
-  # Studio e2e launches the real app (Electron GUI) — run on Linux with a virtual
-  # display. Cross-OS GUI-launch flakiness gives little signal before packaging;
-  # macOS/Windows app-launch coverage returns with signing/notarization in P8.
-  studio-e2e:
-    name: studio e2e (ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      # Full install (no skip env) — e2e needs the real electron binary.
-      - name: Install dependencies
-        shell: bash
-        run: npm ci
-
-      # npm ci's electron postinstall can extract partially / race the exec;
-      # re-run the installer as a dedicated step so the binary is complete + settled
-      # before Playwright launches it (fixes ETXTBSY / "failed to install correctly").
-      - name: Ensure Electron binary is fully installed
-        run: |
-          node node_modules/electron/install.js
-          node -p "require('electron')"
-
-      - name: Install Linux GUI libs for Electron
-        run: npx playwright install-deps
-
-      # RUN_STUDIO_E2E enables the agent-line spec (real gateway: open/observe/act/list/close over the
-      # bearer). The studio-only gateway is better-sqlite3-free, so NO electron-rebuild is needed here.
-      - name: E2E (virtual display)
-        run: xvfb-run -a npm run test:e2e -w apps/studio
-        env:
-          RUN_STUDIO_E2E: '1'
-
-      # The studio_* WIRE CONTRACT, driven against the app the step above just built. It rides this job
-      # rather than its own because it needs exactly what this job already paid for — the real electron
-      # binary, the Linux GUI libs and a virtual display — and nothing else. It is a separate PACKAGE
-      # (contracts/studio-mcp, not a workspace) on purpose: it asserts the endpoint's contract from
-      # outside the implementation, so a repo split moves it with `git mv`. Running it here is what makes
-      # it a gate; a conformance suite CI never invokes is documentation.
-      - name: Conformance (studio_* wire contract, virtual display)
-        run: xvfb-run -a npm run test:conformance --prefix contracts/studio-mcp
-        env:
-          RUN_STUDIO_E2E: '1'
-
 
   # better-sqlite3 publishes 10 Node-22 (ABI 127) prebuild targets for the pinned 12.9.0.
   # Eight of them — darwin-arm64/x64, linux-x64/arm64/arm, linuxmusl-x64/arm64/arm — were

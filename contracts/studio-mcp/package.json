@@ -3,14 +3,14 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "The studio_* MCP wire contract: the ten input schemas, the tool-name set, and a conformance suite any Studio implementation must pass over its real MCP endpoint.",
+  "description": "The studio_* MCP wire contract: the ten input schemas, the tool-name set, and the wire predicates any Studio implementation must satisfy over its real MCP endpoint.",
   "exports": {
     ".": "./src/index.ts"
   },
-  "//not-a-workspace": "Deliberately outside the root `workspaces` globs. It declares no dependencies of its own — it uses the repo's vitest, playwright and node types, which resolve upward — so making it a workspace would buy nothing and change install topology for every contributor. Invoke it with `npm run <script> --prefix contracts/studio-mcp`, or from the repo root as `npm run typecheck:contract` and `vitest run --project contract`.",
+  "//not-a-workspace": "Deliberately outside any root `workspaces` globs. It declares no dependencies of its own — it uses the repo's vitest and node types, which resolve upward — so making it a workspace would buy nothing and change install topology for every contributor. Invoke it with `npm run <script> --prefix contracts/studio-mcp`, or from the repo root as `npm run typecheck:contract` and `vitest run --project contract`.",
+  "//split": "The CONFORMANCE half of this package (the e2e spec, its electron adapter, its fixtures and `vitest.e2e.config.ts`) lives in the private studio repo, beside the app it drives. It reaches this source through the `wigolo/studio-mcp-contract` exports subpath of the pinned core dependency, so there is still exactly one definition of the contract. What stays here is the half that gates CORE: `wire.test.ts` and `schema-drift.test.ts`, which import core modules directly and fail on any core schema edit that drifts from the contract.",
   "scripts": {
     "lint": "tsc -p tsconfig.json",
-    "test": "vitest run --config vitest.config.ts",
-    "test:conformance": "vitest run --config vitest.e2e.config.ts"
+    "test": "vitest run --config vitest.config.ts"
   }
 }
