@@ -16,6 +16,7 @@ import {
   MAX_EVENTS_PAGE,
 } from '../../src/daemon/studio-db-broker.js';
 import { DEFAULT_MAX_FRAME_CHARS } from '../../apps/studio/src/main/broker-frame-bounds.js';
+import { RunViewModel, type RunStoreClient } from '../../apps/studio/src/main/run-view-model.js';
 
 /**
  * SD1 exit-16 — the boot page's condensed answer is an ANSWER, and an answer that ships characters
@@ -84,6 +85,28 @@ function pendingCards(count: number): SeedEvent[] {
     type: 'decision.requested',
     payload: { decisionId: `d-${i}`, kind: 'approval', prompt: 'p'.repeat(CARD_PROMPT_CHARS) },
   }));
+}
+
+/**
+ * The host's store port, bound straight to the broker's handlers.
+ *
+ * The IPC in between is a JSON pipe and nothing else — `createBrokerRunStoreClient` is one `call`
+ * per method — so binding here exercises every read the host actually makes without a child process
+ * to spawn or a frame to hand-assemble. The point is that no fixture sits between the store's answer
+ * and the host's reaction to it: both halves of the contract under test are real code.
+ */
+function storeClientOf(h: ReturnType<typeof createBrokerHandlers>): RunStoreClient {
+  return {
+    createRun: (input) => h.runCreate({ input }),
+    appendEvent: (runId, event) => h.runAppend({ runId, event }),
+    getRun: (runId) => h.runGet({ runId }),
+    listRuns: (opts = {}) => h.runList(opts),
+    listRunLogs: (opts = {}) => h.runListLogs(opts),
+    eventsSince: (runId, since, limit) => h.runEventsSince({ runId, since, limit }),
+    runExists: (runId) => h.runExists({ runId }),
+    runFacts: (runId) => h.runFacts({ runId }),
+    onRunEvent: () => {},
+  };
 }
 
 describe('studio-db-broker — a condensed boot projection is charged and bounded', () => {
@@ -207,6 +230,48 @@ describe('studio-db-broker — a condensed boot projection is charged and bounde
       entry.projectionOmitted?.pendingDecisions,
       'cards were dropped silently — a truncation the host cannot see is one it cannot replay',
     ).toBe(CARDS - entry.projection!.pendingDecisions.length);
+  });
+
+  /**
+   * SD1 exit-18 — the READ half of the same contract, which is the half that did not exist.
+   *
+   * The row above pins that the store REPORTS the shortfall. That is only worth reporting if someone
+   * acts on it, and at tip nobody did: `projectionOmitted` had zero consumers anywhere in `src/` or
+   * `apps/studio/src/`, so the host installed the capped list as the run's current state. The panel
+   * showed the cap's worth of cards, `runForDecision` could not find the rest, and no re-read was owed
+   * until the run happened to emit again — which a run blocked on approvals is precisely the run that
+   * does not do. A human answering the twenty visible cards would never be shown the others.
+   *
+   * Driven end to end rather than against the fake: the count has to survive the store's real read,
+   * the host's `RunLogEntry`, and `retain`, and a fake on either side could only assert the half it
+   * owns. What is asserted is the RUN, not the mechanism — whatever repair the host chooses, the run
+   * a surface can read must hold every card the store holds.
+   */
+  it('re-reads a boot-condensed run whose card list the page had to cut', async () => {
+    const run = await handlers.runCreate({ input: { task: 'a run blocked on more cards than a page can carry' } });
+    const CARDS = MAX_BOOT_PENDING_CARDS + 7;
+    bulkInsert(getDatabase(), run.id, [...filler(FILLER_EVENTS), ...pendingCards(CARDS)]);
+
+    // Precondition: this run really is served short, so the assertion below is about the repair and
+    // not about a page that happened to fit.
+    const [entry] = (await handlers.runListLogs({})).entries;
+    expect(entry.projectionOmitted?.pendingDecisions, 'the fixture was not truncated — nothing to repair').toBe(
+      CARDS - entry.projection!.pendingDecisions.length,
+    );
+
+    const vm = new RunViewModel(storeClientOf(handlers));
+    await vm.hydrate();
+    // The re-read is issued from `retain` and lands a round-trip later, so this waits for the answer
+    // rather than for a tick — a poll that gave up would report the tip's behaviour as the fix's.
+    await vi.waitFor(() =>
+      expect(
+        vm.snapshot(run.id)!.pendingDecisions.map((d) => d.decisionId).sort(),
+        'the host installed the store’s truncated card list as the run’s state and never went back ' +
+        'for the rest — the cards exist in the log and no surface can reach them',
+      ).toEqual(pendingCards(CARDS).map((_, i) => `d-${i}`).sort()),
+    );
+    // …and every one of them is addressable, which is what the panel and `settle` actually need.
+    expect(vm.runForDecision(`d-${CARDS - 1}`), 'a dropped card had no run to resolve it against').toBe(run.id);
   });
 
   /**
