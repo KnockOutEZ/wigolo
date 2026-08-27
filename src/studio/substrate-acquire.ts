@@ -1,5 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve as resolvePath, sep } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -94,11 +94,33 @@ function recordPath(dataDir?: string): string {
   return join(substrateRoot(dataDir), SUBSTRATE_RECORD);
 }
 
-/** Is `candidate` the substrate root itself, or somewhere inside it? */
+/**
+ * Is `candidate` the substrate root itself, or somewhere inside it?
+ *
+ * ⚠ THE FILESYSTEM ANSWERS THIS, NOT THE STRINGS. `resolve()` normalises `.` and `..` and never
+ * touches the disk, so it cannot see a symlink — and a symlink is the whole attack: a directory
+ * inside the root that is a link to somewhere else satisfies every string comparison while the OS
+ * reads and executes bytes from elsewhere entirely. Both sides are resolved, because on macOS the
+ * data dir routinely sits under `/var`, itself a link to `/private/var`; resolving one side only
+ * would decline every legitimate record on the platform the desktop component targets.
+ *
+ * A path that cannot be resolved does not exist, and a substrate that does not exist is not
+ * contained in anything — `false` is the honest answer and the caller treats it as absent.
+ */
 function isInside(candidate: string, root: string): boolean {
-  const c = resolvePath(candidate);
-  const r = resolvePath(root);
+  const c = realpathIfPossible(candidate);
+  const r = realpathIfPossible(root);
+  if (c === null || r === null) return false;
   return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
+}
+
+/** The real location of `p`, or null when it does not resolve to anything on disk. */
+function realpathIfPossible(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -135,21 +157,83 @@ function isSingleDirectoryName(name: string): boolean {
  * is not a consent event. That ruling holds because the only thing ever started is what this
  * product installed, and `acquireSubstrate` writes `path` as `substrateRoot()/<version>` and
  * nothing else. So a record naming anywhere else was not written by the acquirer, and reading it
- * as absent removes the decision rather than hardening it: there is no shape of `record.json` a
- * caller can edit into a program that gets executed from elsewhere on the machine.
+ * as absent removes the decision rather than hardening it.
+ *
+ * ⚠ AND THE STRINGS IN THE RECORD ARE NOT THE PATHS THE OS WILL USE. This check was once stated
+ * as "there is no shape of record.json a caller can edit into a program that gets executed from
+ * elsewhere on the machine", and that was FALSE for as long as it compared strings: neither the
+ * record's `path` nor its `executable` has to be a link ITSELF for the joined path to resolve
+ * outside — any link along the way does it, and `existsSync` follows links so the probe agreed.
+ * So the executable is RESOLVED and required to land inside the substrate root. The claim is true
+ * of this version because the filesystem, not the text, answers it.
  */
 export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
   try {
     const raw = JSON.parse(readFileSync(recordPath(dataDir), 'utf-8')) as Partial<SubstrateRecord>;
     if (!raw.version || !raw.executable || !raw.path) return null;
     if (!staysInsideItsDirectory(raw.executable)) return null;
-    if (!isInside(raw.path, substrateRoot(dataDir))) return null;
+    const root = substrateRoot(dataDir);
+    if (!isInside(raw.path, root)) return null;
     const exec = join(raw.path, raw.executable);
     if (!existsSync(exec)) return null;
+    // The spawn target itself, resolved. `isInside` returns false for a path that does not
+    // resolve, so this subsumes the existence probe above — that probe is kept because it is the
+    // arm that distinguishes "uninstalled" from "escaping" in the log, and costs one stat.
+    if (!isInside(exec, root)) return null;
     return raw as SubstrateRecord;
   } catch {
     return null;
   }
+}
+
+/**
+ * Walk an installed tree and name the first link that leaves it, or null when none does.
+ *
+ * ⚠ WHY A WALK AND NOT A CHECK ON THE ONE NAMED PATH. `install()` copies with
+ * `verbatimSymlinks`, which is required — see {@link localPathSource} — and which copies a link's
+ * target STRING unchanged. That is what keeps a bundle's relative framework links working, and
+ * equally what carries a source-authored ABSOLUTE link across intact. The acquire-time probe
+ * cannot see it: `existsSync` follows the link and reports the target's bytes, so a tree whose
+ * executable is a link to `/tmp/payload` verifies clean, records clean, and is then spawned by
+ * `defaultLaunch` from outside the substrate root. A bundle also reaches its libraries and
+ * resources through links the manifest never names, so checking only the executable would leave
+ * every other link unexamined.
+ *
+ * Resolution, not spelling, decides: an absolute target is refused, and a relative one is refused
+ * when it resolves out. A dangling link is judged lexically from where it sits — it points
+ * nowhere today, but it is a location the substrate would follow the moment something appears
+ * there, and a relative-and-contained dangling link (which is what a partially-populated bundle
+ * has) still passes.
+ *
+ * Symlinked directories are NOT descended into: `readdirSync(withFileTypes)` stats without
+ * following, so a link to a directory is judged as a link and never as a place to recurse. That
+ * is both the correct verdict and what keeps a link cycle from walking forever.
+ */
+function findEscapingLink(destDir: string): string | null {
+  const root = realpathIfPossible(destDir);
+  if (root === null) return null;
+  const pending = [destDir];
+  while (pending.length > 0) {
+    const dir = pending.pop() as string;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = readlinkSync(child);
+        if (isAbsolute(target)) return `${relative(destDir, child)} -> ${target}`;
+        // The lexical fallback anchors at the parent's REAL path, not its spelling: `destDir`
+        // sits under `/var` on macOS while `root` resolved to `/private/var`, and comparing the
+        // two spellings would decline a contained dangling link on every mac.
+        const resolved =
+          realpathIfPossible(child) ?? resolvePath(realpathIfPossible(dirname(child)) ?? dirname(child), target);
+        if (!(resolved === root || resolved.startsWith(root.endsWith(sep) ? root : root + sep))) {
+          return `${relative(destDir, child)} -> ${target}`;
+        }
+      } else if (entry.isDirectory()) {
+        pending.push(child);
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -306,6 +390,22 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
     mkdirSync(root, { recursive: true });
     rmSync(destDir, { recursive: true, force: true });
     await source.install(destDir);
+
+    // CONTAINMENT, BEFORE THE PROBE THAT CANNOT SEE PAST IT. `existsSync` follows links, so a
+    // tree whose executable is a link to somewhere else on the machine passes verification and
+    // gets recorded — and `defaultLaunch` then spawns it, unattended, from outside the substrate
+    // root. Refusing here is what makes the record's containment rule true of the bytes rather
+    // than of the strings, and it costs a legitimate bundle nothing: an application bundle's
+    // framework links are relative and in-tree by construction.
+    const escaping = findEscapingLink(destDir);
+    if (escaping) {
+      rmSync(destDir, { recursive: true, force: true });
+      return {
+        outcome: 'failed',
+        detail: 'the desktop component contains a link to something outside the directory it installs into',
+        error: `link escapes its directory: ${escaping}`,
+      };
+    }
 
     const exec = join(destDir, source.manifest.executable);
     if (!existsSync(exec)) {
