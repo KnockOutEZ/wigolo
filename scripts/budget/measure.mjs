@@ -58,6 +58,21 @@ import {
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DIST_ENTRY = join(ROOT, 'dist', 'index.js');
 
+/**
+ * Run npm, synchronously, and hand back whatever the caller's `stdio` asked for.
+ *
+ * WHY IT IS A HELPER AND NOT TWO INLINE TERNARIES: `shell` is not optional on win32. Node's
+ * CVE-2024-27980 hardening refuses to `spawnSync` a `.cmd` or `.bat` at all — `npm.cmd` comes
+ * back `EINVAL`, as "never ran" rather than as a failed npm — so every npm call in this file
+ * needs the same flag, and the two that existed both lacked it. That went unnoticed because the
+ * budget gates are wired on the macOS runner only; it surfaced the moment a test started running
+ * one of them cross-OS. One spawn seam, so a third call site cannot reintroduce it.
+ */
+function npmRun(args, options) {
+  const win = process.platform === 'win32';
+  return execFileSync(win ? 'npm.cmd' : 'npm', args, { ...options, shell: win });
+}
+
 /** `du -sm` in MiB. A path that does not exist measures 0 rather than throwing. */
 function duMiB(path) {
   if (!existsSync(path)) return 0;
@@ -104,8 +119,7 @@ function measureInstallSize() {
   try {
     copyFileSync(join(ROOT, 'package.json'), join(dir, 'package.json'));
     copyFileSync(join(ROOT, 'package-lock.json'), join(dir, 'package-lock.json'));
-    execFileSync(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    npmRun(
       ['install', '--omit=dev', '--ignore-scripts', '--no-workspaces', '--no-audit', '--no-fund'],
       {
         cwd: dir,
@@ -169,7 +183,7 @@ function parseTrailingJsonArray(out) {
 }
 
 function measureTarball() {
-  const out = execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--json'], {
+  const out = npmRun(['pack', '--dry-run', '--json'], {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
