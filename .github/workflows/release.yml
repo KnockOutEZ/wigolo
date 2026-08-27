@@ -30,9 +30,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
-      # The explicit build below is the one that produces the published dist/. Without the
-      # opt-out the root `prepare` hook builds during `npm ci` too, so the leg that matters
-      # most — publish — pays for two full builds.
+      # The explicit build below is the one that produces the published dist/ — but only
+      # because BOTH hook-firing steps on this leg opt out. The root `prepare` hook builds on
+      # `npm ci` and again on `npm publish` (publish packs, and packing runs `prepare`), so
+      # without the opt-out on each, this leg pays for three full builds and, worse, ships the
+      # publish-time one: an artifact produced after every gate validated a different build.
       - run: npm ci
         env:
           WIGOLO_SKIP_PREPARE: '1'
@@ -55,9 +57,13 @@ jobs:
       # Idempotent: skip if this exact version is already on npm, so a re-run
       # after a partial-publish failure (e.g. a downstream sub-package error)
       # doesn't abort on the root that already landed.
+      # WIGOLO_SKIP_PREPARE: publish packs, and packing runs the root `prepare` hook. Without
+      # it, npm rebuilds dist/ here and THAT build is what ships — replacing the one the gates
+      # above validated, and turning a flaky build into a failure at publish time.
       - name: Publish wigolo (npm)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          WIGOLO_SKIP_PREPARE: '1'
         run: |
           VER="$(node -p "require('./package.json').version")"
           if npm view "wigolo@$VER" version >/dev/null 2>&1; then

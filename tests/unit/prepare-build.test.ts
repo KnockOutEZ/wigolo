@@ -205,41 +205,41 @@ describe('the hook and its opt-out are wired, not merely written', () => {
  * shape that reds when a NEW unguarded install step is added, since a count cannot distinguish
  * "a step gained the opt-out" from "a step that needed it was added".
  */
-describe('the prepare opt-out across every workflow that installs at the repo root', () => {
-  const WORKFLOWS = join(ROOT, '.github', 'workflows');
+const WORKFLOWS = join(ROOT, '.github', 'workflows');
 
-  /** A step's effective working directory: its own, else the job's `defaults.run`, else root. */
-  type Step = { key: string; run: string; optedOut: boolean; atRoot: boolean };
+/** A step's effective working directory: its own, else the job's `defaults.run`, else root. */
+type Step = { key: string; run: string; optedOut: boolean; atRoot: boolean };
 
-  function steps(): Step[] {
-    const out: Step[] = [];
-    for (const file of readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort()) {
-      const doc = parseYaml(readFileSync(join(WORKFLOWS, file), 'utf8')) as {
-        jobs?: Record<string, { defaults?: { run?: { 'working-directory'?: string } }; steps?: unknown[] }>;
-      };
-      for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
-        const jobDir = job.defaults?.run?.['working-directory'];
-        for (const raw of job.steps ?? []) {
-          const step = raw as {
-            name?: string;
-            run?: string;
-            env?: Record<string, unknown>;
-            'working-directory'?: string;
-          };
-          if (typeof step.run !== 'string') continue;
-          const dir = step['working-directory'] ?? jobDir;
-          out.push({
-            key: `${file} / ${jobId} / ${step.name ?? step.run.split('\n')[0]!.trim()}`,
-            run: step.run,
-            optedOut: String(step.env?.WIGOLO_SKIP_PREPARE ?? '') === '1',
-            atRoot: dir === undefined || dir === '.',
-          });
-        }
+function steps(): Step[] {
+  const out: Step[] = [];
+  for (const file of readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort()) {
+    const doc = parseYaml(readFileSync(join(WORKFLOWS, file), 'utf8')) as {
+      jobs?: Record<string, { defaults?: { run?: { 'working-directory'?: string } }; steps?: unknown[] }>;
+    };
+    for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
+      const jobDir = job.defaults?.run?.['working-directory'];
+      for (const raw of job.steps ?? []) {
+        const step = raw as {
+          name?: string;
+          run?: string;
+          env?: Record<string, unknown>;
+          'working-directory'?: string;
+        };
+        if (typeof step.run !== 'string') continue;
+        const dir = step['working-directory'] ?? jobDir;
+        out.push({
+          key: `${file} / ${jobId} / ${step.name ?? step.run.split('\n')[0]!.trim()}`,
+          run: step.run,
+          optedOut: String(step.env?.WIGOLO_SKIP_PREPARE ?? '') === '1',
+          atRoot: dir === undefined || dir === '.',
+        });
       }
     }
-    return out;
   }
+  return out;
+}
 
+describe('the prepare opt-out across every workflow that installs at the repo root', () => {
   /**
    * npm runs the root package's `prepare` on `npm ci`, on an argument-less `npm install`, and
    * on `npm pack` — pack most surprisingly, since nothing in the step reads like an install.
@@ -316,5 +316,69 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
     const job = steps().filter((s) => s.key.startsWith('scrape-quality.yml / '));
     expect(job.filter((s) => /npm run build/.test(s.run))).toEqual([]);
     expect(job.filter((s) => TRIGGERS_PREPARE.test(s.run) && !s.optedOut)).toEqual([]);
+  });
+});
+
+/*
+ * `prepare` fires on the PUBLISH path too, and that register is invisible to the install sweep
+ * above: `npm publish` packs before it uploads, and packing runs `prepare`. So the release leg
+ * lints, tests, builds an explicit `dist/`, verifies the tag — and then `npm publish` rebuilds
+ * `dist/` from scratch, meaning the artifact that actually reaches the registry is NOT the one
+ * every gate validated. A build that flakes at that point also fails the release at publish,
+ * after everything was green. Enumerated the same way as the install legs, because a text
+ * search for `npm publish` cannot tell a root publish from a sub-package's own.
+ */
+describe('the prepare opt-out on every step that packs or publishes the ROOT package', () => {
+  /**
+   * The pack-shaped register. `npm publish` runs `prepack` → `prepare` → the tarball, so it
+   * fires the hook exactly as `npm pack` does; `npm publish` is the one shape the install
+   * register's `ci|pack|install` alternation cannot see.
+   */
+  const TRIGGERS_PREPARE_VIA_PACK = /(?<![\w./-])npm\s+(?:publish|pack)(?![\w-])/m;
+
+  const packing = () =>
+    steps()
+      .filter((s) => s.atRoot && TRIGGERS_PREPARE_VIA_PACK.test(s.run))
+      .sort((a, b) => a.key.localeCompare(b.key));
+
+  it('packs or publishes the root on exactly these steps', () => {
+    // A set, not a count, for the same reason as the install register: a new root publish or
+    // pack step arrives here under its own name rather than as an off-by-one.
+    expect(packing().map((s) => s.key)).toEqual([
+      'ci.yml / clean-machine-smoke / Pack + global install (fresh `npm i -g wigolo`)',
+      'release.yml / release / Publish wigolo (npm)',
+    ]);
+  });
+
+  it('every one of them suppresses the hook, so the shipped dist/ is the validated one', () => {
+    // Removing the env from the release publish step names that step here — which is the whole
+    // point: the gates validate `npm run build`'s output, and only the opt-out makes the
+    // tarball contain THAT build instead of a fresh one nothing checked.
+    const unguarded = packing()
+      .filter((s) => !s.optedOut && !s.run.includes('--ignore-scripts'))
+      .map((s) => s.key);
+    expect(unguarded).toEqual([]);
+  });
+
+  it('a sub-package publish is a different root and keeps its own hook', () => {
+    // Control, and a deliberate non-goal. `sdks/typescript` and `packages/wigolo-vercel-ai-sdk`
+    // publish from their own `working-directory`, so the ROOT `prepare` never fires for them and
+    // an opt-out there would be cargo-culted noise — worse, it could suppress a hook they rely
+    // on. Without this arm the working-directory logic could be exempting everything and the
+    // rule above would still be green.
+    const offRoot = steps().filter((s) => !s.atRoot && TRIGGERS_PREPARE_VIA_PACK.test(s.run));
+    expect(offRoot.map((s) => s.key)).toEqual([
+      'release.yml / release / Publish wigolo-sdk (npm)',
+      'release.yml / release / Publish wigolo-vercel-ai-sdk (npm)',
+    ]);
+    expect(offRoot.filter((s) => s.optedOut)).toEqual([]);
+  });
+
+  it('the release leg still builds the root explicitly, exactly once', () => {
+    // The opt-out is only safe because an explicit build precedes the publish. If that build
+    // were ever dropped, the tarball would have no `dist/` at all — a worse failure than the
+    // one this guard fixes — so the two are pinned together.
+    const job = steps().filter((s) => s.key.startsWith('release.yml / release / '));
+    expect(job.filter((s) => /npm run build/.test(s.run) && s.atRoot)).toHaveLength(1);
   });
 });
