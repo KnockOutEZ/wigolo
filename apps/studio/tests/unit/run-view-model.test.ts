@@ -659,9 +659,15 @@ describe('RunViewModel — a boot read the pipe can carry', () => {
  * the cap booted showing the cap's worth, and the rest were unreachable from every surface at once
  * until the run happened to emit again. A run blocked on approvals is exactly the run that does not.
  *
- * The counterpart in `tests/integration/studio-broker-boot-projection-budget.test.ts` drives the same
- * behaviour through the real store. These two rows pin the parts that need a knob: that the repair is
- * a READ and not a guess, and that it does not fire on an ordinary condensed run.
+ * This is the HOST half, and it is the only place it can be driven. Importing `run-view-model.ts`
+ * from a root `tests/integration` spec pulls `wigolo/studio` into the root projects, and CI's `type
+ * gate` job runs `gate:studio` with no build — so the debt ratchet fails there on a `dist/` that
+ * does not exist. The store half is pinned in
+ * `tests/integration/studio-broker-boot-projection-budget.test.ts` against the real broker: that the
+ * cap fires and reports, and that `runGet` — the read this repair goes to — is NOT itself capped, so
+ * a re-read cannot come back as short as the answer it replaces. `FakeRunStore.bootPendingCardCap`
+ * mirrors both halves of what that file pins, which is what makes these rows a claim about the host
+ * rather than about a fixture.
  */
 describe('RunViewModel — a boot projection the store says is short', () => {
   const CAP = 3;
