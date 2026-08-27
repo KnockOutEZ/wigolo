@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureStudioRunning, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
+import { readSubstrateRecord } from '../../../src/studio/substrate-acquire.js';
 import type { SessionHandle } from '../../../src/studio/handle.js';
 
 /**
@@ -182,5 +183,50 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     const launch = vi.fn();
     expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep })).toBeNull();
     expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('a launch that declines must not be polled for', () => {
+  /**
+   * THE WINDOW THIS CLOSES. `studioLaunchable()` answers from a 5-second-memoized presence probe;
+   * the launcher re-reads the record uncached. Uninstall the substrate and for the rest of that TTL
+   * the two disagree: the gate says "launchable", the launcher finds nothing and declines. Before
+   * this, a decline was indistinguishable from a spawn that had not published yet, so the caller
+   * entered the handle poll with no process started and burned the entire 30 s budget — once per
+   * TTL window, on the fetch path.
+   *
+   * The tick counter is the assertion, not the wall clock: a decline costs zero polls, the stall
+   * costs `timeoutMs / pollMs` of them. The fake clock is what makes the difference readable in
+   * milliseconds instead of thirty seconds.
+   */
+  it('resolves in zero poll ticks when the record is gone under a launchable that says yes', async () => {
+    // Force the precondition and prove the forcing took: the launch path must genuinely find
+    // nothing, or the test passes for the wrong reason.
+    expect(readSubstrateRecord(dir)).toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        vi.advanceTimersByTime(ms);
+      };
+      // No `deps.launch`: this drives the REAL launcher, which is the half of the pair that declines.
+      const h = await ensureStudioRunning({ dataDir: dir, launchable: () => true, pollMs: 250, sleep });
+      expect(h).toBeNull();
+      expect(ticks).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still polls when the launcher did start something', async () => {
+    // The other side of the branch: a decline short-circuits, a real spawn does not. Without this,
+    // "return null immediately" would satisfy the test above forever.
+    let ticks = 0;
+    const sleep = async (): Promise<void> => { if (++ticks === 2) publishHandle(); };
+    const h = await ensureStudioRunning({ dataDir: dir, launch: () => {}, launchable: () => true, pollMs: 1, sleep });
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+    expect(ticks).toBe(2);
   });
 });
