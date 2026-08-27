@@ -145,6 +145,22 @@ export interface ListRunsOptions extends ReadRunOptions {
 export interface ListRunsResult {
   runs: Run[];
   nextCursor?: string;
+  /**
+   * What this call's unbounded READ cost, in stored payload characters — the meter a paging caller
+   * needs, because the answer's own size is silent about it.
+   *
+   * A listing row is a full projection, and a projection reads every `tab.attached`/`tab.detached` row
+   * the run has ever written with no per-run bound (see `PROJECTION_EVENT_TYPES`). So a run with fifty
+   * thousand tab events serializes into a `Run` naming three tabs: the expensive rows are exactly the
+   * ones the answer folds away, and a caller charging what came back charges nearest to nothing for
+   * the page that cost the most. The app's boot paged this two hundred times on that reasoning.
+   *
+   * A LOWER bound, deliberately, and sound in the same way `storedPayloadChars` is on the boot path:
+   * it counts the payload characters actually parsed and nothing else — not the seek reads, not the
+   * decision anti-join, not the serialization of the answer — so it can only ever under-state. A
+   * caller that stops on it therefore stops no earlier than the real cost would have made it.
+   */
+  charsSpent?: number;
 }
 
 /**
@@ -1003,7 +1019,7 @@ function pendingCardOf(event: Pick<RunEvent, 'ts' | 'payload'>, now: Date): Pend
  * per row — up to `MAX_LIST_LIMIT` of them, synchronously, so the router's deadline could not fire
  * during it.
  */
-function readProjectionEvents(db: Database.Database, runIds: readonly string[]): Map<string, ProjectableEvent[]> {
+function readProjectionEvents(db: Database.Database, runIds: readonly string[], spend?: ReadSpend): Map<string, ProjectableEvent[]> {
   const byRun = new Map<string, ProjectableEvent[]>();
   for (const id of runIds) byRun.set(id, []);
   if (runIds.length === 0) return byRun;
@@ -1013,6 +1029,10 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
     .prepare(`SELECT run_id, seq, ts, type, payload FROM studio_run_events WHERE run_id IN (${placeholders(runIds)}) AND type IN (${placeholders(PROJECTION_EVENT_TYPES)})`)
     .all(...runIds, ...PROJECTION_EVENT_TYPES) as ProjectionRow[];
   for (const r of rows) {
+    // Metered here because this is the one read in the path with no per-run bound on it — see
+    // `ListRunsResult.charsSpent`. The characters are counted before the parse, so the number is what
+    // SQLite handed over rather than what survived it.
+    if (spend) spend.chars += r.payload.length;
     byRun.get(r.run_id)?.push({ seq: r.seq, ts: r.ts, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown> });
   }
   // Ordered here for the same reason as the status read: an ORDER BY would cost the type index.
@@ -1026,6 +1046,9 @@ function readProjectionEvents(db: Database.Database, runIds: readonly string[]):
  * whole of what K7 bought, restated as a type.
  */
 type RunSeed = ProjectRunOptions & { status: RunStatus };
+
+/** A running total of the payload characters a read has materialized — see `ListRunsResult.charsSpent`. */
+interface ReadSpend { chars: number }
 
 /**
  * Everything a projection would otherwise have folded from unbounded rows, asked of SQLite instead —
@@ -1080,9 +1103,9 @@ function readEventTails(db: Database.Database, runIds: readonly string[]): Map<s
  * Sharing the path is also what keeps the two agreeing: a list row and an item read cannot drift
  * when neither owns a query.
  */
-function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date, seeds?: readonly RunSeed[]): Run[] {
+function projectRows(db: Database.Database, rows: readonly RunRow[], now: Date, seeds?: readonly RunSeed[], spend?: ReadSpend): Run[] {
   const ids = rows.map((r) => r.id);
-  const byRun = readProjectionEvents(db, ids);
+  const byRun = readProjectionEvents(db, ids, spend);
   const tails = readEventTails(db, ids);
   return rows.map((r, i) => {
     const seed = seeds ? seeds[i] : readSeeds(db, r.id, now);
@@ -1291,6 +1314,9 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   const wanted = opts.status?.length ? new Set<RunStatus>(opts.status) : undefined;
 
   const matched: { row: RunRow; run: Run }[] = [];
+  // Accumulated at the read and reported whole, never derived from a remaining allowance: this call
+  // has no allowance of its own, and the caller that does needs the fact rather than the difference.
+  const spend: ReadSpend = { chars: 0 };
   let after = cursor;
   let lastScanned: RunRow | undefined;
   let reads = 0;
@@ -1319,7 +1345,7 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
     });
     // Phase two: the expensive one, over survivors only. Bounded queries for the chunk, not one
     // unbounded full-log read per row.
-    const runs = projectRows(db, survivors, now, survivorSeeds);
+    const runs = projectRows(db, survivors, now, survivorSeeds, spend);
     survivors.forEach((row, i) => matched.push({ row, run: runs[i] }));
     lastScanned = rows[rows.length - 1];
     after = { createdAt: lastScanned.created_at, id: lastScanned.id };
@@ -1328,11 +1354,15 @@ export function listRuns(db: Database.Database, opts: ListRunsOptions = {}): Lis
   const page = matched.slice(0, limit);
   const runs = page.map((m) => m.run);
   const last = page[page.length - 1];
-  if (matched.length > limit && last) return { runs, nextCursor: encodeCursor(last.row.created_at, last.row.id) };
+  // The spend is on EVERY return, including the ones that carry a cursor: a paging caller charges per
+  // page, and a page that reports its cost only when it happens to be the last one reports nothing on
+  // the pages that made it page.
+  const charsSpent = spend.chars;
+  if (matched.length > limit && last) return { runs, charsSpent, nextCursor: encodeCursor(last.row.created_at, last.row.id) };
   // Stopped on the scan bound rather than on the end of the table: the answer is not finished, so it
   // carries a cursor from the last row LOOKED AT — the rows in between are already decided.
-  if (!exhausted && lastScanned) return { runs, nextCursor: encodeCursor(lastScanned.created_at, lastScanned.id) };
-  return { runs };
+  if (!exhausted && lastScanned) return { runs, charsSpent, nextCursor: encodeCursor(lastScanned.created_at, lastScanned.id) };
+  return { runs, charsSpent };
 }
 
 function encodeCursor(createdAt: string, id: string): string {
