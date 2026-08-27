@@ -20,6 +20,7 @@ import {
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
   MAX_LIST_LIMIT,
+  DEFAULT_LIST_LIMIT,
   MAX_LIST_SCAN_PAGES,
   MAX_LIST_SCAN_ROWS,
   DEFAULT_SPACE_ID,
@@ -397,6 +398,21 @@ describe('run-store — a pending decision expires on its own clock (pin 3)', ()
     expect(AUTO_DENY_MS).toBe(120_000);
   });
 
+  /**
+   * WHY: the same reasoning one seam over, for the two listing bounds. Every arm that exercises them
+   * builds `MAX_LIST_LIMIT + 1` rows or reads `DEFAULT_LIST_LIMIT` of them and compares against the
+   * symbol, so all of them stay green whatever the numbers become — they pin the derivation, which is
+   * what they should pin, and they are silent about the value. Both numbers are contracts outside this
+   * file: `MAX_LIST_LIMIT` is what `GET /v1/runs?limit=` 400s above and what the OpenAPI document
+   * advertises as the maximum, and `DEFAULT_LIST_LIMIT` is both that document's default and the page
+   * size the app's boot divides its own run budget by. A silent change to either desynchronises a
+   * published schema from the router that enforces it.
+   */
+  it('holds the listing bounds at the values the REST contract publishes', () => {
+    expect(MAX_LIST_LIMIT).toBe(200);
+    expect(DEFAULT_LIST_LIMIT).toBe(50);
+  });
+
   it('still needs you while the card can be answered', () => {
     const run = getRun(db, runNeedingADecision(), { now: at(AUTO_DENY_MS - 1) })!;
     expect(run.status).toBe('needs_you');
@@ -686,6 +702,51 @@ describe('run-store — list (§5.3 semantics, in the store)', () => {
       pages++;
     }
     expect(cursor).toBeUndefined();
+  });
+
+  /**
+   * WHY: the app's boot PAGES this call, and a paging caller can bound its total only by a number the
+   * call reports. The one number it had was the answer's own size, and that is silent about the single
+   * unbounded read in here: a projection parses every `tab.attached`/`tab.detached` row a run has ever
+   * written and folds them into a `Run` naming the handful of tabs it still HOLDS. So the run that
+   * costs the most arrives as one of the smallest rows, a caller charging what came back charges
+   * nearest to nothing for it, and the host's boot took up to `MAX_HYDRATION_PAGES` of these on that
+   * reasoning — K-82-1 measured one 50-run page at 1,109 ms in the child that serialises every other
+   * read during boot.
+   *
+   * The assertion is the INEQUALITY rather than a figure: what makes the meter worth having is that it
+   * can be large while the answer is small, which is precisely what a size-of-answer charge cannot see.
+   */
+  it('reports what its projection READ, not what its answer shipped', () => {
+    const noisy = createRun(db, { task: 'takes and gives back pages all day' }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, 1)) });
+    const quiet = createRun(db, { task: 'attached once and stayed' }, { ...opts(), now: () => new Date(Date.UTC(2026, 7, 22, 0, 0, 0, 2)) });
+    // A realistic tab id is a uuid-ish string, and the run churns them. Nothing here survives into the
+    // projection: every attach is matched by its detach, so `noisy` ends up holding no tabs at all.
+    const tabId = (n: number): string => `tab-${String(n).padStart(6, '0')}-${'x'.repeat(120)}`;
+    for (let i = 0; i < 200; i++) {
+      appendEvent(db, noisy.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: tabId(i) } }, opts());
+      appendEvent(db, noisy.id, { actor: { kind: 'agent' }, type: 'tab.detached', payload: { tabId: tabId(i), reason: 'closed' } }, opts());
+    }
+    appendEvent(db, quiet.id, { actor: { kind: 'agent' }, type: 'tab.attached', payload: { tabId: tabId(0) } }, opts());
+
+    const page = listRuns(db, {});
+    expect(page.runs.map((r) => r.id)).toEqual([quiet.id, noisy.id]);
+    expect(page.runs.find((r) => r.id === noisy.id)!.tabIds, 'the fixture left tabs on the run this arm is about').toEqual([]);
+
+    // The read is four hundred payloads deep; the answer is two rows, one of which lists nothing.
+    expect(page.charsSpent!).toBeGreaterThan(400 * 120);
+    expect(page.charsSpent!, 'the meter reported the answer’s size, which is the number it exists to replace')
+      .toBeGreaterThan(JSON.stringify(page.runs).length);
+
+    // A page with nothing to project costs nothing, so the meter is a measurement rather than a
+    // constant — and it travels on the cursor-carrying return too, which is the only return a paging
+    // caller ever sees until the last one.
+    const empty = listRuns(db, { status: ['done'] });
+    expect(empty.runs).toEqual([]);
+    expect(empty.charsSpent).toBe(0);
+    const first = listRuns(db, { limit: 1 });
+    expect(first.nextCursor).toBeTruthy();
+    expect(first.charsSpent!, 'a page that carries a cursor reported no cost, so a pager charges only its last page').toBeGreaterThan(0);
   });
 
   /**

@@ -162,9 +162,34 @@ export class FakeRunStore implements RunStoreClient {
     return this.factsOf(runId);
   }
 
+  /**
+   * What every `listRuns` call so far has reported reading, summed across calls — the same instrument
+   * `readChars` is for the log branch, for the branch that used to report nothing at all.
+   */
+  listRunsChars = 0;
+  /**
+   * The characters a listed run's projection is reported to have READ, per run.
+   *
+   * Mirrors the store's own meter, which counts the payload characters of every projection row it
+   * parsed — unbounded per run, because a run can take and give back tabs for as long as it lives. A
+   * per-run knob rather than a real count so a test can force a heavy corpus without allocating one;
+   * the behaviour either side of the allowance is identical whatever the number is.
+   */
+  listProjectionCharsPerRun = 0;
+  /**
+   * Whether this binding reports the meter at all. `charsSpent` is optional on the wire because the
+   * port allows a store without one, and the host's fallback for that case — charge what SHIPPED — is
+   * a different number from what was read. A fake that always reports cannot reach it.
+   */
+  reportsListChars = true;
+
   async listRuns(opts: ListRunsOptions = {}): Promise<ListRunsResult> {
     this.reads.push('listRuns');
-    return this.page(opts);
+    const page = this.page(opts);
+    if (!this.reportsListChars) return page;
+    const charsSpent = page.runs.length * this.listProjectionCharsPerRun;
+    this.listRunsChars += charsSpent;
+    return { ...page, charsSpent };
   }
 
   /**
