@@ -267,11 +267,24 @@ function endOfUrlToken(style: string, at: number): number {
  * The declarations a browser would actually apply, spelled the way it would compare them —
  * the text the inline test reads instead of the attribute as written.
  *
- * Strings and comments are removed, exactly as a CSS tokenizer resolves them: a `/*` inside a
- * string is not a comment, a quote inside a comment is not a string, and a declaration inside
- * either is not a declaration. Removing them cuts both ways on purpose —
+ * Strings and comments are resolved away, exactly as a CSS tokenizer resolves them: a `/*`
+ * inside a string is not a comment, a quote inside a comment is not a string, and a declaration
+ * inside either is not a declaration. Resolving them cuts both ways on purpose —
  * `display:/*x*\/none` is a real suppression the raw text hides, and
  * `content:"display:none"` is a false one it would otherwise invent.
+ *
+ * A comment resolves to a SPACE rather than to nothing, because it is a token boundary and not
+ * an erasure. §4.3.2 emits nothing in a comment's place, but it does so BETWEEN tokens — the
+ * ident the tokenizer was building has already ended at the `/`. Deleting the comment collapses
+ * that distinction by joining the tokens around it, and the two spellings it then cannot tell
+ * apart disagree about whether the page paints: `display:/*x*\/none` really is `display:none`,
+ * while `display:no/**\/ne` is the two idents `no ne`, which `display` does not accept, so the
+ * declaration is dropped and the element is PAINTED. Deleting made the second read as the first
+ * and the element was removed — a false hide, which deletes copy a reader CAN see, the direction
+ * `hasVisibleTextOutside` notes cannot stand, and worse than the leak this pass exists to stop.
+ * A space separates what the tokenizer separated and joins nothing it joined; every `\s*`
+ * already in the pattern absorbs it exactly where a browser does, so `display:/*x*\/none` and
+ * `display:none/*x*\/!important` still suppress.
  *
  * Escapes are resolved for the same reason and in the same scan — see `consumeEscape`. A
  * version of this that removed strings and comments but never unescaped matched only the
@@ -342,8 +355,10 @@ function resolveDeclarationText(style: string): string {
       kept = i;
       continue;
     }
+    // A SPACE, not nothing: a comment is a token boundary, and deleting it welds the tokens
+    // it separated. See the block comment above — `no/**\/ne` is `no ne`, not `none`.
     if (ch === SLASH && style.charCodeAt(i + 1) === STAR) {
-      out += style.slice(kept, i);
+      out += style.slice(kept, i) + ' ';
       const close = style.indexOf('*/', i + 2);
       i = close === -1 ? style.length : close + 2;
       kept = i;
