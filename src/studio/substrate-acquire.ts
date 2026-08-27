@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { isAbsolute, join, resolve as resolvePath, sep } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -94,18 +94,56 @@ function recordPath(dataDir?: string): string {
   return join(substrateRoot(dataDir), SUBSTRATE_RECORD);
 }
 
+/** Is `candidate` the substrate root itself, or somewhere inside it? */
+function isInside(candidate: string, root: string): boolean {
+  const c = resolvePath(candidate);
+  const r = resolvePath(root);
+  return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
+}
+
+/**
+ * Is this a path that stays inside the directory it is relative to?
+ *
+ * `executable` is a path RELATIVE to the substrate directory, and nesting is normal — `bin/run`
+ * is the shape every substrate the acquirer has installed uses, so a blanket ban on separators
+ * would decline every record the product has ever written. What must not survive is anything
+ * that leaves the directory: a `..` segment, or an absolute path (which is not an escape under
+ * `join` on POSIX, but is a shape the acquirer never writes and therefore evidence the record
+ * did not come from it).
+ */
+function staysInsideItsDirectory(relativePath: string): boolean {
+  if (!relativePath || isAbsolute(relativePath)) return false;
+  return relativePath.split(/[\\/]/).every((segment) => segment !== '..');
+}
+
+/** Is this usable as ONE directory name — no separators, no traversal? */
+function isSingleDirectoryName(name: string): boolean {
+  return Boolean(name) && name !== '.' && name !== '..' && !/[\\/]/.test(name);
+}
+
 /**
  * Read the acquisition record, if there is a valid one.
  *
- * "Valid" means the record parses AND the executable it names is still on disk. A record whose
- * substrate has been deleted must read as absent, or `installedSubstrateExists()` reports a rung
- * that cannot start and the router escalates into nothing. Never throws: a corrupt record is
- * indistinguishable from no record for every caller's purposes.
+ * "Valid" means the record parses, the paths it names stay inside the substrate root, AND the
+ * executable it names is still on disk. A record whose substrate has been deleted must read as
+ * absent, or `installedSubstrateExists()` reports a rung that cannot start and the router
+ * escalates into nothing. Never throws: a corrupt record is indistinguishable from no record for
+ * every caller's purposes.
+ *
+ * ⚠ CONTAINMENT IS NOT DECORATION HERE. `defaultLaunch` spawns `join(path, executable)`
+ * unattended on the fetch path, with no prompt — S9's amended-D4 ruling that starting a process
+ * is not a consent event. That ruling holds because the only thing ever started is what this
+ * product installed, and `acquireSubstrate` writes `path` as `substrateRoot()/<version>` and
+ * nothing else. So a record naming anywhere else was not written by the acquirer, and reading it
+ * as absent removes the decision rather than hardening it: there is no shape of `record.json` a
+ * caller can edit into a program that gets executed from elsewhere on the machine.
  */
 export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
   try {
     const raw = JSON.parse(readFileSync(recordPath(dataDir), 'utf-8')) as Partial<SubstrateRecord>;
     if (!raw.version || !raw.executable || !raw.path) return null;
+    if (!staysInsideItsDirectory(raw.executable)) return null;
+    if (!isInside(raw.path, substrateRoot(dataDir))) return null;
     const exec = join(raw.path, raw.executable);
     if (!existsSync(exec)) return null;
     return raw as SubstrateRecord;
@@ -231,6 +269,26 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
     return {
       outcome: 'no_source',
       detail: 'no desktop component is published for this platform yet, so none was downloaded',
+    };
+  }
+
+  // THE WRITE-TIME HALF OF CONTAINMENT, and the reason `readSubstrateRecord`'s check is not the
+  // whole story. `destDir` is `join(root, version)`, so a version carrying a separator installs
+  // the bytes outside the root — outside the directory the budget gates measure, and outside
+  // what the record is later allowed to name. Refusing here is what stops the machine reporting
+  // `acquired` for a component that then reads back as absent on every subsequent run.
+  if (!isSingleDirectoryName(source.manifest.version)) {
+    return {
+      outcome: 'failed',
+      detail: 'the desktop component names a version that cannot be used as a directory name',
+      error: `unusable version: ${source.manifest.version}`,
+    };
+  }
+  if (!staysInsideItsDirectory(source.manifest.executable)) {
+    return {
+      outcome: 'failed',
+      detail: 'the desktop component names a program outside the directory it installs into',
+      error: `executable escapes its directory: ${source.manifest.executable}`,
     };
   }
 
