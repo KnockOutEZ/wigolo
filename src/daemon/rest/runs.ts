@@ -804,14 +804,14 @@ interface HeldEvent {
   event: RunEvent;
   /**
    * Retained bytes, measured once at offer time — the flush pages on the same number the ceiling
-   * was taken on. `SerializedEvent.retainedBytes`, never `jsonBytes`: this entry is the reason the
-   * envelope, its json, its frame and its parsed graph are all still reachable.
+   * was taken on. `SerializedEvent.retainedBytes`, never the frame's wire size: this entry is the
+   * reason the envelope, its cached frame and its parsed graph are all still reachable.
    */
   bytes: number;
 }
 
 /**
- * What a held entry costs beyond the two strings and the payload text it demonstrably retains: the
+ * What a held entry costs beyond the frame and the payload text it demonstrably retains: the
  * envelope's own object graph (`seq`/`ts`/`actor`/`type`/`payload` and their maps), the WeakMap
  * record, and the `HeldEvent` wrapper. A flat figure rather than a multiplier because this part
  * does not scale with the payload — measured 2026-08-27 at ~347 bytes for a `payload: {}` event and
@@ -955,8 +955,8 @@ export function createOrderedEmitter(
    */
   const hold = (event: RunEvent, measured?: number): void => {
     // Spent in RETAINED bytes, not wire bytes: the count says how MANY are held, this says how much
-    // of the daemon's heap they own, and holding the envelope holds its json, its frame and its
-    // parsed graph together (see `SerializedEvent.retainedBytes`). `measured` is passed only when
+    // of the daemon's heap they own, and holding the envelope holds its cached frame and its parsed
+    // graph along with it (see `SerializedEvent.retainedBytes`). `measured` is passed only when
     // the entry is coming BACK out of this same buffer (the flush's gap door re-holds), where
     // re-serializing to learn a number we already stored is pure waste — and it carries the same
     // unit, because it is the number this line put on the entry the first time round.
