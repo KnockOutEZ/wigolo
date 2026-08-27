@@ -6,18 +6,21 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /*
- * WHY this exists: `src/` must never import `electron`. That quarantine is what keeps a
- * future Studio repo split (or an engine swap) a SUBSTITUTION rather than a rewrite — the
- * moment one core module reaches for `electron`, the core stops being host-agnostic and the
- * split becomes a refactor. Nothing enforced it before this guard, so the property held only
- * by habit.
+ * WHY this exists: `src/` must never import `electron`. That quarantine is what kept the
+ * Studio repo split (and keeps any future engine swap) a SUBSTITUTION rather than a rewrite —
+ * the moment one core module reaches for `electron`, the core stops being host-agnostic and
+ * the split turns into a refactor. Nothing enforced it before this guard, so the property held
+ * only by habit. The split has since happened, which raises the stakes rather than lowering
+ * them: the desktop shell is now a separate repo consuming this one, so a core `electron`
+ * import would break an install that has no shell at all.
  *
  * These tests hold the GUARD honest, not the tree. A guard that has never been observed to
  * fire is an assertion, not a control, so the suite (a) enumerates every import form that
- * would breach the quarantine and requires each to be caught, and (b) points the guard at
- * `apps/studio` — which legitimately imports electron — and requires it to FIRE there. If the
- * detector ever silently stops detecting, the apps/studio case reds even though `src/` is
- * still clean.
+ * would breach the quarantine and requires each to be caught, and (b) points the guard at a
+ * real electron-importing file on disk — `tests/fixtures/electron-quarantine/` — and requires
+ * it to FIRE there. If the detector ever silently stops detecting, that case reds even though
+ * `src/` is still clean. The fixture replaced `apps/studio/src`, which played that role until
+ * the app left this repo.
  */
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -124,29 +127,24 @@ describe('electron quarantine guard (scripts/check-src-no-electron.mjs)', () => 
     expect(r.status).toBe(0);
   });
 
-  it('is not vacuous: fires on apps/studio, which really does import electron', () => {
-    // If the detector ever silently stops detecting, `src/` still passes and every fixture
-    // case could be quietly rewritten. This is the outside signal that the guard still works
-    // against real production code it was never tuned on.
-    const r = runGuard([join(ROOT, 'apps', 'studio', 'src')]);
-    expect(r.status).toBe(1);
-    expect(r.out).toMatch(/electron/);
-  });
-
   it('is not vacuous: fires on the synthetic electron-importing fixture', () => {
-    // The same outside signal as the apps/studio arm above, but not conditional on the app
-    // tree being present in this repo. `tests/fixtures/electron-quarantine/electron-host.mjs`
-    // is a real file the detector really scans (see its header for why it is `.mjs`), so this
-    // reds the moment the detector stops detecting — on any branch.
+    // If the detector ever silently stops detecting, `src/` still passes and every in-test
+    // fixture case could be quietly rewritten. This is the outside signal: a real file on
+    // disk, written for no other purpose, that the guard must flag.
+    // `tests/fixtures/electron-quarantine/electron-host.mjs` (see its header for why `.mjs`)
+    // took this role over from `apps/studio/src` when the app moved to its own repo.
     const r = runGuard([join(ROOT, 'tests', 'fixtures', 'electron-quarantine')]);
     expect(r.status).toBe(1);
     expect(r.out).toContain('electron-host.mjs');
   });
 
-  it('scopes itself to src/ by default, so apps/studio stays legal', () => {
+  it('scopes itself to src/ by default, so the fixture tree stays legal', () => {
+    // The default scan must not wander into the witness above — a guard that fails on its own
+    // fixture cannot be run at all. Asserting the fixture's absence from the output is what
+    // makes this more than "exit 0": the arm above proves the detector WOULD flag that file.
     const r = runGuard([]);
     expect(r.status).toBe(0);
-    expect(r.out).not.toContain('apps/studio');
+    expect(r.out).not.toContain('electron-host.mjs');
   });
 
   it('is gated, not documented: gate:studio chains the guard', () => {
@@ -160,6 +158,6 @@ describe('electron quarantine guard (scripts/check-src-no-electron.mjs)', () => 
   it('is gated, not documented: the CI gate job runs gate:studio', () => {
     const ci = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain('npm run gate:studio');
-    expect(ci).toMatch(/pull_request:[\s\S]*branches: \[main, studio-handoff\]/);
+    expect(ci).toMatch(/pull_request:[\s\S]*branches: \[main, studio-handoff-core\]/);
   });
 });

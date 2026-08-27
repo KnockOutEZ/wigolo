@@ -32,20 +32,17 @@ const log = createLogger('studio');
  *    them.
  */
 
-/** `0`/`false` disables auto-launch entirely; `1`/`true` additionally opts the dev-checkout launcher in. */
+/**
+ * `0`/`false` disables auto-launch entirely.
+ *
+ * It used to have a second job — `1`/`true` opted the dev-checkout launcher in — which retired with the
+ * studio repo split: there is no `apps/studio` beside this package to opt into any more. The disable half
+ * is the whole variable now, and it is still load-bearing (this repo's own suite sets it).
+ */
 const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
-
-/**
- * The dev-checkout workspace holding the app. Stated ONCE because it was spelled two ways — a path
- * segment list for the existence probe and an `npm -w` argument for the spawn — which can drift apart
- * silently. This is the sibling-workspace assumption `installedSubstrateExists` exists to retire: when
- * the app ships as a distributed substrate, or moves to its own repository, this const and that
- * function are the whole coupling.
- */
-const DEV_WORKSPACE = 'apps/studio';
 
 export interface AutoLaunchDeps {
   dataDir?: string;
@@ -59,22 +56,20 @@ export interface AutoLaunchDeps {
   readHandleFn?: (dataDir?: string) => SessionHandle | null;
 }
 
-/** Repo root as seen from the built output, used to find the app workspace. */
-function repoRoot(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-}
-
 /**
  * Is there a substrate this process may start on its own?
  *
- * RECORDED CEILING, and the reason auto-launch is not yet unconditional. The policy — free and prompt-less —
- * is implemented in full below. What does not exist yet is an INSTALLED substrate: until the app ships as a
- * distributable (S16-alpha) the only thing to launch is a dev checkout, and starting `npm run dev` in an
- * arbitrary repo from an agent's fetch is not something to do unasked. It also fires during this repo's own
- * test suite, which is how the constraint was found.
+ * RECORDED CEILING, and the reason auto-launch is not unconditional. The policy — free and prompt-less —
+ * is implemented in full below; what constrains it is whether anything is actually installed.
  *
- * So: an installed app (when one exists) launches freely; the dev checkout requires
- * `WIGOLO_STUDIO_AUTO_LAUNCH=1`. The policy does not change, only what it can find.
+ * THE DEV-CHECKOUT RUNG IS GONE. It existed because the app used to sit at `apps/studio` inside this
+ * repo, so `npm run dev -w apps/studio` was a substrate a checkout could start — gated behind
+ * `WIGOLO_STUDIO_AUTO_LAUNCH=1` because starting it unasked from an agent's fetch is not acceptable, and
+ * because it fired during this repo's own suite (which is how the ceiling was found in the first place).
+ * The studio app now lives in its own repository and consumes this package as a dependency, so there is
+ * no sibling workspace left to probe: the rung could only ever answer false. This is exactly the
+ * retirement `installedSubstrateExists` was written to absorb, and it needs no replacement — an installed
+ * substrate launches freely, and nothing else is launchable.
  *
  * EXPORTED for the tier resolver (D-S10-2), which needs the D13 deferral answer and must not grow a second
  * probe of its own. One seam, two readers — not two seams.
@@ -94,39 +89,37 @@ export function installedSubstrateExists(): boolean {
   return substratePresent();
 }
 
-function devCheckoutExists(): boolean {
-  return existsSync(join(repoRoot(), ...DEV_WORKSPACE.split('/'), 'package.json'));
-}
-
 export function studioLaunchable(): boolean {
-  if (installedSubstrateExists()) return true;
-  const optIn = process.env[AUTO_LAUNCH_ENV];
-  return (optIn === '1' || optIn === 'true') && devCheckoutExists();
+  return installedSubstrateExists();
 }
 
 /**
  * Spawn the substrate detached and hidden, so it neither blocks nor steals focus from whatever the human is
  * doing.
  *
- * TWO SUBSTRATES CAN BE LAUNCHABLE, and the acquired one wins. Once `installedSubstrateExists()` became
- * real (S10-d) `studioLaunchable()` can be true because a substrate was ACQUIRED rather than because a dev
- * checkout is on disk — and launching `npm run dev` in that case would start the wrong program, or none at
- * all on a machine that has the acquired substrate and no checkout. So the record is consulted first and
- * the dev checkout stays the fallback it already was.
+ * THE ACQUISITION RECORD IS THE ONLY SUBSTRATE. It used to be one of two — the other being a
+ * `npm run dev -w apps/studio` in a sibling workspace — and the record won when both were present. The
+ * split retired the other one (see `studioLaunchable`), so what is left is a single path.
+ *
+ * The record is still re-read here rather than trusted from the `studioLaunchable()` call above: nothing
+ * holds a lock between the two, and `deps.launchable` is injectable, so this function must be able to
+ * find nothing. It declines rather than throwing, for the same reason `ensureStudioRunning` never throws —
+ * a launch problem must not become the caller's error.
  */
 function defaultLaunch(): void {
   const acquired = readSubstrateRecord();
+  if (!acquired) {
+    log.debug('studio auto-launch found no acquired substrate to start — declining');
+    return;
+  }
+  // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for. The
+  // human summons a visible one themselves; a card that needs answering is surfaced by the app.
   const hidden = { ...process.env, WIGOLO_STUDIO_HIDDEN: '1' };
-  const child = acquired
-    ? spawn(join(acquired.path, acquired.executable), [], { detached: true, stdio: 'ignore', env: hidden })
-    : spawn('npm', ['run', 'dev', '-w', DEV_WORKSPACE], {
-        cwd: repoRoot(),
-        detached: true,
-        stdio: 'ignore',
-        // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for.
-        // The human summons a visible one themselves; a card that needs answering is surfaced by the app.
-        env: hidden,
-      });
+  const child = spawn(join(acquired.path, acquired.executable), [], {
+    detached: true,
+    stdio: 'ignore',
+    env: hidden,
+  });
   child.unref();
 }
 
