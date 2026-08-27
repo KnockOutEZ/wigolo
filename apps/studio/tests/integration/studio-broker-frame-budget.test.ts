@@ -3,18 +3,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
-import type { SearchEngine } from '../../src/types.js';
-import type { SmartRouter } from '../../src/fetch/router.js';
-import { resetConfig } from '../../src/config.js';
-import { initDatabase, getDatabase, closeDatabase } from '../../src/cache/db.js';
-import { MAX_EVENT_PAYLOAD_CHARS } from '../../src/studio/run-store.js';
-import type { RunEvent } from '../../src/studio/run-store.js';
+import type { SearchEngine } from 'wigolo/types';
+import { resetConfig } from 'wigolo/config';
+import { initDatabase, getDatabase, closeDatabase } from 'wigolo/cache/db';
+import { MAX_EVENT_PAYLOAD_CHARS } from 'wigolo/studio/run-store';
+import type { RunEvent } from 'wigolo/studio/run-store';
 import {
   createBrokerHandlers,
   MAX_EVENTS_PAGE,
   MAX_EVENTS_PAGE_CHARS,
-} from '../../src/daemon/studio-db-broker.js';
-import { DEFAULT_MAX_FRAME_CHARS } from '../../apps/studio/src/main/broker-frame-bounds.js';
+  type BrokerHandlerDeps,
+} from 'wigolo/studio-db-broker';
+import { DEFAULT_MAX_FRAME_CHARS } from '../../src/main/broker-frame-bounds';
 
 /**
  * SD1 exit-13 — `runEventsSince` is a FRAME, and a frame is bounded in characters or it is not
@@ -84,7 +84,7 @@ async function readLog(
 describe('studio-db-broker — one runEventsSince page is bounded in characters, not only in rows', () => {
   const originalEnv = process.env;
   const mockSearchEngine: SearchEngine = { name: 'mock', search: vi.fn().mockResolvedValue([]) };
-  const mockRouter = { fetch: vi.fn() } as unknown as SmartRouter;
+  const mockRouter = { fetch: vi.fn() } as unknown as BrokerHandlerDeps['router'];
 
   let dir: string;
   let handlers: ReturnType<typeof createBrokerHandlers>;

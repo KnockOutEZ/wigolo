@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
-import { resetConfig } from '../../src/config.js';
-import { initDatabase, getDatabase, closeDatabase } from '../../src/cache/db.js';
+import { resetConfig } from 'wigolo/config';
+import { initDatabase, getDatabase, closeDatabase } from 'wigolo/cache/db';
 import {
   appendEvent,
   createRun,
@@ -16,34 +16,20 @@ import {
   type Run,
   type RunEvent,
   type RunEventInput,
-} from '../../src/studio/run-store.js';
+} from 'wigolo/studio/run-store';
 
 /**
- * The app's main-process module, loaded through a COMPUTED specifier.
+ * The app's main-process module, now a plain static import.
  *
- * `apps/studio` is a Bundler-resolution project: its relative imports carry no extension and its
- * `wigolo/studio` specifier resolves through the BUILT package. Naming it in a static import here
- * would pull it into the root type-check program, which resolves as nodenext — and the type-gate
- * CI job deliberately does not build, so `wigolo/studio` would not resolve there and this arm would
- * fail a gate it has nothing to do with. The runtime import is the same module the app loads; what
- * the computed specifier costs is the static type, which the two shapes below restore at the seam
- * this arm actually drives.
+ * This spec used to load `run-view-model.ts` through a COMPUTED specifier and re-declare its two
+ * shapes locally. That cost existed only while the file lived in the ROOT suite: naming the module
+ * statically from there pulled it into the root nodenext type-check program, where the build-free
+ * type-gate job cannot resolve the app's own `wigolo/studio` specifier, and this arm would have
+ * failed a gate it has nothing to do with. Living inside `apps/studio` — a Bundler-resolution
+ * project that resolves that specifier by construction — the static import is the correct form, and
+ * it type-checks the seam instead of restating it.
  */
-interface RunViewModelLike {
-  createRun(input: CreateRunInput): Promise<Run>;
-  attachTab(runId: string, tabId: string, url?: string): Promise<void>;
-  detachTab(tabId: string, reason: 'closed' | 'run_ended'): Promise<void>;
-  endRun(runId: string, terminal: 'completed' | 'failed' | 'cancelled', detail?: string): Promise<void>;
-  ownerOf(tabId: string): string | undefined;
-  tabsOf(runId: string): string[];
-}
-interface TabOwnedErrorLike extends Error { readonly tabId: string; readonly ownerRunId: string }
-const { RunViewModel, TabOwnedError } = (await import(
-  new URL('../../apps/studio/src/main/run-view-model.ts', import.meta.url).href
-)) as {
-  RunViewModel: new (store: unknown) => RunViewModelLike;
-  TabOwnedError: new (tabId: string, ownerRunId: string) => TabOwnedErrorLike;
-};
+import { RunViewModel, TabOwnedError } from '../../src/main/run-view-model';
 
 /** A latch a test can hold an append on, and open when the race it is staging is set up. */
 function gate(): { wait: Promise<void>; release: () => void } {
@@ -154,7 +140,7 @@ describe('law 4 at the durable log — two runs racing for one tab', () => {
     expect(winners, 'both attaches were allowed to commit').toHaveLength(1);
     expect(losers).toHaveLength(1);
     expect(losers[0]!.reason, 'the loser got something other than the designed refusal').toBeInstanceOf(TabOwnedError);
-    expect((losers[0]!.reason as TabOwnedErrorLike).ownerRunId).toBe(winners[0]);
+    expect((losers[0]!.reason as TabOwnedError).ownerRunId).toBe(winners[0]);
 
     // The claim that matters is about the LOG, not about this process's answer: a projection can be
     // corrected on the next replay, a committed envelope cannot.
