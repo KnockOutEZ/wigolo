@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 import {
@@ -164,6 +164,124 @@ describe('readSubstrateRecord trusts the record only while its executable is on 
 
   it('returns null when no record has ever been written', () => {
     expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+});
+
+/**
+ * THE RECORD IS NOT A LAUNCH INSTRUCTION FROM AN UNTRUSTED PARTY, and this is what keeps it
+ * from becoming one.
+ *
+ * `defaultLaunch` spawns `join(record.path, record.executable)` unattended on the fetch path —
+ * no prompt, no permission check, by design (S9's amended-D4 ruling that starting a process is
+ * not a consent event). That ruling holds precisely because the only thing that ever gets
+ * started is the substrate this product installed: `acquireSubstrate` writes `path` as
+ * `substrateRoot()/<version>` and nothing else. A record naming somewhere else was not written
+ * by the acquirer, so treating it as absent costs the product nothing and removes the decision
+ * rather than hardening it.
+ *
+ * WHY A SEPARATOR IN `executable` IS NOT ITSELF THE PROBLEM: `bin/run` is the canonical
+ * manifest shape — every fixture in this file and every substrate the acquirer has ever
+ * installed uses it. What must not survive is anything that ESCAPES the substrate directory, so
+ * the rule is stated as containment (`..` segments and absolute paths are refused) rather than
+ * as a ban on nesting. See DECISIONS-AUTO.md.
+ */
+describe('a record must name something inside the substrate root', () => {
+  /** Write a record verbatim, with a real file at the executable it names. */
+  function plantRecord(record: Record<string, unknown>, execAt: string): void {
+    mkdirSync(dirname(execAt), { recursive: true });
+    writeFileSync(execAt, '#!/bin/sh\n');
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    writeFileSync(join(substrateRoot(dataDir), 'record.json'), JSON.stringify(record));
+  }
+
+  it('ACCEPTS the canonical shape the acquirer writes', () => {
+    // ANTI-VACUITY. Without this arm a `readSubstrateRecord` hardwired to `return null` would
+    // satisfy every rejection below forever, and the containment rule would be indistinguishable
+    // from having broken the feature.
+    const dir = join(substrateRoot(dataDir), '1.2.3');
+    plantRecord({ version: '1.2.3', path: dir, executable: 'bin/run' }, join(dir, 'bin', 'run'));
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+
+  it('rejects a path outside the substrate root, however real the file it names is', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'wigolo-elsewhere-'));
+    try {
+      plantRecord({ version: '1.2.3', path: outside, executable: 'run' }, join(outside, 'run'));
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an executable that climbs out with ..', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'wigolo-elsewhere-'));
+    try {
+      const dir = join(substrateRoot(dataDir), '1.2.3');
+      const climb = relative(dir, join(outside, 'run'));
+      plantRecord({ version: '1.2.3', path: dir, executable: climb }, join(outside, 'run'));
+      // The escape is REAL, not merely refused on a technicality: the joined path resolves to a
+      // file that exists, so without the rule this record would have launched it.
+      expect(existsSync(join(dir, climb))).toBe(true);
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an absolute executable even where the joined path happens to exist', () => {
+    // `join` does not honour an absolute second argument the way `resolve` would, so this shape
+    // does not escape on POSIX — it produces a nonsense location under the substrate directory.
+    // It is refused anyway, and the file is planted at exactly that nonsense location so the
+    // refusal cannot be the pre-existing "the executable is not on disk" arm wearing a new name.
+    const dir = join(substrateRoot(dataDir), '1.2.3');
+    // Root-relative rather than drive-qualified, so `join` produces a real path on win32 too and
+    // the arm is asserting the RULE on every platform instead of an EINVAL from mkdir.
+    const absolute = `${sep}wigolo-elsewhere${sep}run`;
+    plantRecord({ version: '1.2.3', path: dir, executable: absolute }, join(dir, absolute));
+    expect(existsSync(join(dir, absolute))).toBe(true);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+});
+
+describe('the version a record is filed under must be one directory name', () => {
+  it('refuses to install under a version carrying a path separator', async () => {
+    // `destDir` is `join(root, version)`. A version of `../../elsewhere` would put the installed
+    // bytes outside the directory the budget gates measure and outside the containment rule
+    // above — so the record would be written and then read back as absent, which is a machine
+    // that installs a component it can never start.
+    const evil: SubstrateSource = {
+      id: 'evil',
+      manifest: { version: '../escape', executable: 'bin/run' },
+      async install(destDir: string) { mkdirSync(join(destDir, 'bin'), { recursive: true }); writeFileSync(join(destDir, 'bin', 'run'), '#!/bin/sh\n'); },
+    };
+    const r = await acquireSubstrate({ dataDir, source: evil });
+    expect(r.outcome).toBe('failed');
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+    expect(existsSync(join(substrateRoot(dataDir), '..', 'escape'))).toBe(false);
+  });
+
+  it('refuses a manifest whose executable escapes the directory it installs into', async () => {
+    // The install genuinely PRODUCES the escaping file, so the verify step that already exists
+    // would find it and write the record. Without the rule this acquisition reports `acquired`
+    // for a record that the containment check above then reads back as absent — a machine that
+    // installed a component it can never start.
+    const evil: SubstrateSource = {
+      id: 'evil',
+      manifest: { version: '1.2.3', executable: join('..', 'peer', 'run') },
+      async install(destDir: string) {
+        mkdirSync(join(destDir, '..', 'peer'), { recursive: true });
+        writeFileSync(join(destDir, '..', 'peer', 'run'), '#!/bin/sh\n');
+      },
+    };
+    const r = await acquireSubstrate({ dataDir, source: evil });
+    expect(r.outcome).toBe('failed');
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('still installs an ordinary version — the rule is not a blanket refusal', async () => {
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(r.outcome).toBe('acquired');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
   });
 });
 
