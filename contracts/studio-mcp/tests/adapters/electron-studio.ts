@@ -2,7 +2,7 @@ import { _electron as electron, type ElectronApplication } from 'playwright';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { StudioUnderTest } from '../../src/harness.js';
+import type { StudioUnderTest } from 'wigolo/studio-mcp-contract';
 
 /**
  * The desktop Studio app, bound to the conformance harness.

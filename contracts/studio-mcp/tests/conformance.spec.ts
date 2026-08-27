@@ -10,7 +10,7 @@ import {
   refusalContractErrors,
   untrustedFenceErrors,
   advertisedToolErrors,
-} from '../src/index.js';
+} from 'wigolo/studio-mcp-contract';
 import { electronStudioUnderTest } from './adapters/electron-studio.js';
 import { startFixtureServer, type FixtureServer } from './fixtures/server.js';
 

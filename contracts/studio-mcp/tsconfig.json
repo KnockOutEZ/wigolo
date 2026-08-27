@@ -11,9 +11,10 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"],
     "paths": {
-      "wigolo/studio": ["../../src/studio/index.ts"]
+      "wigolo/studio": ["../../src/studio/index.ts"],
+      "wigolo/studio-mcp-contract": ["./src/index.ts"]
     }
   },
-  "//paths": "The conformance suite imports the PUBLIC package surface at runtime, which resolves to dist/ — but the repo's type gate deliberately runs with NO build step (ci.yml states the reason: a build would hide a type error behind a build failure), so this must stay checkable over source alone. The mapping points at the source the package publishes, which is where its declarations are generated from anyway.",
+  "//paths": "The conformance suite imports the PUBLIC package surface at runtime, which resolves to dist/ — but the repo's type gate deliberately runs with NO build step (ci.yml states the reason: a build would hide a type error behind a build failure), so this must stay checkable over source alone. Each mapping points at the source the package publishes, which is where its declarations are generated from anyway. `wigolo/studio-mcp-contract` is this package's OWN surface, reached by its own conformance suite through the specifier a foreign repo uses: the suite ships to the studio app's repo, where `../src/index.js` does not exist and the built subpath of the pinned `wigolo` dependency is the only route to it. Aliasing it here keeps the one import spelling checkable on both sides of the split.",
   "include": ["src", "tests"]
 }
