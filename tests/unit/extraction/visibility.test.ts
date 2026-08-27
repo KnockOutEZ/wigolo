@@ -664,6 +664,92 @@ describe('isHidden — CSS identifier escapes are resolved before the property i
 });
 
 /**
+ * A comment is a token BOUNDARY, not an erasure — and the difference is the whole of this
+ * block. css-syntax-3 §4.3.2 consumes a comment and emits nothing in its place, but "nothing
+ * in its place" happens BETWEEN tokens: the tokenizer has already ended the ident it was
+ * building when it reached the `/`. So `display:/*x*\/none` really does declare `display:none`
+ * — the raw attribute hides a suppression, which is why this pass resolves comments out at all
+ * — while `display:no/**\/ne` declares nothing at all, because `no` and `ne` are two idents and
+ * `no ne` is not a value `display` accepts.
+ *
+ * Deleting the comment outright collapses that distinction by JOINING the tokens around it, and
+ * the two directions are not symmetric in cost. Reading a real suppression as visible leaks copy
+ * a reader cannot see; reading an invalid declaration as a suppression DELETES copy a reader can
+ * see — the direction `hasVisibleTextOutside`'s own note says cannot stand, since `isHidden` is
+ * additionally its skip test and a false hide there mis-feeds the shell discriminator. A single
+ * space is the token-level equivalent: it separates what the tokenizer separated and joins
+ * nothing the tokenizer joined, and every `\s*` already in the pattern absorbs it where a
+ * browser would.
+ *
+ * The rows enumerate what the arm ACCEPTS rather than the spelling the report arrived with —
+ * a comment between tokens, inside a token, unterminated, and inside a string where the string
+ * arm has to keep winning — because "inside a token" is precisely the shape the earlier reading
+ * had no row for.
+ */
+describe('isHidden — a comment separates tokens, so it cannot weld one back together', () => {
+  const reads = (style: string): { byIsHidden: boolean; byStrip: boolean } => {
+    const { document } = parseHTML(
+      '<html><body><p>visible lead</p><div id="t">secret draft copy</div></body></html>',
+    );
+    const el = document.getElementById('t') as unknown as VisibilityElement & {
+      setAttribute(n: string, v: string): void;
+    };
+    el.setAttribute('style', style);
+    return {
+      byIsHidden: isHidden(el),
+      byStrip: (() => {
+        stripHiddenDom(document);
+        return !document.body.innerHTML.includes('secret draft copy');
+      })(),
+    };
+  };
+
+  it.each([
+    ['between the colon and the value — the suppression the raw text hides', 'display:/*x*/none'],
+    ['between the property and the colon, which the grammar allows', 'display/*x*/:none'],
+    ['...the visibility spelling resolves the same way', 'visibility:/*x*/hidden'],
+    ['between the value and the bang, so `!important` still attaches', 'display:none/*x*/!important'],
+    ['between the bang and `important`, which the grammar also allows', 'display:none!/*x*/important'],
+    ['ahead of the `;`, so the declaration after it is still its own', 'color:red/*x*/;display:none'],
+    // Unterminated: consuming to EOF joins nothing, so a complete declaration in front of it
+    // stands exactly as it did — the boundary rule must not disturb that.
+    ['unterminated after a complete declaration — nothing follows to weld it to', 'display:none/*'],
+    // Precedence, unchanged: the string arm is asked first, so a `/*` inside a string opens no
+    // comment and the `;` after the string really does separate declarations.
+    ['a `/*` inside a string opens no comment, so the `;` after it separates', 'content:"/*";display:none'],
+  ])('hides: %s', (_why, style) => {
+    const { byIsHidden, byStrip } = reads(style);
+    expect(byIsHidden).toBe(true);
+    expect(byStrip).toBe(true);
+  });
+
+  it.each([
+    // The headline pair's other half: two idents, an invalid value, a declaration the browser
+    // drops — and an element it therefore PAINTS.
+    ['inside the value — `no` and `ne` are two idents, and `no ne` is not a display value', 'display:no/**/ne'],
+    ['...the visibility spelling splits identically', 'visibility:hid/**/den'],
+    ['inside the PROPERTY — `disp lay` names nothing, so there is no declaration', 'disp/**/lay:none'],
+    // `!important` is recognised from the last two tokens of the value being `!` and the ident
+    // `important`. Split it and the last ident is `ortant`, so no flag attaches and the value
+    // becomes `none ! imp ortant` — invalid for `display`, declaration dropped.
+    ['inside `important`, so the flag never attaches and the value goes invalid', 'display:none!imp/**/ortant'],
+    // Cross-arm, and the reason the escape pass and this one have to agree: the escape resolves
+    // `\64 ` to `d` and hands `isplay:no/**/ne` on, where the boundary rule still applies.
+    ['an escaped property split by a comment is still split', '\\64 isplay:no/**/ne'],
+    // A quote inside a comment is not a string — pinned here in the direction that matters, with
+    // the comment doing double duty as the token boundary the suppression behind it needs.
+    ['a quote inside a comment opens no string, and the comment still separates', 'background:red/*"*/;display:no/**/ne'],
+    // Unterminated in the other position: it eats the rest of the ident rather than welding it,
+    // so what is left is `display:no` — no value, no declaration.
+    ['unterminated mid-token leaves a truncated ident, not a joined one', 'display:no/*'],
+  ])('keeps: %s', (_why, style) => {
+    const { byIsHidden, byStrip } = reads(style);
+    expect(byIsHidden).toBe(false);
+    expect(byStrip).toBe(false);
+  });
+});
+
+/**
  * The inline test resolves strings and comments out before it runs, and the two patterns that
  * did it were quadratic in a length the PAGE picks — not by backtracking but by repeated
  * failed starts. `'` followed by a run of `\'` gives `/'(?:[^'\\]|\\.)*'/g` a quote to open at
