@@ -187,12 +187,25 @@ function resolvePackageDir(name: string, fromDir: string, boundary: string): str
  * Keyed by DIRECTORY, not by name. npm nests a package whenever two requirers want incompatible
  * versions, and a name-keyed set would collapse `express/node_modules/debug` into the root `debug` and
  * ship one version where two are needed.
+ *
+ * TWO roots, and conflating them is a real defect rather than a tidiness point. `workspaceRoot` is
+ * where npm HOISTS to — it fixes `modulesDir` and it is the ceiling every walk refuses to pass.
+ * `wigoloPkgDir` is the manifest the walk STARTS from. Under `"wigolo": "file:../.."` the two are one
+ * path, because the dependency's package root is the workspace root itself, so the single-argument
+ * form was indistinguishable from correct. They separate the moment `wigolo` is a real installed
+ * dependency: the manifest then lives at `<workspaceRoot>/node_modules/wigolo`, while its 28
+ * dependencies are still hoisted to `<workspaceRoot>/node_modules`. Starting AND bounding the walk at
+ * the package directory makes the very first hoisted dependency unresolvable, and the walk throws
+ * "not installed at or below" for a package that is installed one level up.
  */
-export function wigoloRuntimeClosure(wigoloRoot: string): { modulesDir: string; entries: ClosureEntry[] } {
-  const modulesDir = join(wigoloRoot, 'node_modules');
+export function wigoloRuntimeClosure(
+  workspaceRoot: string,
+  wigoloPkgDir: string = workspaceRoot,
+): { modulesDir: string; entries: ClosureEntry[] } {
+  const modulesDir = join(workspaceRoot, 'node_modules');
   const found = new Map<string, ClosureEntry>();
-  const visited = new Set<string>([wigoloRoot]);
-  const queue: string[] = [wigoloRoot];
+  const visited = new Set<string>([wigoloPkgDir]);
+  const queue: string[] = [wigoloPkgDir];
 
   while (queue.length > 0) {
     const dir = queue.shift() as string;
@@ -208,12 +221,12 @@ export function wigoloRuntimeClosure(wigoloRoot: string): { modulesDir: string; 
     ];
 
     for (const [name, optional] of wanted) {
-      const dep = resolvePackageDir(name, dir, wigoloRoot);
+      const dep = resolvePackageDir(name, dir, workspaceRoot);
       if (dep === undefined) {
         // Optional deps legitimately go uninstalled (platform-specific bindings, opt-in extras).
         if (optional) continue;
         throw new Error(
-          `wigoloRuntimeClosure: '${name}', required by ${dir}, is not installed at or below ${wigoloRoot}. ` +
+          `wigoloRuntimeClosure: '${name}', required by ${dir}, is not installed at or below ${workspaceRoot}. ` +
             `Run npm install at the workspace root. Shipping without it would produce an artifact that ` +
             `only starts on a machine that has this repository checked out.`,
         );
@@ -250,9 +263,11 @@ for (const flag of [OMIT_ENV, OMIT_CLOSURE_ENV]) {
 }
 
 /**
- * The workspace root, which is where `wigolo` itself lives (`"wigolo": "file:../.."`) AND where npm
- * hoists its dependencies to. It is both the resolution target and the ceiling for every walk in this
- * file — see the nested-worktree note above.
+ * The workspace root: where npm hoists `wigolo`'s dependencies to, and the ceiling for every walk in
+ * this file — see the nested-worktree note above. Under `"wigolo": "file:../.."` it is also where
+ * `wigolo` itself lives, which is why `WIGOLO_ROOT` below resolves to this same path today; when the
+ * dependency is a real install the two diverge and both are needed, so nothing here assumes they are
+ * one path.
  */
 const APP_DIR = realpathSync(import.meta.dirname);
 const WORKSPACE_ROOT = realpathSync(join(APP_DIR, '..', '..'));
@@ -298,7 +313,7 @@ type FileSet = { from: string; to: string; filter: string[] };
  */
 const wigoloDependencyResources = (): FileSet[] => {
   if (process.env[OMIT_CLOSURE_ENV]) return [];
-  const { modulesDir, entries } = wigoloRuntimeClosure(WIGOLO_ROOT);
+  const { modulesDir, entries } = wigoloRuntimeClosure(WORKSPACE_ROOT, WIGOLO_ROOT);
   process.stderr.write(`  • wigolo runtime dependency closure  packages=${entries.length} from=${modulesDir}\n`);
   return [
     {

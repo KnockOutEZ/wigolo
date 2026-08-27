@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import config, {
   ASAR_UNPACK,
@@ -16,7 +16,21 @@ const appPkg = JSON.parse(readFileSync(join(import.meta.dirname, '../../package.
   devDependencies: Record<string, string>;
   scripts: Record<string, string>;
 };
-const corePkg = JSON.parse(readFileSync(join(import.meta.dirname, '../../../../package.json'), 'utf8')) as {
+const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
+
+/**
+ * The core package's manifest, read through the INSTALLED package rather than at a fixed depth above
+ * this file.
+ *
+ * `../../../../package.json` is the same file today only because `"wigolo": "file:../.."` makes
+ * `node_modules/wigolo` a link back to the repository root. Resolve it as a package and the assertion
+ * below keeps meaning "every dependency core declares", instead of quietly becoming "every dependency
+ * the enclosing repository declares" — which is the same sentence while the link holds and a vacuous
+ * one the moment `wigolo` is a real install.
+ */
+const WIGOLO_PKG_DIR = realpathSync(join(REPO_ROOT, 'node_modules', 'wigolo'));
+const corePkg = JSON.parse(readFileSync(join(WIGOLO_PKG_DIR, 'package.json'), 'utf8')) as {
+  name: string;
   dependencies: Record<string, string>;
 };
 
@@ -154,9 +168,12 @@ describe('dev-channel packaging invariants', () => {
     expect(config.asar).toBe(true);
   });
 
-  it('excludes the repository source tree that the wigolo workspace link points at', () => {
-    // `wigolo` is `file:../..`, so its package root IS this repo. Without these negations the
-    // artifact would seal src/, tests/ and internal-docs/ inside app.asar.
+  it('excludes the repository source tree a linked wigolo checkout points at', () => {
+    // Under `"wigolo": "file:../.."` the dependency's package root IS a repository checkout, so
+    // without these negations the artifact would seal src/, tests/ and internal-docs/ inside
+    // app.asar. A real installed `wigolo` contains only its published `files` set and the negations
+    // match nothing — they are inert there, not wrong, and they must survive: a linked checkout stays
+    // a supported topology and is what every contributor builds from.
     const files = (config.files as string[]).join('\n');
     for (const dir of ['src', 'tests', 'internal-docs', 'benchmarks']) {
       expect(files).toMatch(new RegExp(`!node_modules/wigolo/\\{[^}]*\\b${dir}\\b`));
@@ -177,9 +194,18 @@ describe("wigolo's own dependencies have to be carried into the artifact", () =>
    * why nothing caught it. These run on every push; `tests/e2e/packaging.spec.ts` proves the same
    * thing against a real artifact staged outside the repo.
    */
-  const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
-  const { modulesDir, entries } = wigoloRuntimeClosure(REPO_ROOT);
+  const { modulesDir, entries } = wigoloRuntimeClosure(REPO_ROOT, WIGOLO_PKG_DIR);
   const shipped = new Set(entries.map((e) => e.rel));
+
+  it('walks the core manifest, not the enclosing repository - the closure cannot be vacuous', () => {
+    // The anti-vacuity arm for the two roots. If this file ever went back to walking a single root,
+    // the assertions below would still pass while measuring the wrong dependency set: an enclosing
+    // repository that declares five dependencies would report a five-package "closure" as complete.
+    // Core declares dozens, so the name check plus a floor pins that the walk started from core.
+    expect(corePkg.name).toBe('wigolo');
+    expect(Object.keys(corePkg.dependencies).length).toBeGreaterThan(10);
+    expect(entries.length).toBeGreaterThan(Object.keys(corePkg.dependencies).length);
+  });
 
   it("carries every one of the core package's direct dependencies", () => {
     // Read from package.json, never listed here. A literal list would be satisfied by the six
