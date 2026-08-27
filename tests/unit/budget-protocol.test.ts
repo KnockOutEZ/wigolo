@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, SUBSTRATE_ONLY_ACQUISITION, G_TOTAL_DESKTOP_DROPPED, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
@@ -519,6 +520,31 @@ describe('the cross-run reducer for idle RSS is the minimum, not the median', ()
     // pattern works and G-RSS-IDLE really did opt out of it.
     expect(src).toMatch(/report\('G-COLD-START',\s*median\(/);
   });
+});
+
+describe('G-TARBALL survives the `prepare` lifecycle hook', () => {
+  it('produces a parsed measurement rather than choking on build output', async () => {
+    // WHY THIS ONE GATE IS RUN FOR REAL. The note above is right that measure.mjs mostly cannot
+    // be unit-tested — but that reason ("spawns servers and installs packages") does not apply
+    // to `tarball`, which shells `npm pack --dry-run` and parses JSON off stdout. And it is
+    // exactly the gate that broke: adding a `prepare` script made `npm pack` build first, on
+    // the same stream, and JSON.parse died on the builder's progress lines. A source-shape
+    // assertion would have agreed with whatever the source said; running it is the only check
+    // that could have caught this. Reds if any future lifecycle hook writes to that stream too.
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const script = fileURLToPath(new URL('../../scripts/budget/measure.mjs', import.meta.url));
+    const { stdout } = await run(process.execPath, [script, 'tarball'], {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      encoding: 'utf8',
+    });
+    expect(stdout).toMatch(/G-TARBALL/);
+    expect(stdout).toMatch(/measured:\s+[\d.]+ MiB/);
+    // `NaN MiB` is what an unparsed/partial read produces, and it would satisfy the line above
+    // if that regex were any looser. Name it, so the failure mode has its own assertion.
+    expect(stdout).not.toMatch(/NaN/);
+  }, 120_000);
 });
 
 describe("S10-d's tier-conditional pair is scoped to the COMPONENT, not the total", () => {
