@@ -64,13 +64,22 @@ export interface AutoLaunchDeps {
 /**
  * The narrowest shape of `child_process.spawn` this module uses. Narrow ON PURPOSE: a test seam
  * that had to build a whole `ChildProcess` would be a mock of Node rather than of the one call
- * being made, and the launcher only ever needs to unreference what it started.
+ * being made.
+ *
+ * It carries `on('error')` as well as `unref()` because the launcher genuinely needs both, not
+ * because a `ChildProcess` happens to have them: an error listener is the only way to observe a
+ * spawn that fails asynchronously (see {@link defaultLaunch}), so a seam without it cannot
+ * express the launcher's real contract and a fake built against it would be green while the
+ * production path crashed. Still one function, still two methods, still trivially fake-able.
  */
 export type SpawnStudio = (
   command: string,
   args: readonly string[],
   options: SpawnOptions
-) => { unref(): void };
+) => {
+  unref(): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+};
 
 const defaultSpawn: SpawnStudio = (command, args, options) => spawn(command, args, options);
 
@@ -153,6 +162,23 @@ export function defaultLaunch(deps: DefaultLaunchDeps = {}): boolean {
     detached: true,
     stdio: 'ignore',
     env: hidden,
+  });
+  // BEFORE `unref`, and before this function returns — there must be no tick in which the child
+  // exists with nobody listening.
+  //
+  // `spawn()` does not throw for ENOENT, EACCES or EPERM. It hands back a child and reports the
+  // failure by EMITTING `'error'` on a later tick, so `ensureStudioRunning`'s try/catch — which
+  // can only see a synchronous throw — never gets the chance. An `'error'` with no listener is
+  // rethrown by `EventEmitter` as an uncaught exception, and this arm runs unattended on the
+  // fetch path, so what dies is the whole MCP process rather than one request. `runStudio` has
+  // had this listener since it was written; this arm was created without it.
+  //
+  // The window is narrow — the record's executable was probed on disk at read time — but it is
+  // real: an uninstall between the read and the exec, a lost +x bit, or a Gatekeeper EPERM.
+  child.on('error', (err) => {
+    log.warn('studio auto-launch could not start the desktop component', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   });
   child.unref();
   return true;

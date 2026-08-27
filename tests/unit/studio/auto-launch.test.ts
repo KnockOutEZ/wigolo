@@ -273,7 +273,8 @@ describe('defaultLaunch', () => {
   it('spawns the executable the record names, hidden, detached and unreferenced', () => {
     const executable = plantSubstrateRecord(dir);
     const unref = vi.fn();
-    const spawnFn = vi.fn(() => ({ unref }));
+    const on = vi.fn();
+    const spawnFn = vi.fn(() => ({ unref, on }));
 
     expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(true);
     expect(spawnFn).toHaveBeenCalledTimes(1);
@@ -286,6 +287,9 @@ describe('defaultLaunch', () => {
     expect(options.detached).toBe(true);
     expect(options.stdio).toBe('ignore');
     expect(unref).toHaveBeenCalledTimes(1);
+    // An asynchronous spawn failure has somewhere to go — see the suite at the foot of this file
+    // for why an unlistened `'error'` is a dead MCP process rather than a logged one.
+    expect(on).toHaveBeenCalledWith('error', expect.any(Function));
     // Hidden: an auto-launched session is for the agent's benefit, so it must not steal the human's focus.
     expect((options.env as NodeJS.ProcessEnv).WIGOLO_STUDIO_HIDDEN).toBe('1');
     // …and it INHERITS the rest of the environment rather than replacing it.
