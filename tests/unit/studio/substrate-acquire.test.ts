@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
@@ -339,10 +339,16 @@ describe('the install copies symlinks verbatim rather than resolving them', () =
     const installed = join(substrateRoot(dataDir), '7.7.7', 'Frameworks', 'E.framework');
     expect(readlinkSync(join(installed, 'Versions', 'Current'))).toBe('A');
     expect(readlinkSync(join(installed, 'Resources'))).toBe(join('Versions', 'Current', 'Resources'));
-    // Stated the other way round too, because THIS is the containment claim: no link in the
-    // installed tree may address anything outside the directory it was installed into.
+    // Stated the other way round too. NOTE WHAT THIS ARM DOES AND DOES NOT ESTABLISH: every link
+    // in this fixture is relative BY CONSTRUCTION, so these two lines confirm the copy did not
+    // REWRITE them — they are not evidence that an escaping link would be refused. That claim is
+    // only true because of the containment walk, and it is the negative arms below that hold it up.
     expect(isAbsolute(readlinkSync(join(installed, 'Resources')))).toBe(false);
     expect(readlinkSync(join(installed, 'Resources'))).not.toContain(frameworkDir);
+    // The positive half of the containment rule: the thing `defaultLaunch` would spawn resolves
+    // INSIDE the substrate root even though reaching it traverses two links.
+    const spawnTarget = realpathSync(join(substrateRoot(dataDir), '7.7.7', EXECUTABLE));
+    expect(spawnTarget.startsWith(realpathSync(substrateRoot(dataDir)) + sep)).toBe(true);
   });
 
   it.skipIf(process.platform === 'win32')('still resolves once the install source is deleted', async () => {
@@ -359,6 +365,188 @@ describe('the install copies symlinks verbatim rather than resolving them', () =
     expect(readFileSync(exec, 'utf-8')).toBe('#!/bin/sh\n');
     // And the record must still read as present: `readSubstrateRecord` follows the same chain.
     expect(readSubstrateRecord(dataDir)?.version).toBe('7.7.7');
+  });
+});
+
+/**
+ * VERBATIM IS NOT THE SAME AS CONTAINED, and everything above is blind to the difference.
+ *
+ * `verbatimSymlinks` copies a link's target STRING unchanged, which is what keeps a framework
+ * bundle's relative links working — and equally what carries a SOURCE-AUTHORED ABSOLUTE link
+ * across intact. Every check the module had was a string check on a path that never touched the
+ * filesystem: the manifest says `bin/run` (no `..`, not absolute) so the manifest rule passes;
+ * `isInside` compared `resolve()` output so the record rule passes; the acquire-time probe used
+ * `existsSync`, which FOLLOWS the link, so verification passes. `defaultLaunch` then spawns
+ * `join(path, executable)`, the OS follows the link, and the bytes that run live somewhere else
+ * on the machine entirely.
+ *
+ * Reproduced end to end on 2026-08-28 through the real `acquireSubstrate` / `readSubstrateRecord`
+ * / `defaultLaunch`: outcome `acquired`, spawn target resolving to `<elsewhere>/payload.sh`, and
+ * the payload executing. These arms are that reproduction, refused.
+ *
+ * Relative escapes are included even though the issue's working vector was absolute: the rule is
+ * "where does this RESOLVE", not "does this start with a slash", and an arm that only plants
+ * absolute links would stay green against a fix that merely banned the leading separator.
+ *
+ * Windows is skipped for the same reason the arms above are: creating a symlink there needs
+ * elevation.
+ */
+describe('the install refuses a tree whose links leave it', () => {
+  let outside: string;
+  let payload: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'wigolo-outside-'));
+    payload = join(outside, 'payload.sh');
+    writeFileSync(payload, '#!/bin/sh\necho pwned\n');
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  /** A bundle whose manifest names `bin/run` — the canonical, always-accepted string. */
+  function makeLinkedSourceDir(version: string, linkTarget: string, opts: { realExecutable?: boolean } = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-substrate-link-'));
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    if (opts.realExecutable) {
+      writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
+      symlinkSync(linkTarget, join(dir, 'lib'));
+    } else {
+      symlinkSync(linkTarget, join(dir, 'bin', 'run'));
+    }
+    writeFileSync(join(dir, 'substrate.json'), JSON.stringify({ version, executable: 'bin/run' }));
+    return dir;
+  }
+
+  it.skipIf(process.platform === 'win32')('refuses a bundle whose executable is an absolute link out of the tree', async () => {
+    const src = makeLinkedSourceDir('3.3.3', payload);
+    try {
+      // CONTROL: the escape is real, and every string-only check passes on it. The manifest
+      // string is `bin/run`; the link resolves to a file outside anything being installed.
+      expect(realpathSync(join(src, 'bin', 'run'))).toBe(realpathSync(payload));
+      const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+      expect(r.outcome).toBe('failed');
+      expect(r.error).toMatch(/bin\/run/);
+      // Nothing launchable is left behind: no record, and no half-installed tree to be re-found.
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      expect(existsSync(join(substrateRoot(dataDir), '3.3.3'))).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses an escaping link even when the executable itself is a real file', async () => {
+    // The acquire-time probe is satisfied here — `bin/run` is genuine bytes — so this arm is what
+    // distinguishes a containment WALK from a second existence check on the one named path. A
+    // bundle's dynamic libraries and resources are reached through links the manifest never names.
+    const src = makeLinkedSourceDir('3.3.4', outside, { realExecutable: true });
+    try {
+      const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+      expect(r.outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      expect(existsSync(join(substrateRoot(dataDir), '3.3.4'))).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a DANGLING absolute link even when it is spelt inside the root', async () => {
+    // THE ARM THAT MAKES THE ABSOLUTE RULE ITS OWN MECHANISM. For a link that resolves, the
+    // absolute rule and the resolve rule agree and either alone would do. They part exactly here:
+    // this link resolves to nothing, so a walk that judged only by resolution would fall back to
+    // judging it lexically, find it spelt inside today's substrate root, and admit it — leaving an
+    // absolute path baked into the installed tree that the substrate follows the moment anything
+    // appears there, and that points somewhere else entirely the moment the data dir moves.
+    // Without the absolute rule this arm goes green with the hole open.
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    const inside = join(realpathSync(substrateRoot(dataDir)), '3.3.6', 'lib', 'not-here-yet');
+    expect(isAbsolute(inside)).toBe(true);
+    const src = makeLinkedSourceDir('3.3.6', inside, { realExecutable: true });
+    try {
+      const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+      expect(r.outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      expect(existsSync(join(substrateRoot(dataDir), '3.3.6'))).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a RELATIVE link that climbs out of the installed tree', async () => {
+    // Not the reported vector — a relative link re-anchors at the destination and usually dangles.
+    // It is here because the rule is "where does this resolve", and a fix that only banned a
+    // leading separator would leave this one green while the hole stayed open.
+    const destDir = join(substrateRoot(dataDir), '3.3.5');
+    const climb = relative(join(destDir, 'bin'), payload);
+    const src = makeLinkedSourceDir('3.3.5', climb);
+    try {
+      expect(isAbsolute(climb)).toBe(false);
+      const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+      expect(r.outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      expect(existsSync(destDir)).toBe(false);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('containment is answered by the filesystem, not by string comparison', () => {
+  let outside: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'wigolo-outside-'));
+    mkdirSync(join(outside, 'bin'), { recursive: true });
+    writeFileSync(join(outside, 'bin', 'run'), '#!/bin/sh\n');
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform === 'win32')('reads as absent when the directory the record names is a link out of the root', () => {
+    // The record's `path` string is exactly what the acquirer writes — `<root>/1.2.3` — so string
+    // containment is satisfied, and the executable is on disk because `existsSync` follows links.
+    // Only resolving the directory shows it is not in the root at all.
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    const dir = join(substrateRoot(dataDir), '1.2.3');
+    symlinkSync(outside, dir);
+    writeFileSync(
+      join(substrateRoot(dataDir), 'record.json'),
+      JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
+    );
+    expect(existsSync(join(dir, 'bin', 'run'))).toBe(true);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it.skipIf(process.platform === 'win32')('reads as absent when the executable it names resolves outside the root', () => {
+    // The last line of defence, for a tree that was not installed by this process — a link swapped
+    // in after acquisition, or a record hand-edited beside one.
+    const dir = join(substrateRoot(dataDir), '1.2.3');
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    symlinkSync(join(outside, 'bin', 'run'), join(dir, 'bin', 'run'));
+    writeFileSync(
+      join(substrateRoot(dataDir), 'record.json'),
+      JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
+    );
+    expect(existsSync(join(dir, 'bin', 'run'))).toBe(true);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('still accepts a record whose paths cross a legitimately-linked prefix', () => {
+    // ANTI-FALSE-DECLINE, and the reason the comparison realpaths BOTH sides. On macOS the data
+    // dir routinely lives under `/var/...`, which is itself a link to `/private/var/...`, so a
+    // rule that resolved only one side would decline every real record on the platform the
+    // desktop component targets.
+    const dir = join(substrateRoot(dataDir), '1.2.3');
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
+    writeFileSync(
+      join(substrateRoot(dataDir), 'record.json'),
+      JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
+    );
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
   });
 });
 
