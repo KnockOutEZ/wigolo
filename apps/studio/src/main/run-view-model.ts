@@ -270,9 +270,11 @@ const MAX_HYDRATION_PAGES = 200;
  * that paints. That allowance is a LOCAL of the call, and `hydrate` makes up to
  * `MAX_HYDRATION_PAGES` of those calls — so the bound that holds for one frame was being handed out
  * two hundred times, and the ceiling on what boot loads was `MAX_HYDRATION_PAGES ×` it. Nothing
- * evicts afterwards: `retain` holds every entry's envelopes for the process's life, and the listing
- * carries no status filter, so a run that ended months ago was read, parsed and held exactly like a
- * live one.
+ * evicted afterwards either: `retain` held every entry's envelopes for the process's life, and the
+ * listing carries no status filter, so a run that ended months ago was read, parsed and held exactly
+ * like a live one. (`MAX_RETAINED_SEALED_RUNS` and `MAX_RETAINED_LIVE_RUNS` are the two cuts that now
+ * do, and `MAX_BOOT_HYDRATION_RUNS` is what stops boot reading past what they will keep — but the
+ * allowance below is still what bounds one boot's WORK, which no retention cut can.)
  *
  * So the allowance is carried across the hydration instead. Once it is spent, the remaining pages
  * are taken from `listRuns` — projections only, no envelopes on the wire at all — which is the same
