@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 import {
@@ -282,6 +282,83 @@ describe('the version a record is filed under must be one directory name', () =>
     const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
     expect(r.outcome).toBe('acquired');
     expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+});
+
+/**
+ * A COPY THAT REWRITES SYMLINKS IS NOT A COPY OF THE SUBSTRATE.
+ *
+ * `cpSync`'s default behaviour resolves each symlink it finds and writes an ABSOLUTE link back
+ * into the SOURCE directory. A real desktop substrate is a macOS application bundle, and its
+ * frameworks are built entirely on relative links (`Resources -> Versions/Current/Resources`,
+ * `Current -> A`). Reproduced live on 2026-08-28, an install without `verbatimSymlinks` produced a
+ * bundle that (a) crashed at launch — `icudtl.dat not found in bundle` → `GPU process isn't
+ * usable. Goodbye.` — (b) executed bytes from OUTSIDE the substrate root, which is precisely what
+ * the record's containment rule above claims cannot happen, and (c) dangled entirely once the
+ * install source was deleted.
+ *
+ * The acquire-time VERIFY cannot catch this: the top-level executable is a real file, so the probe
+ * passes while every framework link underneath it points somewhere else.
+ *
+ * Windows is skipped because creating a symlink there needs elevation, and this corruption class
+ * is a POSIX-symlinked bundle shape.
+ */
+describe('the install copies symlinks verbatim rather than resolving them', () => {
+  /**
+   * A source shaped like a real framework bundle: the executable the manifest names is reachable
+   * ONLY by traversing two relative symlinks.
+   */
+  function makeFrameworkSourceDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-substrate-fw-'));
+    const framework = join(dir, 'Frameworks', 'E.framework');
+    mkdirSync(join(framework, 'Versions', 'A', 'Resources'), { recursive: true });
+    writeFileSync(join(framework, 'Versions', 'A', 'Resources', 'run'), '#!/bin/sh\n');
+    symlinkSync('A', join(framework, 'Versions', 'Current'));
+    symlinkSync(join('Versions', 'Current', 'Resources'), join(framework, 'Resources'));
+    writeFileSync(
+      join(dir, 'substrate.json'),
+      JSON.stringify({ version: '7.7.7', executable: join('Frameworks', 'E.framework', 'Resources', 'run') }),
+    );
+    return dir;
+  }
+
+  const EXECUTABLE = join('Frameworks', 'E.framework', 'Resources', 'run');
+  let frameworkDir: string;
+
+  beforeEach(() => {
+    frameworkDir = makeFrameworkSourceDir();
+  });
+
+  afterEach(() => {
+    rmSync(frameworkDir, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform === 'win32')('leaves the installed links relative instead of pointing them back at the source', async () => {
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(frameworkDir) });
+    expect(r.outcome).toBe('acquired');
+    const installed = join(substrateRoot(dataDir), '7.7.7', 'Frameworks', 'E.framework');
+    expect(readlinkSync(join(installed, 'Versions', 'Current'))).toBe('A');
+    expect(readlinkSync(join(installed, 'Resources'))).toBe(join('Versions', 'Current', 'Resources'));
+    // Stated the other way round too, because THIS is the containment claim: no link in the
+    // installed tree may address anything outside the directory it was installed into.
+    expect(isAbsolute(readlinkSync(join(installed, 'Resources')))).toBe(false);
+    expect(readlinkSync(join(installed, 'Resources'))).not.toContain(frameworkDir);
+  });
+
+  it.skipIf(process.platform === 'win32')('still resolves once the install source is deleted', async () => {
+    // ANTI-VACUITY, and the arm that a rewritten-link copy cannot pass. An absolute link into the
+    // source satisfies every existence check above for as long as the source survives — the
+    // corruption only becomes visible when the thing it secretly depends on goes away. The install
+    // COPIES rather than adopting in place precisely so the substrate keeps working when the source
+    // moves, so this is the behaviour that was actually being promised.
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(frameworkDir) });
+    expect(r.outcome).toBe('acquired');
+    rmSync(frameworkDir, { recursive: true, force: true });
+    const exec = join(substrateRoot(dataDir), '7.7.7', EXECUTABLE);
+    expect(existsSync(exec)).toBe(true);
+    expect(readFileSync(exec, 'utf-8')).toBe('#!/bin/sh\n');
+    // And the record must still read as present: `readSubstrateRecord` follows the same chain.
+    expect(readSubstrateRecord(dataDir)?.version).toBe('7.7.7');
   });
 });
 

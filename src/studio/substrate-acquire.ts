@@ -210,7 +210,15 @@ export function localPathSource(dir: string): SubstrateSource | null {
     id: 'local-path',
     manifest,
     async install(destDir: string): Promise<void> {
-      cpSync(dir, destDir, { recursive: true });
+      // `verbatimSymlinks` IS THE WHOLE COPY, not a tuning flag. Without it Node resolves every
+      // symlink it copies and writes an ABSOLUTE link back into `dir` — and a desktop substrate is
+      // an application bundle whose frameworks are built on relative links
+      // (`Resources -> Versions/Current/Resources`, `Current -> A`). The default copy therefore
+      // installs a bundle that crashes at launch (`icudtl.dat not found in bundle`), executes bytes
+      // from OUTSIDE the substrate root — the one thing the record's containment rule claims is
+      // impossible — and dangles completely once the install source is deleted, which is exactly
+      // the case copying rather than adopting in place exists to survive.
+      cpSync(dir, destDir, { recursive: true, verbatimSymlinks: true });
     },
   };
 }
