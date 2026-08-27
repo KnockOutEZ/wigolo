@@ -28,6 +28,14 @@
       "import": "./dist/studio/run-bus.js",
       "types": "./dist/studio/run-bus.d.ts"
     },
+    "./studio/run-store": {
+      "import": "./dist/studio/run-store.js",
+      "types": "./dist/studio/run-store.d.ts"
+    },
+    "./config": {
+      "import": "./dist/config.js",
+      "types": "./dist/config.d.ts"
+    },
     "./studio-mcp-contract": {
       "import": "./dist/contracts/studio-mcp/index.js",
       "types": "./dist/contracts/studio-mcp/index.d.ts"
