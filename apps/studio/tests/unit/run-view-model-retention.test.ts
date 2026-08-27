@@ -211,11 +211,11 @@ describe('RunViewModel — a run that never terminates is bounded too', () => {
     // app. A bound that only fired at boot would leave the app growing all day and look fixed.
     const store = new FakeRunStore();
     const vm = new RunViewModel(store);
-    const ids: string[] = [];
-    for (let i = 0; i < LIVE_CEILING + 250; i++) {
-      ids.push((await store.createRun({ task: `${TASK} #${i}` })).id);
-      await new Promise((r) => { setTimeout(r, 0); });
-    }
+    // The adoption chains are pure microtasks, so one macrotask turn drains all of them — a timer per
+    // run instead costs the test the platform's timer granularity 850 times over, which is seconds on
+    // Windows and nothing on this machine. Draining together is also the harder shape for the cut:
+    // every adoption lands in one burst, and the survivors still have to be chosen by BIRTH.
+    const ids = await seedNeverTerminal(store, LIVE_CEILING + 250);
     await settle();
 
     expect(vm.retainedRunCount(), 'live adoption re-bought the retention boot no longer has')
