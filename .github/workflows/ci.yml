@@ -375,6 +375,11 @@ jobs:
         shell: bash
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' # warmup does the real install below
+          # `npm pack` runs `prepare` unconditionally — it is the hook's whole reason to
+          # exist — so without this the job full-builds a SECOND time on every one of the
+          # 6+1 matrix legs and the comment above is false. dist/ is already fresh from the
+          # previous step and pack reads the working tree, so the tarball is identical.
+          WIGOLO_SKIP_PREPARE: '1'
         run: |
           TGZ=$(npm pack 2>/dev/null | tail -1)
           echo "packed: $TGZ"

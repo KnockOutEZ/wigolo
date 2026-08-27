@@ -31,7 +31,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # No build step here either — the runner executes TypeScript sources via tsx — so the
+      # opt-out keeps the root `prepare` hook from building during `npm ci`.
       - run: npm ci
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       - name: Install browser engine
         run: npx playwright install --with-deps chromium

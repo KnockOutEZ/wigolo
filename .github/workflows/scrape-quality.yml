@@ -29,7 +29,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # The opt-out is what keeps the next comment true: the root `prepare` hook builds during
+      # `npm ci`, so without it this job has a build step after all — just an invisible one.
       - run: npm ci
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
 
       # No build step: the runner executes TypeScript sources directly via tsx and
       # reads only committed fixtures, so a stale dist/ cannot mask a regression.

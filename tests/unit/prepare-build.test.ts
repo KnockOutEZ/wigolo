@@ -1,9 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 /*
  * `scripts/prepare-build.mjs` is a two-armed decision and both arms fail FAR from their cause:
@@ -168,14 +178,12 @@ describe('the hook and its opt-out are wired, not merely written', () => {
     expect(pkg.scripts.prepare).toBe('node scripts/prepare-build.mjs');
   });
 
-  it('every ci.yml job that builds explicitly opts out of the install-time build', () => {
-    // Without this, each of these jobs builds twice — and in `lint-build-unit` the
-    // install-time build lands ahead of Lint, hiding a type error behind a build failure,
-    // which is precisely what that job's step order is arranged to prevent.
-    const optOuts = ci.match(/WIGOLO_SKIP_PREPARE: '1'/g) ?? [];
-    expect(optOuts).toHaveLength(3); // lint-build-unit, full-suite, clean-machine smoke
-
-    // And each opt-out is paired with an explicit build, so the tree still gets built.
+  it('every ci.yml opt-out is paired with an explicit build, so the tree still gets built', () => {
+    // Without the opt-out these jobs build twice — and in `lint-build-unit` the install-time
+    // build lands ahead of Lint, hiding a type error behind a build failure, which is
+    // precisely what that job's step order is arranged to prevent. WHICH steps carry it is
+    // pinned by the cross-workflow enumeration below, not by a count here.
+    expect(ci).toMatch(/WIGOLO_SKIP_PREPARE: '1'/);
     expect(ci).toMatch(/npm run build/);
   });
 
@@ -187,5 +195,126 @@ describe('the hook and its opt-out are wired, not merely written', () => {
     const gate = ci.slice(ci.indexOf('\n  gate:'), ci.indexOf('\n  full-suite:'));
     expect(gate).toContain('npm ci --ignore-scripts');
     expect(gate).not.toContain('WIGOLO_SKIP_PREPARE');
+  });
+});
+
+/*
+ * The opt-out is not a ci.yml concern: `prepare` fires in EVERY workflow that installs at the
+ * repository root, and a text search over one file cannot see the others. So the workflows are
+ * parsed and the rule is applied to every step in every one of them — which is also the only
+ * shape that reds when a NEW unguarded install step is added, since a count cannot distinguish
+ * "a step gained the opt-out" from "a step that needed it was added".
+ */
+describe('the prepare opt-out across every workflow that installs at the repo root', () => {
+  const WORKFLOWS = join(ROOT, '.github', 'workflows');
+
+  /** A step's effective working directory: its own, else the job's `defaults.run`, else root. */
+  type Step = { key: string; run: string; optedOut: boolean; atRoot: boolean };
+
+  function steps(): Step[] {
+    const out: Step[] = [];
+    for (const file of readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort()) {
+      const doc = parseYaml(readFileSync(join(WORKFLOWS, file), 'utf8')) as {
+        jobs?: Record<string, { defaults?: { run?: { 'working-directory'?: string } }; steps?: unknown[] }>;
+      };
+      for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
+        const jobDir = job.defaults?.run?.['working-directory'];
+        for (const raw of job.steps ?? []) {
+          const step = raw as {
+            name?: string;
+            run?: string;
+            env?: Record<string, unknown>;
+            'working-directory'?: string;
+          };
+          if (typeof step.run !== 'string') continue;
+          const dir = step['working-directory'] ?? jobDir;
+          out.push({
+            key: `${file} / ${jobId} / ${step.name ?? step.run.split('\n')[0]!.trim()}`,
+            run: step.run,
+            optedOut: String(step.env?.WIGOLO_SKIP_PREPARE ?? '') === '1',
+            atRoot: dir === undefined || dir === '.',
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * npm runs the root package's `prepare` on `npm ci`, on an argument-less `npm install`, and
+   * on `npm pack` — pack most surprisingly, since nothing in the step reads like an install.
+   * `npm i -g <tarball>` takes an argument and installs a different package, so it is not here.
+   */
+  // The lookbehind matters: `npm pack` appears inside `TGZ=$(npm pack ...)`, so anchoring on a
+  // preceding space or `&&` would miss the very step this issue is about.
+  const TRIGGERS_PREPARE = /(?<![\w./-])npm\s+(?:(?:ci|pack)(?![\w-])|(?:install|i)\s*$)/m;
+
+  /** Every root-scoped step that fires the hook, and therefore must suppress it. */
+  const affected = () =>
+    steps()
+      .filter((s) => s.atRoot && TRIGGERS_PREPARE.test(s.run))
+      .sort((a, b) => a.key.localeCompare(b.key));
+
+  it('fires on exactly these steps — a new root install step must appear here', () => {
+    // A set, not a count: adding an unguarded install step reds this with its own name in the
+    // diff, and deleting or renaming a guarded one reds it too.
+    expect(affected().map((s) => s.key)).toEqual([
+      'agent-benchmark.yml / benchmark / npm ci',
+      'binary-build.yml / build / Install dependencies',
+      'ci.yml / clean-machine-smoke / Install + build',
+      'ci.yml / clean-machine-smoke / Pack + global install (fresh `npm i -g wigolo`)',
+      'ci.yml / full-suite / npm ci',
+      'ci.yml / gate / Install dependencies',
+      'ci.yml / lint-build-unit / Install dependencies',
+      'extraction-benchmark.yml / benchmark / npm ci',
+      'release.yml / release / npm ci',
+      'scrape-quality-live.yml / live-comparison / npm ci',
+      'scrape-quality.yml / scrape-quality / npm ci',
+      'search-benchmark.yml / benchmark / npm ci',
+    ]);
+  });
+
+  it('every one of them suppresses the hook, by env or by --ignore-scripts', () => {
+    // This is the assertion the whole issue is about. Removing the env from any single step
+    // above names that step here.
+    const unguarded = affected()
+      .filter((s) => !s.optedOut && !s.run.includes('--ignore-scripts'))
+      .map((s) => s.key);
+    expect(unguarded).toEqual([]);
+  });
+
+  it('a job that installs somewhere other than the root is not swept in', () => {
+    // Control. Without it the working-directory logic could be exempting everything and the
+    // rule above would still be green. site.yml's build job sets `defaults.run.working-directory:
+    // site`, so its `npm ci` installs a different package and the root hook never fires; the
+    // release workflow's sub-package steps are the same shape with a per-step directory.
+    const offRoot = steps().filter((s) => !s.atRoot && TRIGGERS_PREPARE.test(s.run));
+    expect(offRoot.map((s) => s.key)).toContain('site.yml / build / npm ci');
+    expect(offRoot.length).toBeGreaterThan(1);
+    // And none of them wastes an opt-out pretending the root hook was ever in play.
+    expect(offRoot.filter((s) => s.optedOut)).toEqual([]);
+  });
+
+  it('clean-machine-smoke builds the root exactly once per matrix leg', () => {
+    // The job packs after it builds, and `npm pack` runs `prepare`, so before the opt-out this
+    // 3-OS × Node-22/24 (+arm) matrix paid for two full builds on every leg while the comment
+    // above the install step claimed it was one. Counted over parsed steps rather than read out
+    // of a log, because a log impression cannot fail a suite.
+    const job = steps().filter((s) => s.key.startsWith('ci.yml / clean-machine-smoke / '));
+    const explicit = job.filter((s) => /npm run build/.test(s.run));
+    expect(explicit).toHaveLength(1);
+    const implicit = job.filter((s) => TRIGGERS_PREPARE.test(s.run) && !s.optedOut);
+    expect(implicit.map((s) => s.key)).toEqual([]);
+  });
+
+  it('scrape-quality really has no build step, as its comment claims', () => {
+    // The comment ("No build step: the runner executes TypeScript sources directly via tsx")
+    // stopped being true the moment the root package gained a building `prepare` hook. Both
+    // halves are asserted: no explicit build, and no install-time one either.
+    const source = readFileSync(join(WORKFLOWS, 'scrape-quality.yml'), 'utf8');
+    expect(source).toContain('No build step');
+    const job = steps().filter((s) => s.key.startsWith('scrape-quality.yml / '));
+    expect(job.filter((s) => /npm run build/.test(s.run))).toEqual([]);
+    expect(job.filter((s) => TRIGGERS_PREPARE.test(s.run) && !s.optedOut)).toEqual([]);
   });
 });
