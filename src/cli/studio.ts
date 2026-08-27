@@ -57,9 +57,9 @@ import type {
   StudioHostHandlers,
 } from '../daemon/studio-dispatch.js';
 import { randomUUID } from 'node:crypto';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { spawn, type SpawnOptions } from 'node:child_process';
+import { readSubstrateRecord, type SubstrateRecord } from '../studio/substrate-acquire.js';
 
 /**
  * Headless broadcast sink. The v1 WS hub delivered these to a connected browser tab; the Electron app is now
@@ -1146,20 +1146,59 @@ export async function teardownStudioHost(
   );
 }
 
+/** The slice of a spawned child this rung uses. Structural, so a test fake is two lines. */
+export interface StudioChild {
+  on(event: 'error', listener: (err: Error) => void): unknown;
+  unref(): void;
+}
+
+export interface RunStudioDeps {
+  /** Data dir the acquisition record is read from. Injected so tests never touch the real one. */
+  dataDir?: string;
+  readRecord?: (dataDir?: string) => SubstrateRecord | null;
+  spawnFn?: (command: string, args: string[], options: SpawnOptions) => StudioChild;
+  log?: (msg: string) => void;
+}
+
 /**
- * Launch the Studio desktop app (dev). Packaging + a `wigolo studio` that focuses an installed binary is P8;
- * for now this spawns the app's dev process from the repo checkout (the `studio` command is internal/unadvertised).
- * The daemon-side headless host (startStudioHost) survives only to back tests; the app is the real session host.
+ * Launch the Studio desktop app, visibly, because a human typed the command.
+ *
+ * THE ACQUISITION RECORD IS THE ONLY SUBSTRATE — same single path `defaultLaunch` was reduced to when the
+ * studio repo split retired the dev-checkout rung. This call site was MISSED by that split and kept starting
+ * the package manager against the deleted sibling workspace: with no `workspaces` key and no `apps/` left, it
+ * printed `No workspaces found` and exited, and because the SPAWN itself succeeded, `child.on('error')` never fired.
+ * The command is internal/unadvertised, so the only symptom was silence after "Launching…". Anything that
+ * shells at a path which cannot exist trades a clean decline for a confusing failure; hence the decline arm.
+ *
+ * VISIBLE, not hidden — the one deliberate difference from auto-launch. Auto-launch sets
+ * `WIGOLO_STUDIO_HIDDEN` because the session serves the agent; here the human asked for a window, so the flag
+ * is stripped rather than merely unset, in case the shell already carried it.
+ *
+ * Detached and unref'd so the terminal returns: the run outlives the surface that started it, and the app is
+ * the session host — this process has no further part in it. The daemon-side headless host (startStudioHost)
+ * survives only to back tests.
+ *
+ * Focusing an ALREADY-RUNNING app rather than starting a second one is PX3's job, not this rung's.
  */
-export function runStudio(_args: string[]): void {
-  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  log('Launching Studio app (dev)…');
+export function runStudio(_args: string[], deps: RunStudioDeps = {}): void {
+  const emit = deps.log ?? log;
+  const acquired = (deps.readRecord ?? readSubstrateRecord)(deps.dataDir);
+  if (!acquired) {
+    emit('No Studio desktop component is installed on this machine — run `wigolo warmup` to set it up.');
+    return;
+  }
+  const target = join(acquired.path, acquired.executable);
+  emit(`Launching the Studio desktop component (version ${acquired.version})…`);
+  // Strip rather than leave alone: an inherited hidden flag would swallow the window the human asked for.
+  const env = { ...process.env };
+  delete env.WIGOLO_STUDIO_HIDDEN;
   try {
-    const child = spawn('npm', ['run', 'dev', '-w', 'apps/studio'], { cwd: repoRoot, stdio: 'inherit' });
+    const child = (deps.spawnFn ?? spawn)(target, [], { detached: true, stdio: 'ignore', env });
     child.on('error', (e) =>
-      log(`Failed to launch Studio app: ${e instanceof Error ? e.message : String(e)} (run \`npm run dev -w apps/studio\` from the repo).`),
+      emit(`Failed to launch the Studio desktop component: ${e instanceof Error ? e.message : String(e)}`),
     );
+    child.unref();
   } catch (e) {
-    log(`Failed to launch Studio app: ${e instanceof Error ? e.message : String(e)}`);
+    emit(`Failed to launch the Studio desktop component: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
