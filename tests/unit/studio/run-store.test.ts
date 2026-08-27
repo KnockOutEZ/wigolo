@@ -20,6 +20,7 @@ import {
   MAX_TASK_CHARS,
   AUTO_DENY_MS,
   MAX_LIST_LIMIT,
+  DEFAULT_LIST_LIMIT,
   MAX_LIST_SCAN_PAGES,
   MAX_LIST_SCAN_ROWS,
   DEFAULT_SPACE_ID,
@@ -395,6 +396,21 @@ describe('run-store — a pending decision expires on its own clock (pin 3)', ()
    */
   it('holds the consent window at the two minutes the contract promises', () => {
     expect(AUTO_DENY_MS).toBe(120_000);
+  });
+
+  /**
+   * WHY: the same reasoning one seam over, for the two listing bounds. Every arm that exercises them
+   * builds `MAX_LIST_LIMIT + 1` rows or reads `DEFAULT_LIST_LIMIT` of them and compares against the
+   * symbol, so all of them stay green whatever the numbers become — they pin the derivation, which is
+   * what they should pin, and they are silent about the value. Both numbers are contracts outside this
+   * file: `MAX_LIST_LIMIT` is what `GET /v1/runs?limit=` 400s above and what the OpenAPI document
+   * advertises as the maximum, and `DEFAULT_LIST_LIMIT` is both that document's default and the page
+   * size the app's boot divides its own run budget by. A silent change to either desynchronises a
+   * published schema from the router that enforces it.
+   */
+  it('holds the listing bounds at the values the REST contract publishes', () => {
+    expect(MAX_LIST_LIMIT).toBe(200);
+    expect(DEFAULT_LIST_LIMIT).toBe(50);
   });
 
   it('still needs you while the card can be answered', () => {
