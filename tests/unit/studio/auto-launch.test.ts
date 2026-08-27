@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultLaunch, ensureStudioRunning, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
@@ -298,5 +299,75 @@ describe('defaultLaunch', () => {
     const spawnFn = vi.fn();
     expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * THE ASYNCHRONOUS SPAWN FAILURE, which is a different failure from the one the suite above
+ * already covers.
+ *
+ * `spawn()` does NOT throw for ENOENT, EACCES or EPERM. It returns a child and reports the
+ * failure by emitting `'error'` on a later tick — so `ensureStudioRunning`'s try/catch, which
+ * can only ever see a synchronous throw, is not in the path at all. An `'error'` event with no
+ * listener is rethrown by `EventEmitter` as an uncaught exception, and this arm runs unattended
+ * on the fetch path, so the blast radius is the whole MCP process rather than one request.
+ *
+ * `runStudio` has carried this listener since it was written (src/cli/studio.ts); this arm was
+ * created without it, and the asymmetry is the defect.
+ *
+ * THE FAKE IS A REAL `EventEmitter` ON PURPOSE. The throw it produces with no listener attached
+ * is Node's own behaviour, not a simulation of it, which is what lets a bare `expect(...)` stand
+ * in for "the process would have died here" without actually killing the test runner.
+ */
+describe('a spawn that fails asynchronously must not kill the process', () => {
+  /** A stand-in child that records the state of its own listeners at `unref()` time. */
+  function fakeChild(order: string[]): EventEmitter & { unref(): void } {
+    const child = new EventEmitter() as EventEmitter & { unref(): void };
+    child.unref = () => order.push(`unref:errorListeners=${child.listenerCount('error')}`);
+    return child;
+  }
+
+  it('attaches the error listener BEFORE unref, so there is no window', () => {
+    plantSubstrateRecord(dir);
+    const order: string[] = [];
+    const child = fakeChild(order);
+
+    expect(defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) })).toBe(true);
+    // Not merely "a listener exists by the time the test looks" — it existed at the one moment
+    // the launcher hands the child away and stops being able to attach anything.
+    expect(order).toEqual(['unref:errorListeners=1']);
+  });
+
+  it('logs the failure and resolves null, instead of rethrowing it as an uncaught exception', async () => {
+    plantSubstrateRecord(dir);
+    const order: string[] = [];
+    const child = fakeChild(order);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const h = await ensureStudioRunning({
+        dataDir: dir,
+        launch: () => defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }),
+        launchable: () => true,
+        timeoutMs: 0,
+        pollMs: 1,
+        sleep: noSleep,
+      });
+      expect(h).toBeNull();
+
+      // Emitted only now, and that ordering IS the bug: the failure arrives after the launcher
+      // has returned, so nothing on the synchronous path can still be holding a catch for it.
+      let rethrown: unknown = null;
+      try {
+        child.emit('error', new Error('spawn EACCES'));
+      } catch (e) {
+        rethrown = e;
+      }
+      expect(rethrown).toBeNull();
+      // …and it is not swallowed either: an unattended launcher that fails silently leaves the
+      // operator with a degraded rung and no reason for it.
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toMatch(/spawn EACCES/);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
