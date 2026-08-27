@@ -1,6 +1,12 @@
 import { projectRun, type CreateRunInput, type ListRunsOptions, type ListRunsResult, type Run, type RunEvent, type RunEventInput, type StoredRunFacts } from 'wigolo/studio';
-import type { BrokerClient } from './broker-client';
-import { originOnly } from './url-policy';
+// Extensioned on purpose, unlike the app's other relative imports. This module is now imported by a
+// root `tests/integration` spec — the store's contract and this side's reaction to it are one claim
+// and a fixture on either side can only assert half of it — and the root projects resolve as
+// `nodenext`, where an extensionless relative specifier is an error. `Bundler` accepts the `.js`
+// form too, so the app's own type-check and build are unaffected. Drop the extensions only if
+// nothing outside `apps/studio` imports this file again.
+import type { BrokerClient } from './broker-client.js';
+import { originOnly } from './url-policy.js';
 
 /**
  * SD1 spine 1 — the run store is authoritative and this is a projection of it.

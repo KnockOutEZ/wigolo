@@ -2,7 +2,10 @@ import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stopBrokerChild } from 'wigolo/studio';
-import { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds';
+// Extensioned for the reason `run-view-model.ts` records: that module is imported by a root
+// `tests/integration` spec, this one is on its import graph, and the root projects resolve as
+// `nodenext`.
+import { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds.js';
 import type { ArtifactDelta, RunEvent } from 'wigolo/studio';
 
 /**
@@ -254,7 +257,7 @@ function describeNoRuntime(rejected: readonly NodeRuntimeRejection[]): string {
 }
 
 /** Re-exported so this module stays the one place a reader looks for the client's wire bounds. */
-export { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds';
+export { DEFAULT_MAX_FRAME_CHARS } from './broker-frame-bounds.js';
 
 /** A client that only ever reports why it is dead. Loud (the reason travels to every caller), not fatal. */
 function deadClient(reason: string): BrokerClient {
