@@ -1175,8 +1175,14 @@ export interface RunStudioDeps {
  * is stripped rather than merely unset, in case the shell already carried it.
  *
  * Detached and unref'd so the terminal returns: the run outlives the surface that started it, and the app is
- * the session host — this process has no further part in it. The daemon-side headless host (startStudioHost)
- * survives only to back tests.
+ * the session host — this process has no further part in it.
+ *
+ * The daemon-side headless host (`startStudioHost`) has no production caller and survives to back exactly two
+ * consumers, NAMED here because "only tests" once read as "therefore deletable" and cost 1,474 lines of host
+ * security pins: `tests/integration/studio-session-target.test.ts` (D19 session-id targeting through the REAL
+ * daemon + MCP dispatch — coverage of SHIPPED daemon code that has no other browserless driver) and
+ * `tests/unit/cli/studio.test.ts` (the bind / token / profile-origin / boot-order wiring pins). Excising the
+ * host means deleting both; do not do it until D19's pins live on another spine.
  *
  * Focusing an ALREADY-RUNNING app rather than starting a second one is PX3's job, not this rung's.
  */
