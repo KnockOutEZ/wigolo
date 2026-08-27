@@ -1,0 +1,13 @@
+{
+  "//": "Emit config for the contract's `src/**` — the ONLY way this package crosses a repo boundary. The package is `private: true`, exports raw TS and sits outside the root `workspaces` and `files`, so no npm mechanism can consume it as-is. Instead the root package builds it into `dist/contracts/studio-mcp/` and publishes it as the `wigolo/studio-mcp-contract` exports subpath, which a conformance suite in another repo imports from the pinned `wigolo` dependency. Single source of truth, no vendoring. `tsconfig.json` beside this file stays the noEmit type gate (`typecheck:contract`) over `src` AND `tests`; this one compiles `src` only — the tests never ship.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "../../dist/contracts/studio-mcp"
+  },
+  "include": ["src"]
+}
