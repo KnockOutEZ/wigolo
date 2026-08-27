@@ -526,7 +526,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
   it('drops the buffer on bytes even when the event count is nowhere near its ceiling', async () => {
     const written: number[] = [];
     // A count ceiling this high can never trip in this row: only the byte budget can end it.
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 30_000 });
     emitter.emit(ev(1));
 
     for (let seq = 2; seq <= 6; seq++) emitter.offer(big(seq));
@@ -541,7 +541,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
 
   it('delivers a buffer that fits the budget — the bound is a ceiling, not a tax on every tail', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 30_000 });
 
     emitter.offer(big(2));
     emitter.offer(big(3));
@@ -553,7 +553,7 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
 
   it('starts each replay window from zero bytes, so a delivered buffer is not charged twice', async () => {
     const written: number[] = [];
-    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 10_000 });
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), { onGap: noGaps, maxHeld: 10_000, maxBytes: 30_000 });
 
     emitter.offer(big(2));
     await emitter.goLive();
@@ -563,6 +563,118 @@ describe('the hold buffer is bounded in bytes as well as in events', () => {
 
     expect(emitter.overflowed()).toBe(false);
     expect(written).toHaveLength(19);
+  });
+});
+
+/**
+ * WHY: the byte ceiling above is only a bound if the number it spends is the number the heap grows
+ * by. It used to spend the serialized envelope's JSON length, and a held entry retains considerably
+ * more than that — it pins the ENVELOPE, the envelope keys the emitter's serialization cache, and so
+ * the cached frame and the parsed payload graph stay reachable for exactly as long as the entry.
+ * Measured at the 64 KB payload ceiling: 65,643 charged against 196,917 actually retained. An 8 MB
+ * ceiling was a ~24 MB buffer, and at the 32-connection cap across 32 distinct runs that is ~750 MB
+ * where the constant reasons about 256 MB. Bounded, so not a leak — a constant-factor undercharge,
+ * which is exactly the kind of thing no row notices unless one is written to state the ratio.
+ *
+ * These rows compute the retained figure from the event itself rather than asking the module for it,
+ * so they fail if the charge drifts back toward the wire size.
+ */
+describe('the hold buffer charges what a held entry retains, not just its wire size', () => {
+  const PAYLOAD_CHARS = 4096;
+
+  const sized = (seq: number): RunEvent => ({
+    seq,
+    ts: '2026-08-22T14:00:00.000Z',
+    actor: { kind: 'daemon' },
+    type: 'run.note',
+    payload: { text: 'x'.repeat(PAYLOAD_CHARS) },
+  });
+
+  /** The exact bytes this event puts on the wire — rebuilt here, not imported, so it is an outside signal. */
+  function wireFrameBytes(event: RunEvent): number {
+    const json = JSON.stringify(event);
+    return Buffer.byteLength(`id: ${event.seq}\nevent: ${event.type}\ndata: ${json}\n\n`);
+  }
+
+  /**
+   * What one held entry keeps alive: the cached frame, plus the envelope graph the entry pins, for
+   * which the JSON text's own length is the calibrated proxy, plus a flat per-entry allowance for
+   * the envelope's object headers and the buffer's own wrapper. Measured against real heap
+   * retention on 2026-08-27 at three payload shapes; at the 64 KB ceiling this predicts 131,828
+   * against a measured 131,524.
+   */
+  function retainedBytes(event: RunEvent): number {
+    return wireFrameBytes(event) + Buffer.byteLength(JSON.stringify(event)) + 512;
+  }
+
+  it('will not hold even one event in a budget the size of the frame that event puts on the wire', async () => {
+    const written: number[] = [];
+    // The frame alone is strictly less than the entry retains, because the entry also pins the
+    // envelope the frame was built from. Charging the wire size made this budget look sufficient.
+    const budget = wireFrameBytes(sized(2));
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), {
+      onGap: noGaps,
+      maxHeld: 10_000,
+      maxBytes: budget,
+    });
+
+    emitter.offer(sized(2));
+
+    expect(emitter.overflowed()).toBe(true);
+    await emitter.goLive();
+    expect(written).toEqual([]);
+  });
+
+  it('trips at the documented retention rather than at double it', async () => {
+    const per = retainedBytes(sized(2));
+    const written: number[] = [];
+    // Room for exactly three. A ceiling spent in wire bytes would fit six here, so the fourth event
+    // below is the one that separates the two units.
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), {
+      onGap: noGaps,
+      maxHeld: 10_000,
+      maxBytes: per * 3,
+    });
+
+    emitter.offer(sized(2));
+    emitter.offer(sized(3));
+    emitter.offer(sized(4));
+    expect(emitter.overflowed()).toBe(false);
+
+    emitter.offer(sized(5));
+    expect(emitter.overflowed()).toBe(true);
+
+    await emitter.goLive();
+    // Overflow is all-or-nothing here as everywhere else: the client resumes from the durable log
+    // rather than receiving three quarters of a buffer.
+    expect(written).toEqual([]);
+  });
+
+  it('re-holds a gap-door entry on the same unit it was first charged in', async () => {
+    const per = retainedBytes(sized(2));
+    const written: number[] = [];
+    const gaps: Array<[number, number]> = [];
+    // Two fit. The flush re-holds from the hole onward using the number stored on the entry, so if
+    // that stored number were the wire size while fresh holds cost retained bytes, the buffer would
+    // silently regain capacity every time it healed.
+    const emitter = createOrderedEmitter(0, (e) => written.push(e.seq), {
+      onGap: (from, arrivedAt) => { gaps.push([from, arrivedAt]); },
+      maxHeld: 10_000,
+      maxBytes: per * 2,
+    });
+
+    emitter.emit(sized(1));
+    // A hole: seq 3 with 2 never delivered. The flush hands 3 back to the buffer.
+    emitter.offer(sized(3));
+    await emitter.goLive();
+
+    expect(gaps).toEqual([[1, 3]]);
+    expect(written).toEqual([1]);
+    // One re-held entry, charged as one entry — a second fresh hold still fits, a third does not.
+    emitter.offer(sized(4));
+    expect(emitter.overflowed()).toBe(false);
+    emitter.offer(sized(5));
+    expect(emitter.overflowed()).toBe(true);
   });
 });
 

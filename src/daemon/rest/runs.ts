@@ -93,11 +93,23 @@ const DEFAULT_MAX_HELD_EVENTS = 2048;
  * The same ceiling in the unit the heap actually grows in.
  *
  * A count alone bounds the wrong thing: an event's payload is capped at `MAX_EVENT_PAYLOAD_CHARS`
- * (64k), so 2048 held events is a ~128 MB hold buffer PER TAIL and the count never notices. Events
+ * (64k), so 2048 held events is a ~257 MB hold buffer PER TAIL and the count never notices. Events
  * are small in practice, which is exactly why the count is the ceiling that normally trips — this
  * one exists for the traffic where it does not. Overflow behaviour is identical whichever ceiling
  * trips: the buffer is dropped and the stream ends, because half a buffer delivered is a hole in
  * the middle of the stream.
+ *
+ * THE UNIT IS RETAINED BYTES, NOT WIRE BYTES — see `SerializedEvent.retainedBytes`. This used to be
+ * spent in the serialized envelope's JSON length, which is a third of what a held entry actually
+ * keeps alive: the entry holds the ENVELOPE, the envelope keys the `serializedEvents` WeakMap, and
+ * so the cached strings AND the parsed payload graph all stay reachable for exactly as long as the
+ * entry does. Measured at the 64 KB payload ceiling: 65,643 charged against 196,917 retained, a 3.0x
+ * undercharge — an 8 MB ceiling was really a ~24 MB buffer, and the 32-connection cap across 32
+ * distinct runs reasoned about 256 MB while holding ~750 MB.
+ *
+ * Two changes make 8 MB here mean 8 MB of heap: the WeakMap record stopped retaining a second copy
+ * of the payload nobody read (~196,917 -> ~131,524 per held event), and the charge became the figure
+ * that survives (~131,828). Charge and retention now agree to ~0.2% at that ceiling.
  */
 const DEFAULT_MAX_HELD_BYTES = 8 * 1024 * 1024;
 /**
@@ -790,20 +802,59 @@ export interface OrderedEmitter {
 
 interface HeldEvent {
   event: RunEvent;
-  /** Measured once, at offer time — the flush pages on the same number the ceiling was taken on. */
+  /**
+   * Retained bytes, measured once at offer time — the flush pages on the same number the ceiling
+   * was taken on. `SerializedEvent.retainedBytes`, never `jsonBytes`: this entry is the reason the
+   * envelope, its json, its frame and its parsed graph are all still reachable.
+   */
   bytes: number;
 }
 
-/** Everything about an event that is the same for every subscriber — which is all of it. */
+/**
+ * What a held entry costs beyond the two strings and the payload text it demonstrably retains: the
+ * envelope's own object graph (`seq`/`ts`/`actor`/`type`/`payload` and their maps), the WeakMap
+ * record, and the `HeldEvent` wrapper. A flat figure rather than a multiplier because this part
+ * does not scale with the payload — measured 2026-08-27 at ~347 bytes for a `payload: {}` event and
+ * ~65 bytes on top of the payload string for a 64 KB one.
+ */
+const HELD_ENTRY_OVERHEAD_BYTES = 512;
+
+/**
+ * Everything about an event that is the same for every subscriber — which is all of it.
+ *
+ * Every field here is retained for as long as the envelope is, so a field nobody spends is heap
+ * nobody accounts for. This record used to carry the `json` string beside the `frame` built from
+ * it; nothing ever read it back, and it cost a second copy of the payload — a third of what a held
+ * entry retained, for a field with no consumer. It is gone. Add one back only with a reader.
+ */
 interface SerializedEvent {
-  /** The `data:` payload, and the whole of the expensive part. */
-  json: string;
   /** The finished frame. Byte-identical on every tail, because nothing in it varies by subscriber. */
   frame: string;
   /** `Buffer.byteLength(frame)` — what the pace and stall budgets are spent in. */
   frameBytes: number;
-  /** `Buffer.byteLength(json)` — what the hold buffer charges, measured on the envelope, not the frame. */
-  jsonBytes: number;
+  /**
+   * What one held entry keeps alive, and what the hold buffer charges against `maxBytes`.
+   *
+   * Two components, because holding the envelope holds both: the `frame` string (`frameBytes`), and
+   * the parsed payload graph the frame was serialized FROM, which the entry pins by holding the
+   * envelope itself. The graph is allowed for at the JSON text's own length plus
+   * `HELD_ENTRY_OVERHEAD_BYTES` — the text is a close proxy, because for the payloads this ceiling
+   * exists for it is mostly one big string that appears in both.
+   *
+   * Charging the JSON length ALONE — what this used to do — counted neither the frame nor the graph
+   * and let a stalled reader hold ~3x its budget.
+   *
+   * Calibrated against measured heap retention, and an over-charge across the traffic this ceiling
+   * exists for: at the 64 KB payload ceiling it charges 131,828 against a measured 131,524, and at a
+   * `payload: {}` event 750 against a measured 468. It UNDER-charges one shape — a payload of many
+   * tiny keys, where per-property V8 overhead outruns the JSON text that describes it (60 integer
+   * keys: 1,776 charged against 3,309 measured, ~1.9x). That residual is bounded by
+   * `DEFAULT_MAX_HELD_EVENTS` at ~6.5 MB per tail, i.e. INSIDE this ceiling rather than past it, so
+   * it is a stated margin and not a second undercharge. Closing it would need a structure-aware
+   * scan — an extra O(n) pass over every frame on the writer's stack — to bound a shape no run
+   * currently emits.
+   */
+  retainedBytes: number;
 }
 
 const serializedEvents = new WeakMap<RunEvent, SerializedEvent>();
@@ -831,6 +882,13 @@ const serializedEvents = new WeakMap<RunEvent, SerializedEvent>();
  * whose events go out of scope at the page boundary — so the added retention is one page's frames at
  * worst, the same ~32 MB figure `DEFAULT_SSE_FLUSH_BYTES` already reasons about. It is shared across
  * tails rather than per-tail: N tails hold the SAME envelope objects, because the bus publishes one.
+ *
+ * "One page's frames" was the replay's half of that trade and it stated the hold buffer's half
+ * wrong. The hold buffer is not bounded in frames — it was bounded in the envelope's JSON length,
+ * which does not count the frame this WeakMap keeps alive beside it, so the multiplier this record
+ * adds to a held entry never appeared in the figure `DEFAULT_MAX_HELD_BYTES` was reasoning about.
+ * The ceiling is now spent in `retainedBytes`, which counts everything a live record holds; that is
+ * what keeps the two halves of this trade honest against the same number.
  */
 function serializeRunEvent(event: RunEvent): SerializedEvent {
   const cached = serializedEvents.get(event);
@@ -841,11 +899,13 @@ function serializeRunEvent(event: RunEvent): SerializedEvent {
   // injection point — `refuses an event type that could forge an SSE frame` pins it.
   const json = JSON.stringify(event);
   const frame = `id: ${event.seq}\nevent: ${event.type}\ndata: ${json}\n\n`;
+  const frameBytes = Buffer.byteLength(frame);
   const value: SerializedEvent = {
-    json,
     frame,
-    frameBytes: Buffer.byteLength(frame),
-    jsonBytes: Buffer.byteLength(json),
+    frameBytes,
+    // The frame we retain, plus an allowance for the envelope graph a held entry pins alongside it.
+    // See the field's doc for the calibration and for the one shape this under-covers.
+    retainedBytes: frameBytes + Buffer.byteLength(json) + HELD_ENTRY_OVERHEAD_BYTES,
   };
   serializedEvents.set(event, value);
   return value;
@@ -894,12 +954,13 @@ export function createOrderedEmitter(
    * arriving during the first one do.
    */
   const hold = (event: RunEvent, measured?: number): void => {
-    // Measured on the serialized envelope because that is what the frame carries and what the
-    // buffer retains — the count says how MANY are held, this says how much of the daemon they own.
-    // `measured` is passed only when the entry is coming BACK out of this same buffer (the flush's
-    // gap door re-holds), where re-serializing to learn a number we already stored is pure waste.
-    // Everything else reads the number off the one serialization the frame is built from.
-    const bytes = measured ?? serializeRunEvent(event).jsonBytes;
+    // Spent in RETAINED bytes, not wire bytes: the count says how MANY are held, this says how much
+    // of the daemon's heap they own, and holding the envelope holds its json, its frame and its
+    // parsed graph together (see `SerializedEvent.retainedBytes`). `measured` is passed only when
+    // the entry is coming BACK out of this same buffer (the flush's gap door re-holds), where
+    // re-serializing to learn a number we already stored is pure waste — and it carries the same
+    // unit, because it is the number this line put on the entry the first time round.
+    const bytes = measured ?? serializeRunEvent(event).retainedBytes;
     if (held.length >= maxHeld || heldBytes + bytes > maxBytes) {
       held.length = 0;
       heldBytes = 0;
