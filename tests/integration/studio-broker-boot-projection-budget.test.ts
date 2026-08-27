@@ -210,6 +210,51 @@ describe('studio-db-broker — a condensed boot projection is charged and bounde
   });
 
   /**
+   * SD1 exit-18 — the two facts the host's half of this contract is built on.
+   *
+   * The row above pins the REPORT; this pins that the report is ACTIONABLE, which is what the host
+   * relies on and what nothing checked. `runGet` is the read the host's repair goes to
+   * (`run-view-model.ts`'s `rereadCondensed` → `replayOnce` → `recondense`), so the repair is only
+   * worth issuing if that read is not itself subject to the page's per-run cap — the cap belongs to
+   * `condenseProjection` and to nothing else. If it ever spreads to `runGet`, the host's re-read
+   * would come back exactly as short as the answer it was replacing, and the repair would be a
+   * round-trip that changed nothing.
+   *
+   * The host's own reaction is pinned in `apps/studio/tests/unit/run-view-model.test.ts` rather than
+   * here. It cannot be driven from this file: importing `run-view-model.ts` from a root spec pulls
+   * `wigolo/studio` into the root projects, and CI's `type gate` job runs `gate:studio` with no
+   * build — so the type-check debt ratchet fails on a `dist/` that does not exist there. Reverse
+   * this the moment that job builds core, or `apps/**` leaves `tsconfig.tests-debt.json`.
+   */
+  it('does not apply the page’s per-run card cap to the read the host repairs from', async () => {
+    const run = await handlers.runCreate({ input: { task: 'a run blocked on more cards than a page can carry' } });
+    const CARDS = MAX_BOOT_PENDING_CARDS + 7;
+    bulkInsert(getDatabase(), run.id, [...filler(FILLER_EVENTS), ...pendingCards(CARDS)]);
+
+    // Precondition: this run really is served short, so the comparison below is against a repair and
+    // not against a page that happened to fit.
+    const [entry] = (await handlers.runListLogs({})).entries;
+    expect(entry.projectionOmitted?.pendingDecisions, 'the fixture was not truncated — nothing to repair').toBe(
+      CARDS - entry.projection!.pendingDecisions.length,
+    );
+
+    const repaired = (await handlers.runGet({ runId: run.id }))!;
+    expect(
+      repaired.pendingDecisions.map((d) => d.decisionId).sort(),
+      'the read the host re-reads from is capped too — its repair would come back as short as the ' +
+      'answer it replaces, and the dropped cards would be unreachable from every surface',
+    ).toEqual(pendingCards(CARDS).map((_, i) => `d-${i}`).sort());
+    // And the log itself still holds every one of them, which is the claim `:103` makes about why a
+    // capped projection is not a loss. Counted in SQL rather than through `runEventsSince`, whose
+    // page is clamped to `MAX_EVENTS_PAGE` — the cards are this log's TAIL, so a single page of a
+    // 2,028-envelope run would report zero of them and the row would pass for the wrong reason.
+    const stored = getDatabase()
+      .prepare('SELECT COUNT(*) AS n FROM studio_run_events WHERE run_id = ? AND type = ?')
+      .get(run.id, 'decision.requested') as { n: number };
+    expect(stored.n, 'the cards the page dropped are not in the log either — nothing could repair them').toBe(CARDS);
+  });
+
+  /**
    * The cap must not fire on an ordinary run, or the condensed answer stops being the same answer
    * REST gives — which is the whole reason it is an acceptable substitute for the log.
    */

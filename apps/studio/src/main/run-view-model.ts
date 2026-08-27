@@ -34,6 +34,21 @@ export interface RunLogEntry {
   lastSeq?: number;
   /** A projection sent in place of a log too large for one frame. */
   projection?: Run;
+  /**
+   * What that projection had to leave out to fit the page's character budget, per field.
+   *
+   * The store bounds a condensed run's pending-card list by COUNT as well as by characters, and it
+   * reports the shortfall precisely so this side does not treat the shortened list as the run's state
+   * — see `MAX_BOOT_PENDING_CARDS` in `studio-db-broker.ts`. The report used to arrive and stop here:
+   * nothing carried it, so a run that raised more than the cap booted showing the cap's worth of
+   * cards, `runForDecision` could not find the rest, and no read was owed until the run happened to
+   * emit again. A run that then went quiet held those cards invisibly for the app's whole life.
+   *
+   * Present only when something was dropped, so an ordinary condensed entry is unchanged. `retain`
+   * answers a non-zero count with the same store re-read the horizon timer issues, which is what
+   * turns the report into a repair rather than a fact nobody acts on.
+   */
+  projectionOmitted?: { pendingDecisions: number };
   /** The session link `run.created` carries, when no envelope came with it to replay it from. */
   sessionId?: string;
 }
@@ -606,6 +621,8 @@ interface RetainOptions {
   lastSeq?: number;
   /** A projection to keep IN PLACE of envelopes too large to have been sent. */
   projection?: Run;
+  /** What that projection dropped to fit the store's page budget. See `RunLogEntry.projectionOmitted`. */
+  projectionOmitted?: { pendingDecisions: number };
   /** The session link, when no `run.created` envelope came with the entry to replay it from. */
   sessionId?: string;
 }
@@ -676,13 +693,15 @@ export class RunViewModel {
    */
   private readonly tabsByRun = new Map<string, Set<string>>();
   /**
-   * The tail seq at which each condensed run last had a CLOCK-driven re-read issued for it.
+   * The tail seq at which each condensed run last had a re-read issued for it.
    *
-   * `withoutExpiredDecisions` infers a status, and a condensed run asks the store for the real one
-   * rather than letting the guess stand. Once a run stays condensed across that re-read, asking again
-   * at the same tail cannot learn anything the last answer did not carry — and, if the store's clock
-   * disagrees about the card by a hair, each answer would narrow again and ask again forever. The
-   * tail moving is what makes a new answer possible, so the tail is what re-opens the question.
+   * Two things ask. `withoutExpiredDecisions` infers a status, and a condensed run asks the store for
+   * the real one rather than letting the guess stand; and a boot projection that reported dropped
+   * pending cards (`RunLogEntry.projectionOmitted`) is short by the store's own admission, so `retain`
+   * asks for the rest. Once a run stays condensed across that re-read, asking again at the same tail
+   * cannot learn anything the last answer did not carry — and, if the store's clock disagrees about a
+   * card by a hair, each answer would narrow again and ask again forever. The tail moving is what
+   * makes a new answer possible, so the tail is what re-opens the question.
    */
   private readonly statusRereads = new Map<string, number>();
   /**
@@ -1088,6 +1107,18 @@ export class RunViewModel {
     // After `indexTabs`, because a run that owns a tab is never evicted and this is where that becomes
     // known for a replaced log.
     this.reindex(facts.id);
+    // Last, once the log is in its final shape: an INCOMPLETE projection is not this run's state, it is
+    // the largest answer that fitted one frame. The store said so — see `RunLogEntry.projectionOmitted`
+    // — and the only honest response to "there are more cards than I could send" is to go and get
+    // them, which is the same re-read `snapshot` and the horizon timer already issue for a condensed
+    // run whose status was inferred rather than read. Without it the shortfall was installed as the
+    // run's current state on every surface at once.
+    //
+    // It terminates: the re-read arrives through `replayOnce`, which either materializes the log or
+    // recondenses from `getRun`, and NEITHER carries a `projectionOmitted` — only the boot listing's
+    // per-page budget can produce one. `rereadCondensed`'s per-tail dedupe is the second stop, so a
+    // re-read that lands still short at the same tail is not asked again.
+    if ((opts.projectionOmitted?.pendingDecisions ?? 0) > 0) this.rereadCondensed(facts.id);
   }
 
   /**
@@ -2195,7 +2226,12 @@ export class RunViewModel {
   }
 
   /**
-   * Ask the store for a condensed run's real status, at most once per tail. See `statusRereads`.
+   * Replace a condensed run's kept projection with one read from the store, at most once per tail.
+   *
+   * Called for the two ways a kept projection can be less than the run — a status this process
+   * INFERRED from the clock, and a card list the store told us it had to cut — because the repair is
+   * the same in both: the log is authoritative and it is one round-trip away. See `statusRereads` for
+   * why the tail is the dedupe key.
    */
   private rereadCondensed(runId: string): void {
     const log = this.logs.get(runId);

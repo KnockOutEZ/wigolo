@@ -76,6 +76,17 @@ export class FakeRunStore implements RunStoreClient {
    */
   bootCharCapTotal = Number.POSITIVE_INFINITY;
   /**
+   * How many pending cards ONE condensed projection may relay — the broker's `MAX_BOOT_PENDING_CARDS`.
+   *
+   * The other three caps bound the page; this one bounds a single RUN's answer, and it is the only
+   * one that can make a condensed entry short in a way its own fields cannot show: the projection
+   * still looks like a projection, just with fewer cards in it. So the store reports the shortfall
+   * out of band as `projectionOmitted`, and mirroring both halves here is what lets a host test drive
+   * the case at all — without the report the fake produces a truncation that is indistinguishable
+   * from a run that genuinely had that many cards, which is the defect rather than a fixture for it.
+   */
+  bootPendingCardCap = Number.POSITIVE_INFINITY;
+  /**
    * What every `listRunLogs` call so far has actually MATERIALIZED, summed across calls — the
    * instrument for "what did this whole boot cost the child", which is a claim no single page's
    * answer can see and no assertion about retention can either.
@@ -264,11 +275,18 @@ export class FakeRunStore implements RunStoreClient {
         }
       }
       const sessionId = events[0]?.payload.sessionId;
+      // The per-run card cap, and its report. Applied to a COPY: `run` came off `page`, which projects
+      // from the same log every other read here projects from, so cutting it in place would make the
+      // truncation look like the store's own state to the very next assertion.
+      const dropped = Math.max(0, run.pendingDecisions.length - this.bootPendingCardCap);
+      const projection =
+        dropped > 0 ? { ...run, pendingDecisions: run.pendingDecisions.slice(0, this.bootPendingCardCap) } : run;
       return {
         facts,
         events: [],
         lastSeq,
-        projection: run,
+        projection,
+        ...(dropped > 0 ? { projectionOmitted: { pendingDecisions: dropped } } : {}),
         ...(typeof sessionId === 'string' ? { sessionId } : {}),
       };
     });

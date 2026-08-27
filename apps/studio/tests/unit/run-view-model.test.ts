@@ -650,6 +650,92 @@ describe('RunViewModel — a boot read the pipe can carry', () => {
 });
 
 /**
+ * SD1 exit-18 — a condensed projection the store told us was INCOMPLETE.
+ *
+ * The store bounds a condensed run's pending-card list by count as well as by characters, and it
+ * reports the shortfall as `projectionOmitted` for one reason: so this side does not mistake the
+ * largest answer that fitted a frame for the run's state. The report shipped and nothing read it —
+ * `RunLogEntry` did not carry the field and `retain` never saw it — so a run holding more cards than
+ * the cap booted showing the cap's worth, and the rest were unreachable from every surface at once
+ * until the run happened to emit again. A run blocked on approvals is exactly the run that does not.
+ *
+ * This is the HOST half, and it is the only place it can be driven. Importing `run-view-model.ts`
+ * from a root `tests/integration` spec pulls `wigolo/studio` into the root projects, and CI's `type
+ * gate` job runs `gate:studio` with no build — so the debt ratchet fails there on a `dist/` that
+ * does not exist. The store half is pinned in
+ * `tests/integration/studio-broker-boot-projection-budget.test.ts` against the real broker: that the
+ * cap fires and reports, and that `runGet` — the read this repair goes to — is NOT itself capped, so
+ * a re-read cannot come back as short as the answer it replaces. `FakeRunStore.bootPendingCardCap`
+ * mirrors both halves of what that file pins, which is what makes these rows a claim about the host
+ * rather than about a fixture.
+ */
+describe('RunViewModel — a boot projection the store says is short', () => {
+  const CAP = 3;
+
+  /** A run condensed at boot, holding `cards` unresolved decisions against a store that relays `CAP`. */
+  async function seedCapped(cards: number): Promise<{ store: FakeRunStore; runId: string }> {
+    const store = new FakeRunStore();
+    const run = await store.createRun({ task: 'blocked on more cards than a frame can carry' });
+    for (let i = 0; i < cards; i++) {
+      await store.appendEvent(run.id, {
+        actor: { kind: 'agent' },
+        type: 'decision.requested',
+        payload: { decisionId: `d-${i}`, kind: 'approval', prompt: `approve ${i}?` },
+      });
+    }
+    // Forced onto the condensed branch, which is the only branch a projection cap can apply to.
+    store.bootEventCapPerRun = 1;
+    store.bootPendingCardCap = CAP;
+    return { store, runId: run.id };
+  }
+
+  it('goes back to the store for the cards the boot page could not carry', async () => {
+    const { store, runId } = await seedCapped(CAP + 4);
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+
+    await vi.waitFor(() =>
+      expect(
+        vm.snapshot(runId)!.pendingDecisions.map((d) => d.decisionId),
+        'the truncated list was installed as the run’s state — the cards are in the log and no ' +
+        'surface can reach them',
+      ).toEqual(Array.from({ length: CAP + 4 }, (_, i) => `d-${i}`)),
+    );
+    // The repair is a read of the store, not a projection this process invented from what it held —
+    // it held `CAP` cards and could not have derived the others from them.
+    expect(store.reads.some((r) => r === 'runFacts' || r === 'getRun')).toBe(true);
+    // And the run is answerable for every card, which is what `settle` needs to resolve one.
+    expect(vm.runForDecision(`d-${CAP + 3}`), 'a dropped card had no run to resolve it against').toBe(runId);
+  });
+
+  /**
+   * The must-not-fire side. `retain` is the seam every replay goes through, so a trigger that read
+   * "condensed" rather than "condensed AND reported short" would buy a round-trip per condensed run
+   * on every boot — and `recondense` retains through here too, which is how that becomes a loop
+   * rather than merely a cost.
+   */
+  it('leaves an ordinary condensed run alone, and does not re-read the repaired one twice', async () => {
+    const { store, runId } = await seedCapped(CAP);
+    const vm = new RunViewModel(store);
+    await vm.hydrate();
+    store.reads.length = 0;
+    await vi.waitFor(() => expect(vm.snapshot(runId)!.pendingDecisions).toHaveLength(CAP));
+
+    expect(store.reads, 'a condensed run that lost nothing bought a round-trip anyway').toEqual([]);
+
+    // …and the run that DID lose cards asks once. The re-read lands at the same tail it was issued
+    // at, and re-reading at a tail already asked cannot learn anything the answer did not carry.
+    const short = await seedCapped(CAP + 2);
+    const repaired = new RunViewModel(short.store);
+    await repaired.hydrate();
+    await vi.waitFor(() => expect(repaired.snapshot(short.runId)!.pendingDecisions).toHaveLength(CAP + 2));
+    const before = short.store.reads.length;
+    for (let i = 0; i < 5; i++) repaired.snapshot(short.runId);
+    expect(short.store.reads.length, 'every read of a repaired run bought another round-trip').toBe(before);
+  });
+});
+
+/**
  * perf SD1 exit-7 — what the FIRST live envelope after boot costs a condensed run.
  *
  * A run is condensed because it is long, and a live long run is exactly the one that emits next — so

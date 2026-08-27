@@ -100,10 +100,14 @@ export const MAX_BOOT_FRAME_CHARS = 4_000_000;
  * alone cannot reach.
  *
  * Twenty because the cards are a boot-screen surface — the panel shows the ones that need you, and
- * a human answers them one at a time. Dropped cards are REPORTED (`projectionOmitted`), never
- * silently lost: the run's log still holds every one of them, and the host replays it in bounded
- * pages when the run next speaks. Reverse this if a surface is ever built that must enumerate every
- * pending card at boot, from the projection, without reading the log.
+ * a human answers them one at a time. Dropped cards are REPORTED (`projectionOmitted`) and the host
+ * ACTS on the report: `run-view-model.ts`'s `retain` answers a non-zero count with the same store
+ * re-read it issues for a condensed run whose status it had to infer, so the short list is repaired
+ * rather than installed as the run's state. That second half is the whole reason the count travels —
+ * "reported" was true of the wire and false of the app until SD1 exit-18, and a run that raised more
+ * than the cap and then went quiet held the remainder invisibly for the app's lifetime. Reverse this
+ * if a surface is ever built that must enumerate every pending card at boot, from the projection,
+ * without reading the log.
  */
 export const MAX_BOOT_PENDING_CARDS = 20;
 
