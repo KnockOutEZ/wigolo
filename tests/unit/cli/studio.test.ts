@@ -1160,6 +1160,31 @@ describe('cli/studio D2/B — durable profile↔origin binding (M2 + anti-rebind
       }),
     ).rejects.toThrow(/rebind|bound to/);
   });
+
+  /**
+   * PIN-B3 — the third arm of the same block, and the one the restored suite did NOT carry: a profile
+   * that will not DECODE. Found by mutation while re-proving this family — deleting the refusal at
+   * src/cli/studio.ts left all 81 restored pins green.
+   *
+   * It is a fail-OPEN, not a crash: `malformed` is neither `ok` nor first-use, so with the throw gone
+   * the branch just logs and falls through with `profileBinding` still undefined. The host then boots a
+   * session that the operator believes is bound to an origin and which is bound to nothing — no
+   * expectedOrigin, so the confused-deputy guard PIN-1/B1/B2 enforce has no origin to compare against.
+   * A corrupt file on disk must not be able to unbind a named profile.
+   */
+  it('PIN-B3 (malformed fails CLOSED): a profile that will not decode refuses to start, it does not start unbound', async () => {
+    const malformedStore = {
+      get: async () => ({ ok: false as const, reason: 'malformed' as const }),
+      set: async () => {},
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://a.example/login' });
+    await expect(
+      startStudioHost({
+        port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+        profileId: 'gh', profileStore: malformedStore, profileOrigin: 'https://a.example',
+      }),
+    ).rejects.toThrow(/unreadable|malformed/);
+  });
 });
 
 /**
