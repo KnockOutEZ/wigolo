@@ -378,8 +378,12 @@ export const MAX_ADOPT_RETRIES = 8;
  * Sealing bounded what a finished run COSTS — its envelopes go, its projection stays — and left the
  * count itself unbounded. Runs are never deleted, `hydrate` deliberately keeps runs a later listing
  * did not name, and nothing ever removed a key: `logs` and `statusRereads` gained one entry per run
- * this process had ever seen and gave none of it back, for the life of the app. That is the only
- * monotonic retention left here, and it is the one every walk over `logs` is charged for.
+ * this process had ever seen and gave none of it back, for the life of the app.
+ *
+ * This bound covers the runs that REACH a terminal event. `MAX_RETAINED_LIVE_RUNS` is the other arm,
+ * and it is not a refinement of this one: a run that never terminates is never sealed, so no cut this
+ * bound makes can ever reach it, and that population grows with the machine's lifetime exactly the way
+ * this one used to. Between them they are what makes retention here bounded at all.
  *
  * A terminal, hidden, sealed run is the one class that can be dropped without changing an answer,
  * because it can never become listable again: `isListable` re-opens only on `visibility === 'visible'`
@@ -420,6 +424,85 @@ export const MAX_RETAINED_SEALED_RUNS = 500;
  * and the bound this class actually promises is that ceiling, not the round number in it.
  */
 export const SEALED_EVICTION_SLACK = 100;
+
+/**
+ * How many LISTABLE runs this process keeps the projection of — the other half of the retention bound.
+ *
+ * `MAX_RETAINED_SEALED_RUNS` cuts the `sealed` set, and a run only enters that set once a terminal
+ * envelope has been folded for it. Two ordinary populations never produce one:
+ *
+ *  - a run created over REST. The REST surface appends its `run.created` and nothing afterwards — see
+ *    `ADOPT_RETRY_BASE_MS`, whose whole point is that such a run has no later envelope — so it is
+ *    permanently `running`.
+ *  - a run whose terminal append was truncated by a force-quit past the shutdown deadline. There is no
+ *    reaper behind that, so the log ends without a verdict and the run is `running` forever.
+ *
+ * Both are listable, so `reindex` files them in `live` and nothing ever takes them out: `live` and
+ * `logs` grew with the machine's lifetime population of them, `hydrate` reloaded every one at each
+ * boot with no status filter, and the three fan-out listeners walked the whole set at up to one
+ * fan-out per frame on the thread that paints. The measured cost in `listLive`'s note — 4.6 MB and
+ * 7 ms of a 16 ms frame at 10,000 runs — was taken against terminal runs, and this population re-buys
+ * precisely it, because narrowing the walk to `live` cannot exclude a run that never leaves `live`.
+ *
+ * So the same cut, on the same rule, over the other set: by the run's own `createdAt`, batched by a
+ * slack, with the exemptions below outranking the number. Anything dropped re-adopts from the store
+ * through `applyEvent`'s unknown-run arm the moment something asks — the same path a run created by
+ * another writer already takes, and the same reason dropping a sealed run is safe.
+ *
+ * Five hundred for the reason the sealed bound is five hundred: no surface here names more than a page
+ * of runs. It is deliberately NOT smaller than the sealed bound even though a live run is the more
+ * consequential one to drop, because the two populations are answered by the same surfaces and a
+ * machine that is genuinely running five hundred concurrent runs has a scheduling problem rather than
+ * a retention one.
+ */
+export const MAX_RETAINED_LIVE_RUNS = 500;
+
+/**
+ * How far past `MAX_RETAINED_LIVE_RUNS` the live set may drift before it is cut back — the same trade
+ * `SEALED_EVICTION_SLACK` records, for the same reason: the cut orders by birth, ordering costs a
+ * sort, and a per-run sort at boot is that sort once per hydrated run.
+ *
+ * It does a second job here that it does not do for `sealed`. The exemptions below can pin the set
+ * above the bound with nothing left to drop, and a cut that cannot reach the bound must not re-sort on
+ * every subsequent add — see `liveHighWater`, which advances by exactly this much each time that
+ * happens, so the amortised cost of a pinned set is one sort per slack rather than one per run.
+ */
+export const LIVE_EVICTION_SLACK = 100;
+
+/**
+ * How many runs a whole boot will hydrate, across every page.
+ *
+ * Derived from what retention can HOLD rather than chosen, because a page past that point is read,
+ * parsed, retained and then evicted by the cut at the end of `hydrate` — work whose entire product is
+ * thrown away. The listing is newest-first and both cuts drop the oldest-born, so the runs a longer
+ * boot would reach are exactly the ones the cuts would then discard.
+ *
+ * This is the bound `MAX_HYDRATION_PAGES` was standing in for and could not be. That constant is a
+ * spin guard on a store that returns a cursor forever; it is `DEFAULT_LIST_LIMIT × 200` = 10,000 runs,
+ * which is eight times what this process is willing to keep, and on the projection branch every one of
+ * those pages was an uncharged `listRuns` — K-82-1 measured one 50-run page of it at 1,109 ms in the
+ * child that serialises every other read during boot.
+ */
+export const MAX_BOOT_HYDRATION_RUNS =
+  MAX_RETAINED_LIVE_RUNS + LIVE_EVICTION_SLACK + MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK;
+
+/**
+ * How many characters the projection-only pages of a boot may make the store READ.
+ *
+ * `MAX_BOOT_HYDRATION_CHARS` bounds the log branch, and the projection branch was the door beside it
+ * that nothing metered: `hydrateProjectionPage` was a bare `store.listRuns` with no charge at all, so
+ * the branch the char allowance falls through to was itself free. A `listRuns` page is not cheap —
+ * it fully projects `limit + 1` runs, and a projection reads every `tab.attached`/`tab.detached` row
+ * the run has ever written, deliberately unbounded per run (`src/studio/run-store.ts`'s
+ * `PROJECTION_EVENT_TYPES` note). Free × `MAX_HYDRATION_PAGES` is the same multiplication the log
+ * branch's allowance was added to remove, one branch over.
+ *
+ * Pinned to the log branch's own allowance: the projection tail of a boot may cost what one frame
+ * costs, never what two hundred do. Charged by what the STORE reports it read (`ListRunsResult`'s
+ * `charsSpent`) rather than by what came back, for the reason `RunLogPage.eventsSpent` records — the
+ * expensive rows are the ones a projection condenses away, so the answer's size is silent about them.
+ */
+export const MAX_BOOT_PROJECTION_CHARS = MAX_BOOT_HYDRATION_CHARS;
 
 /** A memoised projection, plus the moment the clock alone stops it being true. */
 interface ProjectionMemo {
@@ -540,6 +623,21 @@ export interface HydrateOptions {
    * one cannot reach it.
    */
   charBudget?: number;
+  /**
+   * The character allowance for this hydration's PROJECTION-only pages, defaulting to
+   * `MAX_BOOT_PROJECTION_CHARS`. Separate from `charBudget` because it gates a different branch: the
+   * projection pages are the ones taken once `charBudget` is already spent, so a single allowance
+   * shared between them could only ever be exhausted before the second branch made its first call.
+   */
+  projectionCharBudget?: number;
+  /**
+   * How many runs this hydration may take in total, defaulting to `MAX_BOOT_HYDRATION_RUNS`.
+   *
+   * Injectable for the same reason as the other two, and it is the one a CHEAP corpus needs: a page of
+   * short runs spends almost nothing of either character allowance, so neither of them can stop a boot
+   * that is long rather than heavy.
+   */
+  runBudget?: number;
 }
 
 export class RunViewModel {
@@ -596,8 +694,21 @@ export class RunViewModel {
    * `running`, both listable. So a run leaves this set once and never re-enters except by a replay,
    * which goes through `retain` and re-adds it. Nothing is ever missed by pruning late; the walk is
    * amortised O(1) per run instead of O(retained runs) per fan-out.
+   *
+   * The set is BOUNDED as well as narrow — `MAX_RETAINED_LIVE_RUNS`. Narrowing alone was not enough:
+   * a run that never terminates never leaves the set, so for the two populations that produce one the
+   * walk was over the machine's lifetime count again.
    */
   private readonly live = new Set<string>();
+  /**
+   * The size the live set has to reach before it is worth trying to cut again — see `evictLive`.
+   *
+   * Zero whenever the last cut reached the bound, which is the ordinary case and the one where the
+   * plain slack decides. It is only ever raised when the cut was refused by the exemptions, which is a
+   * state that does not fix itself: without this, a set pinned above the bound by six hundred tabbed
+   * runs would sort itself on every single add for the life of the app.
+   */
+  private liveHighWater = 0;
   /**
    * The terminal, unwatched, sealed runs — the candidates for `MAX_RETAINED_SEALED_RUNS`.
    *
@@ -781,22 +892,40 @@ export class RunViewModel {
     // page while handing the store a freshly reset per-call budget each time.
     let eventsLeft = opts.eventBudget ?? MAX_BOOT_HYDRATION_EVENTS;
     let charsLeft = opts.charBudget ?? MAX_BOOT_HYDRATION_CHARS;
+    // The projection branch's own allowances. It used to have none of either — `hydrateProjectionPage`
+    // was a bare `listRuns` with no charge — so the branch that exists to be the CHEAP one was the only
+    // unmetered call in the loop, taken for up to `MAX_HYDRATION_PAGES` pages in a row.
+    let projectionCharsLeft = opts.projectionCharBudget ?? MAX_BOOT_PROJECTION_CHARS;
+    let runsLeft = opts.runBudget ?? MAX_BOOT_HYDRATION_RUNS;
     // EVERY page, not the first one. This called `loadLogs()` with no options, which takes
     // `DEFAULT_LIST_LIMIT` runs and drops the `nextCursor` the store hands back with them — so a
     // machine with fifty-one runs booted the app showing fifty, and the fifty-first stayed invisible
     // until it happened to emit, because nothing calls `hydrate` after boot.
-    for (let page = 0; page < MAX_HYDRATION_PAGES; page++) {
+    //
+    // `MAX_HYDRATION_PAGES` stays as the spin guard it was described as; `runsLeft` is the bound that
+    // actually stops an ordinary boot, because it is the one derived from what retention can hold.
+    for (let page = 0; page < MAX_HYDRATION_PAGES && runsLeft > 0; page++) {
       const pageOpts = cursor ? { cursor } : {};
-      const nextCursor =
-        eventsLeft > 0 && charsLeft > 0
-          ? await this.hydrateLogPage(pageOpts, (events, chars) => { eventsLeft -= events; charsLeft -= chars; })
-          : await this.hydrateProjectionPage(pageOpts);
+      let nextCursor: string | undefined;
+      if (eventsLeft > 0 && charsLeft > 0) {
+        nextCursor = await this.hydrateLogPage(pageOpts, (runs, events, chars) => {
+          runsLeft -= runs; eventsLeft -= events; charsLeft -= chars;
+        });
+      } else {
+        // Checked before the call and not after it, so the page that would overrun is never made.
+        if (projectionCharsLeft <= 0) break;
+        nextCursor = await this.hydrateProjectionPage(pageOpts, (runs, chars) => {
+          runsLeft -= runs; projectionCharsLeft -= chars;
+        });
+      }
       if (!nextCursor || nextCursor === cursor) break;
       cursor = nextCursor;
     }
-    // The cut with no slack — see `evictSealed`. The pages arrived newest-first, so whatever is left
-    // in the slack at the end of a boot is the oldest run on the machine rather than a recent one.
+    // The cuts with no slack — see `evictSealed` and `evictLive`. The pages arrived newest-first, so
+    // whatever is left in the slack at the end of a boot is the oldest run on the machine rather than
+    // a recent one.
     this.evictSealed(true);
+    this.evictLive(true);
     this.emit();
   }
 
@@ -811,10 +940,11 @@ export class RunViewModel {
    * the report: `loadLogs`'s own listing-plus-read path materializes every log it returns and
    * condenses nothing, so there what arrived IS what was read.
    */
-  private async hydrateLogPage(opts: ListRunsOptions, charge: (events: number, chars: number) => void): Promise<string | undefined> {
+  private async hydrateLogPage(opts: ListRunsOptions, charge: (runs: number, events: number, chars: number) => void): Promise<string | undefined> {
     const page = await this.loadLogs(opts);
     for (const entry of page.entries) this.retain(entry.facts, entry.events, entry);
     charge(
+      page.entries.length,
       page.eventsSpent ?? page.entries.reduce((n, entry) => n + entry.events.length, 0),
       page.charsSpent ?? 0,
     );
@@ -836,10 +966,18 @@ export class RunViewModel {
    * and because the alternative is a round-trip per run, which is the boot cost this whole path exists
    * to remove. `retain` carries a session link this projection already holds, so a re-hydration never
    * loses one it had. See DECISIONS-AUTO.md (2026-08-24) for the reversal condition.
+   *
+   * CHARGED, which it was not. "Cheaper than the log branch" is not "free": the store fully projects
+   * every run on the page, and a projection reads every tab row the run has ever written with no
+   * per-run bound. So this branch is metered on the same rule as the other one — by what the STORE
+   * reports it READ, never by what came back, because the rows that cost the most are exactly the ones
+   * a projection folds away. A store that reports nothing is charged what it shipped instead, which is
+   * the honest floor for a binding with no meter and is never zero for a non-empty page.
    */
-  private async hydrateProjectionPage(opts: ListRunsOptions): Promise<string | undefined> {
-    const { runs, nextCursor } = await this.store.listRuns(opts);
+  private async hydrateProjectionPage(opts: ListRunsOptions, charge: (runs: number, chars: number) => void): Promise<string | undefined> {
+    const { runs, nextCursor, charsSpent } = await this.store.listRuns(opts);
     for (const run of runs) this.retain(factsOf(run), [], { lastSeq: run.lastSeq, projection: run });
+    charge(runs.length, charsSpent ?? JSON.stringify(runs).length);
     return nextCursor;
   }
 
@@ -961,7 +1099,13 @@ export class RunViewModel {
     // folding is listable by definition of not being terminal-and-hidden, and asking would project it.
     if (log.kept === undefined || isListable(log.kept)) {
       this.sealed.delete(runId);
-      this.live.add(runId);
+      // The cut runs on the ADD and not on every re-file, so an ordinary fold — which re-indexes the
+      // same live run on every envelope — costs one `Set.has` rather than a bound comparison and a
+      // possible sort. Same shape as the sealed arm below, which is guarded by `sealed.has`.
+      if (!this.live.has(runId)) {
+        this.live.add(runId);
+        this.evictLive();
+      }
       return;
     }
     this.live.delete(runId);
@@ -974,16 +1118,13 @@ export class RunViewModel {
   }
 
   /**
-   * Cut the sealed set back to the bound, dropping the runs that were BORN earliest.
+   * Cut the sealed set back to the bound, dropping the runs that were BORN earliest — see
+   * `oldestFirst` for why birth is the order, and `SEALED_EVICTION_SLACK` for why the cut is batched
+   * rather than run once per sealed run.
    *
-   * By birth rather than by when this process filed them, because the two producers file in opposite
-   * orders and only one of them is the ordinary case: `hydrate` pages the listing newest-first, so
-   * dropping the least-recently-filed run would keep the machine's five hundred OLDEST finished runs
-   * and evict everything a human might still be looking for. See `SEALED_EVICTION_SLACK` for why the
-   * cut is batched rather than run once per sealed run.
-   *
-   * `createdAt` is ISO-8601, so string order is chronological order. A run whose log has already gone
-   * sorts first and is dropped first, which is right: there is nothing left to keep.
+   * A prefix slice rather than the take-until-enough walk `evictLive` uses, because nothing exempts a
+   * sealed run: the two exemptions that can refuse the live cut — holding a tab, being visible — are
+   * both states that keep a run OUT of `sealed` in the first place (`reindex`).
    *
    * `force` cuts to the bound with no slack, and `hydrate` ends with one. Without it the slack is not
    * merely slack at boot, it is a hole: the pages arrive newest-first, so the runs still sitting in
@@ -992,15 +1133,79 @@ export class RunViewModel {
    */
   private evictSealed(force = false): void {
     if (this.sealed.size <= (force ? MAX_RETAINED_SEALED_RUNS : MAX_RETAINED_SEALED_RUNS + SEALED_EVICTION_SLACK)) return;
-    const bornAt = (runId: string): string => this.logs.get(runId)?.facts.createdAt ?? '';
-    const byAge = [...this.sealed].sort((a, b) => {
-      const [x, y] = [bornAt(a), bornAt(b)];
-      return x < y ? -1 : x > y ? 1 : 0;
-    });
-    for (const runId of byAge.slice(0, byAge.length - MAX_RETAINED_SEALED_RUNS)) {
+    for (const runId of this.oldestFirst(this.sealed).slice(0, this.sealed.size - MAX_RETAINED_SEALED_RUNS)) {
       this.sealed.delete(runId);
       this.forget(runId);
     }
+  }
+
+  /**
+   * Cut the LIVE set back to its bound, on the same rule and with two exemptions that outrank it.
+   *
+   * The set this cuts is the one `MAX_RETAINED_LIVE_RUNS` describes: runs a surface could still render,
+   * which is every run this process holds that has not been sealed. A run that never terminates never
+   * reaches `sealed`, so before this existed there was no arm of any kind that could drop one.
+   *
+   * Unlike the sealed cut, this one can be REFUSED per run, so it walks oldest-first and takes until it
+   * has dropped enough rather than slicing a prefix. The two exemptions:
+   *
+   *  - the run OWNS a tab. Law 4: dropping it drops its rows from the tab index, and a tab with no
+   *    owner is the human's. Read from `tabsByRun`, so it costs a map lookup.
+   *  - the run is VISIBLE. `run-presentation` decides whether the window is shown by asking `listLive`
+   *    whether any run is visible, so evicting a promoted run closes the window over a run that is
+   *    still going, with no envelope coming to bring it back — the failure the eviction is supposed to
+   *    be invisible against. A condensed run answers from what it kept; anything else is projected,
+   *    and only for the candidates this cut actually walks.
+   *
+   * The walk is what those exemptions cost, and they can pin the set above the bound indefinitely — a
+   * machine holding six hundred tabbed runs has nothing this may drop. `liveHighWater` is what keeps
+   * that from re-sorting on every subsequent add: a cut that could not reach the bound raises the next
+   * cut's trigger by one slack, so the amortised cost stays one sort per `LIVE_EVICTION_SLACK` runs
+   * whether or not the cut can do anything.
+   */
+  private evictLive(force = false): void {
+    const trigger = force
+      ? MAX_RETAINED_LIVE_RUNS
+      : Math.max(MAX_RETAINED_LIVE_RUNS + LIVE_EVICTION_SLACK, this.liveHighWater);
+    if (this.live.size <= trigger) return;
+    let over = this.live.size - MAX_RETAINED_LIVE_RUNS;
+    for (const runId of this.oldestFirst(this.live)) {
+      if (over <= 0) break;
+      if (!this.evictableLive(runId)) continue;
+      // `forget` removes it from `live` as well — see the note there about dropping EVERY row.
+      this.forget(runId);
+      over--;
+    }
+    this.liveHighWater = this.live.size > MAX_RETAINED_LIVE_RUNS ? this.live.size + LIVE_EVICTION_SLACK : 0;
+  }
+
+  /**
+   * May the live cut drop this run? See `evictLive` for why each answer is what it is.
+   *
+   * A run with no log left is trivially droppable — it is already gone and only the candidate entry
+   * remains, which is the state `listLive`'s late prune also handles.
+   */
+  private evictableLive(runId: string): boolean {
+    if (this.tabsByRun.has(runId)) return false;
+    const log = this.logs.get(runId);
+    if (!log) return true;
+    return (log.kept ?? this.snapshot(runId))?.visibility !== 'visible';
+  }
+
+  /**
+   * The eviction order both cuts use: the run's own birth, oldest first.
+   *
+   * By birth rather than by when this process filed them, because the two producers file in opposite
+   * orders and only one of them is the ordinary case — `SEALED_EVICTION_SLACK` has the argument.
+   * `createdAt` is ISO-8601, so string order is chronological order. A run whose facts have already
+   * gone sorts first and is dropped first, which is right: there is nothing left to keep.
+   */
+  private oldestFirst(ids: ReadonlySet<string>): string[] {
+    const bornAt = (runId: string): string => this.logs.get(runId)?.facts.createdAt ?? '';
+    return [...ids].sort((a, b) => {
+      const [x, y] = [bornAt(a), bornAt(b)];
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
   }
 
   /**
@@ -1512,6 +1717,12 @@ export class RunViewModel {
    * count exactly the way the state push did. A sealed run is skipped without projecting at all — its
    * kept projection states the terminal status, and no read can move that.
    *
+   * The walk is still over `logs` rather than over `live`, and that is now bounded rather than merely
+   * narrowed: `logs` holds at most the two retention ceilings plus what their exemptions pin, so this
+   * costs a page of runs and not the machine's lifetime population. Before the live ceiling existed the
+   * skip was the only thing between this and an unbounded walk, and the skip cannot fire for a run that
+   * never terminates — which is the class this walk was most likely to be full of.
+   *
    * Narrowing it costs nothing observable. The one caller, `run-decisions`' `settle`, hands whatever
    * it gets back to `resolveDecision`, which refuses on the run lane once the run is terminal —
    * appending a `decision.resolved` after `run.completed` would be an out-of-order fact in an
@@ -1912,9 +2123,13 @@ export class RunViewModel {
    * comparison here instead of a `snapshot` call. A terminal run that is NOT sealed (adopted
    * mid-flight, say) falls through to the correct arm rather than to a wrong answer.
    *
-   * The WALK is over the `live` candidate set rather than over every run this process retains, which
-   * is the difference between "costs what the human is looking at" and "costs what the machine has
-   * ever run". Both narrowings are needed and neither replaces the other: the set bounds how many runs
+   * The WALK is over the `live` candidate set rather than over every run this process retains. That
+   * narrowing is worth exactly what the set is BOUNDED by, and on its own it was worth nothing for the
+   * two populations that never terminate: a run with no terminal envelope never leaves `live`, so the
+   * walk was over the machine's lifetime count of them and the cost this note measures was re-bought in
+   * full. `MAX_RETAINED_LIVE_RUNS` is what makes the sentence true — the walk costs a page of runs,
+   * never what the machine has ever run. Both narrowings are needed and neither replaces the other:
+   * the set bounds how many runs
    * are visited, the log check bounds what visiting one costs. A run that has left the set is dropped
    * from it HERE, on the read, rather than at the fold that made it non-listable — a candidate can
    * only ever be stale in the one direction, so a late prune answers identically and the fold stays a
