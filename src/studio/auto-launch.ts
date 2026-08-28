@@ -43,6 +43,17 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
 /**
+ * How long a launch that produced no handle is remembered.
+ *
+ * SHORT ON PURPOSE. Every failure mode behind it is one a human fixes in seconds — `chmod +x`, an
+ * approved Gatekeeper dialog, a reinstall, starting the app by hand — so the memo must not outlive
+ * the fix. Long enough that one fan-out pays the timeout once; short enough that the next fan-out
+ * re-checks. A handle appearing invalidates it immediately, which is what keeps it a memo rather
+ * than a lockout, so this number only bounds the no-signal case.
+ */
+const DEFAULT_NO_HANDLE_MEMO_MS = 60_000;
+
+/**
  * What a launcher reports back, and the reason it is not a bare boolean.
  *
  * A boolean can only answer "did I attempt a start", which leaves the caller blind to the failure
@@ -75,6 +86,11 @@ export interface AutoLaunchDeps {
   launchable?: () => boolean;
   timeoutMs?: number;
   pollMs?: number;
+  /**
+   * How long a launch that produced no handle is remembered. `0` disables the memo — the shape the
+   * pre-memo suite asserts, and the escape hatch for a caller that genuinely wants every attempt.
+   */
+  memoMs?: number;
   sleep?: (ms: number) => Promise<void>;
   readHandleFn?: (dataDir?: string) => SessionHandle | null;
 }
@@ -238,22 +254,49 @@ function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome 
 let inFlight: Promise<SessionHandle | null> | null = null;
 
 /**
+ * When the last launch that produced no handle stops being remembered. `0` means nothing to remember.
+ *
+ * `inFlight` IS NOT THIS. Single-flight only collapses launches that OVERLAP — it clears in the
+ * `finally` — and a crawl does not overlap: `src/fetch/router.ts` reaches the bridge rung once per
+ * page, sequentially, and `src/fetch/studio-bridge.ts` awaits `ensureStudioRunning` each time. So
+ * against a substrate that cannot start, 20 challenged pages paid 20 separate budgets: ~10 minutes
+ * of sleeping and 20 dead spawn attempts for one broken install. The memo is what makes a fan-out
+ * pay it once.
+ */
+let noHandleUntil = 0;
+
+/**
  * Return a live session handle, starting the substrate if it is not running. Returns null when auto-launch is
- * disabled, the substrate is absent, or it did not publish a handle inside the budget — never throws, because
- * every caller has a degraded path and a launch problem must not become the user's error.
+ * disabled, the substrate is absent, a recent launch produced no handle, or this one did not publish a handle
+ * inside the budget — never throws, because every caller has a degraded path and a launch problem must not
+ * become the user's error.
  */
 export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<SessionHandle | null> {
   const read = deps.readHandleFn ?? readHandle;
   const existing = read(deps.dataDir);
-  if (existing) return existing;
+  if (existing) {
+    // AHEAD OF THE MEMO CHECK, and it clears it: a handle on disk is direct evidence that whatever
+    // stopped the last launch has been resolved — most often a human who started the app by hand
+    // mid-crawl. Remembering a failure past its own disproof is a lockout, not a memo.
+    noHandleUntil = 0;
+    return existing;
+  }
 
   if (process.env[AUTO_LAUNCH_ENV] === '0' || process.env[AUTO_LAUNCH_ENV] === 'false') return null;
   if (!(deps.launchable ?? studioLaunchable)()) {
     log.debug('studio substrate not launchable on this machine — declining auto-launch');
     return null;
   }
+  // AFTER the launchable gate, so an absent substrate is never what gets remembered: that case
+  // already declines in zero ticks, and folding it in would make a substrate installed mid-session
+  // wait out a window for no reason.
+  if (noHandleUntil > Date.now()) {
+    log.debug('studio auto-launch recently produced no handle — declining without re-launching');
+    return null;
+  }
 
   if (inFlight) return inFlight;
+  const memoMs = deps.memoMs ?? DEFAULT_NO_HANDLE_MEMO_MS;
   inFlight = (async () => {
     const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
@@ -292,7 +335,13 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
       }
       await sleep(pollMs);
     }
-  })();
+  })().then((handle) => {
+    // Recorded on the SHARED promise rather than in the first caller's `await` below: the other
+    // single-flight participants return `inFlight` directly and never reach that code, so putting it
+    // there would leave the memo down for whoever happened not to be first.
+    if (!handle && memoMs > 0) noHandleUntil = Date.now() + memoMs;
+    return handle;
+  });
   try {
     return await inFlight;
   } finally {
@@ -300,7 +349,8 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
   }
 }
 
-/** Test seam: drop a memoized in-flight launch between cases. */
+/** Test seam: drop a memoized in-flight launch and the negative memo between cases. */
 export function resetAutoLaunchState(): void {
   inFlight = null;
+  noHandleUntil = 0;
 }
