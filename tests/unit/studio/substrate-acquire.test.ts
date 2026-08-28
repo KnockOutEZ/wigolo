@@ -13,6 +13,7 @@ import {
   substratePresent,
   substrateRoot,
   SUBSTRATE_PATH_ENV,
+  SUBSTRATE_RECORD,
   type SubstrateSource,
 } from '../../../src/studio/substrate-acquire.js';
 
@@ -281,6 +282,71 @@ describe('the version a record is filed under must be one directory name', () =>
   it('still installs an ordinary version — the rule is not a blanket refusal', async () => {
     const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
     expect(r.outcome).toBe('acquired');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+
+  /**
+   * THE TWO VERSIONS THAT CARRY NO SEPARATOR AND STILL NAME SOMEWHERE ELSE.
+   *
+   * The arm above plants `../escape`, so it stays green against a predicate narrowed to
+   * `!/[\\/]/` — and that narrowing looks like a simplification, because "one directory name" and
+   * "contains no separator" read as the same rule. They are not. `destDir` is `join(root, version)`
+   * and the NEXT statement is `rmSync(destDir, { recursive: true, force: true })`, so:
+   *
+   *   `.`  → destDir IS the substrate root  → deletes every installed version and the record
+   *   `..` → destDir IS the data dir        → deletes the cache DB, the keys and the profiles
+   *
+   * Neither spelling contains a separator, so neither is caught by the narrowed form, and both
+   * reach a recursive delete before anything is verified.
+   *
+   * WHY THE FIXTURE HALF-UNINSTALLS FIRST. With a valid record on disk `acquireSubstrate` returns
+   * `already_present` before it ever computes `destDir`, so a fully-healthy machine cannot reach
+   * the delete at all. The state that CAN is the one this file already names elsewhere — the
+   * record is still there and the executable it points at is gone — which is what an interrupted
+   * uninstall, a partial upgrade, or a first run against a populated root all look like.
+   *
+   * The assertions are about what survived, not about the outcome word, because `..` under the
+   * narrowed predicate still ends in `failed`: it destroys the data dir, then fails writing the
+   * record into the `substrate/` directory it just deleted. An outcome-only arm would go green on
+   * the very shape that wiped the machine.
+   */
+  it.each(['.', '..'])('refuses version %j rather than making it the directory it deletes', async (version) => {
+    await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    const root = substrateRoot(dataDir);
+    const installed = join(root, '1.2.3');
+    const exec = join(installed, 'bin', 'run');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+
+    // A data-dir neighbour that only `..` reaches — the cache DB stands in for everything the
+    // substrate root's PARENT holds and that acquisition has no business touching.
+    const neighbour = join(dataDir, 'cache.db');
+    writeFileSync(neighbour, 'not-a-substrate');
+
+    // Half-uninstalled: the record survives, its executable does not, so the record reads as
+    // absent and the acquisition proceeds past the `already_present` gate.
+    rmSync(exec);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+
+    const evil: SubstrateSource = {
+      id: 'evil',
+      manifest: { version, executable: 'bin/run' },
+      async install(destDir: string) {
+        mkdirSync(join(destDir, 'bin'), { recursive: true });
+        writeFileSync(join(destDir, 'bin', 'run'), '#!/bin/sh\n');
+      },
+    };
+    const r = await acquireSubstrate({ dataDir, source: evil });
+
+    expect(r.outcome).toBe('failed');
+    // Nothing was deleted: the earlier install's directory, the record filed beside it, and the
+    // rest of the data dir are all still where they were.
+    expect(existsSync(installed)).toBe(true);
+    expect(existsSync(join(root, SUBSTRATE_RECORD))).toBe(true);
+    expect(existsSync(neighbour)).toBe(true);
+    expect(readFileSync(neighbour, 'utf-8')).toBe('not-a-substrate');
+    // And the earlier record reads back the moment its executable returns — only possible because
+    // neither the record nor the directory it names was removed.
+    writeFileSync(exec, '#!/bin/sh\n');
     expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
   });
 });
