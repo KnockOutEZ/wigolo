@@ -243,7 +243,7 @@ const NEVER_FAILED = (): boolean => false;
  * reporting". Only a launcher that actually spawns something can say more, and only `defaultLaunch`
  * does.
  */
-function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
+export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
   if (result === false) return { started: false, failed: NEVER_FAILED };
   if (result && typeof result === 'object') {
     return { started: result.started, failed: result.failed ?? NEVER_FAILED };
