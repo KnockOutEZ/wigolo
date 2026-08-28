@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'nod
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultLaunch, ensureStudioRunning, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
+import { defaultLaunch, ensureStudioRunning, normalizeLaunch, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
 import { readSubstrateRecord, SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
 import type { SessionHandle } from '../../../src/studio/handle.js';
 
@@ -560,5 +560,136 @@ describe('a launch that produced no handle is remembered briefly', () => {
     expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => false, sleep: noSleep })).toBeNull();
     expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep: noSleep })).toBeNull();
     expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE SECOND HALF OF THE SAME RULE, and the one the gate arm above could not reach.
+   *
+   * `launchable() === false` is not the only way to reach "nothing was started": the LAUNCHER
+   * declines too, and `defaultLaunch`'s own docstring calls that a NORMAL outcome rather than a
+   * defect — `substratePresent()` memoizes for 5 s while the launcher re-reads the record uncached,
+   * so for the rest of that TTL the gate says yes and the launcher finds nothing. That decline
+   * arrives back through the shared promise as a bare `null`, indistinguishable there from a launch
+   * that ran and timed out, so it was remembered for 60 s: reinstall the substrate one second later
+   * and the fixed machine is declined without a spawn attempt — the exact lockout the memo's
+   * docstring says it must not become.
+   */
+  it('does not memoize a LAUNCHER decline — a substrate reinstalled a tick later is retried', async () => {
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        vi.advanceTimersByTime(ms);
+      };
+      // Force the precondition and prove the forcing took: no `deps.launch`, so this is the REAL
+      // launcher declining against an empty data dir, not a stand-in shaped like one.
+      expect(readSubstrateRecord(dir)).toBeNull();
+      expect(await ensureStudioRunning({ dataDir: dir, launchable: () => true, pollMs: 250, sleep })).toBeNull();
+      expect(ticks).toBe(0);
+
+      // The human reinstalls, well inside the 60 s window. There is no handle yet, so the read at
+      // the top cannot be what rescues this call — only an un-set memo can.
+      const launch = vi.fn(() => { publishHandle(); });
+      const h = await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep });
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(h?.endpoint).toBe(HANDLE.endpoint);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('memoMs: 0 is honoured at the READ as well as the write — the escape hatch gets its attempt', async () => {
+    // The docstring calls `0` "the escape hatch for a caller that genuinely wants every attempt",
+    // and a write-only reading of it makes that false: a default caller's memo declines the
+    // opted-out caller for the rest of the window. Honoured at the read, the promise holds.
+    vi.useFakeTimers();
+    try {
+      const sleep = async (ms: number): Promise<void> => { vi.advanceTimersByTime(ms); };
+      const launch = vi.fn();
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep };
+
+      // A launch that really ran and produced no handle is STILL remembered — the paired positive
+      // arm, without which "never memoize" would satisfy every case here.
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      expect(await ensureStudioRunning({ ...args, memoMs: 0 })).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pins the shipped default window — long enough to spare one fan-out, short enough not to lock out', async () => {
+    // The constant is load-bearing and was unpinned: every arm above passes `memoMs` explicitly, so
+    // `DEFAULT_NO_HANDLE_MEMO_MS` could be raised to an hour with the suite still green — turning
+    // the memo into the lockout its own comment forbids. Asserted through behaviour rather than by
+    // reading the constant, so it pins what the number DOES.
+    vi.useFakeTimers();
+    try {
+      const sleep = async (ms: number): Promise<void> => { vi.advanceTimersByTime(ms); };
+      const launch = vi.fn();
+      // No `memoMs`: this is the shipped default and nothing else.
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep };
+
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      // Just inside: still remembered, so one fan-out pays the budget once.
+      vi.advanceTimersByTime(59_000);
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      // Just outside: retried, so a machine fixed by hand recovers in about a minute.
+      vi.advanceTimersByTime(1_500);
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * WHAT COUNTS AS AN OUTCOME.
+ *
+ * `normalizeLaunch` tolerates three legacy shapes because `deps.launch` is a test seam: `false` is
+ * the decline, `true`/`void` is "started, no failure reporting". What it must NOT do is read any
+ * object as an outcome. An async launcher hands back a Promise, whose `.started` is `undefined` —
+ * falsy — so the launch was reported as a DECLINE on the same tick the real body started running:
+ * the poll never ran, the handle was never read, and the caller was told nothing had been started
+ * while a process was on its way up. TypeScript rejects the shape at the seam, which is what keeps
+ * this latent, but a seam whose whole job is to be faked in tests must fail loudly rather than
+ * silently agree.
+ */
+describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
+  it('throws on a thenable instead of reading it as a decline', () => {
+    const thenable = Promise.resolve({ started: true, failed: () => false });
+    expect(() => normalizeLaunch(thenable as never)).toThrow(/thenable|asynchronous/i);
+  });
+
+  it('throws on an object that is not a LaunchOutcome', () => {
+    expect(() => normalizeLaunch({ launched: true } as never)).toThrow(/LaunchOutcome/);
+  });
+
+  it('still reads all three legacy shapes', () => {
+    expect(normalizeLaunch(false).started).toBe(false);
+    expect(normalizeLaunch(true).started).toBe(true);
+    expect(normalizeLaunch(undefined).started).toBe(true);
+    expect(normalizeLaunch({ started: true, failed: () => true }).failed()).toBe(true);
+  });
+
+  it('an async launcher resolves null without pretending it declined, and is not remembered', async () => {
+    // Through the real entry point: `ensureStudioRunning` never throws, so the loud error becomes a
+    // null — but it must not leave a memo behind, because nothing was established about the machine.
+    const launch = vi.fn(async () => ({ started: true, failed: () => false }));
+    const args = { dataDir: dir, launchable: () => true, timeoutMs: 0, sleep: noSleep };
+
+    expect(await ensureStudioRunning({ ...args, launch: launch as never })).toBeNull();
+    const started = vi.fn();
+    expect(await ensureStudioRunning({ ...args, launch: started })).toBeNull();
+    expect(started).toHaveBeenCalledTimes(1);
   });
 });

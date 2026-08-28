@@ -50,6 +50,10 @@ const DEFAULT_POLL_MS = 250;
  * the fix. Long enough that one fan-out pays the timeout once; short enough that the next fan-out
  * re-checks. A handle appearing invalidates it immediately, which is what keeps it a memo rather
  * than a lockout, so this number only bounds the no-signal case.
+ *
+ * PINNED BY BEHAVIOUR, not by an equality assert: every other memo arm passes `memoMs` explicitly,
+ * so raising this to an hour once left the whole suite green while turning the memo into exactly the
+ * lockout the paragraph above forbids. The arm that reds walks a caller across the boundary.
  */
 const DEFAULT_NO_HANDLE_MEMO_MS = 60_000;
 
@@ -89,6 +93,11 @@ export interface AutoLaunchDeps {
   /**
    * How long a launch that produced no handle is remembered. `0` disables the memo — the shape the
    * pre-memo suite asserts, and the escape hatch for a caller that genuinely wants every attempt.
+   *
+   * It disables BOTH HALVES: such a caller neither writes the memo nor is declined by one another
+   * caller left behind. It does not disable single-flight — a `0` caller that arrives while a
+   * launch is in flight still joins it rather than starting a second app, because that is what
+   * "every attempt" can honestly mean when one is already running.
    */
   memoMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -242,14 +251,47 @@ const NEVER_FAILED = (): boolean => false;
  * no interest in spawn failures: `false` is the decline, `true`/`void` is "started, no failure
  * reporting". Only a launcher that actually spawns something can say more, and only `defaultLaunch`
  * does.
+ *
+ * ⚠ IT REJECTS ANY OTHER OBJECT, LOUDLY, and a thenable by name. Reading `.started` off whatever
+ * arrives used to make an async launcher the worst possible answer: a Promise's `.started` is
+ * `undefined`, so the launch was reported as a DECLINE on the same tick its body started running —
+ * the poll never ran, the handle was never read, and the caller was told nothing had been started
+ * while a process was on its way up. The launcher contract is deliberately SYNCHRONOUS (a spawn is
+ * synchronous; the failure that follows it is carried by `failed()`, not by a promise), so a
+ * thenable is a mistake at the seam rather than a shape to widen for. TypeScript already rejects
+ * it, which is what keeps this latent — but a seam whose whole purpose is to be faked in tests must
+ * not answer a fake it cannot read with a plausible lie.
  */
-function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
+export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
   if (result === false) return { started: false, failed: NEVER_FAILED };
   if (result && typeof result === 'object') {
+    if (typeof (result as { then?: unknown }).then === 'function') {
+      throw new TypeError(
+        'studio auto-launch received a thenable from deps.launch — launchers are synchronous, and an ' +
+          'asynchronous one reads as a decline'
+      );
+    }
+    if (typeof result.started !== 'boolean') {
+      throw new TypeError('studio auto-launch received an object that is not a LaunchOutcome — it has no boolean `started`');
+    }
     return { started: result.started, failed: result.failed ?? NEVER_FAILED };
   }
   return { started: true, failed: NEVER_FAILED };
 }
+
+/**
+ * What one pass of the launch path produced, and why the handle alone is not enough.
+ *
+ * `attempted` distinguishes "something was started and no handle appeared" — the only case the
+ * negative memo is for — from "nothing was started at all", which arrives back as the same `null`
+ * and must not be remembered. See the memo write in {@link ensureStudioRunning}.
+ */
+interface LaunchAttempt {
+  handle: SessionHandle | null;
+  attempted: boolean;
+}
+
+const NOT_ATTEMPTED: LaunchAttempt = { handle: null, attempted: false };
 
 let inFlight: Promise<SessionHandle | null> | null = null;
 
@@ -287,17 +329,23 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     log.debug('studio substrate not launchable on this machine — declining auto-launch');
     return null;
   }
+  const memoMs = deps.memoMs ?? DEFAULT_NO_HANDLE_MEMO_MS;
   // AFTER the launchable gate, so an absent substrate is never what gets remembered: that case
   // already declines in zero ticks, and folding it in would make a substrate installed mid-session
   // wait out a window for no reason.
-  if (noHandleUntil > Date.now()) {
+  //
+  // `memoMs > 0` IS CHECKED HERE TOO, not only at the write. `0` is documented as the escape hatch
+  // for a caller that genuinely wants every attempt, and a write-only reading of it delivers the
+  // opposite: the memo is module state, so a default caller's window silently declines the
+  // opted-out caller for the next 60 s and the escape hatch escapes nothing. See DECISIONS-AUTO
+  // 2026-08-28 for the reversal condition.
+  if (memoMs > 0 && noHandleUntil > Date.now()) {
     log.debug('studio auto-launch recently produced no handle — declining without re-launching');
     return null;
   }
 
   if (inFlight) return inFlight;
-  const memoMs = deps.memoMs ?? DEFAULT_NO_HANDLE_MEMO_MS;
-  inFlight = (async () => {
+  inFlight = (async (): Promise<LaunchAttempt> => {
     const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
     const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); if (typeof t.unref === 'function') t.unref(); }));
@@ -308,38 +356,49 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
       // see. Waiting out the budget on it is the 30 s stall this branch exists to prevent.
       if (!outcome.started) {
         log.debug('studio auto-launch declined — nothing was started, so nothing is polled for');
-        return null;
+        return NOT_ATTEMPTED;
       }
       failed = outcome.failed;
     } catch (err) {
       log.debug('studio auto-launch failed to spawn', { error: err instanceof Error ? err.message : String(err) });
-      return null;
+      return NOT_ATTEMPTED;
     }
     // Poll for the handle rather than watching the child: the handle is written LAST, after the host's
     // handlers are wired, so its appearance is the only honest "ready" signal.
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const h = read(deps.dataDir);
-      if (h) return h;
+      if (h) return { handle: h, attempted: true };
       // Checked AFTER the handle read, because a spawn can both publish and then error, and a
       // published handle is the answer the caller wanted either way. Checked BEFORE the deadline
       // because that is the whole point: a dead process is knowable now, and the alternative is
       // 120 more ticks of waiting for a handle nothing will write.
       if (failed()) {
         log.debug('studio auto-launch spawned a process that failed to start — abandoning the handle poll');
-        return null;
+        return { handle: null, attempted: true };
       }
       if (Date.now() >= deadline) {
         log.debug('studio auto-launch did not publish a handle within budget');
-        return null;
+        return { handle: null, attempted: true };
       }
       await sleep(pollMs);
     }
-  })().then((handle) => {
+  })().then(({ handle, attempted }) => {
     // Recorded on the SHARED promise rather than in the first caller's `await` below: the other
     // single-flight participants return `inFlight` directly and never reach that code, so putting it
     // there would leave the memo down for whoever happened not to be first.
-    if (!handle && memoMs > 0) noHandleUntil = Date.now() + memoMs;
+    //
+    // `attempted` IS WHAT MAKES THE COMMENT ABOVE THE GATE TRUE. A bare `null` cannot tell a launch
+    // that ran and produced nothing from one that never started, and the memo only has a job in the
+    // first case: it exists so a fan-out pays the 30 s budget once instead of per URL. A decline
+    // costs zero ticks, so remembering it buys nothing — and costs a real lockout, because the
+    // commonest decline is the 5 s presence TTL disagreeing with an uncached record read, which a
+    // reinstall or a `chmod +x` resolves in the next second. Remembered, that fixed machine was
+    // declined without a spawn attempt for the rest of the minute.
+    //
+    // A launcher that THREW is the same case for the same reason: nothing was started, nothing was
+    // waited for, and re-attempting costs one synchronous throw rather than a budget.
+    if (!handle && attempted && memoMs > 0) noHandleUntil = Date.now() + memoMs;
     return handle;
   });
   try {
