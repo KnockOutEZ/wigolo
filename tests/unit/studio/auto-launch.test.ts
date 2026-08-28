@@ -692,4 +692,68 @@ describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
     expect(await ensureStudioRunning({ ...args, launch: started })).toBeNull();
     expect(started).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * `started` WAS VALIDATED AND `failed` WAS NOT, and the asymmetry is the defect. `failed` is
+   * merged with `??`, which only replaces a NULLISH value — so a truthy non-function survives
+   * normalization and is called by the poll, and the poll's first `failed()` sits OUTSIDE the
+   * try/catch that guards the launcher call. The TypeError therefore rejects the shared promise,
+   * whose `.then` memo mapper has no rejection branch, and `await inFlight` rethrows it into
+   * `studioBridgeFetch` — which awaits with no catch. So a bad fake at the seam becomes the
+   * user's fetch error, breaking the "never throws" contract in the one place the seam exists to
+   * be exercised.
+   */
+  it('throws on an object whose `failed` is not callable', () => {
+    // The plausible misreading: storing the ERROR the spawn reported instead of a probe of it.
+    expect(() => normalizeLaunch({ started: true, failed: {} } as never)).toThrow(/failed/);
+    expect(() => normalizeLaunch({ started: true, failed: true } as never)).toThrow(/failed/);
+    // Nullish stays legal — that is the documented `true`/`void` legacy shape arriving as an object.
+    expect(normalizeLaunch({ started: true } as never).failed()).toBe(false);
+  });
+
+  it('a non-callable `failed` resolves null through the fetch path rather than rejecting, and is not remembered', async () => {
+    // END-TO-END, because the rejection this pins does NOT happen in `normalizeLaunch`: it happens
+    // at the poll's first `failed()` call, one tick past the try/catch, and only the real entry
+    // point puts those two in the same path. Nothing was started that anyone waited for, so per
+    // A-185-2 the attempt must not be memoized either — the next caller gets its own launch.
+    const launch = vi.fn(() => ({ started: true, failed: {} }));
+    const args = { dataDir: dir, launchable: () => true, timeoutMs: 0, sleep: noSleep };
+
+    await expect(ensureStudioRunning({ ...args, launch: launch as never })).resolves.toBeNull();
+    expect(launch).toHaveBeenCalledTimes(1);
+
+    const started = vi.fn();
+    expect(await ensureStudioRunning({ ...args, launch: started })).toBeNull();
+    expect(started).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * THE HIDDEN FLAG SURVIVES A CASE-INSENSITIVE PARENT, which is not the same claim as "the flag is
+ * set" that `defaultLaunch`'s spawn arm already makes.
+ *
+ * The spread collapses win32's case-insensitive env proxy into a plain object, so an inherited
+ * `wigolo_studio_hidden=0` leaves TWO keys in the options and the child — reading through ITS proxy
+ * — resolves whichever the OS hands back first. A window can then surface for a session that exists
+ * only to serve the agent, and in this design language a surfaced window is a consent surface rather
+ * than cosmetics. `runStudio` already strips case-insensitively for the mirror-image reason (it wants
+ * the flag GONE); this arm wants it canonical, and both need the same mechanism.
+ */
+describe('defaultLaunch sets the hidden flag once, whatever casing the parent carried', () => {
+  it('leaves exactly one key case-insensitively equal to WIGOLO_STUDIO_HIDDEN, set to 1', () => {
+    plantSubstrateRecord(dir);
+    // Force the precondition — a parent that already carries the flag in another casing, saying the
+    // OPPOSITE thing — and assert below that the forcing took effect rather than trusting it.
+    process.env.wigolo_studio_hidden = '0';
+    const spawnFn = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(true);
+    const env = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env;
+
+    const hidden = Object.keys(env).filter((k) => k.toUpperCase() === 'WIGOLO_STUDIO_HIDDEN');
+    expect(hidden).toEqual(['WIGOLO_STUDIO_HIDDEN']);
+    expect(env.WIGOLO_STUDIO_HIDDEN).toBe('1');
+    // The strip is narrow: everything else is still inherited.
+    expect(env.PATH).toBe(process.env.PATH);
+  });
 });
