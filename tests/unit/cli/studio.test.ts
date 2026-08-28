@@ -1631,6 +1631,7 @@ describe('runStudio — the acquired substrate is the only launch target', () =>
   afterEach(() => {
     rmSync(dataDir, { recursive: true, force: true });
     delete process.env.WIGOLO_STUDIO_HIDDEN;
+    delete process.env.wigolo_studio_hidden;
   });
 
   it('with a record present, spawns the executable the record names — never npm', () => {
@@ -1683,6 +1684,35 @@ describe('runStudio — the acquired substrate is the only launch target', () =>
     expect(calls[0].options.env?.WIGOLO_STUDIO_HIDDEN).toBeUndefined();
     // …and it INHERITS the rest of the environment rather than replacing it.
     expect(calls[0].options.env?.PATH).toBe(process.env.PATH);
+  });
+
+  /**
+   * The strip must be case-INSENSITIVE, because the guarantee is about the child's view of the
+   * environment and win32 resolves env names case-insensitively. Spreading `process.env` collapses
+   * Node's win32 proxy into a plain object, so `delete env.WIGOLO_STUDIO_HIDDEN` removes exactly one
+   * spelling; a shell that exported `wigolo_studio_hidden=1` leaves that key sitting in the spread,
+   * the child reads it back through its OWN case-insensitive `process.env`, and the human who typed
+   * `wigolo studio` gets no window — the precise failure the visible-launch contract exists to deny.
+   *
+   * Asserted on the plain object handed to the injected spawn seam, so the pin is platform-independent:
+   * it fails on darwin today if the filter regresses to a single-spelling delete.
+   */
+  it('strips the hidden flag in ANY casing — win32 env lookup does not respect case', () => {
+    process.env.wigolo_studio_hidden = '1';
+    plantRecord(dataDir);
+
+    runStudio([], { dataDir, spawnFn: fakeSpawn(calls), log: (m) => lines.push(m) });
+
+    expect(calls).toHaveLength(1);
+    const env = calls[0].options.env;
+    expect(env).toBeDefined();
+    // No spelling of the flag survives — not the canonical one, not the one the shell used.
+    const survivors = Object.keys(env ?? {}).filter(
+      (k) => k.toUpperCase() === 'WIGOLO_STUDIO_HIDDEN',
+    );
+    expect(survivors).toEqual([]);
+    // Still an INHERIT, not a replace: only the flag is removed.
+    expect(env?.PATH).toBe(process.env.PATH);
   });
 
   it('with no record, declines in ONE actionable line and spawns nothing', () => {
