@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vitestConfig from '../../vitest.config.js';
 
 /*
  * THE RACE THIS GUARDS.
@@ -20,8 +21,17 @@ import { fileURLToPath } from 'node:url';
  * `tests/unit/budget-protocol.test.ts`, when the `prepare` hook turned the G-TARBALL
  * measurement's `npm pack --dry-run` into a full build.
  *
- * So the convention is asserted rather than remembered: nothing in the parallel lane may
- * rebuild `dist/`.
+ * So the convention is asserted rather than remembered — and in BOTH directions, because the
+ * race needs only one side of it to be in the wrong lane:
+ *
+ *   - nothing in the parallel lane may REBUILD `dist/` (the original half), and
+ *   - nothing in the parallel lane may hand a `dist/` path to a CHILD PROCESS (the half added
+ *     for #176, after two broker specs sat in `unit` spawning `dist/daemon/studio-db-broker.js`
+ *     while the serial lane deleted it for ~300ms per rebuild).
+ *
+ * Lane membership below is READ FROM `vitest.config.ts`, never re-derived from a directory
+ * prefix: the serial lane now contains named `tests/unit/**` files as well as the whole
+ * integration + e2e trees, and a guard that assumed the prefix would quietly stop covering them.
  */
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -79,11 +89,50 @@ function allTestFiles(dir = 'tests'): string[] {
   return out.sort();
 }
 
-/** The `unit` project's glob: every test outside the serial lane. */
+interface ProjectShape {
+  test: {
+    name?: string;
+    include?: string[];
+    exclude?: string[];
+    pool?: string;
+    poolOptions?: { forks?: { singleFork?: boolean } };
+    fileParallelism?: boolean;
+  };
+}
+
+/** A project's own `test` block, straight out of the real config object — not a text match on it. */
+function project(name: string): ProjectShape['test'] {
+  const projects = (vitestConfig.test?.projects ?? []) as unknown as ProjectShape[];
+  const found = projects.find((p) => p.test?.name === name);
+  if (!found) throw new Error(`vitest.config.ts has no project named ${name}`);
+  return found.test;
+}
+
+/**
+ * The subset of glob syntax the two project globs actually use: `**\/` for any depth, `*` within a
+ * segment, and bare paths. Deliberately not a glob library — the guard must state what it matches.
+ */
+function globToRegExp(pattern: string): RegExp {
+  const body = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\/|\*\*|\*/g, (m) =>
+      m === '**/' ? '(?:.*/)?' : m === '**' ? '.*' : '[^/]*'
+    );
+  return new RegExp(`^${body}$`);
+}
+
+const matchesAny = (patterns: string[] | undefined, file: string): boolean =>
+  (patterns ?? []).some((p) => globToRegExp(p).test(file));
+
+/** Files vitest gives the serial lane, per the config's own include list. */
+function serialLaneFiles(): string[] {
+  return allTestFiles().filter((p) => matchesAny(project('spawn-serial').include, p));
+}
+
+/** Everything else — the fully-parallel `unit` project. */
 function parallelLaneFiles(): string[] {
-  return allTestFiles().filter(
-    (p) => !p.startsWith('tests/integration/') && !p.startsWith('tests/e2e/')
-  );
+  const serial = new Set(serialLaneFiles());
+  return allTestFiles().filter((p) => !serial.has(p));
 }
 
 describe('no parallel-lane test can rebuild or clean dist/', () => {
@@ -123,9 +172,114 @@ describe('no parallel-lane test can rebuild or clean dist/', () => {
       'tests/integration/studio-runs-proxy.test.ts', // reads dist/ from a child process
     ];
     const present = allTestFiles();
+    const serial = serialLaneFiles();
     for (const file of touchers) {
       expect(present).toContain(file);
-      expect(file.startsWith('tests/integration/') || file.startsWith('tests/e2e/')).toBe(true);
+      expect(serial).toContain(file);
+    }
+  });
+});
+
+/**
+ * A `dist` path written as a string literal with no spaces in it — the shape a spawn can actually
+ * resolve, as opposed to prose that happens to name the directory. Two narrowings do that work, and
+ * both were measured against this tree rather than guessed:
+ *
+ *   - no spaces, so an `it()` title like `'…the shipped dist/ is the validated one'` is not a path
+ *     (`tests/unit/prepare-build.test.ts` has exactly that one);
+ *   - whole-line comments are dropped first (`codeOnly`), so a doc block quoting
+ *     `["dist", "rust/*.node"]` is not a path either (`scripts/prune/wreq-binaries.mjs` has that).
+ *
+ * That is why this scan carries no exemption list: an exemption is what you need when the pattern
+ * cannot tell prose from code, and narrowing the pattern beats maintaining a list of apologies.
+ */
+const DIST_PATH = /['"][^'"\n ]*\bdist(?:\/[^'"\n ]*)?['"]/;
+
+/** Source with whole-line comments removed. Not a parser — a line that is only prose cannot spawn. */
+const codeOnly = (source: string): string =>
+  source
+    .split('\n')
+    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+
+/** Any child-process API call — the thing that turns a resolved `dist/` path into a race. */
+const SPAWNS = /(?:execSync|execFileSync|spawnSync|execFile|spawn|fork|exec)\s*\(/;
+
+/** A relative script path a test names, resolved and kept only if it is really on disk. */
+const LOCAL_SCRIPT = /['"](\.[^'"\n]*\.(?:mjs|cjs|js))['"]/g;
+
+/**
+ * Scripts a test file hands to a child process. A fixture is where the indirection bites:
+ * `tests/unit/studio/run-store-disk-projection.test.ts` spawns
+ * `fixtures/run-store-exit-drain-child.mjs`, and it is the FIXTURE that imports `dist/`. The
+ * spawner's own source never says `dist`, so a scan of test files alone would call it clean while
+ * its child died to the very same rebuild.
+ */
+function spawnedScripts(file: string, source: string): string[] {
+  const base = join(ROOT, dirname(file));
+  const out: string[] = [];
+  for (const match of source.matchAll(LOCAL_SCRIPT)) {
+    const abs = resolve(base, match[1]);
+    if (existsSync(abs)) out.push(toPosix(relative(ROOT, abs)));
+  }
+  return out;
+}
+
+describe('no parallel-lane test can spawn a dist/ path', () => {
+  // The reader half of the race (#176). `dist/` is absent for the whole of a tsup `clean: true`
+  // rebuild — measured at ~300ms on this tree — and a spawn that lands in that window exits 1 with
+  // a module-not-found. The rebuilders were already serialised; the readers were not, so two broker
+  // specs in `unit` spawned `dist/daemon/studio-db-broker.js` straight into it, and one of them
+  // then burned a 40s beforeAll hook timeout on a child that would never say `ready`.
+  const readers = parallelLaneFiles().filter((file) => {
+    const source = codeOnly(readFileSync(join(ROOT, file), 'utf8'));
+    if (!SPAWNS.test(source)) return false;
+    return (
+      DIST_PATH.test(source) ||
+      spawnedScripts(file, source).some((s) =>
+        DIST_PATH.test(codeOnly(readFileSync(join(ROOT, s), 'utf8')))
+      )
+    );
+  });
+
+  it('the parallel lane spawns nothing out of dist/', () => {
+    expect(readers).toEqual([]);
+  });
+
+  it('the known dist/ spawners are in the serial lane', () => {
+    // Must-fire direction, and the reason the list is named rather than counted: a spawner that is
+    // deleted or renamed has to be noticed here, not silently drop out of the scan above.
+    const spawners = [
+      'tests/unit/studio/broker-transport.test.ts', // spawns dist/daemon/studio-db-broker.js
+      'tests/unit/studio/run-store-restart.test.ts', // spawns dist/daemon/studio-db-broker.js
+      'tests/unit/studio/run-store-disk-projection.test.ts', // its fixture imports dist/ in a child
+      'tests/integration/studio-runs-proxy.test.ts', // imports dist/ in a child process
+      'tests/e2e/mcp-startup.test.ts', // spawns dist/index.js
+    ];
+    const present = allTestFiles();
+    const serial = serialLaneFiles();
+    for (const file of spawners) {
+      expect(present).toContain(file);
+      expect(serial).toContain(file);
+    }
+  });
+
+  it('the two lanes partition the suite — no file is in both, none in neither', () => {
+    // The scan above is only a guard while `parallelLaneFiles()` really is the complement of the
+    // serial lane. If the `unit` project stopped excluding a serialised file, that file would run
+    // in BOTH projects and the race would be back with the guard still green.
+    const unit = project('unit');
+    for (const file of serialLaneFiles()) {
+      expect({ file, excludedFromUnit: matchesAny(unit.exclude, file) }).toEqual({
+        file,
+        excludedFromUnit: true,
+      });
+    }
+    for (const file of parallelLaneFiles()) {
+      expect({
+        file,
+        runsInUnit: matchesAny(unit.include, file) && !matchesAny(unit.exclude, file),
+      }).toEqual({ file, runsInUnit: true });
     }
   });
 });
