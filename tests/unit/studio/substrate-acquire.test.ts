@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 import {
@@ -658,14 +658,41 @@ describe('containment is answered by the filesystem, not by string comparison', 
     // dir routinely lives under `/var/...`, which is itself a link to `/private/var/...`, so a
     // rule that resolved only one side would decline every real record on the platform the
     // desktop component targets.
-    const dir = join(substrateRoot(dataDir), '1.2.3');
-    mkdirSync(join(dir, 'bin'), { recursive: true });
-    writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
-    writeFileSync(
-      join(substrateRoot(dataDir), 'record.json'),
-      JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
-    );
-    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+    //
+    // ⚠ THE LINKED PREFIX IS CONSTRUCTED, NOT BORROWED FROM `tmpdir()`. This arm used to run
+    // against the ambient `dataDir`, and that made it a macOS-only test wearing no label: there
+    // `/var/folders/...` resolves to `/private/var/...` and the one-sided mutant reds, but on
+    // ubuntu `/tmp` is already real, both spellings agree, and the arm passes against the very
+    // mutant it exists to kill — proving nothing, silently, on the platform CI runs. So the base
+    // is built here: a real directory (`realpathSync` forces that, even where `tmpdir()` is
+    // itself linked) plus a link to it, and everything below goes through the LINK.
+    //
+    // `'junction'` is what makes that platform-independent rather than trading one skip for
+    // another: POSIX ignores the type argument, and on Windows a junction is the one directory
+    // link that does not need elevation — which is why this arm is absent from the win32 skip
+    // family its siblings belong to.
+    const realBase = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-linked-base-')));
+    const linkedBase = join(dirname(realBase), `${basename(realBase)}-via-link`);
+    symlinkSync(realBase, linkedBase, 'junction');
+    try {
+      // THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Without this line a future environment —
+      // a filesystem that collapses the link, a Windows runner where the junction did not take —
+      // would vacate the whole arm and still report green.
+      expect(realpathSync(linkedBase)).not.toBe(linkedBase);
+      expect(realpathSync(linkedBase)).toBe(realBase);
+
+      const dir = join(substrateRoot(linkedBase), '1.2.3');
+      mkdirSync(join(dir, 'bin'), { recursive: true });
+      writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
+      writeFileSync(
+        join(substrateRoot(linkedBase), 'record.json'),
+        JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
+      );
+      expect(readSubstrateRecord(linkedBase)?.version).toBe('1.2.3');
+    } finally {
+      rmSync(linkedBase, { recursive: true, force: true });
+      rmSync(realBase, { recursive: true, force: true });
+    }
   });
 });
 
