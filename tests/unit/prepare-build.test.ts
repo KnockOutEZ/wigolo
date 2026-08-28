@@ -338,6 +338,9 @@ describe('the install hooks are reachable in every Dockerfile layer that install
   const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
   const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
     scripts: Record<string, string>;
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
 
   /**
@@ -558,6 +561,30 @@ describe('the install hooks are reachable in every Dockerfile layer that install
     expect(prod).toBeDefined();
     expect(prod!.run).not.toContain(SCRIPTLESS_OPT_OUT);
     expect(layerHas(prod!, PREPARE_SCRIPT)).toBe(true);
+  });
+
+  it('every node_modules CLI the image invokes survives the --omit=dev install', () => {
+    /*
+     * The third instance of this issue's class, and the one that outlived the two hooks: a layer
+     * invoking a path it does not contain. `base` and `full` ran `./node_modules/.bin/playwright`
+     * against the node_modules COPYed `--from=deps`, which is an `npm ci --omit=dev` tree — and
+     * the driver left the default install path in `1eb4e4cf` (devDependency + optional peer, which
+     * npm does not install). So the bin has not existed there since 2026-08-11 and the layer
+     * exited 127, with `install-deps` as the entire error message. Asserted against the manifest
+     * rather than against a name, so moving ANY bin's package into devDependencies reds here
+     * instead of in an image build nothing in CI runs.
+     */
+    const production = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+    ]);
+    const invoked = [...dockerfile.matchAll(/\.\/node_modules\/\.bin\/([\w.-]+)/g)].map((m) => m[1]!);
+    // Anti-vacuity: the image really does invoke local CLIs, so the rule below is not empty.
+    expect(invoked.length).toBeGreaterThan(0);
+    for (const bin of invoked) {
+      expect(production.has(bin), `${bin} is not a production dependency`).toBe(true);
+      expect(manifest.devDependencies ?? {}).not.toHaveProperty(bin);
+    }
   });
 
   it('the coverage model has teeth — a manifest-only layer does not count as covered', () => {

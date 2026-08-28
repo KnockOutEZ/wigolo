@@ -45,7 +45,7 @@ COPY scripts/ scripts/
 RUN npm ci --omit=dev
 
 # ---- base: shared runtime layout with the browser engine's OS libraries baked ----
-# `playwright install-deps chromium` installs the OS shared libraries the browser
+# `install-deps chromium` installs the OS shared libraries the browser
 # engine needs (deps ONLY, NOT the browser binary) as ROOT at build time. Without
 # them, a first-use lazy install as the non-root `node` user cannot add system
 # libs (no passwordless sudo) and the browser-engine launch smoke-test fails,
@@ -71,10 +71,15 @@ COPY --chown=node:node --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
 COPY --chown=node:node package.json ./
 COPY --chown=node:node skills/ ./skills/
-# Bake the browser engine's OS libraries via the LOCAL playwright CLI (already in
-# node_modules) so the version matches the runtime and no throwaway playwright is
-# downloaded. install-deps runs apt-get itself (we are root at build time).
-RUN ./node_modules/.bin/playwright install-deps chromium \
+# Bake the browser engine's OS libraries via a LOCAL browser CLI so no throwaway one is
+# downloaded. It has to be `patchright`, not `playwright`: the default driver left the default
+# install path in `1eb4e4cf` (devDependency + optional peer, which npm does not install), so the
+# `--omit=dev` node_modules this stage copies has never contained a `.bin/playwright` since then
+# and the old line exited 127. `patchright` is an optionalDependency, so it IS in that tree, and
+# it is the same upstream at the same browser revision — `patchright-core` and `playwright-core`
+# both pin chromium 1223 — so what it bakes is what the runtime driver resolves.
+# install-deps runs apt-get itself (we are root at build time).
+RUN ./node_modules/.bin/patchright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # Writable location for the local cache, on-device models, browser binary, and
@@ -105,7 +110,9 @@ LABEL org.opencontainers.image.title="wigolo" \
 # JS-render works with no first-use download and no volume. Installed as root,
 # then made readable by the node user.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
+# Same CLI as the base stage, for the same reason, and the revision match is what makes it a
+# drop-in here: the binary lands in the `chromium-1223` layout the driver looks for.
 RUN mkdir -p /opt/browsers \
-    && ./node_modules/.bin/playwright install chromium \
+    && ./node_modules/.bin/patchright install chromium \
     && chown -R node:node /opt/browsers
 USER node
