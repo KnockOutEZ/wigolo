@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
@@ -14,6 +14,7 @@ import {
   substrateRoot,
   SUBSTRATE_PATH_ENV,
   SUBSTRATE_RECORD,
+  type SubstrateManifest,
   type SubstrateSource,
 } from '../../../src/studio/substrate-acquire.js';
 
@@ -777,5 +778,154 @@ describe('the presence answer is memoized for the fetch path', () => {
     expect(substratePresent()).toBe(false);
     await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
     expect(substratePresent()).toBe(true);
+  });
+});
+
+describe('a manifest field that is not a string never reaches a path join', () => {
+  /**
+   * THIS IS NOT PEDANTRY ABOUT JSON TYPES. `substrate.json` is a file this process does not
+   * write, and the manifest was validated by TRUTHINESS — so `"version": 1.0` produced a manifest
+   * whose `version` was a number. `isSingleDirectoryName(1)` is truthy-true, and `join(root, 1)`
+   * then threw `ERR_INVALID_ARG_TYPE` from a statement that sat OUTSIDE the try. `warmup` awaits
+   * this call with no try/catch on the strength of the documented NEVER THROWS, so the entire
+   * warmup run — browser engine, models, search — died on the one path whose stated job is to
+   * degrade loudly to the rung that works.
+   */
+  const NON_STRING: Array<[string, unknown]> = [
+    ['a number', 1.0],
+    ['an array', ['1.0']],
+    ['a boolean', true],
+  ];
+
+  for (const [shape, value] of NON_STRING) {
+    it(`refuses a version that is ${shape}, and acquisition resolves instead of rejecting`, async () => {
+      const dir = makeSourceDir({ version: value, executable: 'bin/run' });
+      try {
+        expect(readSubstrateManifest(dir)).toBeNull();
+        expect(localPathSource(dir)).toBeNull();
+        const r = await acquireSubstrate({ dataDir, env: { [SUBSTRATE_PATH_ENV]: dir } });
+        expect(r.outcome).toBe('no_source');
+        expect(readSubstrateRecord(dataDir)).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`refuses an executable that is ${shape}, and acquisition resolves instead of rejecting`, async () => {
+      // The executable takes a different route to the same crash: `isAbsolute(1)` throws before
+      // the join does, from the guard one line above it — also outside the try.
+      const dir = makeSourceDir({ version: '1.2.3', executable: value });
+      try {
+        expect(readSubstrateManifest(dir)).toBeNull();
+        expect(localPathSource(dir)).toBeNull();
+        const r = await acquireSubstrate({ dataDir, env: { [SUBSTRATE_PATH_ENV]: dir } });
+        expect(r.outcome).toBe('no_source');
+        expect(readSubstrateRecord(dataDir)).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('still reads a version that merely LOOKS numeric — the rule is typeof, not spelling', () => {
+    // ANTI-VACUITY: a guard that declined anything numeric-looking would pass every arm above
+    // while refusing `"1.0"`, which is an ordinary version string a real build would ship.
+    const dir = makeSourceDir({ version: '1.0', executable: 'bin/run' });
+    try {
+      expect(readSubstrateManifest(dir)).toEqual({ version: '1.0', executable: 'bin/run' });
+      expect(localPathSource(dir)?.manifest.version).toBe('1.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves rather than rejecting when a source hands it a non-string version directly', async () => {
+    // The manifest guard closes the shapes we thought of; this closes the CLASS. `destDir` is
+    // computed INSIDE the try, so anything that throws on the way to it becomes a `failed`
+    // outcome rather than an escaping rejection — which is what NEVER THROWS has to mean
+    // structurally for `warmup`'s unguarded await to be safe.
+    const source: SubstrateSource = {
+      id: 'bad-manifest',
+      manifest: { version: 1.0, executable: 'bin/run' } as unknown as SubstrateManifest,
+      async install() {
+        throw new Error('never reached');
+      },
+    };
+    const r = await acquireSubstrate({ dataDir, source });
+    expect(r.outcome).toBe('failed');
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+});
+
+describe('an install source that is itself a symlink to a directory', () => {
+  let linkRoot: string;
+  let linkPath: string;
+
+  beforeEach(() => {
+    linkRoot = mkdtempSync(join(tmpdir(), 'wigolo-substrate-link-'));
+    linkPath = join(linkRoot, 'current');
+    symlinkSync(sourceDir, linkPath, 'dir');
+  });
+
+  afterEach(() => {
+    rmSync(linkRoot, { recursive: true, force: true });
+  });
+
+  it('installs the bytes rather than recording a link that reads back as absent', async () => {
+    // WHY: `verbatimSymlinks` copies a link's target string unchanged — INCLUDING when the source
+    // itself is a link, in which case `destDir` becomes a link out of the substrate root.
+    // `findEscapingLink` anchors on `realpathSync(destDir)`, so it found nothing to complain
+    // about; the acquisition reported `acquired` and `readSubstrateRecord` then correctly refused
+    // the record it had just written. Every later run re-acquired and re-failed identically —
+    // the exact state the version guard's own comment says it exists to prevent.
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(linkPath) });
+    expect(r.outcome).toBe('acquired');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+    const destDir = join(substrateRoot(dataDir), '1.2.3');
+    expect(lstatSync(destDir).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(destDir, 'bin', 'run'))).toBe(true);
+  });
+
+  it('copies rather than adopting — the source directory is left intact', async () => {
+    // The whole reason acquisition copies instead of pointing at the source is that the source
+    // may move or be deleted. Resolving the link must not turn cleanup into a delete of it.
+    await acquireSubstrate({ dataDir, source: localPathSource(linkPath) });
+    expect(existsSync(join(sourceDir, 'bin', 'run'))).toBe(true);
+  });
+});
+
+describe('an install that lands outside the substrate root is failed, never acquired', () => {
+  it('refuses when install() makes destDir itself a link out of the root', async () => {
+    // The generalisation of the symlinked-source bug: whatever `install()` does, the directory
+    // the record is about to name must be inside the root the record is later checked against.
+    // Asserting it here is what makes "acquired" and "readable" the same answer instead of two
+    // answers that can disagree forever.
+    const outside = mkdtempSync(join(tmpdir(), 'wigolo-substrate-outside-'));
+    mkdirSync(join(outside, 'bin'), { recursive: true });
+    writeFileSync(join(outside, 'bin', 'run'), '#!/bin/sh\n');
+    const sneaky: SubstrateSource = {
+      id: 'sneaky',
+      manifest: { version: '9.9.9', executable: 'bin/run' },
+      async install(destDir: string) {
+        symlinkSync(outside, destDir, 'dir');
+      },
+    };
+    try {
+      const r = await acquireSubstrate({ dataDir, source: sneaky });
+      expect(r.outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+      // And the cleanup unlinks the link rather than following it into somebody's directory.
+      expect(existsSync(join(outside, 'bin', 'run'))).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('still acquires an ordinary install — the assertion is not a blanket refusal', async () => {
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(r.outcome).toBe('acquired');
+    expect(realpathSync(join(substrateRoot(dataDir), '1.2.3')).startsWith(realpathSync(substrateRoot(dataDir)))).toBe(
+      true,
+    );
   });
 });
