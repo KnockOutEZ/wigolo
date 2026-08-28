@@ -203,15 +203,63 @@ describe('run store — survives a broker process restart', () => {
     // Committed synchronously inside the transaction, so the crash cannot reach them.
     expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
-    // And the file is a genuine PREFIX: whole lines, in seq order, never reordered and never a torn
-    // one. How short it is depends on how much the runner had drained, which is why this arm bounds
-    // rather than pins — the ordering and exactly-once claims underneath it have their teeth in
-    // `run-store-disk-projection.test.ts` and `run-store-exit-drain.test.ts`, where the state can be
-    // forced. What this arm catches is the shape a loaded machine produces and a fast one never does:
-    // a batch that coalesced four events and then landed in the wrong order, or half-written.
+    // And whatever DID reach the file is a genuine PREFIX: whole lines, in seq order, never
+    // reordered and never a torn one. How much that is depends on how far the runner had drained,
+    // which is why this arm bounds rather than pins — the ordering and exactly-once claims
+    // underneath it have their teeth in `run-store-disk-projection.test.ts` and
+    // `run-store-exit-drain.test.ts`, where the state can be forced. What this arm catches is the
+    // shape a loaded machine produces and a fast one never does: a batch that coalesced four events
+    // and then landed in the wrong order, or half-written.
+    //
+    // HOW MANY lines is deliberately NOT asserted. This used to require at least one, which is a bet
+    // on the drain winning a race against a SIGKILL sent immediately after the last append — and on
+    // a loaded runner it loses: the ubuntu full-suite leg went red at core tip f714540f with
+    // `expected 0 to be greater than 0`, every DB-side assertion above it passing. Zero drained lines
+    // is a legal outcome of this schedule, not a defect, so the arm reads the file the way a
+    // SIGKILLed run can actually leave it — absent, empty, or a prefix. The arm below forces exactly
+    // that zero-drain schedule and pins what must still hold in it.
     const file = join(dir, 'studio', 'runs', created.id, 'events.jsonl');
-    const lines = readFileSync(file, 'utf8').trimEnd().split('\n').filter((l) => l.length > 0);
-    expect(lines.length).toBeGreaterThan(0);
+    const lines = existsSync(file)
+      ? readFileSync(file, 'utf8').trimEnd().split('\n').filter((l) => l.length > 0)
+      : [];
     expect(lines.map((l) => JSON.parse(l) as RunEvent)).toEqual(log.slice(0, lines.length));
+  }, 120_000);
+
+  it('keeps the DB whole when the SIGKILL lands with the queue still full', async () => {
+    // The arm above can only bound, because it cannot choose how much drains. This one can: the
+    // child's disk queue is stalled for longer than the whole spec may run, so NOTHING can reach the
+    // file on its own, and a SIGKILL runs no exit hook to drain it. That is the schedule a loaded CI
+    // runner produces by accident and a developer laptop never does — pinned here instead of left to
+    // chance, so the claim that survives a crash is stated rather than sampled.
+    const killed = mkdtempSync(join(tmpdir(), 'wigolo-run-killed-'));
+    dataDirs.push(killed);
+    const first = await startBroker(killed, 10 * 60_000);
+    const created = await first.call<Run>('runCreate', { input: { task: 'killed with a full queue', driver: { kind: 'cli' } } });
+    for (let i = 0; i < 6; i++) {
+      await first.call<RunEvent>('runAppend', {
+        runId: created.id,
+        event: { actor: { kind: 'agent', driver: 'cli' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } },
+      });
+    }
+
+    // The forcing took effect: the stall is holding every batch, so the projection is at zero lines
+    // BEFORE the kill. Without this the arm would pass on a machine that had quietly drained
+    // everything, and would be pinning the ordinary schedule under a name that promises the hard one.
+    const file = join(killed, 'studio', 'runs', created.id, 'events.jsonl');
+    expect(existsSync(file)).toBe(false);
+
+    first.stop(); // SIGKILL — no `exit` listener runs, and the stalled queue dies with the process
+
+    const second = await startBroker(killed);
+    const log = await second.call<RunEvent[]>('runEventsSince', { runId: created.id, limit: 100 });
+    await second.stopGracefully();
+
+    // The claim that has to survive: the event log is the source of truth (law 1) and it is whole,
+    // because every append committed inside its own transaction before the call returned.
+    expect(log.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    // And the projection lost the lot — which is the documented boundary of A-118-1, not a failure.
+    // A file that appeared here would mean a queued write escaped the stall, i.e. the knob that every
+    // forced-drain test in this suite depends on had stopped holding.
+    expect(existsSync(file)).toBe(false);
   }, 120_000);
 });

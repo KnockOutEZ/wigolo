@@ -9,6 +9,30 @@ import { defineConfig, configDefaults } from 'vitest/config';
 // (integration+e2e in the serial project, everything else in the parallel project — no
 // overlap, no gap), so collected counts are preserved by construction.
 
+/**
+ * Parallel-lane test files that hand a `dist/` path to a child process — directly, or through a
+ * fixture script they spawn. They are READERS of the artifact the serial lane REBUILDS, and the
+ * two halves of that race have to sit in the same lane to take turns: `tests/unit/…` is otherwise
+ * in the fully-parallel `unit` project, which vitest runs CONCURRENTLY with `spawn-serial`, so a
+ * rebuild there deletes `dist/` (tsup `clean: true`) out from under a spawn that has just started.
+ * Measured during the PX0 exit review (#176): `dist/daemon/studio-db-broker.js` was gone at t+436ms
+ * and back at t+739ms across one `npm pack`-triggered build, and a spawn inside that window exits 1
+ * with a module-not-found in a file that has nothing to do with the cause.
+ *
+ * They also belong here on the lane's own criterion — every one of them spawns a real process.
+ *
+ * This list is the lane split's single source of truth: `tests/unit/dist-rebuild-serialization.test.ts`
+ * imports THIS file and derives lane membership from it, so a file added below is audited, and a
+ * dist/-spawning file that is NOT below reds that guard.
+ */
+const DIST_SPAWNING_UNIT_TESTS = [
+  'tests/unit/studio/broker-transport.test.ts',
+  'tests/unit/studio/run-store-restart.test.ts',
+  // Spawns `tests/unit/studio/fixtures/run-store-exit-drain-child.mjs`, which imports
+  // `dist/cache/migrations/runner.js` and `dist/studio/run-store.js` in the child.
+  'tests/unit/studio/run-store-disk-projection.test.ts',
+];
+
 const shared = {
   globals: true,
   environment: 'node' as const,
@@ -57,9 +81,15 @@ export default defineConfig({
         test: {
           ...shared,
           name: 'unit',
-          // Everything EXCEPT integration + e2e. Default (parallel) pool.
+          // Everything EXCEPT integration + e2e, minus the dist/-spawning files that have to
+          // take turns with the rebuilders. Default (parallel) pool.
           include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-          exclude: [...configDefaults.exclude, 'tests/integration/**', 'tests/e2e/**'],
+          exclude: [
+            ...configDefaults.exclude,
+            'tests/integration/**',
+            'tests/e2e/**',
+            ...DIST_SPAWNING_UNIT_TESTS,
+          ],
         },
       },
       {
@@ -99,9 +129,17 @@ export default defineConfig({
             'tests/integration/**/*.test.tsx',
             'tests/e2e/**/*.test.ts',
             'tests/e2e/**/*.test.tsx',
+            // Readers, not rebuilders — see DIST_SPAWNING_UNIT_TESTS above. The lane guarded
+            // rebuilders only, so these three raced it from the parallel side.
+            ...DIST_SPAWNING_UNIT_TESTS,
           ],
           pool: 'forks',
-          poolOptions: { forks: { singleFork: true } },
+          // `poolOptions: { forks: { singleFork: true } }` used to sit here. Vitest 4 removed
+          // `poolOptions` — the string `singleFork` does not appear anywhere in vitest 4.1.6 — so it
+          // had become a line that reads like a guarantee and configures nothing, and the guard test
+          // was asserting it as though it still bound. `maxWorkers: 1` is the supported way to say
+          // the same thing, and it is asserted structurally now rather than by string match.
+          maxWorkers: 1,
           fileParallelism: false,
         },
       },
