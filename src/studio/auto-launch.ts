@@ -39,6 +39,12 @@ const log = createLogger('studio');
  */
 const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
 
+/**
+ * Canonical spelling of the hidden-window flag, uppercased so a comparison is case-insensitive.
+ * Same constant `runStudio` keeps for the same reason; see the strip in {@link defaultLaunch}.
+ */
+const HIDDEN_FLAG = 'WIGOLO_STUDIO_HIDDEN';
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
@@ -213,7 +219,20 @@ export function defaultLaunch(deps: DefaultLaunchDeps = {}): LaunchOutcome {
   }
   // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for. The
   // human summons a visible one themselves; a card that needs answering is surfaced by the app.
-  const hidden = { ...process.env, WIGOLO_STUDIO_HIDDEN: '1' };
+  //
+  // The inherited flag is stripped in ANY CASING before the canonical one goes back, because the
+  // spread collapses win32's case-insensitive env proxy into a plain object: a parent carrying
+  // `wigolo_studio_hidden=0` would otherwise leave TWO keys here, and the child — reading back
+  // through its own proxy — resolves whichever the OS hands it first. A window surfacing for a
+  // session that exists only to serve the agent is a consent surface in this design language, not
+  // cosmetics, so the ambiguity is not acceptable even where the substrate cannot reach it yet.
+  // `runStudio` (src/cli/studio.ts) strips the same way for the mirror-image reason — it wants the
+  // flag gone rather than canonical — and the shared spelling stays duplicated for now because
+  // unifying it means editing a file in another lane.
+  const hidden: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== HIDDEN_FLAG)),
+    [HIDDEN_FLAG]: '1',
+  };
   const child = (deps.spawnFn ?? defaultSpawn)(join(acquired.path, acquired.executable), [], {
     detached: true,
     stdio: 'ignore',
@@ -273,6 +292,21 @@ export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchO
     }
     if (typeof result.started !== 'boolean') {
       throw new TypeError('studio auto-launch received an object that is not a LaunchOutcome — it has no boolean `started`');
+    }
+    // `failed` GETS THE SAME TREATMENT AS `started`, and only looks optional. The merge below is
+    // `??`, which replaces a NULLISH probe — the legacy "started, no failure reporting" shape — and
+    // keeps anything else, so a truthy non-function survives normalization and is CALLED by the
+    // poll. That call is the one place it cannot be caught: it sits a tick past the try/catch that
+    // guards the launcher itself, so the TypeError rejects the shared promise, the memo mapper has
+    // no rejection branch, and `await inFlight` hands it to `studioBridgeFetch`, which awaits with
+    // no catch. A launch problem would become the user's fetch error — the one thing this module's
+    // docstring promises it never does. Thrown HERE it is a synchronous throw at the seam, which
+    // the try/catch already turns into a clean decline.
+    if (result.failed !== undefined && result.failed !== null && typeof result.failed !== 'function') {
+      throw new TypeError(
+        'studio auto-launch received an object whose `failed` is not a function — the handle poll ' +
+          'calls it every tick, so a non-callable probe is a rejection, not a report'
+      );
     }
     return { started: result.started, failed: result.failed ?? NEVER_FAILED };
   }
