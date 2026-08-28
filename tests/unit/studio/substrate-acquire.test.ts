@@ -558,6 +558,59 @@ describe('the install refuses a tree whose links leave it', () => {
   });
 });
 
+/**
+ * THE WALK TERMINATES, AND ONLY ONE LINE MAKES THAT TRUE.
+ *
+ * `findEscapingLink` walks the installed tree with `readdirSync(withFileTypes)`, which stats
+ * WITHOUT following, so a link to a directory reports `isSymbolicLink()` and never
+ * `isDirectory()` — it is judged as a link and is not pushed onto the queue. That single fact is
+ * the whole termination argument, and the arms above do not test it: the framework fixture has
+ * contained directory links, but none of them points at an ancestor, so the walk finishes for
+ * reasons that have nothing to do with the rule.
+ *
+ * `self -> .` is a LEGAL tree. It is contained, so it must install; a bundle can legitimately
+ * carry one (`Versions/Current -> .` shapes appear in the wild). Following directory links —
+ * swapping `entry.isDirectory()` for a `statSync(child).isDirectory()`, which reads as making the
+ * walk "more thorough" — turns it into `self/self/self/…` forever. The caller is `acquireSubstrate`
+ * on the warmup path, unattended and with no timeout of its own, so the failure is a warmup that
+ * never returns rather than a component that fails to install.
+ *
+ * Windows is skipped for the same reason as the arms above: creating a symlink there needs
+ * elevation. The per-test timeout is deliberate — if the rule is ever lost, this arm must report
+ * as a failing test rather than as a runner that stopped making progress.
+ */
+describe('the walk terminates on a link cycle that is contained', () => {
+  it.skipIf(process.platform === 'win32')(
+    'installs a tree whose directory link points at its own parent',
+    async () => {
+      const src = mkdtempSync(join(tmpdir(), 'wigolo-substrate-cycle-'));
+      try {
+        mkdirSync(join(src, 'bin'), { recursive: true });
+        writeFileSync(join(src, 'bin', 'run'), '#!/bin/sh\n');
+        // The cycle: a directory link back to the directory that holds it.
+        symlinkSync('.', join(src, 'self'));
+        writeFileSync(join(src, 'substrate.json'), JSON.stringify({ version: '3.3.7', executable: 'bin/run' }));
+
+        // CONTROL: the cycle is real — the link resolves to the directory it sits in, so a walk
+        // that descended into it would be re-reading its own parent.
+        expect(realpathSync(join(src, 'self'))).toBe(realpathSync(src));
+
+        const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+
+        // Contained is contained: this is an ACCEPT, not a refusal that happens to terminate.
+        expect(r.outcome).toBe('acquired');
+        expect(readSubstrateRecord(dataDir)?.version).toBe('3.3.7');
+        // The link survived the copy as a link, so the installed tree still carries the cycle the
+        // walk had to survive — not a resolved directory that quietly removed it.
+        expect(readlinkSync(join(substrateRoot(dataDir), '3.3.7', 'self'))).toBe('.');
+      } finally {
+        rmSync(src, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+});
+
 describe('containment is answered by the filesystem, not by string comparison', () => {
   let outside: string;
 
