@@ -13,6 +13,7 @@ import {
   substratePresent,
   substrateRoot,
   SUBSTRATE_PATH_ENV,
+  SUBSTRATE_RECORD,
   type SubstrateSource,
 } from '../../../src/studio/substrate-acquire.js';
 
@@ -283,6 +284,71 @@ describe('the version a record is filed under must be one directory name', () =>
     expect(r.outcome).toBe('acquired');
     expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
   });
+
+  /**
+   * THE TWO VERSIONS THAT CARRY NO SEPARATOR AND STILL NAME SOMEWHERE ELSE.
+   *
+   * The arm above plants `../escape`, so it stays green against a predicate narrowed to
+   * `!/[\\/]/` — and that narrowing looks like a simplification, because "one directory name" and
+   * "contains no separator" read as the same rule. They are not. `destDir` is `join(root, version)`
+   * and the NEXT statement is `rmSync(destDir, { recursive: true, force: true })`, so:
+   *
+   *   `.`  → destDir IS the substrate root  → deletes every installed version and the record
+   *   `..` → destDir IS the data dir        → deletes the cache DB, the keys and the profiles
+   *
+   * Neither spelling contains a separator, so neither is caught by the narrowed form, and both
+   * reach a recursive delete before anything is verified.
+   *
+   * WHY THE FIXTURE HALF-UNINSTALLS FIRST. With a valid record on disk `acquireSubstrate` returns
+   * `already_present` before it ever computes `destDir`, so a fully-healthy machine cannot reach
+   * the delete at all. The state that CAN is the one this file already names elsewhere — the
+   * record is still there and the executable it points at is gone — which is what an interrupted
+   * uninstall, a partial upgrade, or a first run against a populated root all look like.
+   *
+   * The assertions are about what survived, not about the outcome word, because `..` under the
+   * narrowed predicate still ends in `failed`: it destroys the data dir, then fails writing the
+   * record into the `substrate/` directory it just deleted. An outcome-only arm would go green on
+   * the very shape that wiped the machine.
+   */
+  it.each(['.', '..'])('refuses version %j rather than making it the directory it deletes', async (version) => {
+    await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    const root = substrateRoot(dataDir);
+    const installed = join(root, '1.2.3');
+    const exec = join(installed, 'bin', 'run');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+
+    // A data-dir neighbour that only `..` reaches — the cache DB stands in for everything the
+    // substrate root's PARENT holds and that acquisition has no business touching.
+    const neighbour = join(dataDir, 'cache.db');
+    writeFileSync(neighbour, 'not-a-substrate');
+
+    // Half-uninstalled: the record survives, its executable does not, so the record reads as
+    // absent and the acquisition proceeds past the `already_present` gate.
+    rmSync(exec);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+
+    const evil: SubstrateSource = {
+      id: 'evil',
+      manifest: { version, executable: 'bin/run' },
+      async install(destDir: string) {
+        mkdirSync(join(destDir, 'bin'), { recursive: true });
+        writeFileSync(join(destDir, 'bin', 'run'), '#!/bin/sh\n');
+      },
+    };
+    const r = await acquireSubstrate({ dataDir, source: evil });
+
+    expect(r.outcome).toBe('failed');
+    // Nothing was deleted: the earlier install's directory, the record filed beside it, and the
+    // rest of the data dir are all still where they were.
+    expect(existsSync(installed)).toBe(true);
+    expect(existsSync(join(root, SUBSTRATE_RECORD))).toBe(true);
+    expect(existsSync(neighbour)).toBe(true);
+    expect(readFileSync(neighbour, 'utf-8')).toBe('not-a-substrate');
+    // And the earlier record reads back the moment its executable returns — only possible because
+    // neither the record nor the directory it names was removed.
+    writeFileSync(exec, '#!/bin/sh\n');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
 });
 
 /**
@@ -490,6 +556,59 @@ describe('the install refuses a tree whose links leave it', () => {
       rmSync(src, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * THE WALK TERMINATES, AND ONLY ONE LINE MAKES THAT TRUE.
+ *
+ * `findEscapingLink` walks the installed tree with `readdirSync(withFileTypes)`, which stats
+ * WITHOUT following, so a link to a directory reports `isSymbolicLink()` and never
+ * `isDirectory()` — it is judged as a link and is not pushed onto the queue. That single fact is
+ * the whole termination argument, and the arms above do not test it: the framework fixture has
+ * contained directory links, but none of them points at an ancestor, so the walk finishes for
+ * reasons that have nothing to do with the rule.
+ *
+ * `self -> .` is a LEGAL tree. It is contained, so it must install; a bundle can legitimately
+ * carry one (`Versions/Current -> .` shapes appear in the wild). Following directory links —
+ * swapping `entry.isDirectory()` for a `statSync(child).isDirectory()`, which reads as making the
+ * walk "more thorough" — turns it into `self/self/self/…` forever. The caller is `acquireSubstrate`
+ * on the warmup path, unattended and with no timeout of its own, so the failure is a warmup that
+ * never returns rather than a component that fails to install.
+ *
+ * Windows is skipped for the same reason as the arms above: creating a symlink there needs
+ * elevation. The per-test timeout is deliberate — if the rule is ever lost, this arm must report
+ * as a failing test rather than as a runner that stopped making progress.
+ */
+describe('the walk terminates on a link cycle that is contained', () => {
+  it.skipIf(process.platform === 'win32')(
+    'installs a tree whose directory link points at its own parent',
+    async () => {
+      const src = mkdtempSync(join(tmpdir(), 'wigolo-substrate-cycle-'));
+      try {
+        mkdirSync(join(src, 'bin'), { recursive: true });
+        writeFileSync(join(src, 'bin', 'run'), '#!/bin/sh\n');
+        // The cycle: a directory link back to the directory that holds it.
+        symlinkSync('.', join(src, 'self'));
+        writeFileSync(join(src, 'substrate.json'), JSON.stringify({ version: '3.3.7', executable: 'bin/run' }));
+
+        // CONTROL: the cycle is real — the link resolves to the directory it sits in, so a walk
+        // that descended into it would be re-reading its own parent.
+        expect(realpathSync(join(src, 'self'))).toBe(realpathSync(src));
+
+        const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
+
+        // Contained is contained: this is an ACCEPT, not a refusal that happens to terminate.
+        expect(r.outcome).toBe('acquired');
+        expect(readSubstrateRecord(dataDir)?.version).toBe('3.3.7');
+        // The link survived the copy as a link, so the installed tree still carries the cycle the
+        // walk had to survive — not a resolved directory that quietly removed it.
+        expect(readlinkSync(join(substrateRoot(dataDir), '3.3.7', 'self'))).toBe('.');
+      } finally {
+        rmSync(src, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
 });
 
 describe('containment is answered by the filesystem, not by string comparison', () => {
