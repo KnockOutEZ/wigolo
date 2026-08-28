@@ -170,6 +170,17 @@ function isSingleDirectoryName(name: string): boolean {
 export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
   try {
     const raw = JSON.parse(readFileSync(recordPath(dataDir), 'utf-8')) as Partial<SubstrateRecord>;
+    // TYPE, NOT TRUTHINESS — the same rule {@link readSubstrateManifest} establishes, for the
+    // same reason: `record.json` is a file any process can edit, and `"version": 1.0` is truthy.
+    // The other two fields throw their way to `null` through this function's own catch, so the
+    // shape that actually got through was a numeric `version` — which read back as PRESENT and
+    // then flowed into `already_present`'s detail text, the acquisition log and every doctor row
+    // downstream as a number. Two readers of the same on-disk shapes answering by two different
+    // rules is the asymmetry, and closing it is what stops the next reader having to work out
+    // which of them to trust.
+    if (typeof raw.version !== 'string' || typeof raw.executable !== 'string' || typeof raw.path !== 'string') {
+      return null;
+    }
     if (!raw.version || !raw.executable || !raw.path) return null;
     if (!staysInsideItsDirectory(raw.executable)) return null;
     const root = substrateRoot(dataDir);
@@ -393,37 +404,53 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
     };
   }
 
-  // THE WRITE-TIME HALF OF CONTAINMENT, and the reason `readSubstrateRecord`'s check is not the
-  // whole story. `destDir` is `join(root, version)`, so a version carrying a separator installs
-  // the bytes outside the root — outside the directory the budget gates measure, and outside
-  // what the record is later allowed to name. Refusing here is what stops the machine reporting
-  // `acquired` for a component that then reads back as absent on every subsequent run.
-  if (!isSingleDirectoryName(source.manifest.version)) {
-    return {
-      outcome: 'failed',
-      detail: 'the desktop component names a version that cannot be used as a directory name',
-      error: `unusable version: ${source.manifest.version}`,
-    };
-  }
-  if (!staysInsideItsDirectory(source.manifest.executable)) {
-    return {
-      outcome: 'failed',
-      detail: 'the desktop component names a program outside the directory it installs into',
-      error: `executable escapes its directory: ${source.manifest.executable}`,
-    };
-  }
-
   const root = substrateRoot(dataDir);
-  // EVERY STATEMENT THAT CAN THROW IS INSIDE THE TRY, INCLUDING THE JOIN. `destDir` used to be
-  // computed here, one line above the `try`, which made NEVER THROWS true only for the argument
-  // shapes the guards above happened to anticipate: a non-string `version` passes
-  // `isSingleDirectoryName` and `join` then throws `ERR_INVALID_ARG_TYPE` straight past this
-  // function's contract and into `warmup`'s unguarded await, killing the browser, model and
-  // search phases with it. The cleanup path is the only reason it sat outside — so it now
-  // remembers the directory in a variable the catch can read, and cleans up only once there is
-  // something to clean up.
+  // EVERY STATEMENT THAT CAN THROW IS INSIDE THE TRY, INCLUDING THE GUARDS. `destDir` used to be
+  // computed one line above the `try`, which made NEVER THROWS true only for the argument shapes
+  // the guards happened to anticipate; moving the join in fixed that, and then left the guards
+  // THEMSELVES outside — where `staysInsideItsDirectory` calls `isAbsolute()`, which throws
+  // `ERR_INVALID_ARG_TYPE` on a non-string. So the same class reopened one line higher, on the
+  // one seam a manifest can still arrive mistyped through: `deps.source`, which never passes
+  // `readSubstrateManifest` and which is where S16-alpha's published channel plugs in. A guard
+  // that can throw is not a guard while it sits outside the thing that makes the contract true,
+  // so the whole pre-flight now answers from inside. The cleanup path is the only reason any of
+  // it sat outside — so the directory lives in a variable the catch can read, and cleanup runs
+  // only once there is something to clean up.
   let installedDir: string | null = null;
   try {
+    // TYPE, NOT TRUTHINESS — ESTABLISHED AT EVERY DOOR, not just the file one.
+    // `readSubstrateManifest` does this for a `substrate.json` on disk, and an injected source
+    // bypasses it entirely. Answering the type here is what lets the two guards below stay
+    // predicates about PATHS rather than about JSON, and what makes the refusal name its own
+    // reason instead of surfacing as a generic install failure.
+    if (typeof source.manifest.version !== 'string' || typeof source.manifest.executable !== 'string') {
+      return {
+        outcome: 'failed',
+        detail: 'the desktop component describes itself with something that is not a version and a program name',
+        error: `unusable manifest: version ${typeof source.manifest.version}, executable ${typeof source.manifest.executable}`,
+      };
+    }
+
+    // THE WRITE-TIME HALF OF CONTAINMENT, and the reason `readSubstrateRecord`'s check is not the
+    // whole story. `destDir` is `join(root, version)`, so a version carrying a separator installs
+    // the bytes outside the root — outside the directory the budget gates measure, and outside
+    // what the record is later allowed to name. Refusing here is what stops the machine reporting
+    // `acquired` for a component that then reads back as absent on every subsequent run.
+    if (!isSingleDirectoryName(source.manifest.version)) {
+      return {
+        outcome: 'failed',
+        detail: 'the desktop component names a version that cannot be used as a directory name',
+        error: `unusable version: ${source.manifest.version}`,
+      };
+    }
+    if (!staysInsideItsDirectory(source.manifest.executable)) {
+      return {
+        outcome: 'failed',
+        detail: 'the desktop component names a program outside the directory it installs into',
+        error: `executable escapes its directory: ${source.manifest.executable}`,
+      };
+    }
+
     const destDir = join(root, source.manifest.version);
     installedDir = destDir;
     mkdirSync(root, { recursive: true });
