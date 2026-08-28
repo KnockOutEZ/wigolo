@@ -227,10 +227,10 @@ function spawnedScripts(file: string, source: string): string[] {
 
 describe('no parallel-lane test can spawn a dist/ path', () => {
   // The reader half of the race (#176). `dist/` is absent for the whole of a tsup `clean: true`
-  // rebuild — measured at ~300ms on this tree — and a spawn that lands in that window exits 1 with
-  // a module-not-found. The rebuilders were already serialised; the readers were not, so two broker
-  // specs in `unit` spawned `dist/daemon/studio-db-broker.js` straight into it, and one of them
-  // then burned a 40s beforeAll hook timeout on a child that would never say `ready`.
+  // rebuild — ~300ms, measured during the PX0 exit review — and a spawn that lands in that window
+  // exits 1 with a module-not-found. The rebuilders were already serialised; the readers were not,
+  // so two broker specs in `unit` spawned `dist/daemon/studio-db-broker.js` straight into it, and
+  // one of them then burned a 40s beforeAll hook timeout on a child that would never say `ready`.
   const readers = parallelLaneFiles().filter((file) => {
     const source = codeOnly(readFileSync(join(ROOT, file), 'utf8'));
     if (!SPAWNS.test(source)) return false;

@@ -15,9 +15,9 @@ import { defineConfig, configDefaults } from 'vitest/config';
  * two halves of that race have to sit in the same lane to take turns: `tests/unit/…` is otherwise
  * in the fully-parallel `unit` project, which vitest runs CONCURRENTLY with `spawn-serial`, so a
  * rebuild there deletes `dist/` (tsup `clean: true`) out from under a spawn that has just started.
- * Measured on this tree: `dist/daemon/studio-db-broker.js` was gone at t+436ms and back at t+739ms
- * during one `npm pack`-triggered build, and a spawn inside that window exits 1 with a
- * module-not-found in a file that has nothing to do with the cause.
+ * Measured during the PX0 exit review (#176): `dist/daemon/studio-db-broker.js` was gone at t+436ms
+ * and back at t+739ms across one `npm pack`-triggered build, and a spawn inside that window exits 1
+ * with a module-not-found in a file that has nothing to do with the cause.
  *
  * They also belong here on the lane's own criterion — every one of them spawns a real process.
  *
