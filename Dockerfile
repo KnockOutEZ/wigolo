@@ -16,7 +16,19 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# npm resolves this package's own lifecycle scripts inside THIS layer's filesystem, so every
+# path they name has to be here before `npm ci` or the install dies with `Cannot find module`
+# before any of their guards can run. TWO of them fire on an install — `postinstall`
+# (`scripts/prune/run.mjs`, which also imports three siblings) and `prepare`
+# (`scripts/prepare-build.mjs`) — so the whole directory is copied rather than the two files:
+# a future lifecycle script must not be able to reintroduce this failure. The cost is that
+# editing any script invalidates the install cache, which is the cheaper of the two mistakes.
+COPY scripts/ scripts/
+# ...and once it IS loadable its toolchain guard resolves TRUE here — `npm ci` just installed
+# tsup and typescript — so `prepare` would build a layer that has no `src/` yet. This layer opts
+# the build out and does it explicitly on the next line instead. The variable only works because
+# the COPY above made the script loadable enough to read it.
+RUN WIGOLO_SKIP_PREPARE=1 npm ci
 COPY . .
 RUN npm run build
 
@@ -24,10 +36,16 @@ RUN npm run build
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# Same reachability requirement as the builder layer. No opt-out here on purpose: with the
+# scripts present, `--omit=dev` leaves tsup/typescript unresolvable and `prepare` takes its no-op
+# arm at exit 0 — the production path it was written for — while `postinstall` prunes the non-host
+# binaries out of the node_modules this stage exists to produce, which is exactly what we want in
+# the image. `--ignore-scripts` would skip both, and dependencies' own install scripts with them.
+COPY scripts/ scripts/
 RUN npm ci --omit=dev
 
 # ---- base: shared runtime layout with the browser engine's OS libraries baked ----
-# `playwright install-deps chromium` installs the OS shared libraries the browser
+# `install-deps chromium` installs the OS shared libraries the browser
 # engine needs (deps ONLY, NOT the browser binary) as ROOT at build time. Without
 # them, a first-use lazy install as the non-root `node` user cannot add system
 # libs (no passwordless sudo) and the browser-engine launch smoke-test fails,
@@ -53,10 +71,15 @@ COPY --chown=node:node --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
 COPY --chown=node:node package.json ./
 COPY --chown=node:node skills/ ./skills/
-# Bake the browser engine's OS libraries via the LOCAL playwright CLI (already in
-# node_modules) so the version matches the runtime and no throwaway playwright is
-# downloaded. install-deps runs apt-get itself (we are root at build time).
-RUN ./node_modules/.bin/playwright install-deps chromium \
+# Bake the browser engine's OS libraries via a LOCAL browser CLI so no throwaway one is
+# downloaded. It has to be `patchright`, not `playwright`: the default driver left the default
+# install path in `1eb4e4cf` (devDependency + optional peer, which npm does not install), so the
+# `--omit=dev` node_modules this stage copies has never contained a `.bin/playwright` since then
+# and the old line exited 127. `patchright` is an optionalDependency, so it IS in that tree, and
+# it is the same upstream at the same browser revision — `patchright-core` and `playwright-core`
+# both pin chromium 1223 — so what it bakes is what the runtime driver resolves.
+# install-deps runs apt-get itself (we are root at build time).
+RUN ./node_modules/.bin/patchright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # Writable location for the local cache, on-device models, browser binary, and
@@ -87,7 +110,9 @@ LABEL org.opencontainers.image.title="wigolo" \
 # JS-render works with no first-use download and no volume. Installed as root,
 # then made readable by the node user.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
+# Same CLI as the base stage, for the same reason, and the revision match is what makes it a
+# drop-in here: the binary lands in the `chromium-1223` layout the driver looks for.
 RUN mkdir -p /opt/browsers \
-    && ./node_modules/.bin/playwright install chromium \
+    && ./node_modules/.bin/patchright install chromium \
     && chown -R node:node /opt/browsers
 USER node

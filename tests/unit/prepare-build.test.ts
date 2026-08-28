@@ -320,6 +320,334 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
 });
 
 /*
+ * The Dockerfile register, which every arm above is structurally blind to. The scratch-tree arms
+ * copy the real script into a directory that exists and then run it, so they answer "does the
+ * guard decide correctly" and can never answer "is the guard reachable". In an image build it was
+ * not: both `npm ci` layers ran at a point where only `package.json` + `package-lock.json` had
+ * been COPYed, `scripts/` arriving later with `COPY . .`, so npm invoked a file absent from the
+ * layer and exited 1 with `Cannot find module '/app/scripts/prepare-build.mjs'` — before any
+ * build, test or guard could execute. `WIGOLO_SKIP_PREPARE=1` cannot fix that on its own: npm has
+ * to LOAD the script before the script can read the variable.
+ *
+ * So the rule is about layer ORDERING, and the only thing that can hold it is the Dockerfile
+ * parsed as an ordered sequence of layers: at each install layer, is the file npm is about to run
+ * actually in the image yet?
+ */
+describe('the install hooks are reachable in every Dockerfile layer that installs', () => {
+  const PREPARE_SCRIPT = 'scripts/prepare-build.mjs';
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+
+  /**
+   * Every hook npm fires on an install, in the order it fires them. `postinstall` runs BEFORE
+   * `prepare`, which is why the rule cannot be about one named file: with only the prepare script
+   * COPYed, the deps layer got further and then died on `scripts/prune/run.mjs` instead. The set
+   * is the whole class, so a hook added later is covered without an edit here.
+   */
+  const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare'] as const;
+
+  /** The repo-relative script paths those hooks hand to node — what must be in the layer. */
+  function hookScriptPaths(): { hook: string; path: string }[] {
+    const out: { hook: string; path: string }[] = [];
+    for (const hook of INSTALL_HOOKS) {
+      const command = manifest.scripts[hook];
+      if (!command) continue;
+      for (const match of command.matchAll(/(?:^|\s)(?:\.\/)?(scripts\/[\w./-]+\.[cm]?js)/g)) {
+        out.push({ hook, path: match[1]! });
+      }
+    }
+    return out;
+  }
+
+  /** `npm ci`, `npm install`, `npm i` — the shapes that make npm run the root `prepare`. */
+  const RUNS_INSTALL = /(?<![\w./-])npm\s+(?:ci|install|i)(?![\w-])/;
+  /** The ONLY opt-out that works without loading the script, since npm never reads it. */
+  const SCRIPTLESS_OPT_OUT = '--ignore-scripts';
+
+  type Layer = {
+    /** `<stage> / <the RUN command>`, so a red arm names the layer in its own message. */
+    key: string;
+    stage: string;
+    run: string;
+    /** WORKDIR-relative paths present in the image at this layer, as COPY source→dest pairs. */
+    copies: { src: string; dest: string; workdir: string }[];
+    env: Record<string, string>;
+  };
+
+  function norm(p: string) {
+    return p.replace(/^\.\//, '').replace(/\/+$/, '') || '.';
+  }
+
+  /** A COPY destination expressed relative to the stage's WORKDIR; null when it lands outside. */
+  function destRelative(dest: string, workdir: string): string | null {
+    let d = dest;
+    if (d.startsWith('/')) {
+      if (d === workdir || d === `${workdir}/`) d = '.';
+      else if (d.startsWith(`${workdir}/`)) d = d.slice(workdir.length + 1);
+      else return null;
+    }
+    return norm(d);
+  }
+
+  const under = (parent: string, child: string) => (parent === '.' ? child : `${parent}/${child}`);
+
+  /**
+   * Does this single COPY put `target` (a WORKDIR-relative path) into the image? Models the one
+   * rule of docker COPY that makes layer reasoning non-obvious: copying a DIRECTORY copies its
+   * contents into the destination, not the directory itself — so `COPY scripts/ scripts/` lands
+   * `scripts/prepare-build.mjs` while `COPY scripts/ ./` lands `prepare-build.mjs`.
+   */
+  function copyLands(copy: { src: string; dest: string; workdir: string }, target: string): boolean {
+    const into = destRelative(copy.dest, copy.workdir);
+    if (into === null) return false;
+    const src = norm(copy.src);
+    const destIsDir = /\/$/.test(copy.dest) || copy.dest === '.' || src === '.';
+    if (src === '.') return under(into, target) === target;
+    if (src === target) {
+      const landed = destIsDir ? under(into, src.split('/').pop()!) : into;
+      return landed === target;
+    }
+    if (target.startsWith(`${src}/`)) {
+      return under(into, target.slice(src.length + 1)) === target;
+    }
+    return false;
+  }
+
+  const layerHas = (layer: Layer, target: string) => layer.copies.some((c) => copyLands(c, target));
+
+  /** Parse the Dockerfile into install layers, carrying `FROM <stage>` inheritance forward. */
+  function installLayers(source: string): Layer[] {
+    const logical: string[] = [];
+    let buffer = '';
+    for (const raw of source.split('\n')) {
+      const line = raw.replace(/\s+$/, '');
+      if (line.trimStart().startsWith('#') && buffer === '') continue;
+      if (line.endsWith('\\')) {
+        buffer += `${line.slice(0, -1)} `;
+        continue;
+      }
+      logical.push((buffer + line).trim());
+      buffer = '';
+    }
+
+    const stages = new Map<string, { copies: Layer['copies']; env: Record<string, string> }>();
+    const out: Layer[] = [];
+    let stage = '';
+    let state = { copies: [] as Layer['copies'], env: {} as Record<string, string> };
+    let workdir = '/';
+
+    for (const line of logical) {
+      const from = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
+      if (from) {
+        const parent = stages.get(from[1]!);
+        // A stage built `FROM <earlier stage>` inherits its files and ENV; a stage built from a
+        // registry image starts empty. Without this, `FROM base AS full` would read as bare.
+        state = { copies: [...(parent?.copies ?? [])], env: { ...(parent?.env ?? {}) } };
+        workdir = '/';
+        stage = from[2] ?? from[1]!;
+        stages.set(stage, state);
+        continue;
+      }
+      const wd = /^WORKDIR\s+(\S+)$/i.exec(line);
+      if (wd) {
+        workdir = wd[1]!.replace(/\/+$/, '') || '/';
+        continue;
+      }
+      const env = /^ENV\s+(.+)$/i.exec(line);
+      if (env) {
+        for (const pair of env[1]!.split(/\s+/)) {
+          const eq = pair.indexOf('=');
+          if (eq > 0) state.env[pair.slice(0, eq)] = pair.slice(eq + 1);
+        }
+        continue;
+      }
+      const copy = /^COPY\s+(.+)$/i.exec(line);
+      if (copy) {
+        const args = copy[1]!.split(/\s+/).filter((a) => !a.startsWith('--'));
+        const dest = args.pop();
+        if (dest) for (const src of args) state.copies.push({ src, dest, workdir });
+        continue;
+      }
+      const run = /^RUN\s+(.+)$/i.exec(line);
+      if (run && RUNS_INSTALL.test(run[1]!)) {
+        out.push({
+          key: `${stage} / ${run[1]!}`,
+          stage,
+          run: run[1]!,
+          copies: [...state.copies],
+          env: { ...state.env },
+        });
+      }
+    }
+    return out;
+  }
+
+  const layers = installLayers(dockerfile);
+
+  it('installs on exactly these layers — a new install layer must appear here', () => {
+    // A set, not a count: a new `npm ci` layer arrives under its own text rather than as an
+    // off-by-one, and it is then subject to every rule below.
+    expect(layers.map((l) => l.key)).toEqual([
+      'builder / WIGOLO_SKIP_PREPARE=1 npm ci',
+      'deps / npm ci --omit=dev',
+    ]);
+  });
+
+  it('names the install hooks whose scripts must be in the layer', () => {
+    // Anti-vacuity for the rule below: if the extraction found nothing, "no unreachable script"
+    // would be green on any Dockerfile at all. Both hooks are here because BOTH failed for real.
+    expect(hookScriptPaths()).toEqual([
+      { hook: 'postinstall', path: 'scripts/prune/run.mjs' },
+      { hook: 'prepare', path: PREPARE_SCRIPT },
+    ]);
+  });
+
+  it('every install layer already contains every script npm is about to run', () => {
+    // THE assertion. npm resolves each hook's path inside the layer's filesystem, so a layer that
+    // installs before the file is COPYed dies with `Cannot find module` and no guard inside the
+    // file — however sound — is ever reached. Stated over the whole hook set rather than one
+    // named file, because fixing only `prepare` moved the failure to `postinstall`.
+    const unreachable: string[] = [];
+    for (const layer of layers) {
+      if (layer.run.includes(SCRIPTLESS_OPT_OUT)) continue;
+      for (const { hook, path } of hookScriptPaths()) {
+        if (!layerHas(layer, path)) unreachable.push(`${layer.key} — ${hook} needs ${path}`);
+      }
+    }
+    expect(unreachable).toEqual([]);
+  });
+
+  it('a hook script that imports siblings gets them too, not just its entry point', () => {
+    // `scripts/prune/run.mjs` imports three files beside it, so COPYing the entry point alone
+    // would swap `Cannot find module '…/run.mjs'` for `Cannot find module '…/ort-platforms.mjs'`
+    // — the same failure one level down. Asserted against the imports read out of the script.
+    const runner = join(ROOT, 'scripts', 'prune', 'run.mjs');
+    const siblings = [...readFileSync(runner, 'utf8').matchAll(/from\s+'\.\/([\w.-]+\.mjs)'/g)].map(
+      (m) => `scripts/prune/${m[1]!}`
+    );
+    expect(siblings.length).toBeGreaterThan(0);
+    for (const layer of layers) {
+      if (layer.run.includes(SCRIPTLESS_OPT_OUT)) continue;
+      for (const sibling of siblings) expect(layerHas(layer, sibling), `${layer.key}: ${sibling}`).toBe(true);
+    }
+  });
+
+  it('a layer that installs devDependencies but has no src/ opts the build out by env', () => {
+    // The other half of the same fix, and the reason COPYing the script is not sufficient alone:
+    // once the file IS in the builder layer, its toolchain guard resolves TRUE there (`npm ci`
+    // installed tsup + typescript), so `prepare` would run `npm run build` against a layer that
+    // has no `src/` yet. That is the env variable's exact job — and it only works because the
+    // script is now loadable enough to read it.
+    const needsEnv = layers.filter(
+      (l) => !/--omit=dev|--production|--only=prod/.test(l.run) && !l.run.includes(SCRIPTLESS_OPT_OUT) && !layerHas(l, 'src')
+    );
+    expect(needsEnv.map((l) => l.key)).not.toEqual([]);
+    const unguarded = needsEnv
+      .filter((l) => !/WIGOLO_SKIP_PREPARE=[^\s]/.test(l.run) && l.env.WIGOLO_SKIP_PREPARE !== '1')
+      .map((l) => l.key);
+    expect(unguarded).toEqual([]);
+  });
+
+  it('the production layer reaches the toolchain-absent arm rather than opting out', () => {
+    // Not a style point: the `--omit=dev` layer is the ONLY place the toolchain-absent arm runs
+    // for real. Papering it over with `--ignore-scripts` would also skip dependencies' own
+    // install scripts, and would make the arm the scratch tests pin unreachable in production.
+    const prod = layers.find((l) => /--omit=dev/.test(l.run));
+    expect(prod).toBeDefined();
+    expect(prod!.run).not.toContain(SCRIPTLESS_OPT_OUT);
+    expect(layerHas(prod!, PREPARE_SCRIPT)).toBe(true);
+  });
+
+  it('every node_modules CLI the image invokes survives the --omit=dev install', () => {
+    /*
+     * The third instance of this issue's class, and the one that outlived the two hooks: a layer
+     * invoking a path it does not contain. `base` and `full` ran `./node_modules/.bin/playwright`
+     * against the node_modules COPYed `--from=deps`, which is an `npm ci --omit=dev` tree — and
+     * the driver left the default install path in `1eb4e4cf` (devDependency + optional peer, which
+     * npm does not install). So the bin has not existed there since 2026-08-11 and the layer
+     * exited 127, with `install-deps` as the entire error message. Asserted against the manifest
+     * rather than against a name, so moving ANY bin's package into devDependencies reds here
+     * instead of in an image build nothing in CI runs.
+     */
+    const production = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+    ]);
+    const invoked = [...dockerfile.matchAll(/\.\/node_modules\/\.bin\/([\w.-]+)/g)].map((m) => m[1]!);
+    // Anti-vacuity: the image really does invoke local CLIs, so the rule below is not empty.
+    expect(invoked.length).toBeGreaterThan(0);
+    for (const bin of invoked) {
+      expect(production.has(bin), `${bin} is not a production dependency`).toBe(true);
+      expect(manifest.devDependencies ?? {}).not.toHaveProperty(bin);
+    }
+  });
+
+  it('the coverage model has teeth — a manifest-only layer does not count as covered', () => {
+    // Control. If `copyLands` were permissive the gate above would be green on the very
+    // Dockerfile that fails to build, which is exactly how this defect survived until now.
+    const manifestOnly: Layer = {
+      key: 'probe',
+      stage: 'probe',
+      run: 'npm ci',
+      copies: [
+        { src: 'package.json', dest: './', workdir: '/app' },
+        { src: 'package-lock.json', dest: './', workdir: '/app' },
+      ],
+      env: {},
+    };
+    expect(layerHas(manifestOnly, PREPARE_SCRIPT)).toBe(false);
+    // Directory COPY copies CONTENTS: the destination decides whether the path still matches.
+    const w = '/app';
+    expect(copyLands({ src: 'scripts/', dest: 'scripts/', workdir: w }, PREPARE_SCRIPT)).toBe(true);
+    expect(copyLands({ src: 'scripts/', dest: './', workdir: w }, PREPARE_SCRIPT)).toBe(false);
+    expect(copyLands({ src: PREPARE_SCRIPT, dest: 'scripts/', workdir: w }, PREPARE_SCRIPT)).toBe(true);
+    expect(copyLands({ src: PREPARE_SCRIPT, dest: '/opt/', workdir: w }, PREPARE_SCRIPT)).toBe(false);
+    expect(copyLands({ src: '.', dest: '.', workdir: w }, PREPARE_SCRIPT)).toBe(true);
+  });
+});
+
+/*
+ * The published-tarball register of the same defect. `prepare` names a file, so every install
+ * shape that RUNS the hook must also SHIP the file. Registry tarball installs never fire prepare,
+ * which is what made this inert rather than broken — but a directory dependency or an extracted
+ * tarball installed with plain `npm install` does fire it, and then npm runs a path `files` never
+ * packed. Same class as the Dockerfile layer, one register over.
+ */
+describe('everything the install hooks need is packed by `files`', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    files: string[];
+    scripts: Record<string, string>;
+  };
+
+  const packs = (path: string) =>
+    pkg.files.some((entry) => {
+      const e = entry.replace(/^\.\//, '').replace(/\/+$/, '');
+      return path === e || path.startsWith(`${e}/`);
+    });
+
+  it('`files` packs every script an install hook names', () => {
+    const named = ['preinstall', 'install', 'postinstall', 'prepare'].flatMap((hook) =>
+      [...(pkg.scripts[hook] ?? '').matchAll(/(?:^|\s)(?:\.\/)?(scripts\/[\w./-]+\.[cm]?js)/g)].map(
+        (m) => m[1]!
+      )
+    );
+    // Anti-vacuity: an empty list would make the loop below pass on any manifest.
+    expect(named).toEqual(['scripts/prune/run.mjs', 'scripts/prepare-build.mjs']);
+    for (const path of named) {
+      expect(packs(path), `files does not pack ${path}`).toBe(true);
+      // And the file is really there to pack — `files` naming a missing path packs nothing
+      // silently, so the tarball would ship a hook pointing at nothing.
+      expect(existsSync(join(ROOT, path)), `${path} is missing on disk`).toBe(true);
+    }
+  });
+});
+
+/*
  * `prepare` fires on the PUBLISH path too, and that register is invisible to the install sweep
  * above: `npm publish` packs before it uploads, and packing runs `prepare`. So the release leg
  * lints, tests, builds an explicit `dist/`, verifies the tag — and then `npm publish` rebuilds
