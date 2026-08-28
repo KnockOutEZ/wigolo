@@ -16,11 +16,14 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-# The manifest's `prepare` hook is `node scripts/prepare-build.mjs`, and npm resolves that path
-# inside THIS layer — so the file has to be here before `npm ci`, or the install dies with
-# `Cannot find module` before the script's own guards can run. Copied alone (not the whole
-# `scripts/`) so an unrelated script cannot invalidate the install cache.
-COPY scripts/prepare-build.mjs scripts/
+# npm resolves this package's own lifecycle scripts inside THIS layer's filesystem, so every
+# path they name has to be here before `npm ci` or the install dies with `Cannot find module`
+# before any of their guards can run. TWO of them fire on an install — `postinstall`
+# (`scripts/prune/run.mjs`, which also imports three siblings) and `prepare`
+# (`scripts/prepare-build.mjs`) — so the whole directory is copied rather than the two files:
+# a future lifecycle script must not be able to reintroduce this failure. The cost is that
+# editing any script invalidates the install cache, which is the cheaper of the two mistakes.
+COPY scripts/ scripts/
 # ...and once it IS loadable its toolchain guard resolves TRUE here — `npm ci` just installed
 # tsup and typescript — so `prepare` would build a layer that has no `src/` yet. This layer opts
 # the build out and does it explicitly on the next line instead. The variable only works because
@@ -33,11 +36,12 @@ RUN npm run build
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-# Same reachability requirement as the builder layer. No opt-out here on purpose: with the script
-# present, `--omit=dev` leaves tsup/typescript unresolvable and `prepare` takes its no-op arm at
-# exit 0 — the production path the script was written for. `--ignore-scripts` would also skip
-# dependencies' own install scripts, which this stage's node_modules needs.
-COPY scripts/prepare-build.mjs scripts/
+# Same reachability requirement as the builder layer. No opt-out here on purpose: with the
+# scripts present, `--omit=dev` leaves tsup/typescript unresolvable and `prepare` takes its no-op
+# arm at exit 0 — the production path it was written for — while `postinstall` prunes the non-host
+# binaries out of the node_modules this stage exists to produce, which is exactly what we want in
+# the image. `--ignore-scripts` would skip both, and dependencies' own install scripts with them.
+COPY scripts/ scripts/
 RUN npm ci --omit=dev
 
 # ---- base: shared runtime layout with the browser engine's OS libraries baked ----

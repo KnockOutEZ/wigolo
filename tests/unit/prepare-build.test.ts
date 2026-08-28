@@ -333,9 +333,33 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
  * parsed as an ordered sequence of layers: at each install layer, is the file npm is about to run
  * actually in the image yet?
  */
-describe('the prepare hook is reachable in every Dockerfile layer that installs', () => {
+describe('the install hooks are reachable in every Dockerfile layer that installs', () => {
   const PREPARE_SCRIPT = 'scripts/prepare-build.mjs';
   const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+
+  /**
+   * Every hook npm fires on an install, in the order it fires them. `postinstall` runs BEFORE
+   * `prepare`, which is why the rule cannot be about one named file: with only the prepare script
+   * COPYed, the deps layer got further and then died on `scripts/prune/run.mjs` instead. The set
+   * is the whole class, so a hook added later is covered without an edit here.
+   */
+  const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare'] as const;
+
+  /** The repo-relative script paths those hooks hand to node — what must be in the layer. */
+  function hookScriptPaths(): { hook: string; path: string }[] {
+    const out: { hook: string; path: string }[] = [];
+    for (const hook of INSTALL_HOOKS) {
+      const command = manifest.scripts[hook];
+      if (!command) continue;
+      for (const match of command.matchAll(/(?:^|\s)(?:\.\/)?(scripts\/[\w./-]+\.[cm]?js)/g)) {
+        out.push({ hook, path: match[1]! });
+      }
+    }
+    return out;
+  }
 
   /** `npm ci`, `npm install`, `npm i` — the shapes that make npm run the root `prepare`. */
   const RUNS_INSTALL = /(?<![\w./-])npm\s+(?:ci|install|i)(?![\w-])/;
@@ -471,14 +495,43 @@ describe('the prepare hook is reachable in every Dockerfile layer that installs'
     ]);
   });
 
-  it('every install layer already contains the script npm is about to run', () => {
-    // THE assertion. npm resolves `node scripts/prepare-build.mjs` inside the layer's filesystem,
-    // so a layer that installs before the file is COPYed dies with `Cannot find module` and no
-    // guard inside the file — however sound — is ever reached.
-    const unreachable = layers
-      .filter((l) => !layerHas(l, PREPARE_SCRIPT) && !l.run.includes(SCRIPTLESS_OPT_OUT))
-      .map((l) => l.key);
+  it('names the install hooks whose scripts must be in the layer', () => {
+    // Anti-vacuity for the rule below: if the extraction found nothing, "no unreachable script"
+    // would be green on any Dockerfile at all. Both hooks are here because BOTH failed for real.
+    expect(hookScriptPaths()).toEqual([
+      { hook: 'postinstall', path: 'scripts/prune/run.mjs' },
+      { hook: 'prepare', path: PREPARE_SCRIPT },
+    ]);
+  });
+
+  it('every install layer already contains every script npm is about to run', () => {
+    // THE assertion. npm resolves each hook's path inside the layer's filesystem, so a layer that
+    // installs before the file is COPYed dies with `Cannot find module` and no guard inside the
+    // file — however sound — is ever reached. Stated over the whole hook set rather than one
+    // named file, because fixing only `prepare` moved the failure to `postinstall`.
+    const unreachable: string[] = [];
+    for (const layer of layers) {
+      if (layer.run.includes(SCRIPTLESS_OPT_OUT)) continue;
+      for (const { hook, path } of hookScriptPaths()) {
+        if (!layerHas(layer, path)) unreachable.push(`${layer.key} — ${hook} needs ${path}`);
+      }
+    }
     expect(unreachable).toEqual([]);
+  });
+
+  it('a hook script that imports siblings gets them too, not just its entry point', () => {
+    // `scripts/prune/run.mjs` imports three files beside it, so COPYing the entry point alone
+    // would swap `Cannot find module '…/run.mjs'` for `Cannot find module '…/ort-platforms.mjs'`
+    // — the same failure one level down. Asserted against the imports read out of the script.
+    const runner = join(ROOT, 'scripts', 'prune', 'run.mjs');
+    const siblings = [...readFileSync(runner, 'utf8').matchAll(/from\s+'\.\/([\w.-]+\.mjs)'/g)].map(
+      (m) => `scripts/prune/${m[1]!}`
+    );
+    expect(siblings.length).toBeGreaterThan(0);
+    for (const layer of layers) {
+      if (layer.run.includes(SCRIPTLESS_OPT_OUT)) continue;
+      for (const sibling of siblings) expect(layerHas(layer, sibling), `${layer.key}: ${sibling}`).toBe(true);
+    }
   });
 
   it('a layer that installs devDependencies but has no src/ opts the build out by env', () => {
@@ -538,22 +591,32 @@ describe('the prepare hook is reachable in every Dockerfile layer that installs'
  * tarball installed with plain `npm install` does fire it, and then npm runs a path `files` never
  * packed. Same class as the Dockerfile layer, one register over.
  */
-describe('everything the prepare hook needs is packed by `files`', () => {
+describe('everything the install hooks need is packed by `files`', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
     files: string[];
     scripts: Record<string, string>;
   };
 
-  it('`files` packs the script `prepare` names', () => {
-    const named = /node\s+(\S+\.mjs)/.exec(pkg.scripts.prepare ?? '')?.[1];
-    expect(named).toBe('scripts/prepare-build.mjs');
-    const packed = pkg.files.some((entry) => {
+  const packs = (path: string) =>
+    pkg.files.some((entry) => {
       const e = entry.replace(/^\.\//, '').replace(/\/+$/, '');
-      return named === e || named!.startsWith(`${e}/`);
+      return path === e || path.startsWith(`${e}/`);
     });
-    expect(packed).toBe(true);
-    // And the file is really there to pack — `files` naming a missing path packs nothing silently.
-    expect(existsSync(join(ROOT, named!))).toBe(true);
+
+  it('`files` packs every script an install hook names', () => {
+    const named = ['preinstall', 'install', 'postinstall', 'prepare'].flatMap((hook) =>
+      [...(pkg.scripts[hook] ?? '').matchAll(/(?:^|\s)(?:\.\/)?(scripts\/[\w./-]+\.[cm]?js)/g)].map(
+        (m) => m[1]!
+      )
+    );
+    // Anti-vacuity: an empty list would make the loop below pass on any manifest.
+    expect(named).toEqual(['scripts/prune/run.mjs', 'scripts/prepare-build.mjs']);
+    for (const path of named) {
+      expect(packs(path), `files does not pack ${path}`).toBe(true);
+      // And the file is really there to pack — `files` naming a missing path packs nothing
+      // silently, so the tarball would ship a hook pointing at nothing.
+      expect(existsSync(join(ROOT, path)), `${path} is missing on disk`).toBe(true);
+    }
   });
 });
 
