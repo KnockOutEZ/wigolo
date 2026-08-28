@@ -757,6 +757,51 @@ describe('a launch that produced no handle is remembered briefly', () => {
     }
   });
 
+  /**
+   * A HANDLE APPEARING INVALIDATES THE MEMO — INCLUDING ONE THE POLL ITSELF SAW.
+   *
+   * The docstring's promise is unqualified ("a handle appearing invalidates it immediately, which
+   * is what keeps it a memo rather than a lockout"), but only the top-of-call read cleared
+   * `noHandleUntil`. So the recovery that runs THROUGH the launch path — a memo-bypassing caller
+   * whose launch publishes, i.e. a substrate that came up on the second attempt — left the stale
+   * window standing: when that session ended, a default caller still inside the original 60 s was
+   * declined with no spawn attempt, having just been served by a live handle. That is the lockout,
+   * reached by the successful path rather than the failing one.
+   *
+   * The clear belongs on the shared promise beside the memo write, not in the poll body: the other
+   * single-flight participants return `inFlight` directly and never run the loop.
+   */
+  it('is invalidated by a handle observed INSIDE the poll, not only by the top-of-call read', async () => {
+    vi.useFakeTimers();
+    try {
+      const sleep = async (ms: number): Promise<void> => { vi.advanceTimersByTime(ms); };
+      const launch = vi.fn();
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep };
+
+      // Arm the memo the ordinary way: a launch that produced no handle.
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      // A memo-bypassing caller launches, and THIS one comes up. The handle is published by the
+      // launcher, so the top-of-call read — which ran before it — cannot be what sees it; only the
+      // poll can, which is the whole point of the arm.
+      const lateLaunch = vi.fn(() => { publishHandle(); });
+      const served = await ensureStudioRunning({ ...args, memoMs: 0, launch: lateLaunch, timeoutMs: 30_000, pollMs: 250 });
+      expect(lateLaunch).toHaveBeenCalledTimes(1);
+      expect(served?.endpoint).toBe(HANDLE.endpoint);
+
+      // The session ends well inside the ORIGINAL window. The next default caller must launch: it
+      // was just served by a live substrate, so the remembered failure has been disproved.
+      rmSync(join(dir, 'studio', 'current.json'), { force: true });
+      vi.advanceTimersByTime(1_000);
+      const third = vi.fn();
+      expect(await ensureStudioRunning({ ...args, launch: third })).toBeNull();
+      expect(third).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('pins the shipped default window — long enough to spare one fan-out, short enough not to lock out', async () => {
     // The constant is load-bearing and was unpinned: every arm above passes `memoMs` explicitly, so
     // `DEFAULT_NO_HANDLE_MEMO_MS` could be raised to an hour with the suite still green — turning
@@ -807,6 +852,33 @@ describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
 
   it('throws on an object that is not a LaunchOutcome', () => {
     expect(() => normalizeLaunch({ launched: true } as never)).toThrow(/LaunchOutcome/);
+  });
+
+  /**
+   * THE CHOICE, RECORDED: an illegal launcher answer THROWS rather than declining quietly.
+   *
+   * `started` was reached by a trailing "anything else = legacy true", so every falsy value that is
+   * not `false` — `null`, `0`, `''`, `NaN` — was read as STARTED: one token away from a correct
+   * decline, and the reward was the full 30 s handle poll for a process nobody launched, followed
+   * by a 60 s negative memo locking the next caller out. `() => null` is what a launcher written
+   * against `readSubstrateRecord`'s own return shape produces.
+   *
+   * Throwing was chosen over silently declining for two reasons. It is the treatment the seam
+   * already gives every other unreadable shape (a thenable, a non-LaunchOutcome object, a
+   * non-callable `failed`) — one rule, not a second dialect for primitives. And it is not a
+   * behavioural gamble: the throw is synchronous at the seam, so `ensureStudioRunning`'s launcher
+   * try/catch turns it into a clean zero-tick decline that is NOT memoized, which is the safer of
+   * the two candidate behaviours anyway. The difference is purely that the operator gets a logged
+   * reason instead of a mystery. Reversal condition in DECISIONS-AUTO (2026-08-29).
+   *
+   * The guard is an ALLOWLIST rather than a falsy check, because the same trailing branch also read
+   * `1` and `'yes'` as started — the identical guess, made about a value that merely happens to be
+   * truthy.
+   */
+  it('throws on any answer that is not `false`, `true`, `void` or a LaunchOutcome', () => {
+    for (const illegal of [null, 0, '', Number.NaN, 1, 'started']) {
+      expect(() => normalizeLaunch(illegal as never)).toThrow(/not a launcher answer/);
+    }
   });
 
   it('still reads all three legacy shapes', () => {
@@ -860,6 +932,116 @@ describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
     const started = vi.fn();
     expect(await ensureStudioRunning({ ...args, launch: started })).toBeNull();
     expect(started).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * NEVER-THROWS IS A CONTRACT, AND THE POLL LOOP SAT OUTSIDE EVERY GUARD THAT ENFORCED IT.
+ *
+ * `ensureStudioRunning`'s docstring ends "never throws, because every caller has a degraded path and
+ * a launch problem must not become the user's error". The try/catch that delivered that only covered
+ * the LAUNCHER CALL. Everything the poll loop invokes each tick — `failed()`, `readHandleFn()`,
+ * `sleep()` — ran a tick past it, the `.then` memo mapper had no rejection branch, and the body is
+ * `try { return await inFlight } finally` with no catch. So a probe that throws propagated all the
+ * way into `studioBridgeFetch`, which awaits with no catch: a launch problem became the caller's
+ * fetch error.
+ *
+ * The rejection also SKIPPED THE MEMO WRITE, so the fan-out re-paid the poll budget per URL — the
+ * second failure hiding behind the first.
+ *
+ * These resolve rather than reject, and they are memoized, because `started` was true: something was
+ * launched and no handle appeared, which is exactly the case the negative memo exists for. A
+ * LAUNCHER that throws stays un-memoized (arms above) because nothing was started at all.
+ */
+describe('a fault inside the handle poll is an outcome, never a rejection', () => {
+  const throwingProbe = (): boolean => { throw new Error('probe boom'); };
+
+  it('a `failed` probe that throws gives up the poll instead of rejecting, and is remembered', async () => {
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => { ticks += 1; vi.advanceTimersByTime(ms); };
+      const launch = vi.fn(() => ({ started: true, failed: throwingProbe }));
+      const args = { dataDir: dir, launchable: () => true, timeoutMs: 30_000, pollMs: 250, sleep };
+
+      await expect(ensureStudioRunning({ ...args, launch })).resolves.toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+      // Abandoned on the tick it threw, not on tick 120: a probe that cannot answer is no more
+      // waitable than one that answered "dead".
+      expect(ticks).toBe(0);
+
+      // …and the attempt was recorded, so the next challenged page is declined for free rather than
+      // re-paying the budget into the same broken seam.
+      const second = vi.fn();
+      expect(await ensureStudioRunning({ ...args, launch: second })).toBeNull();
+      expect(second).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a `sleep` that rejects mid-poll resolves null rather than rejecting', async () => {
+    const launch = vi.fn(() => ({ started: true, failed: () => false }));
+    const sleep = async (): Promise<void> => { throw new Error('sleep boom'); };
+    // A real timeout, so the loop genuinely reaches the sleep rather than expiring on tick one.
+    const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 30_000, pollMs: 250, sleep };
+
+    await expect(ensureStudioRunning(args)).resolves.toBeNull();
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a `readHandleFn` that throws resolves null — at the top-of-call read as well as in the poll', async () => {
+    // The top read is the FIRST thing the function does and sat outside every guard too, so the
+    // plainest possible fake — a reader that always throws — never even reached the poll: it
+    // rejected synchronously from the entry point.
+    const readHandleFn = vi.fn((): SessionHandle | null => { throw new Error('handle read boom'); });
+    const launch = vi.fn();
+    const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep: noSleep, readHandleFn };
+
+    await expect(ensureStudioRunning(args)).resolves.toBeNull();
+    // Reached the launch path rather than being answered by the unreadable read: a handle that
+    // cannot be read is not evidence the substrate is absent.
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(readHandleFn.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  /**
+   * THE PAIRED POSITIVE ARM. Without it, a `catch { return NOT_ATTEMPTED }` wrapped around the whole
+   * body satisfies every arm above while quietly deleting the poll.
+   */
+  it('still returns a handle the poll finds, and still honours a probe that reports failure', async () => {
+    let dead = false;
+    const launch = vi.fn(() => { dead = true; return { started: true, failed: () => dead }; });
+    expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 30_000, pollMs: 1, sleep: noSleep })).toBeNull();
+
+    resetAutoLaunchState();
+    const good = vi.fn(() => { publishHandle(); return { started: true, failed: () => false }; });
+    const h = await ensureStudioRunning({ dataDir: dir, launch: good, launchable: () => true, timeoutMs: 30_000, pollMs: 1, sleep: noSleep });
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+  });
+
+  /**
+   * The end-to-end half of the falsy-answer arm: whichever way the seam reports it, the cost must be
+   * zero ticks and no memo. Mirrors the launcher-decline arm — nothing was started, so nothing is
+   * waited for and nothing is remembered.
+   */
+  it('a falsy non-`false` launch answer costs zero poll ticks and is not remembered', async () => {
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => { ticks += 1; vi.advanceTimersByTime(ms); };
+      const launch = vi.fn(() => null);
+      const args = { dataDir: dir, launchable: () => true, timeoutMs: 30_000, pollMs: 250, sleep };
+
+      expect(await ensureStudioRunning({ ...args, launch: launch as never })).toBeNull();
+      expect(ticks).toBe(0);
+
+      const second = vi.fn();
+      expect(await ensureStudioRunning({ ...args, launch: second })).toBeNull();
+      expect(second).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

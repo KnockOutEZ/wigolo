@@ -117,11 +117,14 @@ export interface AutoLaunchDeps {
   /**
    * Start the substrate. Injectable so tests never spawn a real process.
    *
-   * Returning `false` means DECLINED — nothing was started, so there is nothing to wait for. Any
-   * other return (including `void`) means a start was attempted and the handle poll is worth
-   * running. A {@link LaunchOutcome} says both, and additionally lets the poll give up early on a
-   * start that has since died. See {@link defaultLaunch} for why a launcher that answered
-   * `launchable` can still decline.
+   * Returning `false` means DECLINED — nothing was started, so there is nothing to wait for.
+   * `true` or `void` means a start was attempted and the handle poll is worth running. A {@link
+   * LaunchOutcome} says both, and additionally lets the poll give up early on a start that has
+   * since died. See {@link defaultLaunch} for why a launcher that answered `launchable` can still
+   * decline.
+   *
+   * NOTHING ELSE IS AN ANSWER. `null`, `0`, `''` and the rest are rejected rather than guessed at;
+   * see {@link normalizeLaunch} for why a near-miss decline must not read as a start.
    */
   launch?: () => boolean | void | LaunchOutcome;
   /** True when the substrate can actually be started on this machine. Injectable. */
@@ -303,7 +306,8 @@ const NEVER_FAILED = (): boolean => false;
  * reporting". Only a launcher that actually spawns something can say more, and only `defaultLaunch`
  * does.
  *
- * ⚠ IT REJECTS ANY OTHER OBJECT, LOUDLY, and a thenable by name. Reading `.started` off whatever
+ * ⚠ IT REJECTS EVERY OTHER SHAPE, LOUDLY — any other object, a thenable by name, and any primitive
+ * that is not `false`/`true`/`void`. Reading `.started` off whatever
  * arrives used to make an async launcher the worst possible answer: a Promise's `.started` is
  * `undefined`, so the launch was reported as a DECLINE on the same tick its body started running —
  * the poll never ran, the handle was never read, and the caller was told nothing had been started
@@ -315,6 +319,20 @@ const NEVER_FAILED = (): boolean => false;
  */
 export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
   if (result === false) return { started: false, failed: NEVER_FAILED };
+  // THE LEGAL PRIMITIVES, ENUMERATED — this used to be a trailing "anything else means started",
+  // which is the same plausible lie the paragraph above refuses to tell, just told about a value
+  // rather than an object. `null`, `0`, `''` and `NaN` are all ONE TOKEN from a correct decline —
+  // `() => null` is what a launcher written against `readSubstrateRecord`'s own return shape
+  // produces — and each of them bought the full 30 s handle poll for a process nobody started,
+  // followed by a 60 s negative memo locking the next caller out. `1` and `'yes'` are the identical
+  // guess about a truthy value, so the guard is an allowlist rather than a falsy check.
+  //
+  // It THROWS rather than declining quietly, for the same reason every other unreadable shape here
+  // does: one rule at the seam, not a second dialect for primitives. It is not a behavioural gamble
+  // either — the throw is synchronous, so `ensureStudioRunning`'s launcher try/catch turns it into
+  // exactly the clean zero-tick, un-memoized decline the alternative would have produced, plus a
+  // logged reason. DECISIONS-AUTO 2026-08-29 carries the reversal condition.
+  if (result === true || result === undefined) return { started: true, failed: NEVER_FAILED };
   if (result && typeof result === 'object') {
     if (typeof (result as { then?: unknown }).then === 'function') {
       throw new TypeError(
@@ -342,7 +360,10 @@ export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchO
     }
     return { started: result.started, failed: result.failed ?? NEVER_FAILED };
   }
-  return { started: true, failed: NEVER_FAILED };
+  throw new TypeError(
+    `studio auto-launch received a ${result === null ? 'null' : typeof result} from deps.launch, which is ` +
+      'not a launcher answer — only `false` (declined), `true`/`void` (started) and a LaunchOutcome say anything'
+  );
 }
 
 /**
@@ -381,7 +402,20 @@ let noHandleUntil = 0;
  */
 export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<SessionHandle | null> {
   const read = deps.readHandleFn ?? readHandle;
-  const existing = read(deps.dataDir);
+  // GUARDED, because this is the first thing the function does and it sat outside every try in it:
+  // a reader that throws rejected straight out of the entry point, past the "never throws" promise
+  // in the docstring above and into `studioBridgeFetch`, which awaits with no catch.
+  //
+  // A read that cannot answer is NOT evidence the substrate is absent, so it falls through to the
+  // launch path rather than declining: the honest reading is "no handle I can see", which is what
+  // the null branch already means. If the substrate is in fact up, the launcher's own decline or
+  // the poll bounds what that costs.
+  let existing: SessionHandle | null = null;
+  try {
+    existing = read(deps.dataDir);
+  } catch (err) {
+    log.debug('studio auto-launch could not read the session handle', { error: err instanceof Error ? err.message : String(err) });
+  }
   if (existing) {
     // AHEAD OF THE MEMO CHECK, and it clears it: a handle on disk is direct evidence that whatever
     // stopped the last launch has been resolved — most often a human who started the app by hand
@@ -431,23 +465,41 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     }
     // Poll for the handle rather than watching the child: the handle is written LAST, after the host's
     // handlers are wired, so its appearance is the only honest "ready" signal.
+    //
+    // WRAPPED, and this is a SECOND outcome rather than a second layer over the launcher's catch.
+    // Everything the loop invokes each tick — `failed()`, `read()`, `sleep()` — is caller-supplied
+    // and sits a tick PAST the try above, so a throw from any of them rejected the shared promise,
+    // found no rejection branch on the `.then` memo mapper, and was rethrown by `await inFlight`
+    // into the caller's fetch path. That is the one thing this module promises never happens.
+    //
+    // It resolves as ATTEMPTED — unlike the launcher catch, which resolves as NOT_ATTEMPTED —
+    // because `started` was true: something was launched and no handle appeared, which is exactly
+    // the case the negative memo exists for. Re-paying a 30 s budget per URL into a probe that
+    // cannot answer is the fan-out cost the memo was added to stop.
     const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const h = read(deps.dataDir);
-      if (h) return { handle: h, attempted: true };
-      // Checked AFTER the handle read, because a spawn can both publish and then error, and a
-      // published handle is the answer the caller wanted either way. Checked BEFORE the deadline
-      // because that is the whole point: a dead process is knowable now, and the alternative is
-      // 120 more ticks of waiting for a handle nothing will write.
-      if (failed()) {
-        log.debug('studio auto-launch spawned a process that failed to start — abandoning the handle poll');
-        return { handle: null, attempted: true };
+    try {
+      for (;;) {
+        const h = read(deps.dataDir);
+        if (h) return { handle: h, attempted: true };
+        // Checked AFTER the handle read, because a spawn can both publish and then error, and a
+        // published handle is the answer the caller wanted either way. Checked BEFORE the deadline
+        // because that is the whole point: a dead process is knowable now, and the alternative is
+        // 120 more ticks of waiting for a handle nothing will write.
+        if (failed()) {
+          log.debug('studio auto-launch spawned a process that failed to start — abandoning the handle poll');
+          return { handle: null, attempted: true };
+        }
+        if (Date.now() >= deadline) {
+          log.debug('studio auto-launch did not publish a handle within budget');
+          return { handle: null, attempted: true };
+        }
+        await sleep(pollMs);
       }
-      if (Date.now() >= deadline) {
-        log.debug('studio auto-launch did not publish a handle within budget');
-        return { handle: null, attempted: true };
-      }
-      await sleep(pollMs);
+    } catch (err) {
+      log.debug('studio auto-launch could not carry out the handle poll — treating it as a launch that published nothing', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { handle: null, attempted: true };
     }
   })().then(({ handle, attempted }) => {
     // Recorded on the SHARED promise rather than in the first caller's `await` below: the other
@@ -464,7 +516,20 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     //
     // A launcher that THREW is the same case for the same reason: nothing was started, nothing was
     // waited for, and re-attempting costs one synchronous throw rather than a budget.
-    if (!handle && attempted && memoMs > 0) noHandleUntil = Date.now() + memoMs;
+    //
+    // THE CLEAR IS THE SAME EVENT AS THE WRITE, so it lives here rather than in the poll body. The
+    // memo's own docstring promises "a handle appearing invalidates it immediately", but only the
+    // TOP-OF-CALL read delivered that: a recovery that ran through the LAUNCH path — a
+    // memo-bypassing caller whose substrate came up on the second attempt, and whose handle the
+    // poll therefore saw — left the stale window standing, so when that session ended a default
+    // caller still inside the original 60 s was declined with no spawn attempt. Reached by the
+    // succeeding path instead of the failing one, but the same lockout.
+    //
+    // Cleared without consulting `memoMs`, exactly like the top-of-call read: `memoMs` says what
+    // THIS caller wants remembered, and the memo is module state. A live handle disproves it for
+    // everyone.
+    if (handle) noHandleUntil = 0;
+    else if (attempted && memoMs > 0) noHandleUntil = Date.now() + memoMs;
     return handle;
   });
   try {
