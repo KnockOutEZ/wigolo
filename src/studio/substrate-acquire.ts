@@ -277,10 +277,21 @@ export function substratePresent(now: () => number = Date.now): boolean {
   return presence.value;
 }
 
-/** Read a substrate directory's manifest. Null when absent or malformed. */
+/**
+ * Read a substrate directory's manifest. Null when absent or malformed.
+ *
+ * ⚠ TYPE, NOT TRUTHINESS. `substrate.json` is JSON this process did not write, so every field
+ * arrives with whatever type the file spells — and `"version": 1.0` is truthy. A number survived
+ * the old check, `isSingleDirectoryName(1)` is truthy-true, and `join(root, 1)` then threw
+ * `ERR_INVALID_ARG_TYPE` out of {@link acquireSubstrate}, whose contract is that it never throws
+ * and whose caller (`warmup`) awaits it unguarded on the strength of that contract. So the
+ * manifest is the place the type is established once, for everything downstream that treats
+ * these two fields as paths.
+ */
 export function readSubstrateManifest(dir: string): SubstrateManifest | null {
   try {
     const raw = JSON.parse(readFileSync(join(dir, SUBSTRATE_MANIFEST), 'utf-8')) as Partial<SubstrateManifest>;
+    if (typeof raw.version !== 'string' || typeof raw.executable !== 'string') return null;
     if (!raw.version || !raw.executable) return null;
     return { version: raw.version, executable: raw.executable };
   } catch {
@@ -301,6 +312,17 @@ export function localPathSource(dir: string): SubstrateSource | null {
     id: 'local-path',
     manifest,
     async install(destDir: string): Promise<void> {
+      // THE SOURCE ITSELF IS RESOLVED, AND ONLY THE SOURCE ITSELF. `verbatimSymlinks` below
+      // copies a link's target string unchanged, which is right for every link INSIDE the tree
+      // and catastrophic for the tree's own root: when `WIGOLO_SUBSTRATE_PATH` names a link to a
+      // directory (`.../current -> .../build-7`, the ordinary shape of a local build), the copy
+      // reproduces that link and `destDir` becomes a link pointing OUT of the substrate root.
+      // Nothing downstream could see it — `findEscapingLink` anchors on `realpathSync(destDir)`,
+      // so it walked the target's contents and found them all contained — and the acquisition
+      // reported `acquired` for a record `readSubstrateRecord` then refused on every later run.
+      // Resolving one level here installs the bytes the link points at; the links within them are
+      // still copied verbatim, because `realpathIfPossible` is applied to `dir` and not to them.
+      const from = realpathIfPossible(dir) ?? dir;
       // `verbatimSymlinks` IS THE WHOLE COPY, not a tuning flag. Without it Node resolves every
       // symlink it copies and writes an ABSOLUTE link back into `dir` — and a desktop substrate is
       // an application bundle whose frameworks are built on relative links
@@ -309,7 +331,7 @@ export function localPathSource(dir: string): SubstrateSource | null {
       // from OUTSIDE the substrate root — the one thing the record's containment rule claims is
       // impossible — and dangles completely once the install source is deleted, which is exactly
       // the case copying rather than adopting in place exists to survive.
-      cpSync(dir, destDir, { recursive: true, verbatimSymlinks: true });
+      cpSync(from, destDir, { recursive: true, verbatimSymlinks: true });
     },
   };
 }
@@ -392,11 +414,38 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
   }
 
   const root = substrateRoot(dataDir);
-  const destDir = join(root, source.manifest.version);
+  // EVERY STATEMENT THAT CAN THROW IS INSIDE THE TRY, INCLUDING THE JOIN. `destDir` used to be
+  // computed here, one line above the `try`, which made NEVER THROWS true only for the argument
+  // shapes the guards above happened to anticipate: a non-string `version` passes
+  // `isSingleDirectoryName` and `join` then throws `ERR_INVALID_ARG_TYPE` straight past this
+  // function's contract and into `warmup`'s unguarded await, killing the browser, model and
+  // search phases with it. The cleanup path is the only reason it sat outside — so it now
+  // remembers the directory in a variable the catch can read, and cleans up only once there is
+  // something to clean up.
+  let installedDir: string | null = null;
   try {
+    const destDir = join(root, source.manifest.version);
+    installedDir = destDir;
     mkdirSync(root, { recursive: true });
     rmSync(destDir, { recursive: true, force: true });
     await source.install(destDir);
+
+    // THE INSTALLED DIRECTORY IS WHERE WE SAID IT WOULD BE — asserted, not assumed. `install()`
+    // is a seam: today's local-path copy, tomorrow's published channel. Whatever it does, the
+    // directory the record is about to name has to be inside the root the record is later CHECKED
+    // against, or `acquired` and `readSubstrateRecord` disagree permanently — acquisition reports
+    // success, the rung reads back absent, and every subsequent run repeats it identically. That
+    // is the state the version guard above says it exists to prevent, and a `destDir` that is
+    // itself a link out of the root reached it while satisfying every check below: `isInside` is
+    // the only one that resolves the directory rather than walking inside it.
+    if (!isInside(destDir, root)) {
+      rmSync(destDir, { recursive: true, force: true });
+      return {
+        outcome: 'failed',
+        detail: 'the desktop component installed somewhere other than the directory it was given',
+        error: `installed directory escapes the substrate root: ${destDir}`,
+      };
+    }
 
     // CONTAINMENT, BEFORE THE PROBE THAT CANNOT SEE PAST IT. `existsSync` follows links, so a
     // tree whose executable is a link to somewhere else on the machine passes verification and
@@ -442,7 +491,7 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
       path: destDir,
     };
   } catch (err) {
-    rmSync(destDir, { recursive: true, force: true });
+    if (installedDir !== null) rmSync(installedDir, { recursive: true, force: true });
     const message = err instanceof Error ? err.message : String(err);
     return {
       outcome: 'failed',
