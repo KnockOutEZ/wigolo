@@ -45,6 +45,7 @@ import { MarkStore } from '../../../src/studio/mark/store.js';
 import { ProfileStore } from '../../../src/studio/profile-store.js';
 import { scopeStorageStateToOrigin } from '../../../src/studio/login-capture.js';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
@@ -1717,6 +1718,80 @@ describe('runStudio — the acquired substrate is the only launch target', () =>
     for (const line of lines) {
       expect(line).not.toMatch(/electron|playwright|chromium|npm run dev/i);
     }
+  });
+});
+
+/**
+ * THE ASYNCHRONOUS SPAWN FAILURE, which is a different failure from the try/catch already pinned
+ * above.
+ *
+ * `spawn()` does NOT throw for EACCES, EPERM or a Gatekeeper refusal — it returns a child and
+ * reports the failure by emitting `'error'` on a later tick, so `runStudio`'s try/catch, which can
+ * only ever see a synchronous throw, is not in that path at all. An `'error'` event with no
+ * listener is rethrown by `EventEmitter` as an uncaught exception, and the child is `unref`'d and
+ * detached by then, so the exception lands on a CLI process that has already returned to the
+ * human's shell.
+ *
+ * `runStudio` has attached that listener since it was written; nothing asserted it. `fakeSpawn`
+ * returns `{ on: () => undefined }`, so deleting the listener leaves all six arms above green
+ * while the process-killing shape reopens. `defaultLaunch` carries this exact pin in
+ * tests/unit/studio/auto-launch.test.ts, and the asymmetry was the gap.
+ *
+ * THE FAKE IS A REAL `EventEmitter` ON PURPOSE. The throw it produces with no listener attached is
+ * Node's own behaviour rather than a simulation of it, which is what lets `rethrown` stand in for
+ * "the CLI process would have died here" without actually killing the runner.
+ */
+describe('runStudio — a spawn that fails asynchronously must not kill the process', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'wig-runstudio-err-'));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** A stand-in child that records the state of its own listeners at `unref()` time. */
+  function fakeChild(order: string[]): EventEmitter & { unref(): void } {
+    const child = new EventEmitter() as EventEmitter & { unref(): void };
+    child.unref = () => order.push(`unref:errorListeners=${child.listenerCount('error')}`);
+    return child;
+  }
+
+  it('attaches the error listener BEFORE unref, so there is no window', () => {
+    plantRecord(dataDir);
+    const order: string[] = [];
+    const child = fakeChild(order);
+
+    runStudio([], { dataDir, spawnFn: () => child, log: () => undefined });
+
+    // Not merely "a listener exists by the time the test looks" — it existed at the one moment the
+    // command hands the child away, detaches it and stops being able to attach anything.
+    expect(order).toEqual(['unref:errorListeners=1']);
+  });
+
+  it('reports the failure on the human line instead of rethrowing it as an uncaught exception', () => {
+    plantRecord(dataDir);
+    const lines: string[] = [];
+    const child = fakeChild([]);
+
+    runStudio([], { dataDir, spawnFn: () => child, log: (m) => lines.push(m) });
+
+    // Emitted only now, and that ordering IS the defect being pinned: the failure arrives after
+    // `runStudio` has returned, so nothing on the synchronous path is still holding a catch for it.
+    let rethrown: unknown = null;
+    try {
+      child.emit('error', new Error('spawn EACCES'));
+    } catch (e) {
+      rethrown = e;
+    }
+    expect(rethrown).toBeNull();
+    // …and it is not swallowed either: a human typed the command, so the reason the window never
+    // appeared has to reach them rather than vanishing with the detached child.
+    expect(lines.join('\n')).toMatch(/spawn EACCES/);
+    // Capability language holds on the failure line too — it is user-facing text.
+    expect(lines.join('\n')).not.toMatch(/electron|playwright|chromium/i);
   });
 });
 
