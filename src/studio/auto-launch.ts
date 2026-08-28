@@ -42,6 +42,34 @@ const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
+/**
+ * How long a launch that produced no handle is remembered.
+ *
+ * SHORT ON PURPOSE. Every failure mode behind it is one a human fixes in seconds — `chmod +x`, an
+ * approved Gatekeeper dialog, a reinstall, starting the app by hand — so the memo must not outlive
+ * the fix. Long enough that one fan-out pays the timeout once; short enough that the next fan-out
+ * re-checks. A handle appearing invalidates it immediately, which is what keeps it a memo rather
+ * than a lockout, so this number only bounds the no-signal case.
+ */
+const DEFAULT_NO_HANDLE_MEMO_MS = 60_000;
+
+/**
+ * What a launcher reports back, and the reason it is not a bare boolean.
+ *
+ * A boolean can only answer "did I attempt a start", which leaves the caller blind to the failure
+ * that arrives AFTER the attempt: `spawn` reports ENOENT/EACCES/EPERM by emitting `'error'` on a
+ * later tick, so by then the launcher has returned `true` and the handle poll is already running
+ * against a process that is already dead. That failure is observed — the listener {@link
+ * defaultLaunch} must attach anyway sees it — it just had nowhere to be reported to. `failed()` is
+ * that somewhere: a probe the poll reads each tick.
+ */
+export interface LaunchOutcome {
+  /** False means DECLINED — nothing was started, so there is nothing to wait for. */
+  started: boolean;
+  /** True once the spawn has reported an asynchronous failure. Polled, not awaited. */
+  failed: () => boolean;
+}
+
 export interface AutoLaunchDeps {
   dataDir?: string;
   /**
@@ -49,14 +77,20 @@ export interface AutoLaunchDeps {
    *
    * Returning `false` means DECLINED — nothing was started, so there is nothing to wait for. Any
    * other return (including `void`) means a start was attempted and the handle poll is worth
-   * running. See {@link defaultLaunch} for why a launcher that answered `launchable` can still
-   * decline.
+   * running. A {@link LaunchOutcome} says both, and additionally lets the poll give up early on a
+   * start that has since died. See {@link defaultLaunch} for why a launcher that answered
+   * `launchable` can still decline.
    */
-  launch?: () => boolean | void;
+  launch?: () => boolean | void | LaunchOutcome;
   /** True when the substrate can actually be started on this machine. Injectable. */
   launchable?: () => boolean;
   timeoutMs?: number;
   pollMs?: number;
+  /**
+   * How long a launch that produced no handle is remembered. `0` disables the memo — the shape the
+   * pre-memo suite asserts, and the escape hatch for a caller that genuinely wants every attempt.
+   */
+  memoMs?: number;
   sleep?: (ms: number) => Promise<void>;
   readHandleFn?: (dataDir?: string) => SessionHandle | null;
 }
@@ -140,20 +174,33 @@ export function studioLaunchable(): boolean {
  * find nothing. It declines rather than throwing, for the same reason `ensureStudioRunning` never throws —
  * a launch problem must not become the caller's error.
  *
- * ⚠ THE DECLINE IS RETURNED, and that return is load-bearing. `studioLaunchable()` answers from
- * `substratePresent()`, which memoizes for 5 s; this function reads the record uncached. Uninstall the
- * substrate and for the rest of that TTL window the gate says yes and the launcher finds nothing —
- * so a decline here is a NORMAL outcome, not a defect. When it was a bare `return`, the caller could
- * not tell it apart from a spawn that had yet to publish and sat out the entire 30 s poll budget with
- * no process running, once per TTL window, on the fetch path. Saying "declined" costs one boolean and
- * closes the window; widening the presence TTL or plumbing a shared probe would both reach further
- * than this file.
+ * ⚠ THIS RETURN IS LOAD-BEARING, AND IT CLOSES TWO DIFFERENT WINDOWS — one each, by a different
+ * mechanism. Unreported, both end the same way: `ensureStudioRunning` enters the handle poll and
+ * waits out the full 30 s budget for a handle no live process will ever write, on the fetch path.
+ *
+ *  1. NOTHING WAS STARTED — closed by `started: false`. `studioLaunchable()` answers from
+ *     `substratePresent()`, which memoizes for 5 s; this function reads the record uncached.
+ *     Uninstall the substrate and for the rest of that TTL window the gate says yes and the launcher
+ *     finds nothing, so a decline here is a NORMAL outcome rather than a defect. Reported, the caller
+ *     skips the poll entirely and pays zero ticks. Widening the presence TTL or plumbing a shared
+ *     probe would both reach further than this file.
+ *  2. SOMETHING WAS STARTED AND DIED — closed by `failed()`. `spawn` does not throw for ENOENT,
+ *     EACCES or EPERM; it hands back a child and emits `'error'` on a later tick, by which point
+ *     this function has already returned "started". The listener below has to exist regardless — an
+ *     unlistened `'error'` is a dead MCP process, not a logged one — so the failure is already
+ *     observed, and `failed()` is only what carries it to the poll. The poll reads the probe each
+ *     tick and gives up on the tick after the failure lands instead of on tick 120. This is the
+ *     commoner real-world shape: a lost +x bit, a Gatekeeper EPERM, an uninstall mid-crawl.
+ *
+ * Neither reaches the residual case — a start that neither declines nor errors and simply never
+ * publishes, i.e. a genuinely wedged app. That one is bounded by the timeout and then REMEMBERED, so
+ * a fan-out pays it once rather than per URL; see the negative memo in `ensureStudioRunning`.
  */
-export function defaultLaunch(deps: DefaultLaunchDeps = {}): boolean {
+export function defaultLaunch(deps: DefaultLaunchDeps = {}): LaunchOutcome {
   const acquired = readSubstrateRecord(deps.dataDir);
   if (!acquired) {
     log.debug('studio auto-launch found no acquired substrate to start — declining');
-    return false;
+    return { started: false, failed: () => false };
   }
   // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for. The
   // human summons a visible one themselves; a card that needs answering is surfaced by the app.
@@ -175,46 +222,95 @@ export function defaultLaunch(deps: DefaultLaunchDeps = {}): boolean {
   //
   // The window is narrow — the record's executable was probed on disk at read time — but it is
   // real: an uninstall between the read and the exec, a lost +x bit, or a Gatekeeper EPERM.
+  let spawnFailed = false;
   child.on('error', (err) => {
+    spawnFailed = true;
     log.warn('studio auto-launch could not start the desktop component', {
       error: err instanceof Error ? err.message : String(err),
     });
   });
   child.unref();
-  return true;
+  return { started: true, failed: () => spawnFailed };
+}
+
+const NEVER_FAILED = (): boolean => false;
+
+/**
+ * Read any launcher's answer as a {@link LaunchOutcome}.
+ *
+ * The three legacy shapes stay legal because `deps.launch` is a test seam and most of the suite has
+ * no interest in spawn failures: `false` is the decline, `true`/`void` is "started, no failure
+ * reporting". Only a launcher that actually spawns something can say more, and only `defaultLaunch`
+ * does.
+ */
+function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchOutcome {
+  if (result === false) return { started: false, failed: NEVER_FAILED };
+  if (result && typeof result === 'object') {
+    return { started: result.started, failed: result.failed ?? NEVER_FAILED };
+  }
+  return { started: true, failed: NEVER_FAILED };
 }
 
 let inFlight: Promise<SessionHandle | null> | null = null;
 
 /**
+ * When the last launch that produced no handle stops being remembered. `0` means nothing to remember.
+ *
+ * `inFlight` IS NOT THIS. Single-flight only collapses launches that OVERLAP — it clears in the
+ * `finally` — and a crawl does not overlap: `src/fetch/router.ts` reaches the bridge rung once per
+ * page, sequentially, and `src/fetch/studio-bridge.ts` awaits `ensureStudioRunning` each time. So
+ * against a substrate that cannot start, 20 challenged pages paid 20 separate budgets: ~10 minutes
+ * of sleeping and 20 dead spawn attempts for one broken install. The memo is what makes a fan-out
+ * pay it once.
+ */
+let noHandleUntil = 0;
+
+/**
  * Return a live session handle, starting the substrate if it is not running. Returns null when auto-launch is
- * disabled, the substrate is absent, or it did not publish a handle inside the budget — never throws, because
- * every caller has a degraded path and a launch problem must not become the user's error.
+ * disabled, the substrate is absent, a recent launch produced no handle, or this one did not publish a handle
+ * inside the budget — never throws, because every caller has a degraded path and a launch problem must not
+ * become the user's error.
  */
 export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<SessionHandle | null> {
   const read = deps.readHandleFn ?? readHandle;
   const existing = read(deps.dataDir);
-  if (existing) return existing;
+  if (existing) {
+    // AHEAD OF THE MEMO CHECK, and it clears it: a handle on disk is direct evidence that whatever
+    // stopped the last launch has been resolved — most often a human who started the app by hand
+    // mid-crawl. Remembering a failure past its own disproof is a lockout, not a memo.
+    noHandleUntil = 0;
+    return existing;
+  }
 
   if (process.env[AUTO_LAUNCH_ENV] === '0' || process.env[AUTO_LAUNCH_ENV] === 'false') return null;
   if (!(deps.launchable ?? studioLaunchable)()) {
     log.debug('studio substrate not launchable on this machine — declining auto-launch');
     return null;
   }
+  // AFTER the launchable gate, so an absent substrate is never what gets remembered: that case
+  // already declines in zero ticks, and folding it in would make a substrate installed mid-session
+  // wait out a window for no reason.
+  if (noHandleUntil > Date.now()) {
+    log.debug('studio auto-launch recently produced no handle — declining without re-launching');
+    return null;
+  }
 
   if (inFlight) return inFlight;
+  const memoMs = deps.memoMs ?? DEFAULT_NO_HANDLE_MEMO_MS;
   inFlight = (async () => {
     const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
     const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); if (typeof t.unref === 'function') t.unref(); }));
+    let failed: () => boolean;
     try {
-      const started = (deps.launch ?? (() => defaultLaunch({ dataDir: deps.dataDir })))();
+      const outcome = normalizeLaunch((deps.launch ?? (() => defaultLaunch({ dataDir: deps.dataDir })))());
       // An explicit decline means nothing was started, so there is nothing the poll below could ever
       // see. Waiting out the budget on it is the 30 s stall this branch exists to prevent.
-      if (started === false) {
+      if (!outcome.started) {
         log.debug('studio auto-launch declined — nothing was started, so nothing is polled for');
         return null;
       }
+      failed = outcome.failed;
     } catch (err) {
       log.debug('studio auto-launch failed to spawn', { error: err instanceof Error ? err.message : String(err) });
       return null;
@@ -225,13 +321,27 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     for (;;) {
       const h = read(deps.dataDir);
       if (h) return h;
+      // Checked AFTER the handle read, because a spawn can both publish and then error, and a
+      // published handle is the answer the caller wanted either way. Checked BEFORE the deadline
+      // because that is the whole point: a dead process is knowable now, and the alternative is
+      // 120 more ticks of waiting for a handle nothing will write.
+      if (failed()) {
+        log.debug('studio auto-launch spawned a process that failed to start — abandoning the handle poll');
+        return null;
+      }
       if (Date.now() >= deadline) {
         log.debug('studio auto-launch did not publish a handle within budget');
         return null;
       }
       await sleep(pollMs);
     }
-  })();
+  })().then((handle) => {
+    // Recorded on the SHARED promise rather than in the first caller's `await` below: the other
+    // single-flight participants return `inFlight` directly and never reach that code, so putting it
+    // there would leave the memo down for whoever happened not to be first.
+    if (!handle && memoMs > 0) noHandleUntil = Date.now() + memoMs;
+    return handle;
+  });
   try {
     return await inFlight;
   } finally {
@@ -239,7 +349,8 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
   }
 }
 
-/** Test seam: drop a memoized in-flight launch between cases. */
+/** Test seam: drop a memoized in-flight launch and the negative memo between cases. */
 export function resetAutoLaunchState(): void {
   inFlight = null;
+  noHandleUntil = 0;
 }

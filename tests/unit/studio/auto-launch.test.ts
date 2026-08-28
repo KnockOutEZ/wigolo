@@ -132,9 +132,11 @@ describe('ensureStudioRunning', () => {
   });
 
   it('a later call can launch again after the first attempt settled', async () => {
+    // `memoMs: 0` because this case is about `inFlight` clearing, not about the negative memo that
+    // would otherwise swallow the second call — see the memo suite at the foot of this file.
     const launch = vi.fn();
-    await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep: noSleep });
-    await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep: noSleep });
+    await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, memoMs: 0, sleep: noSleep });
+    await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, memoMs: 0, sleep: noSleep });
     expect(launch).toHaveBeenCalledTimes(2);
   });
 });
@@ -266,7 +268,7 @@ describe('a launch that declines must not be polled for', () => {
 describe('defaultLaunch', () => {
   it('declines and spawns nothing when no substrate has been acquired', () => {
     const spawnFn = vi.fn();
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(false);
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
@@ -276,7 +278,7 @@ describe('defaultLaunch', () => {
     const on = vi.fn();
     const spawnFn = vi.fn(() => ({ unref, on }));
 
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(true);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(true);
     expect(spawnFn).toHaveBeenCalledTimes(1);
 
     const [command, args, options] = spawnFn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
@@ -301,7 +303,7 @@ describe('defaultLaunch', () => {
     const executable = plantSubstrateRecord(dir);
     rmSync(executable, { force: true });
     const spawnFn = vi.fn();
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(false);
     expect(spawnFn).not.toHaveBeenCalled();
   });
 });
@@ -336,7 +338,7 @@ describe('a spawn that fails asynchronously must not kill the process', () => {
     const order: string[] = [];
     const child = fakeChild(order);
 
-    expect(defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) })).toBe(true);
+    expect(defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }).started).toBe(true);
     // Not merely "a listener exists by the time the test looks" — it existed at the one moment
     // the launcher hands the child away and stops being able to attach anything.
     expect(order).toEqual(['unref:errorListeners=1']);
@@ -373,5 +375,190 @@ describe('a spawn that fails asynchronously must not kill the process', () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+});
+
+/**
+ * THE DEAD SPAWN, which is the commoner half of the stall and the one the decline fix does not
+ * reach.
+ *
+ * The listener above keeps the process alive, which was #167's whole job, but it only LOGS — and by
+ * the time it fires, `defaultLaunch` has already returned "started". So `ensureStudioRunning` is
+ * inside the handle poll waiting on a process that is already dead, and it waits out the entire
+ * 30 s budget: 120 ticks at the shipped 250 ms cadence, once per challenged URL.
+ *
+ * The failure is already OBSERVED — nothing new has to be detected, only reported. The launcher's
+ * return widens from a bare boolean to an outcome carrying `failed()`, and the poll reads it each
+ * tick.
+ */
+describe('a spawn that died must not be polled for the full budget', () => {
+  /** A stand-in child that can be made to report its failure on a later tick, as `spawn` does. */
+  function fakeChild(): EventEmitter & { unref(): void } {
+    const child = new EventEmitter() as EventEmitter & { unref(): void };
+    child.unref = () => {};
+    return child;
+  }
+
+  it('breaks the poll on the tick after the error listener sees the failure', async () => {
+    plantSubstrateRecord(dir);
+    const child = fakeChild();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        // Emitted from inside the wait, not before it: an ENOENT/EACCES/EPERM spawn hands back a
+        // child and reports the failure on a later tick, so the poll is already running when it
+        // lands. Emitting it earlier would test a shape `spawn` never produces.
+        if (ticks === 1) child.emit('error', new Error('spawn EACCES'));
+        vi.advanceTimersByTime(ms);
+      };
+      const h = await ensureStudioRunning({
+        dataDir: dir,
+        launch: () => defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }),
+        launchable: () => true,
+        // The SHIPPED budget, not a shrunken one: the stall this closes is only visible against
+        // 30 s / 250 ms, and a test that pre-shrank it could not tell the fix from the timeout.
+        timeoutMs: 30_000,
+        pollMs: 250,
+        sleep,
+      });
+      expect(h).toBeNull();
+      // One tick to let the failure land, then out. Unbroken this is 120.
+      expect(ticks).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      stderr.mockRestore();
+    }
+  });
+
+  it('keeps polling a spawn that has NOT reported a failure', async () => {
+    // The paired positive arm. Without it, a `failed: () => true` hardwired into the launcher — or
+    // a poll that bails on the first empty read — satisfies the arm above forever.
+    plantSubstrateRecord(dir);
+    const child = fakeChild();
+    let ticks = 0;
+    const sleep = async (): Promise<void> => { if (++ticks === 4) publishHandle(); };
+    const h = await ensureStudioRunning({
+      dataDir: dir,
+      launch: () => defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }),
+      launchable: () => true,
+      pollMs: 1,
+      sleep,
+    });
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+    expect(ticks).toBe(4);
+  });
+
+  it('a declined launch carries no failure probe to read', async () => {
+    // The decline arm still short-circuits ahead of the poll, so `failed()` is never consulted on
+    // it. Pins that widening the return did not move the decline behind the new check.
+    const spawnFn = vi.fn();
+    const outcome = defaultLaunch({ dataDir: dir, spawnFn });
+    expect(outcome.started).toBe(false);
+    expect(outcome.failed()).toBe(false);
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * THE NEGATIVE MEMO, which is the per-URL half of the same stall.
+ *
+ * `inFlight` is single-flight, not a cache: it clears in the `finally`, so it only collapses
+ * launches that OVERLAP. A crawl does not overlap — `src/fetch/router.ts` reaches the bridge rung
+ * once per page, sequentially, and `src/fetch/studio-bridge.ts` awaits `ensureStudioRunning` each
+ * time. Against a substrate that cannot start, 20 challenged pages therefore paid 20 separate
+ * budgets: ~10 minutes of sleeping and 20 dead spawn attempts for one broken install.
+ *
+ * So a launch that produced no handle is remembered for ~60 s. Short on purpose: the failure modes
+ * are things a human fixes in seconds (chmod +x, approve the Gatekeeper dialog, reinstall), and the
+ * memo must not outlive the fix. A handle appearing invalidates it immediately, which is the arm
+ * that keeps it from becoming a lockout.
+ */
+describe('a launch that produced no handle is remembered briefly', () => {
+  it('costs the second caller zero poll ticks inside the memo window', async () => {
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        vi.advanceTimersByTime(ms);
+      };
+      const launch = vi.fn();
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 30_000, pollMs: 250, sleep };
+
+      // The first challenged page pays the budget in full — that part is unchanged, and has to be:
+      // a wedged-but-live app really might publish on tick 119.
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(ticks).toBe(120);
+
+      // The second one is what used to cost another 120. It must not even re-spawn.
+      const paid = ticks;
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(ticks - paid).toBe(0);
+      expect(launch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('expires, so a machine that gets fixed is retried', async () => {
+    // The paired positive arm. Without it a permanent kill switch — or a bare `return null` at the
+    // top of the function — satisfies the arm above forever.
+    vi.useFakeTimers();
+    try {
+      const sleep = async (ms: number): Promise<void> => { vi.advanceTimersByTime(ms); };
+      const launch = vi.fn();
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, memoMs: 60_000, sleep };
+
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      // Still inside the window: memoized.
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(60_001);
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is invalidated by a handle appearing — a human starting the app mid-crawl recovers', async () => {
+    vi.useFakeTimers();
+    try {
+      const sleep = async (ms: number): Promise<void> => { vi.advanceTimersByTime(ms); };
+      const launch = vi.fn();
+      const args = { dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep };
+
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(1);
+
+      // The human starts the app themselves, well inside the memo window. The handle read is ahead
+      // of the memo check, so this call is answered rather than declined.
+      publishHandle();
+      expect((await ensureStudioRunning(args))?.endpoint).toBe(HANDLE.endpoint);
+
+      // …and the memo is GONE, not merely bypassed. When that session ends the next caller launches
+      // instead of being declined by a memo the recovery should have cleared.
+      rmSync(join(dir, 'studio', 'current.json'), { force: true });
+      expect(await ensureStudioRunning(args)).toBeNull();
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not memoize a launchable that says no — there was no launch to remember', async () => {
+    // The memo is about launches that produced nothing, not about machines with no substrate. Those
+    // already decline in zero ticks at the gate, and folding them in would mean a substrate
+    // installed mid-session waited out a window for no reason.
+    const launch = vi.fn();
+    expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => false, sleep: noSleep })).toBeNull();
+    expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, timeoutMs: 0, sleep: noSleep })).toBeNull();
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 });
