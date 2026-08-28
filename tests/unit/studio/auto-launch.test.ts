@@ -62,6 +62,13 @@ afterEach(async () => {
   // that plants an acquisition record hands its `true` to every test that runs after it.
   const { resetSubstratePresenceCache } = await import('../../../src/studio/substrate-acquire.js');
   resetSubstratePresenceCache();
+  // AFTER the env restore above, and paired with it. `plantAcquiredSubstrate` repoints
+  // `WIGOLO_DATA_DIR` and drops the memoized config to move `substrateRoot()` inside `dir`;
+  // restoring the env is not enough on its own, because the config caches the OLD answer — so
+  // without this the next test in this process keeps resolving its data dir to the temp dir
+  // removed on the line below.
+  const { resetConfig } = await import('../../../src/config.js');
+  resetConfig();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -149,18 +156,46 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
    * the JSON alone would read as absent and this helper would prove nothing — hence the stub
    * executable beside it.
    *
-   * It plants at `substrateRoot()`'s OWN answer rather than under this file's per-test temp dir,
-   * and the caller must remove exactly that path. `substrateRoot()` reads `getConfig().dataDir`,
-   * which is memoized on first resolve — by the time any test here runs, that has already
-   * happened, so setting `WIGOLO_DATA_DIR` now would move where the record is LOOKED FOR not at
-   * all while moving where a naive plant WROTE it. Planting and cleaning at the same resolved
-   * path is what keeps the record from outliving this test.
+   * IT PLANTS AT `substrateRoot()`'s OWN ANSWER, because `studioLaunchable()` takes no data dir —
+   * it reaches the root through `substratePresent()`, so a plant anywhere else is a plant nothing
+   * reads. What changed is that the answer is MOVED here rather than accepted: this helper
+   * repoints `WIGOLO_DATA_DIR` at the per-test temp dir and drops the memoized config, so the
+   * root it plants at — and that its caller then `rmSync`es — is one this file created.
+   *
+   * ⚠ THE MOVE IS ASSERTED, NOT TRUSTED, and that assert is the actual safety property. Before
+   * this, the ambient answer was taken as given: `substrateRoot()` follows the memoized data dir,
+   * `tests/setup.ts` repoints `WIGOLO_DATA_DIR` only when unset (deliberately — `:23`, "the guard
+   * respects it"), so a developer who exported the documented knob had a forged record planted at
+   * their REAL substrate root and the whole directory removed after. The suite reported 37/37 and
+   * exited 0 while uninstalling the product. A repoint that silently stopped biting — a dropped
+   * `resetConfig()`, a config that stopped reading the var — would restore exactly that, so the
+   * refusal below is what keeps the fix from decaying back into the defect.
+   *
+   * It also puts the SIGKILL residue somewhere harmless. Interrupted between the plant and the
+   * cleanup, this used to leave a forged record naming a real on-disk executable at the very path
+   * the launcher reads; inside a temp dir, nothing consults it.
    */
   async function plantAcquiredSubstrate(): Promise<string> {
     const { substrateRoot, SUBSTRATE_RECORD, resetSubstratePresenceCache } = await import(
       '../../../src/studio/substrate-acquire.js'
     );
+    const { resetConfig } = await import('../../../src/config.js');
+
+    process.env.WIGOLO_DATA_DIR = dir;
+    // The data dir is memoized on first resolve, which by now has already happened — so the
+    // assignment above moves nothing on its own. This is what makes it bite.
+    resetConfig();
+
     const root = substrateRoot();
+    const expected = join(dir, 'substrate');
+    if (root !== expected) {
+      throw new Error(
+        `refusing to plant a forged substrate record at ${root}: this helper's caller DELETES that ` +
+          `directory recursively, and it is not the per-test dir ${expected} this file created. ` +
+          `Repointing WIGOLO_DATA_DIR did not take effect.`
+      );
+    }
+
     const componentDir = join(root, 'component');
     mkdirSync(componentDir, { recursive: true });
     writeFileSync(join(componentDir, 'studio-app'), '#!/bin/sh\nexit 0\n');
