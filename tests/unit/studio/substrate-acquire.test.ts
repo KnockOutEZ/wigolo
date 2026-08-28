@@ -857,6 +857,123 @@ describe('a manifest field that is not a string never reaches a path join', () =
   });
 });
 
+describe('the injected-source seam carries the same never-throws contract as the manifest reader', () => {
+  /**
+   * THE MANIFEST READER IS NOT THE ONLY DOOR. `readSubstrateManifest` establishes `typeof ===
+   * 'string'` for the two path fields, so a `substrate.json` on disk can no longer produce a
+   * source whose manifest is mistyped. A source handed in through `deps.source` never passes
+   * that reader — and that seam is the one a published channel re-enters with a manifest of its
+   * own. The pre-flight guards then answered from OUTSIDE the try: `staysInsideItsDirectory`
+   * calls `isAbsolute()`, which throws `ERR_INVALID_ARG_TYPE` on a non-string, straight past a
+   * documented NEVER THROWS and into `warmup`'s unguarded await.
+   *
+   * So the discriminator below is deliberately settle-vs-reject rather than any particular
+   * outcome string: the contract is about the promise's shape, and an assertion on `outcome`
+   * alone cannot tell a refusal apart from a crash.
+   */
+  const NON_STRING: Array<[string, unknown]> = [
+    ['a number', 1],
+    ['an array', ['bin/run']],
+    ['a boolean', true],
+    ['null', null],
+  ];
+
+  async function settle(manifest: unknown): Promise<{ status: 'resolved' | 'rejected'; value?: unknown }> {
+    return acquireSubstrate({
+      dataDir,
+      source: {
+        id: 'injected',
+        manifest: manifest as SubstrateManifest,
+        async install() {
+          throw new Error('never reached');
+        },
+      },
+    }).then(
+      (value) => ({ status: 'resolved' as const, value }),
+      () => ({ status: 'rejected' as const }),
+    );
+  }
+
+  for (const [shape, value] of NON_STRING) {
+    it(`settles rather than rejecting when an injected manifest's executable is ${shape}`, async () => {
+      const settled = await settle({ version: '1.0', executable: value });
+      expect(settled.status).toBe('resolved');
+      expect((settled.value as { outcome: string }).outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+    });
+
+    it(`settles rather than rejecting when an injected manifest's version is ${shape}`, async () => {
+      const settled = await settle({ version: value, executable: 'bin/run' });
+      expect(settled.status).toBe('resolved');
+      expect((settled.value as { outcome: string }).outcome).toBe('failed');
+      expect(readSubstrateRecord(dataDir)).toBeNull();
+    });
+  }
+
+  it('still acquires a well-formed injected source — the seam guard refuses shapes, not everything', async () => {
+    // ANTI-VACUITY: a guard that declined every injected manifest would satisfy every arm above
+    // while breaking the seam S16-alpha's published channel is going to arrive through.
+    const settled = await acquireSubstrate({
+      dataDir,
+      source: {
+        id: 'injected',
+        manifest: { version: '4.5.6', executable: 'bin/run' },
+        async install(destDir: string) {
+          mkdirSync(join(destDir, 'bin'), { recursive: true });
+          writeFileSync(join(destDir, 'bin', 'run'), '#!/bin/sh\n');
+        },
+      },
+    });
+    expect(settled.outcome).toBe('acquired');
+    expect(readSubstrateRecord(dataDir)?.version).toBe('4.5.6');
+  });
+});
+
+describe('a record field that is not a string reads back as absent', () => {
+  /**
+   * THE SIBLING ASYMMETRY. `readSubstrateManifest` establishes `typeof === 'string'`;
+   * `readSubstrateRecord` checked truthiness only — and `record.json` is a file this process
+   * wrote but any process can edit. A numeric `version` is truthy, so the record read back as
+   * PRESENT and `installedSubstrateExists()` reported a rung whose version is a number: it flows
+   * into `already_present`'s detail text and into every log line and doctor row downstream.
+   * Every throw the other two fields can raise is absorbed by this function's own try/catch
+   * today, so this arm is about the ONE shape that gets through, plus the consistency that stops
+   * the next reader having to re-derive which of the two functions to trust.
+   */
+  /** A real installed substrate, so every arm below fails on the TYPE and nothing else. */
+  function installTree(): string {
+    const installed = join(substrateRoot(dataDir), '1.2.3');
+    mkdirSync(join(installed, 'bin'), { recursive: true });
+    writeFileSync(join(installed, 'bin', 'run'), '#!/bin/sh\n');
+    return installed;
+  }
+
+  function putRecord(record: unknown): void {
+    writeFileSync(join(substrateRoot(dataDir), SUBSTRATE_RECORD), JSON.stringify(record));
+  }
+
+  it('refuses a record whose version is a number, even though the substrate is really there', () => {
+    putRecord({ version: 1.0, executable: 'bin/run', path: installTree() });
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('refuses a record whose executable is a number', () => {
+    putRecord({ version: '1.2.3', executable: 1, path: installTree() });
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('refuses a record whose path is a number', () => {
+    installTree();
+    putRecord({ version: '1.2.3', executable: 'bin/run', path: 7 });
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('still reads a well-formed record back — the type check is not a blanket refusal', () => {
+    putRecord({ version: '1.2.3', executable: 'bin/run', path: installTree() });
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+});
+
 describe('an install source that is itself a symlink to a directory', () => {
   let linkRoot: string;
   let linkPath: string;
