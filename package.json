@@ -49,6 +49,7 @@
     "assets/blocks",
     "assets/legacy-skill-hashes.json",
     "scripts/prune",
+    "scripts/prepare-build.mjs",
     "skills",
     "README.md",
     "LICENSE",

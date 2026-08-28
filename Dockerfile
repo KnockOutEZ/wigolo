@@ -16,7 +16,16 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# The manifest's `prepare` hook is `node scripts/prepare-build.mjs`, and npm resolves that path
+# inside THIS layer — so the file has to be here before `npm ci`, or the install dies with
+# `Cannot find module` before the script's own guards can run. Copied alone (not the whole
+# `scripts/`) so an unrelated script cannot invalidate the install cache.
+COPY scripts/prepare-build.mjs scripts/
+# ...and once it IS loadable its toolchain guard resolves TRUE here — `npm ci` just installed
+# tsup and typescript — so `prepare` would build a layer that has no `src/` yet. This layer opts
+# the build out and does it explicitly on the next line instead. The variable only works because
+# the COPY above made the script loadable enough to read it.
+RUN WIGOLO_SKIP_PREPARE=1 npm ci
 COPY . .
 RUN npm run build
 
@@ -24,6 +33,11 @@ RUN npm run build
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# Same reachability requirement as the builder layer. No opt-out here on purpose: with the script
+# present, `--omit=dev` leaves tsup/typescript unresolvable and `prepare` takes its no-op arm at
+# exit 0 — the production path the script was written for. `--ignore-scripts` would also skip
+# dependencies' own install scripts, which this stage's node_modules needs.
+COPY scripts/prepare-build.mjs scripts/
 RUN npm ci --omit=dev
 
 # ---- base: shared runtime layout with the browser engine's OS libraries baked ----

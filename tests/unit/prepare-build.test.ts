@@ -465,7 +465,10 @@ describe('the prepare hook is reachable in every Dockerfile layer that installs'
   it('installs on exactly these layers — a new install layer must appear here', () => {
     // A set, not a count: a new `npm ci` layer arrives under its own text rather than as an
     // off-by-one, and it is then subject to every rule below.
-    expect(layers.map((l) => l.key)).toEqual(['builder / npm ci', 'deps / npm ci --omit=dev']);
+    expect(layers.map((l) => l.key)).toEqual([
+      'builder / WIGOLO_SKIP_PREPARE=1 npm ci',
+      'deps / npm ci --omit=dev',
+    ]);
   });
 
   it('every install layer already contains the script npm is about to run', () => {
