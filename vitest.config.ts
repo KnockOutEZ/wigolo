@@ -134,7 +134,12 @@ export default defineConfig({
             ...DIST_SPAWNING_UNIT_TESTS,
           ],
           pool: 'forks',
-          poolOptions: { forks: { singleFork: true } },
+          // `poolOptions: { forks: { singleFork: true } }` used to sit here. Vitest 4 removed
+          // `poolOptions` — the string `singleFork` does not appear anywhere in vitest 4.1.6 — so it
+          // had become a line that reads like a guarantee and configures nothing, and the guard test
+          // was asserting it as though it still bound. `maxWorkers: 1` is the supported way to say
+          // the same thing, and it is asserted structurally now rather than by string match.
+          maxWorkers: 1,
           fileParallelism: false,
         },
       },

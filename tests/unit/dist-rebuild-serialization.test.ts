@@ -95,7 +95,7 @@ interface ProjectShape {
     include?: string[];
     exclude?: string[];
     pool?: string;
-    poolOptions?: { forks?: { singleFork?: boolean } };
+    maxWorkers?: number;
     fileParallelism?: boolean;
   };
 }
@@ -287,21 +287,27 @@ describe('no parallel-lane test can spawn a dist/ path', () => {
 describe('the serial lane is actually serial', () => {
   // The guard above is worth nothing if `spawn-serial` stops being one fork with file
   // parallelism off, because then the touchers race EACH OTHER instead.
+  // Text, for the one claim that is about the config as a DOCUMENT rather than as options.
   const config = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8');
-  const serial = config.slice(config.indexOf("name: 'spawn-serial'"));
 
-  it('runs the integration + e2e globs in a single non-parallel fork', () => {
-    expect(serial).toContain("'tests/integration/**/*.test.ts'");
-    expect(serial).toContain("'tests/e2e/**/*.test.ts'");
-    expect(serial).toContain("pool: 'forks'");
-    expect(serial).toContain('singleFork: true');
-    expect(serial).toContain('fileParallelism: false');
+  it('runs the integration + e2e globs in a single non-parallel worker', () => {
+    // Read off the config OBJECT, not its text. The text form of this assertion outlived the
+    // option it named: `poolOptions.forks.singleFork` was removed in vitest 4 — the string
+    // `singleFork` appears nowhere in 4.1.6 — so a `toContain('singleFork: true')` went on passing
+    // against a line that configured nothing. A structural read cannot do that: an option vitest
+    // does not have is an option this test cannot find.
+    const lane = project('spawn-serial');
+    expect(lane.include).toContain('tests/integration/**/*.test.ts');
+    expect(lane.include).toContain('tests/e2e/**/*.test.ts');
+    expect(lane.pool).toBe('forks');
+    expect(lane.maxWorkers).toBe(1);
+    expect(lane.fileParallelism).toBe(false);
   });
 
   it('the unit project excludes exactly that lane, so the two never overlap', () => {
-    const unit = config.slice(config.indexOf("name: 'unit'"), config.indexOf("name: 'contract'"));
-    expect(unit).toContain("'tests/integration/**'");
-    expect(unit).toContain("'tests/e2e/**'");
+    const unit = project('unit');
+    expect(unit.exclude).toContain('tests/integration/**');
+    expect(unit.exclude).toContain('tests/e2e/**');
   });
 
   it('names the dist/ race in the config, so the split is not undone as tidying', () => {
