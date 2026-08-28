@@ -31,13 +31,45 @@ const log = createLogger('studio');
  */
 
 /**
- * `0`/`false` disables auto-launch entirely.
+ * `0`/`false`/`off` disables auto-launch entirely, in ANY CASING.
  *
  * It used to have a second job — `1`/`true` opted the dev-checkout launcher in — which retired with the
  * studio repo split: there is no `apps/studio` beside this package to opt into any more. The disable half
  * is the whole variable now, and it is still load-bearing (this repo's own suite sets it).
  */
 const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
+
+/**
+ * The spellings that mean OFF, matched lowercased and trimmed. See {@link autoLaunchDisabled}.
+ *
+ * `off` is honoured alongside the house pair because the disable half is this variable's whole job
+ * now, and `off` is what an operator writes for a switch that only switches one way. Recorded with
+ * its reversal condition in DECISIONS-AUTO (2026-08-28).
+ */
+const AUTO_LAUNCH_OFF_VALUES = new Set(['0', 'false', 'off']);
+
+/**
+ * Has the operator turned auto-launch off?
+ *
+ * ⚠ CASE-INSENSITIVE, AND THE COMPARISON IS THE VARIABLE'S WHOLE JOB. This was exact-match against
+ * two lowercase literals, so `WIGOLO_STUDIO_AUTO_LAUNCH=False` — or `FALSE`, or `Off` — read as
+ * "not disabled" and the substrate was spawned detached and hidden on the fetch path against the
+ * operator's stated intent. A hidden desktop process the human asked not to have is a consent
+ * surface in this design language, not a preference that failed to apply, so the failure mode of a
+ * near-miss spelling has to be "off" rather than "on".
+ *
+ * `envBool` (src/config.ts) is the house comparison and lowercases for the same reason. The same
+ * class was fixed twice already this phase for `WIGOLO_STUDIO_HIDDEN` (#179, #187) — those were the
+ * env KEY's casing, which is a different half: a key-side fix cannot reach a value comparison, and
+ * this file now carries both.
+ *
+ * Trimmed as well, because a value that arrived with the shell's whitespace still attached is the
+ * same stated intent; `isLoopbackHost` (src/studio/bind.ts) normalises the same way.
+ */
+function autoLaunchDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[AUTO_LAUNCH_ENV];
+  return raw !== undefined && AUTO_LAUNCH_OFF_VALUES.has(raw.trim().toLowerCase());
+}
 
 /**
  * Canonical spelling of the hidden-window flag, uppercased so a comparison is case-insensitive.
@@ -358,7 +390,7 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
     return existing;
   }
 
-  if (process.env[AUTO_LAUNCH_ENV] === '0' || process.env[AUTO_LAUNCH_ENV] === 'false') return null;
+  if (autoLaunchDisabled()) return null;
   if (!(deps.launchable ?? studioLaunchable)()) {
     log.debug('studio substrate not launchable on this machine — declining auto-launch');
     return null;
