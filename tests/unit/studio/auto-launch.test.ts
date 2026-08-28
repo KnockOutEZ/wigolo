@@ -266,7 +266,7 @@ describe('a launch that declines must not be polled for', () => {
 describe('defaultLaunch', () => {
   it('declines and spawns nothing when no substrate has been acquired', () => {
     const spawnFn = vi.fn();
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(false);
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
@@ -276,7 +276,7 @@ describe('defaultLaunch', () => {
     const on = vi.fn();
     const spawnFn = vi.fn(() => ({ unref, on }));
 
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(true);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(true);
     expect(spawnFn).toHaveBeenCalledTimes(1);
 
     const [command, args, options] = spawnFn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
@@ -301,7 +301,7 @@ describe('defaultLaunch', () => {
     const executable = plantSubstrateRecord(dir);
     rmSync(executable, { force: true });
     const spawnFn = vi.fn();
-    expect(defaultLaunch({ dataDir: dir, spawnFn })).toBe(false);
+    expect(defaultLaunch({ dataDir: dir, spawnFn }).started).toBe(false);
     expect(spawnFn).not.toHaveBeenCalled();
   });
 });
@@ -336,7 +336,7 @@ describe('a spawn that fails asynchronously must not kill the process', () => {
     const order: string[] = [];
     const child = fakeChild(order);
 
-    expect(defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) })).toBe(true);
+    expect(defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }).started).toBe(true);
     // Not merely "a listener exists by the time the test looks" — it existed at the one moment
     // the launcher hands the child away and stops being able to attach anything.
     expect(order).toEqual(['unref:errorListeners=1']);
@@ -373,5 +373,89 @@ describe('a spawn that fails asynchronously must not kill the process', () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+});
+
+/**
+ * THE DEAD SPAWN, which is the commoner half of the stall and the one the decline fix does not
+ * reach.
+ *
+ * The listener above keeps the process alive, which was #167's whole job, but it only LOGS — and by
+ * the time it fires, `defaultLaunch` has already returned "started". So `ensureStudioRunning` is
+ * inside the handle poll waiting on a process that is already dead, and it waits out the entire
+ * 30 s budget: 120 ticks at the shipped 250 ms cadence, once per challenged URL.
+ *
+ * The failure is already OBSERVED — nothing new has to be detected, only reported. The launcher's
+ * return widens from a bare boolean to an outcome carrying `failed()`, and the poll reads it each
+ * tick.
+ */
+describe('a spawn that died must not be polled for the full budget', () => {
+  /** A stand-in child that can be made to report its failure on a later tick, as `spawn` does. */
+  function fakeChild(): EventEmitter & { unref(): void } {
+    const child = new EventEmitter() as EventEmitter & { unref(): void };
+    child.unref = () => {};
+    return child;
+  }
+
+  it('breaks the poll on the tick after the error listener sees the failure', async () => {
+    plantSubstrateRecord(dir);
+    const child = fakeChild();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.useFakeTimers();
+    try {
+      let ticks = 0;
+      const sleep = async (ms: number): Promise<void> => {
+        ticks += 1;
+        // Emitted from inside the wait, not before it: an ENOENT/EACCES/EPERM spawn hands back a
+        // child and reports the failure on a later tick, so the poll is already running when it
+        // lands. Emitting it earlier would test a shape `spawn` never produces.
+        if (ticks === 1) child.emit('error', new Error('spawn EACCES'));
+        vi.advanceTimersByTime(ms);
+      };
+      const h = await ensureStudioRunning({
+        dataDir: dir,
+        launch: () => defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }),
+        launchable: () => true,
+        // The SHIPPED budget, not a shrunken one: the stall this closes is only visible against
+        // 30 s / 250 ms, and a test that pre-shrank it could not tell the fix from the timeout.
+        timeoutMs: 30_000,
+        pollMs: 250,
+        sleep,
+      });
+      expect(h).toBeNull();
+      // One tick to let the failure land, then out. Unbroken this is 120.
+      expect(ticks).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      stderr.mockRestore();
+    }
+  });
+
+  it('keeps polling a spawn that has NOT reported a failure', async () => {
+    // The paired positive arm. Without it, a `failed: () => true` hardwired into the launcher — or
+    // a poll that bails on the first empty read — satisfies the arm above forever.
+    plantSubstrateRecord(dir);
+    const child = fakeChild();
+    let ticks = 0;
+    const sleep = async (): Promise<void> => { if (++ticks === 4) publishHandle(); };
+    const h = await ensureStudioRunning({
+      dataDir: dir,
+      launch: () => defaultLaunch({ dataDir: dir, spawnFn: vi.fn(() => child) }),
+      launchable: () => true,
+      pollMs: 1,
+      sleep,
+    });
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+    expect(ticks).toBe(4);
+  });
+
+  it('a declined launch carries no failure probe to read', async () => {
+    // The decline arm still short-circuits ahead of the poll, so `failed()` is never consulted on
+    // it. Pins that widening the return did not move the decline behind the new check.
+    const spawnFn = vi.fn();
+    const outcome = defaultLaunch({ dataDir: dir, spawnFn });
+    expect(outcome.started).toBe(false);
+    expect(outcome.failed()).toBe(false);
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });
