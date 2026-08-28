@@ -14,6 +14,7 @@ import {
   substrateRoot,
   SUBSTRATE_PATH_ENV,
   SUBSTRATE_RECORD,
+  type SubstrateManifest,
   type SubstrateSource,
 } from '../../../src/studio/substrate-acquire.js';
 
