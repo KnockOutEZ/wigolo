@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { defaultLaunch, ensureStudioRunning, normalizeLaunch, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
 import { readSubstrateRecord, SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
 import type { SessionHandle } from '../../../src/studio/handle.js';
@@ -209,6 +209,106 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     const launch = vi.fn();
     expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep })).toBeNull();
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE PLANT IS CONFINED TO A DIRECTORY THIS FILE CREATED, and before this it was not.
+   *
+   * `substrateRoot()` takes no data dir — `studioLaunchable()` reaches it through
+   * `substratePresent()`, which is why the helper above plants at its ambient answer rather than
+   * under a per-test dir. That answer comes from the memoized config, so it follows
+   * `WIGOLO_DATA_DIR`; and `tests/setup.ts:179` repoints that var ONLY WHEN UNSET, deliberately
+   * (`:23` — "the guard respects it"). So a developer who exported the documented config knob and
+   * ran `npm test` had this helper forge a record at their REAL substrate root and its caller
+   * `rmSync(root, { recursive: true, force: true })` the whole directory — one the suite never
+   * created. Measured on `89f423b1`: 37/37 green, exit 0, `$WIGOLO_DATA_DIR/substrate` gone with
+   * everything under it. A green suite that silently uninstalls the product.
+   *
+   * The residue was the second half: a SIGKILL between the plant and the cleanup left a forged
+   * record naming a real on-disk executable at the very path the launcher reads, passing every
+   * containment check. Planting inside a temp dir puts that residue somewhere nothing consults.
+   */
+  it('plants and cleans inside the per-test dir even when WIGOLO_DATA_DIR names a real substrate root', async () => {
+    const decoy = mkdtempSync(join(tmpdir(), 'wig-decoy-'));
+    try {
+      const keep = join(decoy, 'substrate', 'existing-component', 'keep.txt');
+      mkdirSync(dirname(keep), { recursive: true });
+      writeFileSync(keep, 'user data');
+
+      // Force the precondition and prove the forcing took effect. `resetConfig()` is what makes
+      // the export bite — the data dir is memoized on first resolve, so without it this arm would
+      // assert against the harness dir and pass while the defect stood. The equality below is
+      // therefore not decoration: it names the directory the UNFIXED helper plants in and deletes.
+      process.env.WIGOLO_DATA_DIR = decoy;
+      const { resetConfig } = await import('../../../src/config.js');
+      resetConfig();
+      const { substrateRoot } = await import('../../../src/studio/substrate-acquire.js');
+      expect(substrateRoot()).toBe(join(decoy, 'substrate'));
+
+      const root = await plantAcquiredSubstrate();
+      try {
+        expect(root).toBe(join(dir, 'substrate'));
+        // …and the isolation did not buy safety by planting where nothing reads: the record is
+        // still the one `studioLaunchable()` answers from. Without this the helper could satisfy
+        // the arm above by writing to a directory no production path consults.
+        const { studioLaunchable } = await import('../../../src/studio/auto-launch.js');
+        expect(studioLaunchable()).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+
+      // The user's data survived the plant AND the cleanup — the assertion the repro is for.
+      expect(existsSync(keep)).toBe(true);
+    } finally {
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * THE OFF SWITCH IS A VALUE COMPARISON, and it was exact-match against two lowercase literals.
+ *
+ * `WIGOLO_STUDIO_AUTO_LAUNCH=False` — or `FALSE`, or `Off` — therefore read as "not disabled", and
+ * the substrate was spawned detached and hidden on the fetch path against the operator's stated
+ * intent. A hidden desktop process the human asked not to have is a consent surface in this design
+ * language, not a preference that failed to apply.
+ *
+ * The house comparison is case-insensitive (`envBool`, src/config.ts), and this phase has already
+ * fixed the same class twice for `WIGOLO_STUDIO_HIDDEN` (#179, #187) — those were the KEY's casing,
+ * this is the VALUE's, which is the half no key-side fix reaches. `off` is honoured beyond the house
+ * set because the disable half is now this variable's whole job and `off` is what an operator writes
+ * for a switch; see DECISIONS-AUTO 2026-08-28 for the reversal condition.
+ */
+describe('the auto-launch off switch reads its value case-insensitively', () => {
+  for (const spelling of ['0', 'false', 'False', 'FALSE', 'off', 'Off', 'OFF', ' false ']) {
+    it(`declines when the variable is ${JSON.stringify(spelling)}`, async () => {
+      process.env.WIGOLO_STUDIO_AUTO_LAUNCH = spelling;
+      const launch = vi.fn();
+      expect(await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep })).toBeNull();
+      expect(launch).not.toHaveBeenCalled();
+    });
+  }
+
+  it('LAUNCHES when the variable is unset — the switch cannot be satisfied by never launching', async () => {
+    // The anti-vacuity arm. Every case above wants `null` and no launch, so a `return null` at the
+    // top of `ensureStudioRunning` — or a disable predicate that answered true for an absent
+    // variable — satisfies all eight of them forever.
+    delete process.env.WIGOLO_STUDIO_AUTO_LAUNCH;
+    const launch = vi.fn(() => publishHandle());
+    const h = await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
+  });
+
+  it('LAUNCHES on a value that is not an off spelling — the widening is not "any value disables"', async () => {
+    // The second half of the same guard, and a different claim from the arm above: an unset
+    // variable is a distinct code path from a SET one carrying an unrecognised value. `1` is the
+    // retired opt-in, so it is the spelling an operator most plausibly still has exported.
+    process.env.WIGOLO_STUDIO_AUTO_LAUNCH = '1';
+    const launch = vi.fn(() => publishHandle());
+    const h = await ensureStudioRunning({ dataDir: dir, launch, launchable: () => true, sleep: noSleep });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(h?.endpoint).toBe(HANDLE.endpoint);
   });
 });
 
