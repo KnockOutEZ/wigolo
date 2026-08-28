@@ -1147,6 +1147,9 @@ export async function teardownStudioHost(
 }
 
 /** The slice of a spawned child this rung uses. Structural, so a test fake is two lines. */
+/** Canonical spelling of the auto-launch hidden flag, uppercased for case-insensitive comparison. */
+const HIDDEN_FLAG = 'WIGOLO_STUDIO_HIDDEN';
+
 export interface StudioChild {
   on(event: 'error', listener: (err: Error) => void): unknown;
   unref(): void;
@@ -1172,7 +1175,8 @@ export interface RunStudioDeps {
  *
  * VISIBLE, not hidden — the one deliberate difference from auto-launch. Auto-launch sets
  * `WIGOLO_STUDIO_HIDDEN` because the session serves the agent; here the human asked for a window, so the flag
- * is stripped rather than merely unset, in case the shell already carried it.
+ * is stripped rather than merely unset, in case the shell already carried it — and stripped in ANY casing,
+ * because the child resolves env names case-insensitively on win32 while the spread below is a plain object.
  *
  * Detached and unref'd so the terminal returns: the run outlives the surface that started it, and the app is
  * the session host — this process has no further part in it.
@@ -1196,8 +1200,12 @@ export function runStudio(_args: string[], deps: RunStudioDeps = {}): void {
   const target = join(acquired.path, acquired.executable);
   emit(`Launching the Studio desktop component (version ${acquired.version})…`);
   // Strip rather than leave alone: an inherited hidden flag would swallow the window the human asked for.
-  const env = { ...process.env };
-  delete env.WIGOLO_STUDIO_HIDDEN;
+  // Case-INSENSITIVELY, because the spread collapses win32's case-insensitive env proxy into a plain
+  // object: a shell that exported `wigolo_studio_hidden` would otherwise slip past a single-spelling
+  // delete and be read back by the child through ITS proxy, hiding the window anyway.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toUpperCase() !== HIDDEN_FLAG),
+  );
   try {
     const child = (deps.spawnFn ?? spawn)(target, [], { detached: true, stdio: 'ignore', env });
     child.on('error', (e) =>
