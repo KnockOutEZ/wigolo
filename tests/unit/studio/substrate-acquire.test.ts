@@ -553,7 +553,11 @@ describe('the install refuses a tree whose links leave it', () => {
       expect(realpathSync(join(src, 'bin', 'run'))).toBe(realpathSync(payload));
       const r = await acquireSubstrate({ dataDir, source: localPathSource(src) });
       expect(r.outcome).toBe('failed');
-      expect(r.error).toMatch(/bin\/run/);
+      // The refusal names the offending entry via `relative()`, so the separator is the HOST's:
+      // `bin/run` on POSIX, `bin\run` on win32. Pinning one spelling made this arm red on both
+      // Windows jobs while the refusal it exists to pin had fired correctly. Match either
+      // separator — the arm still requires the message to name `bin`+`run`, so nothing is lost.
+      expect(r.error).toMatch(/bin[\\/]run/);
       // Nothing launchable is left behind: no record, and no half-installed tree to be re-found.
       expect(readSubstrateRecord(dataDir)).toBeNull();
       expect(existsSync(join(substrateRoot(dataDir), '3.3.3'))).toBe(false);
