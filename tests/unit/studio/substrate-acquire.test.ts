@@ -697,6 +697,137 @@ describe('containment is answered by the filesystem, not by string comparison', 
   });
 });
 
+/**
+ * CONTAINMENT IS RELATIVE TO A ROOT, AND THE ROOT IS ITSELF A PATH ON DISK.
+ *
+ * Everything above answers "is this inside the root" by resolving both sides. That is the right
+ * question and it has a blind spot the size of the feature: NOTHING required the root to be a real
+ * directory. `substrateRoot()` is `<dataDir>/substrate`, and if that entry is a LINK to somewhere
+ * else, both sides resolve into the link's target, the prefix comparison agrees, and every
+ * containment check passes for a spawn target that lives entirely outside the data dir — and that
+ * therefore also survives the `rm -rf ~/.wigolo` the release checklist prescribes.
+ *
+ * The second shape is narrower and independent: `readSubstrateRecord` asked only whether `path` was
+ * SOMEWHERE under the root. The docstring above it states the actual rule — the acquirer writes
+ * `path` as `substrateRoot()/<version>` and nothing else, which is the entire reason a record can
+ * be treated as this product's own installation rather than as a launch instruction from whoever
+ * last edited the file. A nested path under the root satisfies containment and could not have been
+ * written by the acquirer, so reading it as PRESENT is the docstring's premise being false in the
+ * one place the no-consent spawn depends on it.
+ *
+ * Both were reproduced against the built `dist/` at core `019f160c` with control arms. They are
+ * independent: pinning `path` to `join(root, version)` does not close the symlinked root, and
+ * refusing a symlinked root does not close the nested path.
+ *
+ * ⚠ THESE ARMS RUN ON EVERY PLATFORM. The plants are DIRECTORY links, made with `'junction'` —
+ * ignored on POSIX, and on Windows the one directory link that needs no elevation. Nothing here
+ * goes through `cpSync`, so there is no second link for the copy to re-create.
+ */
+describe('the substrate root is a real directory, and a record names exactly root/<version>', () => {
+  let attacker: string;
+
+  beforeEach(() => {
+    attacker = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-attacker-')));
+  });
+
+  afterEach(() => {
+    rmSync(attacker, { recursive: true, force: true });
+  });
+
+  /** The canonical shape, planted at the root this call is asked about. */
+  function plantCanonical(root: string, version = '1.2.3'): void {
+    const dir = join(root, version);
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version, path: dir, executable: 'bin/run' }));
+  }
+
+  it('ACCEPTS the canonical shape — a real root holding exactly root/<version>', () => {
+    // ANTI-VACUITY, local to this block. Every arm below is a refusal, and a `readSubstrateRecord`
+    // hardwired to `return null` would satisfy all of them while having removed the feature.
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    plantCanonical(substrateRoot(dataDir));
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+
+  it('SEC-1: reads as absent when the substrate root is itself a link to somewhere else', () => {
+    const root = substrateRoot(dataDir);
+    // The root is never created — it IS the link. Everything the "acquirer" then writes lands in
+    // the attacker's directory while being spelt as `<dataDir>/substrate/1.2.3`.
+    symlinkSync(attacker, root, 'junction');
+    plantCanonical(root);
+
+    // CONTROL — THE ESCAPE IS REAL AND EVERY EXISTING CHECK PASSES ON IT.
+    const dir = join(root, '1.2.3');
+    // (a) the record's own containment rule agrees, because both sides resolve through the link;
+    expect(realpathSync(dir).startsWith(realpathSync(root) + sep)).toBe(true);
+    // (b) the executable `defaultLaunch` would spawn is on disk;
+    expect(existsSync(join(dir, 'bin', 'run'))).toBe(true);
+    // (c) and the bytes it would run live OUTSIDE the data dir entirely — so they are not what
+    //     this product installed, and `rm -rf ~/.wigolo` does not remove them.
+    expect(realpathSync(dir).startsWith(realpathSync(dataDir) + sep)).toBe(false);
+    expect(realpathSync(join(dir, 'bin', 'run')).startsWith(attacker + sep)).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-1: the refusal is about the ROOT, not about any link on the way to it', () => {
+    // ANTI-OVERREACH, and the arm that fails a fix written as "refuse if anything in the path is a
+    // link". On macOS the data dir routinely sits under `/var -> /private/var`, so a rule that
+    // walked the ancestors would decline every legitimate record on the platform the desktop
+    // component targets. Only the root ENTRY ITSELF is required to be real.
+    const realBase = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-linked-data-')));
+    const linkedBase = join(dirname(realBase), `${basename(realBase)}-via-link`);
+    symlinkSync(realBase, linkedBase, 'junction');
+    try {
+      expect(realpathSync(linkedBase)).toBe(realBase);
+      mkdirSync(substrateRoot(linkedBase), { recursive: true });
+      // The root is a real directory REACHED THROUGH a link, which is the shape that must keep
+      // working.
+      expect(lstatSync(substrateRoot(linkedBase)).isSymbolicLink()).toBe(false);
+      plantCanonical(substrateRoot(linkedBase));
+      expect(readSubstrateRecord(linkedBase)?.version).toBe('1.2.3');
+    } finally {
+      rmSync(linkedBase, { recursive: true, force: true });
+      rmSync(realBase, { recursive: true, force: true });
+    }
+  });
+
+  it('SEC-2: reads as absent when the path is nested under the root but is not root/<version>', () => {
+    const root = substrateRoot(dataDir);
+    const nested = join(root, 'tmp', 'deep');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'helper'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '1.2.3', path: nested, executable: 'helper' }));
+
+    // CONTROL: containment is genuinely satisfied — this really is inside the root, so the arm is
+    // not the pre-existing "path escapes the root" rule wearing a new name. What it is not is the
+    // one path the acquirer writes.
+    expect(realpathSync(nested).startsWith(realpathSync(root) + sep)).toBe(true);
+    expect(existsSync(join(nested, 'helper'))).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-2: reads as absent when the version is not one directory name', () => {
+    // THE ARM THAT MAKES `join(root, version)` A RULE RATHER THAN A COINCIDENCE. Pinning `path` to
+    // `join(root, raw.version)` is only worth anything while `version` is a directory NAME: with
+    // `version: '.'` the join is the root itself, the equality holds, containment holds, and a
+    // payload dropped beside `record.json` reads back as an installed component. That is the same
+    // "not written by the acquirer" class, one level up, and it survives the equality fix alone.
+    const root = substrateRoot(dataDir);
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(join(root, 'bin', 'run'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '.', path: root, executable: 'bin/run' }));
+
+    // CONTROL: the equality this fix is built on is SATISFIED by this shape.
+    expect(realpathSync(root)).toBe(realpathSync(join(root, '.')));
+    expect(existsSync(join(root, 'bin', 'run'))).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+});
+
 describe('source resolution', () => {
   it('reads a manifest from a substrate directory', () => {
     expect(readSubstrateManifest(sourceDir)).toEqual({ version: '1.2.3', executable: 'bin/run' });
