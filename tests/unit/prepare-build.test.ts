@@ -154,6 +154,50 @@ describe('scripts/prepare-build.mjs — the git-dependency build hook', () => {
     expect(run.stdout).toMatch(/WIGOLO_SKIP_PREPARE/);
   }, 60_000);
 
+  /*
+   * The opt-out's OFF spellings, which bare truthiness read backwards.
+   *
+   * `if (process.env.WIGOLO_SKIP_PREPARE)` made `=0`, `=false` and `=off` all mean SKIP — the
+   * inverse of what the operator wrote — and this repo had already established the opposite rule
+   * one file over: `autoLaunchDisabled` (src/studio/auto-launch.ts) trims, lowercases and compares
+   * against `{'0','false','off'}` for exactly this class. Two flags shipped by one phase cannot
+   * disagree about what `0` means.
+   *
+   * The fail direction is quiet, which is why it needs arms rather than a reading: a local
+   * `npm ci` under a leaked `WIGOLO_SKIP_PREPARE=0` exits 0 with an unbuilt tree, and the missing
+   * `dist/` surfaces weeks later as module-not-found in whatever consumes it.
+   */
+  const OFF_SPELLINGS = ['0', 'false', 'off', ' 0 ', 'FALSE', 'Off', ' False ', '   ', ''];
+
+  it('BUILDS for every value that means off — `0`/`false`/`off`, in any casing, trimmed', () => {
+    plantToolchain('tsup');
+    plantToolchain('typescript');
+    plantBuild();
+    for (const value of OFF_SPELLINGS) {
+      const run = runPrepare({ WIGOLO_SKIP_PREPARE: value });
+      expect(run.status, JSON.stringify(value)).toBe(0);
+      expect(run.built, JSON.stringify(value)).toBe(true);
+      // Not merely "it built": a guard that announced the skip and then built anyway would leave
+      // the CI legs' own grep lying about what the install did.
+      expect(run.stdout, JSON.stringify(value)).not.toMatch(/WIGOLO_SKIP_PREPARE/);
+    }
+  }, 120_000);
+
+  it('still SKIPS for every value CI actually sets, and prints the line those legs grep', () => {
+    // Anti-vacuity twin for the arm above: normalising the off values must not soften the opt-out
+    // itself. `=1` is the only spelling in the workflows and the Dockerfile today; the rest are
+    // here because "any other non-empty value skips" is the stated rule, not "1 skips".
+    plantToolchain('tsup');
+    plantToolchain('typescript');
+    plantBuild();
+    for (const value of ['1', 'true', 'yes', 'TRUE', ' 1 ', 'no']) {
+      const run = runPrepare({ WIGOLO_SKIP_PREPARE: value });
+      expect(run.status, JSON.stringify(value)).toBe(0);
+      expect(run.built, JSON.stringify(value)).toBe(false);
+      expect(run.stdout, JSON.stringify(value)).toMatch(/WIGOLO_SKIP_PREPARE/);
+    }
+  }, 120_000);
+
   it('propagates a failing build rather than swallowing it', () => {
     // The opt-out must not become a blanket exit 0. A build that fails on the
     // git-dependency path has to fail the install, or the consumer gets a partial dist/.
