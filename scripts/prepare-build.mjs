@@ -39,8 +39,37 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-/** Opt-out for a caller that will build explicitly itself. Any non-empty value counts. */
-if (process.env.WIGOLO_SKIP_PREPARE) {
+/**
+ * The spellings that mean OFF, matched trimmed and lowercased.
+ *
+ * ⚠ THIS WAS BARE TRUTHINESS, AND BARE TRUTHINESS READS THE FLAG BACKWARDS. `if (process.env.X)`
+ * makes `=0`, `=false` and `=off` all mean SKIP — the inverse of what the operator wrote — while
+ * this repo established the opposite rule one file over in the same phase: `autoLaunchDisabled`
+ * (`src/studio/auto-launch.ts`) trims, lowercases and compares against exactly these three values.
+ * Two flags shipped together cannot disagree about what `0` means.
+ *
+ * The fail direction is quiet rather than loud, which is why it is worth a set instead of a cast:
+ * a local `npm ci` under a leaked `WIGOLO_SKIP_PREPARE=0` exits 0 with an unbuilt tree, and the
+ * absent `dist/` surfaces much later as module-not-found in whatever consumes this package.
+ */
+const SKIP_OFF_VALUES = new Set(['0', 'false', 'off']);
+
+/**
+ * Opt-out for a caller that will build explicitly itself.
+ *
+ * Any non-empty value counts EXCEPT the off spellings above — so `=1`, the only value CI and the
+ * Dockerfile actually set, still skips. Trimmed before the comparison for the same reason
+ * `isLoopbackHost` (`src/studio/bind.ts`) trims: a value that arrived with the shell's whitespace
+ * still attached is the same stated intent. A value that is whitespace ONLY states no intent at
+ * all, so it falls back to the unset default, which is to build.
+ */
+function skipRequested(raw) {
+  if (raw === undefined) return false;
+  const value = raw.trim().toLowerCase();
+  return value !== '' && !SKIP_OFF_VALUES.has(value);
+}
+
+if (skipRequested(process.env.WIGOLO_SKIP_PREPARE)) {
   console.log('prepare: no build — WIGOLO_SKIP_PREPARE is set; the caller builds explicitly.');
   process.exit(0);
 }
