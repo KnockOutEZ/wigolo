@@ -254,10 +254,16 @@ const WORKFLOWS = join(ROOT, '.github', 'workflows');
 /** A step's effective working directory: its own, else the job's `defaults.run`, else root. */
 type Step = { key: string; run: string; optedOut: boolean; atRoot: boolean };
 
-function steps(): Step[] {
+/**
+ * Parses the real workflows by default. The directory is a parameter only so an arm can point the
+ * REAL parser and the REAL classifier at a planted shape under $TMPDIR: every other arm here can
+ * do no more than agree with the workflows that happen to exist, which is no evidence at all about
+ * a shape none of them currently gets wrong.
+ */
+function steps(dir: string = WORKFLOWS): Step[] {
   const out: Step[] = [];
-  for (const file of readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort()) {
-    const doc = parseYaml(readFileSync(join(WORKFLOWS, file), 'utf8')) as {
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.yml')).sort()) {
+    const doc = parseYaml(readFileSync(join(dir, file), 'utf8')) as {
       jobs?: Record<string, { defaults?: { run?: { 'working-directory'?: string } }; steps?: unknown[] }>;
     };
     for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
@@ -285,13 +291,14 @@ function steps(): Step[] {
 
 describe('the prepare opt-out across every workflow that installs at the repo root', () => {
   /**
-   * npm runs the root package's `prepare` on `npm ci`, on an argument-less `npm install`, and
-   * on `npm pack` — pack most surprisingly, since nothing in the step reads like an install.
+   * npm runs the root package's `prepare` on `npm ci`, on an argument-less `npm install`, on
+   * `npm pack` and on `npm publish` — the last two most surprisingly, since nothing in either
+   * step reads like an install, and publish only fires it because it packs first.
    * `npm i -g <tarball>` takes an argument and installs a different package, so it is not here.
    */
   // The lookbehind matters: `npm pack` appears inside `TGZ=$(npm pack ...)`, so anchoring on a
   // preceding space or `&&` would miss the very step this issue is about.
-  const TRIGGERS_PREPARE = /(?<![\w./-])npm\s+(?:(?:ci|pack)(?![\w-])|(?:install|i)\s*$)/m;
+  const TRIGGERS_PREPARE = /(?<![\w./-])npm\s+(?:(?:ci|pack|publish)(?![\w-])|(?:install|i)\s*$)/m;
 
   /** Every root-scoped step that fires the hook, and therefore must suppress it. */
   const affected = () =>
@@ -301,7 +308,10 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
 
   it('fires on exactly these steps — a new root install step must appear here', () => {
     // A set, not a count: adding an unguarded install step reds this with its own name in the
-    // diff, and deleting or renaming a guarded one reds it too.
+    // diff, and deleting or renaming a guarded one reds it too. The release publish step belongs
+    // here and not only in the pack/publish block below: this list is the enumeration a reader
+    // reaches for as "every root step that fires the hook", so an omission here reads as proof
+    // the publish path is exempt, and deleting the other block would leave no arm at all.
     expect(affected().map((s) => s.key)).toEqual([
       'agent-benchmark.yml / benchmark / npm ci',
       'binary-build.yml / build / Install dependencies',
@@ -312,6 +322,7 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
       'ci.yml / lint-build-unit / Install dependencies',
       'extraction-benchmark.yml / benchmark / npm ci',
       'release.yml / release / npm ci',
+      'release.yml / release / Publish wigolo (npm)',
       'scrape-quality-live.yml / live-comparison / npm ci',
       'scrape-quality.yml / scrape-quality / npm ci',
       'search-benchmark.yml / benchmark / npm ci',
@@ -325,6 +336,53 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
       .filter((s) => !s.optedOut && !s.run.includes('--ignore-scripts'))
       .map((s) => s.key);
     expect(unguarded).toEqual([]);
+  });
+
+  it('flags an un-suppressed root `npm publish` planted in a scratch workflow', () => {
+    // The arm above can only ever agree with the workflows that exist: a shape the classifier
+    // cannot see is a shape no real workflow can red it with, so "green" says nothing about it.
+    // `npm publish` is exactly that shape — publish packs, packing fires the root `prepare`, and
+    // the alternation above enumerates install verbs. Planting it in a scratch workflow directory
+    // and running the real parser over it is the outside signal: the classifier must flag the
+    // unguarded root publish, must not flag the guarded one as unguarded, and must leave a
+    // sub-package publish (its own root, its own hook) off-root entirely.
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-prepare-workflows-'));
+    try {
+      writeFileSync(
+        join(dir, 'synthetic.yml'),
+        [
+          'jobs:',
+          '  ship:',
+          '    steps:',
+          '      - name: Publish the root unguarded',
+          '        run: npm publish --provenance --access public',
+          '      - name: Publish the root guarded',
+          '        env:',
+          "          WIGOLO_SKIP_PREPARE: '1'",
+          '        run: npm publish --provenance --access public',
+          '      - name: Publish a sub-package from its own root',
+          '        working-directory: sdks/typescript',
+          '        run: npm publish --provenance --access public',
+          '',
+        ].join('\n'),
+      );
+      const planted = steps(dir);
+      const firing = planted.filter((s) => s.atRoot && TRIGGERS_PREPARE.test(s.run));
+      expect(firing.map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish the root unguarded',
+        'synthetic.yml / ship / Publish the root guarded',
+      ]);
+      // The verdict, not just the sweep: this is the name the guard arm would print.
+      expect(firing.filter((s) => !s.optedOut).map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish the root unguarded',
+      ]);
+      // And the working-directory logic still excuses a different package's publish.
+      expect(planted.filter((s) => !s.atRoot).map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish a sub-package from its own root',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a job that installs somewhere other than the root is not swept in', () => {
@@ -692,19 +750,24 @@ describe('everything the install hooks need is packed by `files`', () => {
 });
 
 /*
- * `prepare` fires on the PUBLISH path too, and that register is invisible to the install sweep
- * above: `npm publish` packs before it uploads, and packing runs `prepare`. So the release leg
- * lints, tests, builds an explicit `dist/`, verifies the tag — and then `npm publish` rebuilds
- * `dist/` from scratch, meaning the artifact that actually reaches the registry is NOT the one
- * every gate validated. A build that flakes at that point also fails the release at publish,
- * after everything was green. Enumerated the same way as the install legs, because a text
- * search for `npm publish` cannot tell a root publish from a sub-package's own.
+ * `prepare` fires on the PUBLISH path too: `npm publish` packs before it uploads, and packing
+ * runs `prepare`. So the release leg lints, tests, builds an explicit `dist/`, verifies the tag —
+ * and then `npm publish` rebuilds `dist/` from scratch, meaning the artifact that actually reaches
+ * the registry is NOT the one every gate validated. A build that flakes at that point also fails
+ * the release at publish, after everything was green. Enumerated the same way as the install legs,
+ * because a text search for `npm publish` cannot tell a root publish from a sub-package's own.
+ *
+ * The sweep above now classifies `npm publish` too, so the publish steps appear in both
+ * enumerations by design and neither block alone is load-bearing. What is only here is the
+ * publish-specific pair: that a sub-package's publish is a different root, and that the explicit
+ * root build the opt-out depends on still precedes it.
  */
 describe('the prepare opt-out on every step that packs or publishes the ROOT package', () => {
   /**
-   * The pack-shaped register. `npm publish` runs `prepack` → `prepare` → the tarball, so it
-   * fires the hook exactly as `npm pack` does; `npm publish` is the one shape the install
-   * register's `ci|pack|install` alternation cannot see.
+   * The pack-shaped register: `npm publish` runs `prepack` → `prepare` → the tarball, so it fires
+   * the hook exactly as `npm pack` does. Narrower than the install classifier on purpose — it
+   * matches only the two verbs that produce a tarball, so the arms below can speak about the
+   * shipped bytes rather than about installs.
    */
   const TRIGGERS_PREPARE_VIA_PACK = /(?<![\w./-])npm\s+(?:publish|pack)(?![\w-])/m;
 
