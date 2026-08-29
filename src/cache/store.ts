@@ -376,7 +376,8 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.time_range != null ||
     filters.exact_match != null ||
     filters.search_depth != null ||
-    filters.reranker != null
+    filters.reranker != null ||
+    (filters.search_engines?.length ?? 0) > 0
   );
 }
 

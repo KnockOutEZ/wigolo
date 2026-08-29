@@ -310,7 +310,7 @@ interface RunV1SearchOptions {
 function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): EngineEntry[] {
   const lowered = allowlist.map((n) => n.toLowerCase());
   const filtered = entries.filter((e) => lowered.includes(e.engine.name.toLowerCase()));
-  return filtered.length > 0 ? filtered : entries;
+  return filtered;
 }
 
 export async function runV1Search(
@@ -379,10 +379,15 @@ export async function runV1Search(
   const probeEntries = allEntries.filter((e) => e.probeOnly === true);
 
   // Apply caller-supplied engine allowlist (SearchInput.search_engines).
-  // Case-insensitive match against engine name. Unknown names are silently
-  // ignored — if no entries match, fall back to the full roster.
+  // Case-insensitive match against engine name. For the primary wave, if no
+  // entries match the allowlist, fall back to the full roster (the caller
+  // likely made a typo or passed an unknown engine name). For recovery and
+  // backfill waves, an empty result means those waves run nothing — which is
+  // correct: if the caller explicitly filtered out all probe/backfill engines,
+  // we don't secretly re-introduce them.
   if (input.engineFilter && input.engineFilter.length > 0) {
-    entries = applyEngineAllowlist(entries, input.engineFilter);
+    const allowlisted = applyEngineAllowlist(entries, input.engineFilter);
+    entries = allowlisted.length > 0 ? allowlisted : entries;
   }
 
   const options: SearchEngineOptions = {
