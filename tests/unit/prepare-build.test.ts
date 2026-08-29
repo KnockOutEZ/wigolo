@@ -254,10 +254,16 @@ const WORKFLOWS = join(ROOT, '.github', 'workflows');
 /** A step's effective working directory: its own, else the job's `defaults.run`, else root. */
 type Step = { key: string; run: string; optedOut: boolean; atRoot: boolean };
 
-function steps(): Step[] {
+/**
+ * Parses the real workflows by default. The directory is a parameter only so an arm can point the
+ * REAL parser and the REAL classifier at a planted shape under $TMPDIR: every other arm here can
+ * do no more than agree with the workflows that happen to exist, which is no evidence at all about
+ * a shape none of them currently gets wrong.
+ */
+function steps(dir: string = WORKFLOWS): Step[] {
   const out: Step[] = [];
-  for (const file of readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort()) {
-    const doc = parseYaml(readFileSync(join(WORKFLOWS, file), 'utf8')) as {
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.yml')).sort()) {
+    const doc = parseYaml(readFileSync(join(dir, file), 'utf8')) as {
       jobs?: Record<string, { defaults?: { run?: { 'working-directory'?: string } }; steps?: unknown[] }>;
     };
     for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
@@ -325,6 +331,53 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
       .filter((s) => !s.optedOut && !s.run.includes('--ignore-scripts'))
       .map((s) => s.key);
     expect(unguarded).toEqual([]);
+  });
+
+  it('flags an un-suppressed root `npm publish` planted in a scratch workflow', () => {
+    // The arm above can only ever agree with the workflows that exist: a shape the classifier
+    // cannot see is a shape no real workflow can red it with, so "green" says nothing about it.
+    // `npm publish` is exactly that shape — publish packs, packing fires the root `prepare`, and
+    // the alternation above enumerates install verbs. Planting it in a scratch workflow directory
+    // and running the real parser over it is the outside signal: the classifier must flag the
+    // unguarded root publish, must not flag the guarded one as unguarded, and must leave a
+    // sub-package publish (its own root, its own hook) off-root entirely.
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-prepare-workflows-'));
+    try {
+      writeFileSync(
+        join(dir, 'synthetic.yml'),
+        [
+          'jobs:',
+          '  ship:',
+          '    steps:',
+          '      - name: Publish the root unguarded',
+          '        run: npm publish --provenance --access public',
+          '      - name: Publish the root guarded',
+          '        env:',
+          "          WIGOLO_SKIP_PREPARE: '1'",
+          '        run: npm publish --provenance --access public',
+          '      - name: Publish a sub-package from its own root',
+          '        working-directory: sdks/typescript',
+          '        run: npm publish --provenance --access public',
+          '',
+        ].join('\n'),
+      );
+      const planted = steps(dir);
+      const firing = planted.filter((s) => s.atRoot && TRIGGERS_PREPARE.test(s.run));
+      expect(firing.map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish the root unguarded',
+        'synthetic.yml / ship / Publish the root guarded',
+      ]);
+      // The verdict, not just the sweep: this is the name the guard arm would print.
+      expect(firing.filter((s) => !s.optedOut).map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish the root unguarded',
+      ]);
+      // And the working-directory logic still excuses a different package's publish.
+      expect(planted.filter((s) => !s.atRoot).map((s) => s.key)).toEqual([
+        'synthetic.yml / ship / Publish a sub-package from its own root',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a job that installs somewhere other than the root is not swept in', () => {
