@@ -795,6 +795,14 @@ describe('the substrate root is a real directory, and a record names exactly roo
 
   it('SEC-2: reads as absent when the path is nested under the root but is not root/<version>', () => {
     const root = substrateRoot(dataDir);
+    // ⚠ THE LEGITIMATE INSTALL IS PLANTED TOO, AND THAT IS WHAT MAKES THIS ARM SHARP. Without it
+    // `join(root, version)` resolves to nothing and the refusal comes from "the acquirer's path is
+    // not on disk" — a real rule, but the WEAK half: it leaves the arm green against a fix that
+    // dropped the equality entirely. Measured, 2026-08-29: that mutant survived. With a real
+    // `<root>/1.2.3` present, both sides resolve and only `named !== expected` refuses this record.
+    // It is also the realistic shape — an installed component, and a record edited beside it to
+    // name a payload dropped somewhere else under the same root.
+    plantCanonical(root);
     const nested = join(root, 'tmp', 'deep');
     mkdirSync(nested, { recursive: true });
     writeFileSync(join(nested, 'helper'), '#!/bin/sh\n');
@@ -805,7 +813,23 @@ describe('the substrate root is a real directory, and a record names exactly roo
     // one path the acquirer writes.
     expect(realpathSync(nested).startsWith(realpathSync(root) + sep)).toBe(true);
     expect(existsSync(join(nested, 'helper'))).toBe(true);
+    // CONTROL: and the path the acquirer WOULD have written is on disk, so the refusal cannot be
+    // the "expected location is absent" arm.
+    expect(existsSync(join(root, '1.2.3', 'bin', 'run'))).toBe(true);
 
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-2: reads as absent when root/<version> is absent, even though the path it names is real', () => {
+    // The other half of the same rule, kept as its own arm now that the one above deliberately
+    // plants a real `<root>/<version>`: a record naming a location that exists, filed under a
+    // version that was never installed, is still not something the acquirer wrote.
+    const root = substrateRoot(dataDir);
+    const nested = join(root, 'tmp', 'deep');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'helper'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '9.9.9', path: nested, executable: 'helper' }));
+    expect(existsSync(join(root, '9.9.9'))).toBe(false);
     expect(readSubstrateRecord(dataDir)).toBeNull();
   });
 
@@ -824,6 +848,22 @@ describe('the substrate root is a real directory, and a record names exactly roo
     expect(realpathSync(root)).toBe(realpathSync(join(root, '.')));
     expect(existsSync(join(root, 'bin', 'run'))).toBe(true);
 
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-1: does not INSTALL into a linked root either, rather than acquiring what it then refuses', async () => {
+    // THE WRITE SIDE OF THE SAME RULE, and not the read arm wearing a second hat. `mkdirSync`
+    // succeeds on an existing link and `isInside(destDir, root)` agrees because both sides resolve
+    // through it, so acquisition would report `acquired`, copy the component into a directory
+    // OUTSIDE the data dir, and then read back as absent on every subsequent run — the permanent
+    // acquire/read disagreement this module's version guard exists to prevent.
+    const root = substrateRoot(dataDir);
+    symlinkSync(attacker, root, 'junction');
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(r.outcome).toBe('failed');
+    expect(r.error).toMatch(/symlink/);
+    // And it refused BEFORE copying anything into the attacker's directory.
+    expect(existsSync(join(attacker, '1.2.3'))).toBe(false);
     expect(readSubstrateRecord(dataDir)).toBeNull();
   });
 });

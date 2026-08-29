@@ -235,12 +235,17 @@ export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
     if (!isSingleDirectoryName(raw.version)) return null;
     const expected = realpathIfPossible(join(root, raw.version));
     const named = realpathIfPossible(raw.path);
-    if (expected === null || named === null || named !== expected) return null;
-    // NOT SUBSUMED BY THE EQUALITY ABOVE. Both sides of it are the same spelling, so it holds
-    // even when `<root>/<version>` is itself a link out of the root — the shape the arms below
-    // plant. Containment is what refuses that, and it is the only rule that resolves the
-    // DIRECTORY rather than comparing two names for it.
-    if (!isInside(raw.path, root)) return null;
+    // `expected === null` is the both-unresolved case, which the inequality alone would let past
+    // (`null !== null` is false) and which the executable probe below would then refuse anyway.
+    // It is stated here because this is where the rule is decided; it is not carrying the rule.
+    if (expected === null || named !== expected) return null;
+    // ⚠ `isInside(raw.path, root)` USED TO SIT HERE AND IS GONE, deliberately. The equality above
+    // strictly dominates it: any `path` outside the root either fails to equal
+    // `realpath(join(root, version))` or fails to resolve at all, and where `<root>/<version>` is
+    // ITSELF a link out of the root the equality holds (both sides are the same spelling) — so
+    // containment never decided that case either. What decides it is the executable check below,
+    // which resolves the path the OS will actually run. Measured 2026-08-29: deleting the line
+    // changed no test, which is the whole reason it is not still here being trusted.
     const exec = join(raw.path, raw.executable);
     if (!existsSync(exec)) return null;
     // The spawn target itself, resolved. `isInside` returns false for a path that does not
