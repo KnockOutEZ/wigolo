@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -114,6 +114,33 @@ function isInside(candidate: string, root: string): boolean {
   return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
+/**
+ * Is this entry ITSELF a link, judged without following it?
+ *
+ * ⚠ THE ROOT IS A PATH TOO, AND {@link isInside} CANNOT SEE IT. Containment is stated relative to
+ * the substrate root, and `isInside` resolves BOTH sides — which is correct for a root reached
+ * THROUGH a link (macOS puts the data dir under `/var -> /private/var`, and resolving one side
+ * only would decline every real record there) and blind to the root BEING one. Where
+ * `<dataDir>/substrate` is a link to somewhere else, both sides resolve into the target, the
+ * prefix comparison agrees, and every check passes for a tree that is not in the data dir at all —
+ * so it is not what this product installed, and `rm -rf ~/.wigolo` does not remove it either.
+ *
+ * `lstat` is the whole distinction: it stats the entry rather than what the entry points at, so an
+ * ancestor link is invisible to it (which is what keeps the legitimate macOS shape working) and
+ * the root's own link-ness is not. A junction answers `true` here as well, which is what makes the
+ * rule hold on Windows rather than only on the platforms with POSIX symlinks.
+ *
+ * A root that cannot be stat'd is not a link — it is absent, and every caller here is already on a
+ * path that reads an absent substrate as absent.
+ */
+function isLinkEntry(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /** The real location of `p`, or null when it does not resolve to anything on disk. */
 function realpathIfPossible(p: string): string | null {
   try {
@@ -164,8 +191,23 @@ function isSingleDirectoryName(name: string): boolean {
  * elsewhere on the machine", and that was FALSE for as long as it compared strings: neither the
  * record's `path` nor its `executable` has to be a link ITSELF for the joined path to resolve
  * outside — any link along the way does it, and `existsSync` follows links so the probe agreed.
- * So the executable is RESOLVED and required to land inside the substrate root. The claim is true
- * of this version because the filesystem, not the text, answers it.
+ * So the executable is RESOLVED and required to land inside the substrate root.
+ *
+ * ⚠ AND THE PARAGRAPH ABOVE WAS ITSELF TOO STRONG UNTIL PX0's EXIT REVIEW (SEC-1, SEC-2). It
+ * asserted a property of the CODE that only two of the three necessary rules held up, and the
+ * no-consent spawn rests on the whole claim being true as written. The two that were missing:
+ *
+ *   SEC-1 — "inside the substrate root" is only a containment statement while the root is a real
+ *   directory. `isInside` resolves both sides, so a root that is a LINK resolves along with the
+ *   candidate and every comparison agrees for a tree living entirely outside the data dir. The
+ *   root's own link-ness is now refused first ({@link isLinkEntry}), before anything is compared.
+ *
+ *   SEC-2 — "anywhere under the root" is weaker than the rule this docstring states. The acquirer
+ *   writes `join(root, version)` and nothing else, so a nested-but-contained path could not have
+ *   come from it; `path` is now required to RESOLVE to that one location, and `version` is
+ *   required to be a single directory name so the join is a name rather than a traversal.
+ *
+ * The claim is true of this version because the filesystem, not the text, answers all three.
  */
 export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
   try {
@@ -184,7 +226,26 @@ export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
     if (!raw.version || !raw.executable || !raw.path) return null;
     if (!staysInsideItsDirectory(raw.executable)) return null;
     const root = substrateRoot(dataDir);
-    if (!isInside(raw.path, root)) return null;
+    // SEC-1 — BEFORE ANY COMPARISON, because the comparison is the thing this defeats. See
+    // {@link isLinkEntry}.
+    if (isLinkEntry(root)) return null;
+    // SEC-2 — the acquirer writes ONE path, so that is the one path a record may name.
+    // `version` first: `join(root, '.')` is the root and `join(root, '../x')` leaves it, so
+    // without this the equality below would hold for locations the acquirer cannot produce.
+    if (!isSingleDirectoryName(raw.version)) return null;
+    const expected = realpathIfPossible(join(root, raw.version));
+    const named = realpathIfPossible(raw.path);
+    // `expected === null` is the both-unresolved case, which the inequality alone would let past
+    // (`null !== null` is false) and which the executable probe below would then refuse anyway.
+    // It is stated here because this is where the rule is decided; it is not carrying the rule.
+    if (expected === null || named !== expected) return null;
+    // ⚠ `isInside(raw.path, root)` USED TO SIT HERE AND IS GONE, deliberately. The equality above
+    // strictly dominates it: any `path` outside the root either fails to equal
+    // `realpath(join(root, version))` or fails to resolve at all, and where `<root>/<version>` is
+    // ITSELF a link out of the root the equality holds (both sides are the same spelling) — so
+    // containment never decided that case either. What decides it is the executable check below,
+    // which resolves the path the OS will actually run. Measured 2026-08-29: deleting the line
+    // changed no test, which is the whole reason it is not still here being trusted.
     const exec = join(raw.path, raw.executable);
     if (!existsSync(exec)) return null;
     // The spawn target itself, resolved. `isInside` returns false for a path that does not
@@ -405,6 +466,20 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
   }
 
   const root = substrateRoot(dataDir);
+  // THE SAME ROOT RULE AS THE READER'S, ON THE WRITE SIDE — because the two answering differently
+  // is its own defect. A linked root does not stop `install()`: `mkdirSync(root, {recursive:true})`
+  // succeeds on an existing link, the bytes land in the link's target, and `isInside(destDir, root)`
+  // agrees because both sides resolve there. The acquisition would report `acquired` for a record
+  // `readSubstrateRecord` now refuses on every subsequent run — the permanent disagreement the
+  // version guard below exists to prevent — while having copied a component into a directory
+  // outside the data dir. `isLinkEntry` cannot throw, so this stays a guard outside the try.
+  if (isLinkEntry(root)) {
+    return {
+      outcome: 'failed',
+      detail: 'the directory the desktop component installs into is a link to somewhere else',
+      error: `substrate root is a symlink: ${root}`,
+    };
+  }
   // EVERY STATEMENT THAT CAN THROW IS INSIDE THE TRY, INCLUDING THE GUARDS. `destDir` used to be
   // computed one line above the `try`, which made NEVER THROWS true only for the argument shapes
   // the guards happened to anticipate; moving the join in fixed that, and then left the guards

@@ -25,6 +25,48 @@ import {
  * somewhere else entirely.
  */
 
+/**
+ * CAN THIS MACHINE PLANT THE LINKS THESE FIXTURES NEED? MEASURED, NOT GUESSED.
+ *
+ * The containment family used to be gated on `process.platform === 'win32'` with the rationale
+ * "creating a symlink there needs elevation" — a rationale this same file contradicts, since the
+ * linked-prefix arm plants a `'junction'` unskipped and the studio guard plants one on win32 too.
+ * The accurate statement is narrower and is about link TYPE, not platform:
+ *
+ *   - A junction needs no elevation, and is a DIRECTORY link. Every arm whose plant this file
+ *     makes itself can use one, so those arms run on all three shipped OSes unconditionally.
+ *   - The arms below that drive `acquireSubstrate` cannot. `install()` copies with
+ *     `cpSync(..., verbatimSymlinks: true)`, which re-creates each link as `symlinkSync(target,
+ *     dest)` with NO type argument — Node never chooses a junction there, so a junction planted in
+ *     the SOURCE comes out the other side as an ordinary link. Whether that succeeds is a property
+ *     of the machine (Developer Mode, or an elevated token — GitHub's Windows runners generally
+ *     have one), not of this repo.
+ *
+ * So the gate asks the machine instead of assuming the answer. Where Windows CAN make links, the
+ * arms RUN there rather than being skipped on a guess; where it genuinely cannot, they skip for a
+ * measured reason. Skipping on a guess is worse than either: four of these arms expect
+ * `outcome: 'failed'`, and a `cpSync` that dies of EPERM produces exactly that — so un-skipping
+ * them blindly would have bought four arms that pass without testing anything.
+ */
+let linkCapability: boolean | null = null;
+function canPlantSymlinks(): boolean {
+  if (linkCapability !== null) return linkCapability;
+  const probe = mkdtempSync(join(tmpdir(), 'wigolo-link-probe-'));
+  try {
+    mkdirSync(join(probe, 'target'));
+    writeFileSync(join(probe, 'target', 'file'), 'x');
+    symlinkSync(join(probe, 'target'), join(probe, 'dir-link'));
+    symlinkSync(join(probe, 'target', 'file'), join(probe, 'file-link'));
+    linkCapability =
+      lstatSync(join(probe, 'dir-link')).isSymbolicLink() && lstatSync(join(probe, 'file-link')).isSymbolicLink();
+  } catch {
+    linkCapability = false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+  return linkCapability;
+}
+
 let dataDir: string;
 let sourceDir: string;
 
@@ -53,6 +95,18 @@ afterEach(() => {
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(sourceDir, { recursive: true, force: true });
   delete process.env[SUBSTRATE_PATH_ENV];
+});
+
+describe('the link-capability gate answers about the machine, not about a guess', () => {
+  it('is TRUE on every platform with POSIX symlinks', () => {
+    // THE OUTSIDE SIGNAL. A probe that answered `false` everywhere — a typo in the plant, a
+    // `tmpdir()` that stopped being writable — would skip the whole containment family and report
+    // green, which is the exact failure mode replacing `skipIf(win32)` exists to remove. On win32
+    // the answer is a property of the runner (Developer Mode, or an elevated token) rather than of
+    // this repo, so there is nothing here to assert; the junction-based arms run there regardless.
+    if (process.platform !== 'win32') expect(canPlantSymlinks()).toBe(true);
+    expect(typeof canPlantSymlinks()).toBe('boolean');
+  });
 });
 
 describe('acquireSubstrate — install, verify, record (D-S10-3)', () => {
@@ -367,8 +421,10 @@ describe('the version a record is filed under must be one directory name', () =>
  * The acquire-time VERIFY cannot catch this: the top-level executable is a real file, so the probe
  * passes while every framework link underneath it points somewhere else.
  *
- * Windows is skipped because creating a symlink there needs elevation, and this corruption class
- * is a POSIX-symlinked bundle shape.
+ * These arms are gated on {@link canPlantSymlinks}, not on the platform. The fixture's links are
+ * RELATIVE by construction and the assertions read their target strings back verbatim, so a
+ * junction — which Node normalises to an absolute target — would be asserting something else.
+ * Where a machine can make ordinary links, including a Windows one with Developer Mode, these run.
  */
 describe('the install copies symlinks verbatim rather than resolving them', () => {
   /**
@@ -400,7 +456,7 @@ describe('the install copies symlinks verbatim rather than resolving them', () =
     rmSync(frameworkDir, { recursive: true, force: true });
   });
 
-  it.skipIf(process.platform === 'win32')('leaves the installed links relative instead of pointing them back at the source', async () => {
+  it.skipIf(!canPlantSymlinks())('leaves the installed links relative instead of pointing them back at the source', async () => {
     const r = await acquireSubstrate({ dataDir, source: localPathSource(frameworkDir) });
     expect(r.outcome).toBe('acquired');
     const installed = join(substrateRoot(dataDir), '7.7.7', 'Frameworks', 'E.framework');
@@ -418,7 +474,7 @@ describe('the install copies symlinks verbatim rather than resolving them', () =
     expect(spawnTarget.startsWith(realpathSync(substrateRoot(dataDir)) + sep)).toBe(true);
   });
 
-  it.skipIf(process.platform === 'win32')('still resolves once the install source is deleted', async () => {
+  it.skipIf(!canPlantSymlinks())('still resolves once the install source is deleted', async () => {
     // ANTI-VACUITY, and the arm that a rewritten-link copy cannot pass. An absolute link into the
     // source satisfies every existence check above for as long as the source survives — the
     // corruption only becomes visible when the thing it secretly depends on goes away. The install
@@ -455,8 +511,11 @@ describe('the install copies symlinks verbatim rather than resolving them', () =
  * "where does this RESOLVE", not "does this start with a slash", and an arm that only plants
  * absolute links would stay green against a fix that merely banned the leading separator.
  *
- * Windows is skipped for the same reason the arms above are: creating a symlink there needs
- * elevation.
+ * Gated on {@link canPlantSymlinks} for the same reason as the arms above: the plant has to
+ * survive `cpSync`, which re-creates it without a type hint, so a junction does not help. Note
+ * what un-skipping these blindly would have bought — they expect `outcome: 'failed'`, and a
+ * `cpSync` that dies of EPERM produces exactly that, so on a machine that cannot make links they
+ * would pass while testing nothing.
  */
 describe('the install refuses a tree whose links leave it', () => {
   let outside: string;
@@ -486,7 +545,7 @@ describe('the install refuses a tree whose links leave it', () => {
     return dir;
   }
 
-  it.skipIf(process.platform === 'win32')('refuses a bundle whose executable is an absolute link out of the tree', async () => {
+  it.skipIf(!canPlantSymlinks())('refuses a bundle whose executable is an absolute link out of the tree', async () => {
     const src = makeLinkedSourceDir('3.3.3', payload);
     try {
       // CONTROL: the escape is real, and every string-only check passes on it. The manifest
@@ -503,7 +562,7 @@ describe('the install refuses a tree whose links leave it', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('refuses an escaping link even when the executable itself is a real file', async () => {
+  it.skipIf(!canPlantSymlinks())('refuses an escaping link even when the executable itself is a real file', async () => {
     // The acquire-time probe is satisfied here — `bin/run` is genuine bytes — so this arm is what
     // distinguishes a containment WALK from a second existence check on the one named path. A
     // bundle's dynamic libraries and resources are reached through links the manifest never names.
@@ -518,7 +577,7 @@ describe('the install refuses a tree whose links leave it', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('refuses a DANGLING absolute link even when it is spelt inside the root', async () => {
+  it.skipIf(!canPlantSymlinks())('refuses a DANGLING absolute link even when it is spelt inside the root', async () => {
     // THE ARM THAT MAKES THE ABSOLUTE RULE ITS OWN MECHANISM. For a link that resolves, the
     // absolute rule and the resolve rule agree and either alone would do. They part exactly here:
     // this link resolves to nothing, so a walk that judged only by resolution would fall back to
@@ -540,7 +599,7 @@ describe('the install refuses a tree whose links leave it', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('refuses a RELATIVE link that climbs out of the installed tree', async () => {
+  it.skipIf(!canPlantSymlinks())('refuses a RELATIVE link that climbs out of the installed tree', async () => {
     // Not the reported vector — a relative link re-anchors at the destination and usually dangles.
     // It is here because the rule is "where does this resolve", and a fix that only banned a
     // leading separator would leave this one green while the hole stayed open.
@@ -576,12 +635,13 @@ describe('the install refuses a tree whose links leave it', () => {
  * on the warmup path, unattended and with no timeout of its own, so the failure is a warmup that
  * never returns rather than a component that fails to install.
  *
- * Windows is skipped for the same reason as the arms above: creating a symlink there needs
- * elevation. The per-test timeout is deliberate — if the rule is ever lost, this arm must report
+ * Gated on {@link canPlantSymlinks} for the same reason as the arms above: `self -> .` is relative
+ * by construction, it has to survive `cpSync`, and the arm reads its target back verbatim — none
+ * of which a junction does. The per-test timeout is deliberate — if the rule is ever lost, this arm must report
  * as a failing test rather than as a runner that stopped making progress.
  */
 describe('the walk terminates on a link cycle that is contained', () => {
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(!canPlantSymlinks())(
     'installs a tree whose directory link points at its own parent',
     async () => {
       const src = mkdtempSync(join(tmpdir(), 'wigolo-substrate-cycle-'));
@@ -625,13 +685,18 @@ describe('containment is answered by the filesystem, not by string comparison', 
     rmSync(outside, { recursive: true, force: true });
   });
 
-  it.skipIf(process.platform === 'win32')('reads as absent when the directory the record names is a link out of the root', () => {
+  // ⚠ THESE TWO RUN EVERYWHERE. The plants are DIRECTORY links made with `'junction'` — ignored on
+  // POSIX, and on Windows the one directory link that needs no elevation — and nothing here goes
+  // through `cpSync`, so there is no second link for the copy to re-create with the wrong type.
+  // That is the difference between them and the `canPlantSymlinks()` family above.
+  it('reads as absent when the directory the record names is a link out of the root', () => {
     // The record's `path` string is exactly what the acquirer writes — `<root>/1.2.3` — so string
-    // containment is satisfied, and the executable is on disk because `existsSync` follows links.
-    // Only resolving the directory shows it is not in the root at all.
+    // containment is satisfied, `join(root, version)` and `path` are the same spelling so the
+    // acquirer-path equality is satisfied too, and the executable is on disk because `existsSync`
+    // follows links. Only resolving what gets SPAWNED shows it is not in the root at all.
     mkdirSync(substrateRoot(dataDir), { recursive: true });
     const dir = join(substrateRoot(dataDir), '1.2.3');
-    symlinkSync(outside, dir);
+    symlinkSync(outside, dir, 'junction');
     writeFileSync(
       join(substrateRoot(dataDir), 'record.json'),
       JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
@@ -640,12 +705,16 @@ describe('containment is answered by the filesystem, not by string comparison', 
     expect(readSubstrateRecord(dataDir)).toBeNull();
   });
 
-  it.skipIf(process.platform === 'win32')('reads as absent when the executable it names resolves outside the root', () => {
+  it('reads as absent when the executable it names resolves outside the root', () => {
     // The last line of defence, for a tree that was not installed by this process — a link swapped
     // in after acquisition, or a record hand-edited beside one.
+    //
+    // The link is on `bin/` rather than on `bin/run` so it can be a junction and the arm can run on
+    // win32. It is the same defect either way: the record names `bin/run`, that path exists, and
+    // the bytes the OS would execute live outside the substrate root.
     const dir = join(substrateRoot(dataDir), '1.2.3');
-    mkdirSync(join(dir, 'bin'), { recursive: true });
-    symlinkSync(join(outside, 'bin', 'run'), join(dir, 'bin', 'run'));
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(outside, 'bin'), join(dir, 'bin'), 'junction');
     writeFileSync(
       join(substrateRoot(dataDir), 'record.json'),
       JSON.stringify({ version: '1.2.3', path: dir, executable: 'bin/run' }),
@@ -694,6 +763,177 @@ describe('containment is answered by the filesystem, not by string comparison', 
       rmSync(linkedBase, { recursive: true, force: true });
       rmSync(realBase, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * CONTAINMENT IS RELATIVE TO A ROOT, AND THE ROOT IS ITSELF A PATH ON DISK.
+ *
+ * Everything above answers "is this inside the root" by resolving both sides. That is the right
+ * question and it has a blind spot the size of the feature: NOTHING required the root to be a real
+ * directory. `substrateRoot()` is `<dataDir>/substrate`, and if that entry is a LINK to somewhere
+ * else, both sides resolve into the link's target, the prefix comparison agrees, and every
+ * containment check passes for a spawn target that lives entirely outside the data dir — and that
+ * therefore also survives the `rm -rf ~/.wigolo` the release checklist prescribes.
+ *
+ * The second shape is narrower and independent: `readSubstrateRecord` asked only whether `path` was
+ * SOMEWHERE under the root. The docstring above it states the actual rule — the acquirer writes
+ * `path` as `substrateRoot()/<version>` and nothing else, which is the entire reason a record can
+ * be treated as this product's own installation rather than as a launch instruction from whoever
+ * last edited the file. A nested path under the root satisfies containment and could not have been
+ * written by the acquirer, so reading it as PRESENT is the docstring's premise being false in the
+ * one place the no-consent spawn depends on it.
+ *
+ * Both were reproduced against the built `dist/` at core `019f160c` with control arms. They are
+ * independent: pinning `path` to `join(root, version)` does not close the symlinked root, and
+ * refusing a symlinked root does not close the nested path.
+ *
+ * ⚠ THESE ARMS RUN ON EVERY PLATFORM. The plants are DIRECTORY links, made with `'junction'` —
+ * ignored on POSIX, and on Windows the one directory link that needs no elevation. Nothing here
+ * goes through `cpSync`, so there is no second link for the copy to re-create.
+ */
+describe('the substrate root is a real directory, and a record names exactly root/<version>', () => {
+  let attacker: string;
+
+  beforeEach(() => {
+    attacker = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-attacker-')));
+  });
+
+  afterEach(() => {
+    rmSync(attacker, { recursive: true, force: true });
+  });
+
+  /** The canonical shape, planted at the root this call is asked about. */
+  function plantCanonical(root: string, version = '1.2.3'): void {
+    const dir = join(root, version);
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'run'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version, path: dir, executable: 'bin/run' }));
+  }
+
+  it('ACCEPTS the canonical shape — a real root holding exactly root/<version>', () => {
+    // ANTI-VACUITY, local to this block. Every arm below is a refusal, and a `readSubstrateRecord`
+    // hardwired to `return null` would satisfy all of them while having removed the feature.
+    mkdirSync(substrateRoot(dataDir), { recursive: true });
+    plantCanonical(substrateRoot(dataDir));
+    expect(readSubstrateRecord(dataDir)?.version).toBe('1.2.3');
+  });
+
+  it('SEC-1: reads as absent when the substrate root is itself a link to somewhere else', () => {
+    const root = substrateRoot(dataDir);
+    // The root is never created — it IS the link. Everything the "acquirer" then writes lands in
+    // the attacker's directory while being spelt as `<dataDir>/substrate/1.2.3`.
+    symlinkSync(attacker, root, 'junction');
+    plantCanonical(root);
+
+    // CONTROL — THE ESCAPE IS REAL AND EVERY EXISTING CHECK PASSES ON IT.
+    const dir = join(root, '1.2.3');
+    // (a) the record's own containment rule agrees, because both sides resolve through the link;
+    expect(realpathSync(dir).startsWith(realpathSync(root) + sep)).toBe(true);
+    // (b) the executable `defaultLaunch` would spawn is on disk;
+    expect(existsSync(join(dir, 'bin', 'run'))).toBe(true);
+    // (c) and the bytes it would run live OUTSIDE the data dir entirely — so they are not what
+    //     this product installed, and `rm -rf ~/.wigolo` does not remove them.
+    expect(realpathSync(dir).startsWith(realpathSync(dataDir) + sep)).toBe(false);
+    expect(realpathSync(join(dir, 'bin', 'run')).startsWith(attacker + sep)).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-1: the refusal is about the ROOT, not about any link on the way to it', () => {
+    // ANTI-OVERREACH, and the arm that fails a fix written as "refuse if anything in the path is a
+    // link". On macOS the data dir routinely sits under `/var -> /private/var`, so a rule that
+    // walked the ancestors would decline every legitimate record on the platform the desktop
+    // component targets. Only the root ENTRY ITSELF is required to be real.
+    const realBase = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-linked-data-')));
+    const linkedBase = join(dirname(realBase), `${basename(realBase)}-via-link`);
+    symlinkSync(realBase, linkedBase, 'junction');
+    try {
+      expect(realpathSync(linkedBase)).toBe(realBase);
+      mkdirSync(substrateRoot(linkedBase), { recursive: true });
+      // The root is a real directory REACHED THROUGH a link, which is the shape that must keep
+      // working.
+      expect(lstatSync(substrateRoot(linkedBase)).isSymbolicLink()).toBe(false);
+      plantCanonical(substrateRoot(linkedBase));
+      expect(readSubstrateRecord(linkedBase)?.version).toBe('1.2.3');
+    } finally {
+      rmSync(linkedBase, { recursive: true, force: true });
+      rmSync(realBase, { recursive: true, force: true });
+    }
+  });
+
+  it('SEC-2: reads as absent when the path is nested under the root but is not root/<version>', () => {
+    const root = substrateRoot(dataDir);
+    // ⚠ THE LEGITIMATE INSTALL IS PLANTED TOO, AND THAT IS WHAT MAKES THIS ARM SHARP. Without it
+    // `join(root, version)` resolves to nothing and the refusal comes from "the acquirer's path is
+    // not on disk" — a real rule, but the WEAK half: it leaves the arm green against a fix that
+    // dropped the equality entirely. Measured, 2026-08-29: that mutant survived. With a real
+    // `<root>/1.2.3` present, both sides resolve and only `named !== expected` refuses this record.
+    // It is also the realistic shape — an installed component, and a record edited beside it to
+    // name a payload dropped somewhere else under the same root.
+    plantCanonical(root);
+    const nested = join(root, 'tmp', 'deep');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'helper'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '1.2.3', path: nested, executable: 'helper' }));
+
+    // CONTROL: containment is genuinely satisfied — this really is inside the root, so the arm is
+    // not the pre-existing "path escapes the root" rule wearing a new name. What it is not is the
+    // one path the acquirer writes.
+    expect(realpathSync(nested).startsWith(realpathSync(root) + sep)).toBe(true);
+    expect(existsSync(join(nested, 'helper'))).toBe(true);
+    // CONTROL: and the path the acquirer WOULD have written is on disk, so the refusal cannot be
+    // the "expected location is absent" arm.
+    expect(existsSync(join(root, '1.2.3', 'bin', 'run'))).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-2: reads as absent when root/<version> is absent, even though the path it names is real', () => {
+    // The other half of the same rule, kept as its own arm now that the one above deliberately
+    // plants a real `<root>/<version>`: a record naming a location that exists, filed under a
+    // version that was never installed, is still not something the acquirer wrote.
+    const root = substrateRoot(dataDir);
+    const nested = join(root, 'tmp', 'deep');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'helper'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '9.9.9', path: nested, executable: 'helper' }));
+    expect(existsSync(join(root, '9.9.9'))).toBe(false);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-2: reads as absent when the version is not one directory name', () => {
+    // THE ARM THAT MAKES `join(root, version)` A RULE RATHER THAN A COINCIDENCE. Pinning `path` to
+    // `join(root, raw.version)` is only worth anything while `version` is a directory NAME: with
+    // `version: '.'` the join is the root itself, the equality holds, containment holds, and a
+    // payload dropped beside `record.json` reads back as an installed component. That is the same
+    // "not written by the acquirer" class, one level up, and it survives the equality fix alone.
+    const root = substrateRoot(dataDir);
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(join(root, 'bin', 'run'), '#!/bin/sh\n');
+    writeFileSync(join(root, SUBSTRATE_RECORD), JSON.stringify({ version: '.', path: root, executable: 'bin/run' }));
+
+    // CONTROL: the equality this fix is built on is SATISFIED by this shape.
+    expect(realpathSync(root)).toBe(realpathSync(join(root, '.')));
+    expect(existsSync(join(root, 'bin', 'run'))).toBe(true);
+
+    expect(readSubstrateRecord(dataDir)).toBeNull();
+  });
+
+  it('SEC-1: does not INSTALL into a linked root either, rather than acquiring what it then refuses', async () => {
+    // THE WRITE SIDE OF THE SAME RULE, and not the read arm wearing a second hat. `mkdirSync`
+    // succeeds on an existing link and `isInside(destDir, root)` agrees because both sides resolve
+    // through it, so acquisition would report `acquired`, copy the component into a directory
+    // OUTSIDE the data dir, and then read back as absent on every subsequent run — the permanent
+    // acquire/read disagreement this module's version guard exists to prevent.
+    const root = substrateRoot(dataDir);
+    symlinkSync(attacker, root, 'junction');
+    const r = await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(r.outcome).toBe('failed');
+    expect(r.error).toMatch(/symlink/);
+    // And it refused BEFORE copying anything into the attacker's directory.
+    expect(existsSync(join(attacker, '1.2.3'))).toBe(false);
+    expect(readSubstrateRecord(dataDir)).toBeNull();
   });
 });
 

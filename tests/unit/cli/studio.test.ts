@@ -1592,13 +1592,15 @@ function fakeSpawn(calls: SpawnCall[], unrefs?: { count: number }): (c: string, 
 
 /**
  * Plant a valid acquisition record — valid means the executable it names is really on disk AND
- * sits under `substrateRoot()`, which is the only place `acquireSubstrate` ever installs to. This
- * used to plant at `<dataDir>/installed`, a location the acquirer never writes; the containment
- * rule in `readSubstrateRecord` reads such a record as absent, so the fixture would have been
- * pinning `runStudio` against a record the product cannot produce.
+ * sits at `substrateRoot()/<version>`, which is the only place `acquireSubstrate` ever installs
+ * to. This used to plant at `<dataDir>/installed`, a location the acquirer never writes; the
+ * containment rule in `readSubstrateRecord` reads such a record as absent, so the fixture would
+ * have been pinning `runStudio` against a record the product cannot produce. `<root>/installed`
+ * was the same mistake one level in — contained, but still not a path the acquirer writes — and
+ * PX0's SEC-2 made the reader say so.
  */
 function plantRecord(dataDir: string, executable = 'wigolo-studio'): string {
-  const substrateDir = join(dataDir, 'substrate', 'installed');
+  const substrateDir = join(dataDir, 'substrate', '0.1.0');
   mkdirSync(substrateDir, { recursive: true });
   writeFileSync(join(substrateDir, executable), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   mkdirSync(join(dataDir, 'substrate'), { recursive: true });
