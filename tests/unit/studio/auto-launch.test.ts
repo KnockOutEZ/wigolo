@@ -38,7 +38,10 @@ function publishHandle(): void {
  */
 function plantSubstrateRecord(dataDir: string): string {
   const root = join(dataDir, 'substrate');
-  const componentDir = join(root, 'component');
+  // `<root>/<version>` AND NOTHING ELSE — the one location `acquireSubstrate` writes, and since
+  // PX0's SEC-2 the only one `readSubstrateRecord` reads. A fixture planted at `<root>/component`
+  // pinned the launcher against a record the product cannot produce.
+  const componentDir = join(root, '0.0.1');
   mkdirSync(componentDir, { recursive: true });
   const executable = join(componentDir, 'studio-app');
   writeFileSync(executable, '#!/bin/sh\nexit 0\n');
@@ -196,7 +199,9 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
       );
     }
 
-    const componentDir = join(root, 'component');
+    // `<root>/<version>` — see {@link plantSubstrateRecord}. Any other location under the root
+    // reads as absent since PX0's SEC-2, so this helper would plant a record nothing accepts.
+    const componentDir = join(root, '0.0.1');
     mkdirSync(componentDir, { recursive: true });
     writeFileSync(join(componentDir, 'studio-app'), '#!/bin/sh\nexit 0\n');
     writeFileSync(
