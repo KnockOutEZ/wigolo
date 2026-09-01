@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseBrowserTypes } from './fetch/browser-types.js';
 import { PRODUCTION_ACCOUNTS_URL } from './account/constants.js';
+import { TELEMETRY_ENV, TELEMETRY_SETTINGS_KEY, resolveTelemetryEnabled } from './telemetry/off-switch.js';
 import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET } from './studio/origin-budget.js';
 import type { BrowserType } from './types.js';
 import {
@@ -230,6 +231,21 @@ export interface Config {
    * instead of silently reaching whatever a real hostname would answer.
    */
   accountsUrl: string;
+  /**
+   * Usage and reliability telemetry. Opt-OUT as of 0.3.0: the default is on, and
+   * `WIGOLO_TELEMETRY` beats the persisted `telemetryEnabled` key.
+   *
+   * ⚠ RESOLVED BY A DEDICATED PARSER, NOT `envBool`. `envBool` recognises only `false` and
+   * `0`, so `WIGOLO_TELEMETRY=off` — the spelling the docs and the brief both use — would
+   * parse as ON through it. Widening `envBool` would flip every other knob already set to
+   * `off` in the field, so the parser lives in `./telemetry/off-switch.ts` alongside its
+   * measurement. Same reasoning, same shape as `AUTO_LAUNCH_OFF_VALUES`.
+   *
+   * Off here means the telemetry client writes no queue file and opens no connection. It is
+   * additionally inert until the install is activated — that half is state, not config, and
+   * lives in `src/telemetry/`.
+   */
+  telemetryEnabled: boolean;
   /**
    * Opt-in auto-detect ladder for a local language model server. Resolves
    * `WIGOLO_LOCAL_LLM` env > persisted `localLlm` > default:
@@ -833,6 +849,7 @@ export function getConfig(): Config {
     llmCacheTtlDays: envInt('WIGOLO_LLM_CACHE_TTL_DAYS', 7, settings, 'llmCacheTtlDays'),
     llmMaxCallsPerRequest: envInt('WIGOLO_LLM_MAX_CALLS_PER_REQUEST', 1, settings, 'llmMaxCallsPerRequest'),
     accountsUrl: envStr('WIGOLO_ACCOUNTS_URL', PRODUCTION_ACCOUNTS_URL, settings, 'accountsUrl') ?? PRODUCTION_ACCOUNTS_URL,
+    telemetryEnabled: resolveTelemetryEnabled(process.env[TELEMETRY_ENV], settings[TELEMETRY_SETTINGS_KEY]),
     localLlm: (() => {
       const raw = envStr('WIGOLO_LOCAL_LLM', null, settings, 'localLlm');
       if (!raw) return 'off';

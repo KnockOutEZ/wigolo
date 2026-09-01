@@ -21,7 +21,7 @@ import {
   type EngineHealthEntry,
 } from '../search/core/engine-health.js';
 import type { EngineEntry } from '../search/core/engine-base.js';
-import { isTelemetryEnabled } from './telemetry.js';
+import { telemetryStatus } from '../telemetry/index.js';
 import { readPersistedConfig } from '../persisted-config.js';
 import { authenticatedOriginCount } from '../studio/auth-origin-store.js';
 import { readEscalationCounters, formatEscalationCounterLines } from '../studio/escalation-counters.js';
@@ -1312,8 +1312,19 @@ function checkRssFeeds(dataDir: string): void {
 
 function checkTelemetryStatus(): void {
   out('');
-  const state = isTelemetryEnabled() ? 'enabled' : 'disabled';
-  out(`[wigolo doctor] Telemetry: opt-in ${state} (WIGOLO_TELEMETRY=1 to opt in)`);
+  // Opt-OUT as of 0.3.0, and the line distinguishes the two ways it can be off: the switch,
+  // and an install that has no account to report against yet.
+  switch (telemetryStatus()) {
+    case 'enabled':
+      out('[wigolo doctor] Telemetry: opt-out enabled (WIGOLO_TELEMETRY=off to opt out)');
+      break;
+    case 'disabled':
+      out('[wigolo doctor] Telemetry: opt-out disabled (nothing is queued and nothing is sent)');
+      break;
+    case 'not_activated':
+      out('[wigolo doctor] Telemetry: opt-out inactive (no account yet — run `wigolo register`)');
+      break;
+  }
 }
 
 /**

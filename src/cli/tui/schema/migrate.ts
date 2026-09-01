@@ -1,4 +1,5 @@
 import { createLogger } from '../../../logger.js';
+import { parseTelemetryEnv } from '../../../telemetry/off-switch.js';
 
 const log = createLogger('cli');
 
@@ -19,9 +20,28 @@ const PASSTHROUGH_KEYS = new Set<string>([
   'cacheTtlSearch',
 ]);
 
+/**
+ * Value coercions applied AFTER a rename, keyed by the v2 key.
+ *
+ * A rename alone copies the value verbatim, which is wrong for a key whose v1 spelling was a
+ * string and whose v2 type is boolean: a hand-written `WIGOLO_TELEMETRY: "0"` would arrive as
+ * the string `'0'`, `resolveTelemetryEnabled` would ignore it as a non-boolean, and the
+ * install would fall through to the 0.3.0 default — ON — silently reversing the one thing the
+ * user had written down. Coercing through the same off-value parser the env switch uses keeps
+ * an explicit off an explicit off across the version break.
+ */
+const VALUE_COERCIONS: Record<string, (value: unknown) => unknown> = {
+  telemetryEnabled: (value) => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value !== 'string') return value;
+    return parseTelemetryEnv(value) ?? value;
+  },
+};
+
 const RENAMED_KEYS: Record<string, string> = {
   WIGOLO_SEARCH: 'searchBackend',
   WIGOLO_ACCOUNTS_URL: 'accountsUrl',
+  WIGOLO_TELEMETRY: 'telemetryEnabled',
 };
 
 const KNOWN_OUTPUT_KEYS = new Set<string>([
@@ -47,11 +67,13 @@ export function migrateV1ToV2(input: PersistedConfigV1 | PersistedConfigV2): Per
     }
     if (Object.prototype.hasOwnProperty.call(RENAMED_KEYS, key)) {
       const renamed = RENAMED_KEYS[key]!;
-      out[renamed] = value;
+      const coerce = VALUE_COERCIONS[renamed];
+      out[renamed] = coerce === undefined ? value : coerce(value);
       continue;
     }
     if (KNOWN_OUTPUT_KEYS.has(key)) {
-      out[key] = value;
+      const coerce = VALUE_COERCIONS[key];
+      out[key] = coerce === undefined ? value : coerce(value);
       continue;
     }
     legacy[key] = value;
