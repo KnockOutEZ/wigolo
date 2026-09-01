@@ -39,8 +39,14 @@ export const FLUSH_INTERVAL_MS = 15 * 60 * 1000;
  */
 export const MIN_FLUSH_SPACING_MS = 60 * 1000;
 
-/** Used when a 429 arrives without a `retry_after_s`. */
-export const DEFAULT_RETRY_AFTER_S = 60;
+/**
+ * Used when a 429 arrives without a `retry_after_s`.
+ *
+ * Deliberately longer than {@link MIN_FLUSH_SPACING_MS}: a server that rate-limited us
+ * without saying for how long has told us the ordinary cadence is already too fast, so
+ * falling back to exactly that cadence would answer a 429 by doing the same thing again.
+ */
+export const DEFAULT_RETRY_AFTER_S = 300;
 
 /** How long an activation check is trusted before the state file is re-read. */
 export const ACTIVATION_TTL_MS = 60 * 1000;
