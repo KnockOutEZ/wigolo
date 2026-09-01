@@ -363,6 +363,17 @@ function normaliseDomainList(list?: string[] | null): string[] | null {
   return [...new Set(lower)].sort();
 }
 
+/** Normalise a caller-supplied engine list: trim, lowercase, dedupe, sort.
+ * Mirrors the orchestrator's case-insensitive engine matching, so
+ * `['DuckDuckGo']`, `['duckduckgo']`, reordered, or duplicate-name lists —
+ * all of which dispatch the same engine set — produce identical cache keys. */
+export function normaliseEngineList(list?: string[] | null): string[] | null {
+  if (!list || list.length === 0) return null;
+  const lower = list.map((e) => e.toLowerCase().trim()).filter((e) => e.length > 0);
+  if (lower.length === 0) return null;
+  return [...new Set(lower)].sort();
+}
+
 function hasAnyFilter(filters?: SearchCacheFilters): boolean {
   if (!filters) return false;
   return (
@@ -377,7 +388,7 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.exact_match != null ||
     filters.search_depth != null ||
     filters.reranker != null ||
-    (filters.search_engines?.length ?? 0) > 0
+    normaliseEngineList(filters.search_engines) != null
   );
 }
 
@@ -402,9 +413,7 @@ export function buildSearchCacheKey(
     exact_match: filters!.exact_match ?? null,
     search_depth: filters!.search_depth ?? null,
     reranker: filters!.reranker ?? null,
-    search_engines: filters!.search_engines && filters!.search_engines.length > 0
-      ? [...filters!.search_engines].sort()
-      : null,
+    search_engines: normaliseEngineList(filters!.search_engines),
   };
   return `${query} ${JSON.stringify(fingerprint)}`;
 }

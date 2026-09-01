@@ -387,7 +387,20 @@ export async function runV1Search(
   // we don't secretly re-introduce them.
   if (input.engineFilter && input.engineFilter.length > 0) {
     const allowlisted = applyEngineAllowlist(entries, input.engineFilter);
-    entries = allowlisted.length > 0 ? allowlisted : entries;
+    if (allowlisted.length > 0) {
+      entries = allowlisted;
+    } else {
+      // No NON-probe entry matched. Distinguish a caller typo from an explicit
+      // probe-only selection: if the filter names a configured probe-only
+      // engine (e.g. Mojeek with searchMojeekProbeOnly enabled), dispatch those
+      // probe-only engines rather than silently restoring the full primary
+      // roster and dispatching unselected engines. Fall back to the full roster
+      // ONLY when the filter matches no configured engine at all.
+      const probeAllowlisted = applyEngineAllowlist(probeEntries, input.engineFilter);
+      if (probeAllowlisted.length > 0) {
+        entries = probeAllowlisted;
+      }
+    }
   }
 
   const options: SearchEngineOptions = {

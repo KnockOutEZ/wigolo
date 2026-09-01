@@ -103,7 +103,7 @@ function makeMockEngine(cfg: MockEngineConfig): {
 }
 
 function makeEntry(
-  cfg: MockEngineConfig & { weight?: number; supportsDateFilter?: boolean },
+  cfg: MockEngineConfig & { weight?: number; supportsDateFilter?: boolean; probeOnly?: boolean },
 ): { entry: EngineEntry; spy: ReturnType<typeof vi.fn> } {
   const { engine, spy } = makeMockEngine(cfg);
   return {
@@ -111,6 +111,7 @@ function makeEntry(
       engine,
       weight: cfg.weight,
       supportsDateFilter: cfg.supportsDateFilter,
+      probeOnly: cfg.probeOnly,
     },
     spy,
   };
@@ -1447,5 +1448,81 @@ describe('runV1Search — engineFilter (search_engines parameter)', () => {
     await runV1Search({ query: 'test query' });
     expect(bingSpy).toHaveBeenCalledOnce();
     expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('dispatches a configured probe-only engine when it is the only filter match (no full-roster fallback)', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    // Mojeek configured probe-only (searchMojeekProbeOnly enabled): held back
+    // from the primary wave, but an explicit selection must dispatch it — not
+    // be treated as "unknown engine" and restore the whole primary roster.
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, ddg, mojeek];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['mojeek'],
+    });
+    expect(mojeekSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(ddgSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['mojeek']);
+  });
+
+  it('keeps the full-roster fallback when the filter matches no configured engine at all', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, mojeek];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['nonexistent-engine'],
+    });
+    // Unknown name: full primary roster restored (probe-only still held back).
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(mojeekSpy).not.toHaveBeenCalled();
+  });
+
+  it('holds probe-only engines back when the filter also matches a primary engine', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, ddg, mojeek];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['duckduckgo', 'mojeek'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    // Probe-only selection is honoured via its intended wave, not the primary.
+    expect(out.enginesUsed).not.toContain('bing');
   });
 });
