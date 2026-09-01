@@ -38,6 +38,10 @@
     "./studio-mcp-contract": {
       "import": "./dist/contracts/studio-mcp/index.js",
       "types": "./dist/contracts/studio-mcp/index.d.ts"
+    },
+    "./account": {
+      "import": "./dist/account/index.js",
+      "types": "./dist/account/index.d.ts"
     }
   },
   "types": "dist/types.d.ts",
