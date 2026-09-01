@@ -28,6 +28,7 @@ import { policyForHolder, type NavGrant } from './nav-policy.js';
 import type { ControlParty } from './control-token.js';
 import type { AgentInputEvent } from './input-events.js';
 import { isResolveError, type ResolveResult, type ResolveErrorReason } from './perception/resolve.js';
+import { PAGE_CHANGED_BY_HUMAN, type HeldSnapshotRead } from './perception/held-snapshot.js';
 import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
@@ -112,6 +113,14 @@ export interface ActHandlerDeps {
    * rejected by design (P1: risky verbs take the non-blocking park path, NOT
    * `SessionApprovals.request()`). Re-adding a request seam here means wiring it end-to-end.
    */
+  /**
+   * §7 row 1: the session's held page snapshot, consulted through its ONE read seam. A `ref` is an
+   * address INTO the snapshot the agent read, so once a human has edited that page the address no
+   * longer means what the agent was told — §5: "the stale snapshot's marks are refused as act
+   * targets until a re-read". Absent (every pre-SD2 host and the unit tests of the safe paths) ⇒
+   * nothing is ever stale here and the act path behaves exactly as it did.
+   */
+  held?: { read(): HeldSnapshotRead };
   /** Phase 6c: the live page URL (host-observed) — the HARD signal the risk classifier weights over the page-controlled element role/name. */
   currentUrl?: () => string | undefined;
   /** Phase 6c: override the classifier's pattern set (configurable gate policy). Defaults to the built-in set. */
@@ -249,7 +258,7 @@ function auditOutcome(result: StudioActOutput | StudioToolError): AuditOutcome {
 export function createActHandler(
   deps: ActHandlerDeps,
 ): (input: StudioActInput) => Promise<StudioActOutput | StudioToolError> {
-  const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park, flow } = deps;
+  const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park, flow, held } = deps;
 
   const refused = (currentEpoch: number): StudioToolError => ({ error_reason: 'not_holder', hint: HOLD_HINT, currentEpoch });
   const standDown = (charsLanded?: number): StudioToolError => ({
@@ -360,6 +369,14 @@ export function createActHandler(
     const gateEpoch = controlToken.epoch;
     const ref = typeof input.ref === 'string' ? input.ref : '';
     if (!ref) return { error_reason: 'missing_ref', hint: `${input.action} requires the \`ref\` of an element from studio_observe.` };
+    // §7 row 1, read at the holder's single seam — the same verdict studio_observe reads, so the
+    // two surfaces cannot disagree about whether the page is the one the agent knows. The resolver
+    // below would happily find a LIVE element for this ref; that is the point of refusing here,
+    // because the agent chose the ref from a page a human has since changed.
+    const staleness = held?.read();
+    if (staleness?.state === 'invalidated') {
+      return { error_reason: 'page_changed_by_human', hint: `${PAGE_CHANGED_BY_HUMAN}: studio_observe for a fresh snapshot, then choose the ref again.` };
+    }
     const resolved = await resolve(ref); // LIVE — fresh snapshot, occlusion hit-test, never cached coords
     if (isResolveError(resolved)) return mapResolveError(resolved.error);
     // S13-0: seed the flow sidecar HERE — the element is live at this instant and may be gone after
