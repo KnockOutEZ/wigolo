@@ -77,6 +77,7 @@ import { ToolRegistry } from './server/tool-registry.js';
 // through the proxy + the (host-injected) studioHost closure — no session-module import,
 // so the stdio path stays untouched (grep invariant).
 import { proxyToStudioHost, type StudioHostHandlers } from './daemon/studio-dispatch.js';
+import { attachCapabilityHandshake, withClientProfile } from './daemon/capability-handshake.js';
 // Core hosts the studio surface but does not enumerate it: this is the ONE reference, an injection
 // point rather than a list. When Studio moves to its own repo, this line moves with it.
 import { createStudioToolProvider } from './studio/tool-provider.js';
@@ -398,6 +399,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
       instructions: WIGOLO_INSTRUCTIONS,
     },
   );
+
+  // SD2 §2. The client badge maps to a capability set and a phrasing key at `initialize`, and the
+  // profile is scoped over the whole dispatch below so a result-phrasing site can read it.
+  const clientProfile = attachCapabilityHandshake(server);
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
@@ -725,7 +730,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
     // recordToolCall swallows DB errors, so an audit write can never corrupt or fail the result.
     // studio_* calls are EXCLUDED — they carry the richer per-session studio_audit.
     const auditStartedAt = Date.now();
-    const result = await dispatch();
+    const result = await withClientProfile(clientProfile(), dispatch);
     if (!name.startsWith('studio_')) {
       recordToolCall(subsystems.toolAuditDb, {
         tool: name,

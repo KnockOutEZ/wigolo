@@ -126,6 +126,43 @@ export function hasCapability(profile: ClientProfile, capability: Capability): b
   return profile.capabilities.includes(capability);
 }
 
+/**
+ * The slice of an MCP `Server` the handshake needs. Structural rather than the SDK type so this
+ * module stays import-free and the Electron-hosted gateway can load it (see the file header).
+ */
+export interface HandshakeConnection {
+  oninitialized?: () => void;
+  getClientVersion(): unknown;
+}
+
+/**
+ * Keyed by the connection object, which is one `Server` per transport session, so the entry dies
+ * with the session and nothing has to remember to evict it.
+ */
+const profiles = new WeakMap<object, ClientProfile>();
+
+/**
+ * Resolves the profile when `initialize` completes and stores it on the connection.
+ *
+ * `oninitialized` rather than a per-call read because the badge is fixed for the life of the
+ * session: resolving it once means the mapping table is consulted once, and means a call that
+ * somehow arrives mid-handshake cannot see a half-resolved profile. Any handler already installed
+ * is preserved — this is a hook, not an owner of the slot.
+ */
+export function attachCapabilityHandshake(connection: HandshakeConnection): () => ClientProfile {
+  const prior = connection.oninitialized;
+  connection.oninitialized = () => {
+    profiles.set(connection, profileClient(connection.getClientVersion()));
+    prior?.();
+  };
+  return () => connectionProfile(connection);
+}
+
+/** The safe default until `initialize` lands, and for any object that never handshook at all. */
+export function connectionProfile(connection: object): ClientProfile {
+  return profiles.get(connection) ?? UNKNOWN_CLIENT_PROFILE;
+}
+
 const ambient = new AsyncLocalStorage<ClientProfile>();
 
 /**
