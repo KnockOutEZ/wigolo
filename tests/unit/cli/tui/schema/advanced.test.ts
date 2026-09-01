@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { advancedCategory } from '../../../../../src/cli/tui/schema/advanced.js';
 
 describe('advancedCategory', () => {
-  it('has id advanced and eight fields (incl. opt-in escape-hatch URLs)', () => {
+  it('has id advanced and nine fields (incl. opt-in escape-hatch URLs + accounts service)', () => {
     expect(advancedCategory.id).toBe('advanced');
-    expect(advancedCategory.fields.length).toBe(8);
+    expect(advancedCategory.fields.length).toBe(9);
     const keys = advancedCategory.fields.map((f) => f.key);
     expect(keys).toEqual([
       'WIGOLO_LOG_LEVEL',
@@ -14,6 +14,7 @@ describe('advancedCategory', () => {
       'WIGOLO_HOSTED_READER_URL',
       'USER_AGENT',
       'WIGOLO_DAEMON_PORT',
+      'WIGOLO_ACCOUNTS_URL',
       'WIGOLO_DAEMON_HOST',
     ]);
   });
@@ -63,6 +64,16 @@ describe('advancedCategory', () => {
     const f = advancedCategory.fields.find((x) => x.key === 'WIGOLO_DAEMON_HOST');
     expect(f?.kind).toBe('text');
     expect(f?.default).toBe('127.0.0.1');
+  });
+
+  it('WIGOLO_ACCOUNTS_URL is an optional text field mapped to accountsUrl', () => {
+    const f = advancedCategory.fields.find((x) => x.key === 'WIGOLO_ACCOUNTS_URL');
+    expect(f?.kind).toBe('text');
+    expect(f?.settingsPath).toBe('accountsUrl');
+    expect(f?.help).toBeTruthy();
+    // No `default`: the shipped fallback lives in PRODUCTION_ACCOUNTS_URL, and
+    // repeating a sentinel hostname in the picker would invite someone to save it.
+    expect(f?.default).toBeUndefined();
   });
 
   it('every field has settingsPath + label', () => {

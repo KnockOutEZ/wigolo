@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseBrowserTypes } from './fetch/browser-types.js';
+import { PRODUCTION_ACCOUNTS_URL } from './account/constants.js';
 import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET } from './studio/origin-budget.js';
 import type { BrowserType } from './types.js';
 import {
@@ -220,6 +221,15 @@ export interface Config {
   llmBaseUrl: string | null;
   llmCacheTtlDays: number;
   llmMaxCallsPerRequest: number;
+  /**
+   * Base URL of the accounts service (registration, entitlements, telemetry).
+   *
+   * Defaults to `PRODUCTION_ACCOUNTS_URL`, a deliberately non-resolving RFC 2606
+   * sentinel until the publish issue flips it — so a test that forgets to point
+   * `WIGOLO_ACCOUNTS_URL` at a locally-run instance trips the suite's net fence
+   * instead of silently reaching whatever a real hostname would answer.
+   */
+  accountsUrl: string;
   /**
    * Opt-in auto-detect ladder for a local language model server. Resolves
    * `WIGOLO_LOCAL_LLM` env > persisted `localLlm` > default:
@@ -822,6 +832,7 @@ export function getConfig(): Config {
     llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),
     llmCacheTtlDays: envInt('WIGOLO_LLM_CACHE_TTL_DAYS', 7, settings, 'llmCacheTtlDays'),
     llmMaxCallsPerRequest: envInt('WIGOLO_LLM_MAX_CALLS_PER_REQUEST', 1, settings, 'llmMaxCallsPerRequest'),
+    accountsUrl: envStr('WIGOLO_ACCOUNTS_URL', PRODUCTION_ACCOUNTS_URL, settings, 'accountsUrl') ?? PRODUCTION_ACCOUNTS_URL,
     localLlm: (() => {
       const raw = envStr('WIGOLO_LOCAL_LLM', null, settings, 'localLlm');
       if (!raw) return 'off';

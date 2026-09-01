@@ -21,6 +21,7 @@ const PASSTHROUGH_KEYS = new Set<string>([
 
 const RENAMED_KEYS: Record<string, string> = {
   WIGOLO_SEARCH: 'searchBackend',
+  WIGOLO_ACCOUNTS_URL: 'accountsUrl',
 };
 
 const KNOWN_OUTPUT_KEYS = new Set<string>([
