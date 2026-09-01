@@ -112,9 +112,10 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
     // event, which is what this queue is for, so it inherits the cursor-ack discipline rather than
     // needing its own: a lost observe response replays it, and an overflow that dropped it would
     // also raise `eventsDropped`, which already forces a full resync. `takeAnnouncement` hands it
-    // over once per invalidation, so a spill fetch or a credential short-circuit returning before
-    // the drain parks the notice in the queue rather than re-minting it next turn. It carries the
-    // invalidation's SHAPE and none of the human's content — the fresh snapshot below carries that.
+    // over once per invalidation, so the credential short-circuit below — which returns before the
+    // drain, deliberately without advancing the cursor — parks the notice in the queue rather than
+    // re-minting it next turn. (A spill fetch never gets here at all: it is not a page read.) It
+    // carries the invalidation's SHAPE and none of the human's content — the fresh snapshot does that.
     const announce = held.takeAnnouncement();
     if (announce) {
       deps.eventQueue.enqueue({ type: 'page_changed', by: announce.by, cause: announce.cause, notice: PAGE_CHANGED_BY_HUMAN });
