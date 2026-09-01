@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createObserver } from '../../../src/studio/observe.js';
 import { StudioEventQueue } from '../../../src/studio/event-queue.js';
+import { HeldSnapshot } from '../../../src/studio/perception/held-snapshot.js';
 import { writeSpill, enforceSpillBudget } from '../../../src/studio/perception/spill.js';
 import { buildSnapshot, type PageSnapshot, type SnapshotElement, type AxNode, type DomNode } from '../../../src/studio/perception/snapshot.js';
 import type { StudioObserveOutput, StudioToolError } from '../../../src/daemon/studio-dispatch.js';
@@ -381,5 +382,127 @@ describe('createObserver — D8b structural marker-neutralization on page-derive
     const r = ok(await observer(async () => mkSnap('s1', [el('e1', 'Add to cart')]), new StudioEventQueue(100))({}));
     // MUTATION (blanket-escape normal text) → 'Add to cart' would diverge → RED.
     expect((r.elements as SnapshotElement[])[0].name).toBe('Add to cart'); // untouched (targeted neutralization only)
+  });
+});
+
+describe('§7 row 1 — a human page edit invalidates the held snapshot and is announced', () => {
+  const pageChanged = (r: StudioObserveOutput) => r.events.find((e) => e.type === 'page_changed');
+
+  it('the next observe announces the change verbatim and returns a FRESH full snapshot', async () => {
+    // The demo contract: agent snapshots → human types → the next call says so → the re-read
+    // carries the human's text. MUT: drop the page_changed synthesis in observe.ts → RED.
+    const held = new HeldSnapshot();
+    let live = mkSnap('s1', [el('e1', 'Search')]);
+    const obs = createObserver({
+      snapshot: async () => live, eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    const first = ok(await obs({}));
+    expect(first.kind).toBe('full');
+    expect(pageChanged(first)).toBeUndefined();
+
+    held.humanEdit('key'); // the human types into the page
+    live = mkSnap('s2', [el('e1', 'Search'), el('e2', 'hello from the human')]);
+
+    const next = ok(await obs({ base_id: 's1' }));
+    expect(pageChanged(next)).toEqual({
+      seq: expect.any(Number), type: 'page_changed', by: 'human', cause: 'input',
+      notice: 'page changed by human — re-read',
+    });
+    expect(next.kind).toBe('full'); // never a delta against a base the human has edited
+    expect(next.id).toBe('s2');
+    expect(JSON.stringify(next.elements)).toContain('hello from the human');
+  });
+
+  it('the stale base is UNREACHABLE — the diff cannot be taken against it', async () => {
+    // Structural, not a rule: with the base invalidated resolveObserve gets null, so there is no
+    // code path that emits a delta computed from the page as it was before the human touched it.
+    const held = new HeldSnapshot();
+    let live = mkSnap('s1', [el('e1', 'A')]);
+    const obs = createObserver({
+      snapshot: async () => live, eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    await obs({});
+    held.humanEdit('form_change');
+    live = mkSnap('s2', [el('e1', 'A'), el('e2', 'B')]);
+    const r = ok(await obs({ base_id: 's1' }));
+    expect(r.kind).toBe('full');
+    expect(r.diff).toBeUndefined();
+  });
+
+  it('the announcement clears once the agent has re-read AND acked', async () => {
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    let since = ok(await obs({})).eventCursor;
+    held.humanEdit('paste');
+    const announced = ok(await obs({ since }));
+    expect(pageChanged(announced)).toBeDefined();
+    since = announced.eventCursor;
+    expect(pageChanged(ok(await obs({ since })))).toBeUndefined(); // the re-read satisfied "re-read"
+    expect(pageChanged(ok(await obs({ since: ok(await obs({ since })).eventCursor })))).toBeUndefined();
+  });
+
+  it('an UNACKED announcement replays — a lost observe response never swallows it', async () => {
+    // The notice rides the studio event queue precisely so it inherits exactly-once delivery: the
+    // one signal whose job is to stop the agent acting on a page it no longer knows must not be
+    // lost to a dropped response. MUT: mint the notice with a seq the cursor already covers → the
+    // agent's own `since` filter drops it and this goes RED.
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    const since = ok(await obs({})).eventCursor;
+    held.humanEdit('key');
+    expect(pageChanged(ok(await obs({ since })))).toBeDefined();
+    expect(pageChanged(ok(await obs({ since })))).toBeDefined(); // same cursor: the response was lost
+  });
+
+  it('the notice is minted once per invalidation, not once per call that sees it', async () => {
+    const q = new StudioEventQueue(100);
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: q, held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    const since = ok(await obs({})).eventCursor;
+    held.humanEdit('key');
+    const r = ok(await obs({ since }));
+    expect(r.events.filter((e) => e.type === 'page_changed')).toHaveLength(1);
+  });
+
+  it('a human NAVIGATION is announced with its own cause', async () => {
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    await obs({});
+    held.humanEdit('navigation');
+    expect(pageChanged(ok(await obs({})))).toMatchObject({ cause: 'navigation' });
+  });
+
+  it('an undisturbed page never announces a page change', async () => {
+    // The §4.6 context economy: a permanent "no page change" line would spend the agent's
+    // budget on noise, so the absence of the event IS the "no".
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    for (let i = 0; i < 3; i++) expect(pageChanged(ok(await obs({ base_id: 's1' })))).toBeUndefined();
+  });
+
+  it('a host that wires no holder still cannot serve a stale base (the observer keeps its own)', async () => {
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100),
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    expect(ok(await obs({})).kind).toBe('full');
+    expect(ok(await obs({ base_id: 's1' })).kind).toBe('diff'); // the pre-existing diff behaviour is unchanged
   });
 });

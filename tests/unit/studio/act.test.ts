@@ -4,6 +4,7 @@ import type { NavGrant } from '../../../src/studio/nav-policy.js';
 import type { ControlParty } from '../../../src/studio/control-token.js';
 import type { AgentInputEvent } from '../../../src/studio/input-events.js';
 import { createResolver, type ResolveResult } from '../../../src/studio/perception/resolve.js';
+import { HeldSnapshot } from '../../../src/studio/perception/held-snapshot.js';
 import { buildSnapshot, type AxNode, type DomNode, type PerceptionCdp } from '../../../src/studio/perception/snapshot.js';
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
@@ -875,5 +876,90 @@ describe('createActHandler — co-drive announce (P4 ghost cursor + narration)',
     for (const a of ch.announces) {
       for (const k of Object.keys(a)) expect(allowed.has(k), `announce key '${k}' must not carry page-derived content`).toBe(true);
     }
+  });
+});
+
+describe('§7 row 1 — a ref minted from a human-edited snapshot is refused as an act target', () => {
+  const heldWith = () => {
+    const held = new HeldSnapshot();
+    held.hold({
+      id: 's1', elements: [{ ref: 'e1', role: 'button', name: 'Pay' }], tokenCount: 1,
+      overBudget: false, domTruncated: false, refMap: new Map([['e1', 9]]), groupByRef: new Map(), domParent: new Map(),
+    });
+    return held;
+  };
+  const landed = fixedResolve({ backendNodeId: 9, center: { x: 5, y: 6 } } as ResolveResult);
+
+  it('the act result carries §7 row 1 verbatim, and does NOT dispatch', async () => {
+    // The agent holds `e1` from a snapshot the human has since typed into: acting on it would act
+    // on an address that no longer means what the agent read. MUT: drop the held check in
+    // gateAndResolve → the click dispatches and this goes RED on both arms.
+    const held = heldWith();
+    held.humanEdit('key');
+    const rec = recordingChannel();
+    const act = createActHandler({
+      ...base, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]),
+      grant: denyGrant, resolve: landed, channel: rec.channel, held,
+    });
+    const e = asErr(await act({ action: 'click', ref: 'e1' }));
+    expect(e.error_reason).toBe('page_changed_by_human');
+    expect(e.hint).toContain('page changed by human — re-read');
+    expect(rec.calls).toEqual([]);
+  });
+
+  it('EVERY ref-taking action is refused, not just the click that reveals it', async () => {
+    for (const action of ['click', 'type'] as const) {
+      const held = heldWith();
+      held.humanEdit('paste');
+      const rec = recordingChannel();
+      const act = createActHandler({
+        ...base, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]),
+        grant: denyGrant, resolve: landed, channel: rec.channel, held,
+      });
+      expect(asErr(await act({ action, ref: 'e1', text: 'x' })).error_reason, action).toBe('page_changed_by_human');
+      expect(rec.calls, action).toEqual([]);
+    }
+  });
+
+  it('the ref-LESS actions are untouched — a mark is what goes stale, not the viewport', async () => {
+    // scroll aims at the viewport centre and navigate takes a URL: neither addresses an element the
+    // agent read, so refusing them would block progress without protecting anything. Pinning this
+    // keeps the refusal narrow to §5's claim ("the stale snapshot's MARKS are refused").
+    const held = heldWith();
+    held.humanEdit('key');
+    const rec = recordingChannel();
+    const act = createActHandler({
+      ...base, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]),
+      grant: allowGrant, resolve: landed, channel: rec.channel, held,
+    });
+    expect(isStudioToolError(await act({ action: 'scroll', direction: 'down' }))).toBe(false);
+    expect(isStudioToolError(await act({ action: 'navigate', url: 'https://example.com/' }))).toBe(false);
+  });
+
+  it('a live snapshot, or no holder at all, acts exactly as before', async () => {
+    for (const held of [heldWith(), undefined]) {
+      const rec = recordingChannel();
+      const act = createActHandler({
+        ...base, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]),
+        grant: denyGrant, resolve: landed, channel: rec.channel, held,
+      });
+      expect(isStudioToolError(await act({ action: 'click', ref: 'e1' }))).toBe(false);
+      expect(rec.calls.length).toBe(1);
+    }
+  });
+
+  it('the refusal is audited as a refusal, so the run log shows why the act did not run', async () => {
+    const db = migratedDb();
+    const audit = new SessionAuditLog({ db, sessionId: 'sess-page-changed' });
+    const held = heldWith();
+    held.humanEdit('form_change');
+    const act = createActHandler({
+      ...base, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]),
+      grant: denyGrant, resolve: landed, channel: recordingChannel().channel, held, audit,
+    });
+    await act({ action: 'click', ref: 'e1' });
+    const rows = audit.entries();
+    expect(rows.at(-1)).toMatchObject({ outcome: { ok: false, error_reason: 'page_changed_by_human' } });
+    db.close();
   });
 });
