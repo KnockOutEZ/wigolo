@@ -1,6 +1,7 @@
 import { createLogger } from '../logger.js';
 import type { ControlToken, ControlParty } from './control-token.js';
 import type { KeyInput, AgentMouseInput, AgentInputEvent } from './input-events.js';
+import type { SnapshotInvalidation } from './perception/held-snapshot.js';
 
 /**
  * Couples the control token to the input channel for one session: gates every
@@ -28,11 +29,24 @@ export interface ControlMessage {
   to?: ControlParty;
 }
 
+/**
+ * What this controller needs of the session's held page snapshot (§7 row 1) — narrowed to the one
+ * wire-facing method so the controller can never read, and so never leak, a snapshot.
+ */
+export interface HumanEditSink {
+  humanEditFromWire(kind: unknown): SnapshotInvalidation | null;
+}
+
 export class SessionController {
   constructor(
     private readonly token: ControlToken,
     private readonly input: InputSink,
     private readonly broadcast: (msg: Record<string, unknown>) => void,
+    /**
+     * The session's held snapshot, when the host perceives one. Optional because a headless
+     * daemon-side host that never observes has nothing to invalidate.
+     */
+    private readonly heldSnapshot?: HumanEditSink,
   ) {
     // Every flip: release the outgoing holder's held buttons/keys and push the
     // authoritative {holder, epoch} so clients drop stale input. The neutralize
@@ -92,6 +106,22 @@ export class SessionController {
     }
     await Promise.all(pending);
     return true;
+  }
+
+  /**
+   * A page-mutating HUMAN input landed on this session's tab — the §7 row 1 trigger, and the
+   * counterpart of `dispatchAgentUnit` above. The app's input sink calls this for the human half of
+   * the same channel the agent's units ride; human navigation reports itself here too.
+   *
+   * THIS METHOD IS THE ATTRIBUTION. Agent input is only deliverable through `dispatchAgentUnit`,
+   * which has no path to the held snapshot, so an agent act cannot reach the trigger even by
+   * accident — no diffing, no heuristic that could misfile whose keystroke it was (§5, A-51-8).
+   *
+   * `kind` is untrusted (it crosses IPC from the app): an unrecognised or non-page-mutating shape
+   * is ignored. Returns whether a live snapshot was actually invalidated.
+   */
+  humanInput(kind: unknown): boolean {
+    return (this.heldSnapshot?.humanEditFromWire(kind) ?? null) !== null;
   }
 
   /** The page-CSS-px viewport centre where an agent scroll aims its wheel. */

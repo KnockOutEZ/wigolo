@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ControlToken } from '../../../src/studio/control-token.js';
 import { SessionController } from '../../../src/studio/session-control.js';
+import { HeldSnapshot, HUMAN_EDIT_KINDS } from '../../../src/studio/perception/held-snapshot.js';
+import type { AgentInputEvent } from '../../../src/studio/input-events.js';
 
 function makeFakeInput() {
   const calls = { key: 0, neutralize: 0, agentMouseAt: 0 };
@@ -122,5 +124,67 @@ describe('SessionController — agent input dispatch (2J.2, the abort layer)', (
     const f = makeFakeInput();
     const ctl = new SessionController(token, f.input, () => {});
     expect(ctl.viewportCenter()).toEqual({ x: 50, y: 60 });
+  });
+});
+
+describe('SessionController — human vs agent input attribution (§7 row 1)', () => {
+  const makeHeld = () => {
+    const held = new HeldSnapshot();
+    held.hold({
+      id: 's1', elements: [{ ref: 'e1', role: 'textbox', name: 'Search' }], tokenCount: 1,
+      overBudget: false, domTruncated: false, refMap: new Map(), groupByRef: new Map(), domParent: new Map(),
+    });
+    return held;
+  };
+
+  it('a human edit on the session invalidates the held snapshot', () => {
+    const held = makeHeld();
+    const ctl = new SessionController(new ControlToken(), makeFakeInput().input, () => {}, held);
+    expect(ctl.humanInput('key')).toBe(true);
+    expect(held.read().state).toBe('invalidated');
+  });
+
+  it('EVERY §5 human shape reaches the holder through this seam', () => {
+    for (const kind of HUMAN_EDIT_KINDS) {
+      const held = makeHeld();
+      const ctl = new SessionController(new ControlToken(), makeFakeInput().input, () => {}, held);
+      expect(ctl.humanInput(kind), kind).toBe(true);
+    }
+  });
+
+  it('an unrecognised wire shape is ignored rather than guessed at', () => {
+    const held = makeHeld();
+    const ctl = new SessionController(new ControlToken(), makeFakeInput().input, () => {}, held);
+    for (const junk of ['scroll', 'mouse_move', '', 42, null, { kind: 'key' }]) {
+      expect(ctl.humanInput(junk)).toBe(false);
+    }
+    expect(held.read().state).toBe('live');
+  });
+
+  it('the agent driving its OWN input units never trips the trigger', async () => {
+    // The attribution IS the two methods: agent input is only deliverable through
+    // dispatchAgentUnit, which has no path to the holder. Every agent unit shape — the click
+    // pair, a modifier-wrapped keystroke run, a wheel — must leave the snapshot live.
+    // MUT: call `held.humanEdit('key')` from dispatchAgentUnit → every arm below goes RED.
+    const held = makeHeld();
+    const token = new ControlToken();
+    const ctl = new SessionController(token, makeFakeInput().input, () => {}, held);
+    token.grant('agent');
+    const epoch = token.epoch;
+    const units: AgentInputEvent[][] = [
+      [{ kind: 'mouse', type: 'mousePressed', x: 1, y: 2, button: 'left', clickCount: 1 },
+       { kind: 'mouse', type: 'mouseReleased', x: 1, y: 2, button: 'left', clickCount: 1 }],
+      [{ kind: 'key', type: 'keyDown', key: 'h', code: 'KeyH' }, { kind: 'key', type: 'char', key: 'h', text: 'h' }, { kind: 'key', type: 'keyUp', key: 'h', code: 'KeyH' }],
+      [{ kind: 'mouse', type: 'mouseWheel', x: 1, y: 2, deltaX: 0, deltaY: 120 }],
+    ];
+    for (const unit of units) {
+      expect(await ctl.dispatchAgentUnit(epoch, unit)).toBe(true);
+      expect(held.read().state, JSON.stringify(unit[0])).toBe('live');
+    }
+  });
+
+  it('without a holder the seam is inert (a headless host that perceives nothing)', () => {
+    const ctl = new SessionController(new ControlToken(), makeFakeInput().input, () => {});
+    expect(ctl.humanInput('key')).toBe(false);
   });
 });
