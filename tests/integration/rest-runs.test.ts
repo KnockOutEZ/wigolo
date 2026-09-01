@@ -220,7 +220,7 @@ afterAll(async () => {
 }, 30000);
 
 describe('REST /v1/runs — create, list, fetch', () => {
-  it('POST creates a run that GET can see immediately, with seq 1 already written', async () => {
+  it('POST creates a run that GET can see immediately, with the birth event already written', async () => {
     const r = await post('/v1/runs', { task: 'compare two monitors', driver: { kind: 'api', client: { name: 'curl-demo', version: '1.0' } } });
     expect(r.status).toBe(201);
     const created = (r.body as { ok: boolean; run: Record<string, unknown> }).run;
@@ -228,7 +228,8 @@ describe('REST /v1/runs — create, list, fetch', () => {
     // Headless is the default, not a mode (law 2), and the birth event is already durable.
     expect(created.visibility).toBe('hidden');
     expect(created.status).toBe('running');
-    expect(created.lastSeq).toBe(1);
+    // seq 1 is the birth event; seq 2 is the SD2 §2 attach, because naming a client IS attaching.
+    expect(created.lastSeq).toBe(2);
     expect(created.driver).toEqual({ kind: 'api', client: { name: 'curl-demo', version: '1.0' } });
 
     const fetched = await request({ path: `/v1/runs/${created.id as string}` });
@@ -419,6 +420,39 @@ describe('REST /v1/runs — create, list, fetch', () => {
 });
 
 describe('SSE /v1/runs/:id/events — replay, live tail, gapless reconnect', () => {
+  /**
+   * SD2 §2's acceptance in one wire assertion: a watcher on the run's stream is told which client
+   * attached and what it could do, without asking anything else. Two harnesses are created — one
+   * the table maps, one nobody has ever heard of — and the frames prove the unmapped one is served
+   * exactly as fully, at the safe default. That is law 5 on the wire: the capability sets match and
+   * only the phrasing key, which buys nothing but wording, differs.
+   */
+  it('carries `client.attached` with the capability profile, identically for an unmapped harness', async () => {
+    const mapped = await post('/v1/runs', { task: 'mapped harness', driver: { kind: 'cli', client: { name: 'claude-code', version: '1.2.3' } } });
+    const fabricated = await post('/v1/runs', { task: 'unheard-of harness', driver: { kind: 'cli', client: { name: 'foo-agent', version: '0.3' } } });
+    const idOf = (r: typeof mapped) => (r.body as { run: { id: string } }).run.id;
+
+    const read = async (id: string) => {
+      const c = new SseClient();
+      await c.open(`/v1/runs/${id}/events`);
+      await c.waitForFrames(2);
+      c.kill();
+      return c;
+    };
+    const a = await read(idOf(mapped));
+    const b = await read(idOf(fabricated));
+
+    for (const c of [a, b]) {
+      expect(c.frames.map((f) => f.event)).toEqual(['run.created', 'client.attached']);
+      expect(c.seqs()).toEqual([1, 2]);
+    }
+
+    const payload = (c: typeof a) => (JSON.parse(c.frames[1].data!) as { payload: Record<string, unknown> }).payload;
+    expect(payload(a)).toEqual({ tier: 'detected', phrasing: 'mcp-tools', capabilities: [], client: { name: 'claude-code', version: '1.2.3' } });
+    expect(payload(b)).toEqual({ tier: 'detected', phrasing: 'generic', capabilities: [], client: { name: 'foo-agent', version: '0.3' } });
+    expect(payload(b).capabilities).toEqual(payload(a).capabilities);
+  }, 20000);
+
   it('replays the whole log in order, then delivers live events on the same stream', async () => {
     const id = await createRun('replay then live');
     appendRunEventWithTail(db, id, { actor: { kind: 'agent', driver: 'cli' }, type: 'tab.attached', payload: { tabId: 't1' } });
