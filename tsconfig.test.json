@@ -11,6 +11,7 @@
     "tests/unit/studio/nav.test.ts",
     "tests/unit/studio/nav-policy.test.ts",
     "tests/unit/studio/act.test.ts",
+    "tests/unit/studio/error-reason-contract.test.ts",
     "tests/unit/studio/flow/record.test.ts",
     "tests/unit/studio/flow/record-broker.test.ts",
     "tests/unit/studio/flow/run.test.ts",
