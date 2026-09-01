@@ -184,7 +184,7 @@ describe('§7 row 1 — a human page edit, end to end', () => {
     const act = createActHandler({
       browser: { navigate: async () => {} },
       controlToken: { holder: 'agent', epoch: 1, assertCanDrive: () => ({ ok: true }) },
-      grant: { allowPrivate: false } as never,
+      grant: { humanAllowPrivate: false, agentAllowPrivate: false },
       resolve: async () => ({ backendNodeId: 11, center: { x: 4, y: 5 } }),
       channel: { dispatchAgentUnit: async () => { dispatched.push('unit'); return true; }, viewportCenter: () => ({ x: 0, y: 0 }) },
       held,
