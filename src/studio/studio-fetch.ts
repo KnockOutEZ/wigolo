@@ -27,8 +27,11 @@ import { classifyChallenge } from '../fetch/challenge-classify.js';
 /**
  * The capability NAME on the gateway transport. Shared by the host seam and the core-side client so the
  * two can never drift into a silent 404 (the trap CLAUDE.md records for the studio dispatch name-guards).
+ *
+ * The literal now lives in the companion contract, which both sides of the split import; this is a
+ * re-export so today's callers are untouched and no second copy of the string exists in `src/`.
  */
-export const STUDIO_FETCH_CAPABILITY = 'studio_fetch';
+export { STUDIO_FETCH_CAPABILITY } from '../companion-contract/escalation.js';
 
 export interface StudioFetchInput {
   url: string;

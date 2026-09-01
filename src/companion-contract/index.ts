@@ -14,3 +14,54 @@ export type {
   HandshakeRefusal,
   HandshakeResult,
 } from './handshake.js';
+export {
+  ESCALATION_DECLINE_REASONS,
+  STUDIO_FETCH_CAPABILITY,
+  isEscalationDecline,
+  isEscalationServed,
+} from './escalation.js';
+export type {
+  EscalationDecline,
+  EscalationDeclineReason,
+  EscalationRequest,
+  EscalationResponse,
+  EscalationServed,
+} from './escalation.js';
+export {
+  SESSION_TARGET_OPS,
+  SESSION_TARGET_REFUSAL_REASONS,
+  isSessionTargetRefusal,
+  isSessionTargeted,
+} from './session-target.js';
+export type {
+  SessionTargetOp,
+  SessionTargetRefusal,
+  SessionTargetRefusalReason,
+  SessionTargetRequest,
+  SessionTargetResult,
+} from './session-target.js';
+export {
+  BROKER_REFUSAL_REASONS,
+  BROKER_REVOCATION_REASONS,
+  BROKER_TABLES,
+  BROKER_WRITE_KINDS,
+  grantCovers,
+  isBrokerRefusal,
+} from './broker.js';
+export type {
+  BrokerAccess,
+  BrokerCell,
+  BrokerGrant,
+  BrokerMode,
+  BrokerOp,
+  BrokerReadOp,
+  BrokerRefusal,
+  BrokerRefusalReason,
+  BrokerResult,
+  BrokerRevocation,
+  BrokerRevocationReason,
+  BrokerRow,
+  BrokerTable,
+  BrokerWriteKind,
+  BrokerWriteOp,
+} from './broker.js';
