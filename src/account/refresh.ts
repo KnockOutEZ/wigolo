@@ -155,3 +155,33 @@ export async function maybeRefresh(opts: MaybeRefreshOpts): Promise<RefreshOutco
   store.write({ entitlement_token: ent.data.token, last_refresh_at: new Date(now()).toISOString() });
   return { status: 'refreshed', entitlementUpdated: true, racedRetry };
 }
+
+/** Options for `refreshEntitlementsNow` — `force` is not among them, by construction. */
+export type RefreshNowOpts = Omit<MaybeRefreshOpts, 'force'>;
+
+/**
+ * The USER-INITIATED refresh (A-226-14). Identical to `maybeRefresh` in every
+ * respect but one: it never consults `last_refresh_attempt_at`.
+ *
+ * WHY A SEPARATE ENTRY POINT RATHER THAN "PASS `force`". The throttle is the
+ * law for every AUTOMATIC path — process start, the daily timer — and A-212-13
+ * is the reason it exists: an outage must cost one attempt per install per day,
+ * not one per invocation. A boolean on the shared entry makes bypassing it a
+ * one-character edit at any call site, and the next reader cannot tell an
+ * automatic caller that acquired a `force: true` from a deliberate gesture. A
+ * named verb can only be reached on purpose, and greps as the complete list of
+ * places the throttle is skipped.
+ *
+ * WHY `force` IS OMITTED FROM ITS OPTIONS. There is no bypass-the-bypass and no
+ * caller-supplied "actually respect the throttle" — a surface that wants the
+ * throttled behaviour calls `maybeRefresh`. One name, one meaning.
+ *
+ * ONLY EVER ON A GESTURE. Studio's refresh pill and the explicit CLI verbs are
+ * the callers. Nothing on a timer may call this; if UI automation ever turns a
+ * gesture into a loop, the rate limit belongs client-side at the pill — never
+ * back here, because re-coupling refresh to the throttle would make a user who
+ * just changed their plan wait a day to see it.
+ */
+export async function refreshEntitlementsNow(opts: RefreshNowOpts): Promise<RefreshOutcome> {
+  return maybeRefresh({ ...opts, force: true });
+}
