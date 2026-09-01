@@ -49,6 +49,7 @@
     "tests/unit/cli/config-prune-audit.test.ts",
     "tests/unit/daemon/studio-dispatch.test.ts",
     "tests/unit/daemon/studio-mcp-server.test.ts",
+    "tests/unit/daemon/capability-handshake-mcp.test.ts",
     "tests/unit/server/tool-audit.test.ts",
     "tests/integration/tool-audit-dispatch.test.ts",
     "tests/unit/daemon/proxy-roundtrip.test.ts",
