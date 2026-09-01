@@ -167,6 +167,26 @@ describe('throttle', () => {
     expect(second.status).toBe('throttled');
   });
 
+  it('the stamp is already on disk WHILE the request is in flight', async () => {
+    // The stronger form of the arm above, and the one a request that never
+    // returns depends on: a crash or a hang mid-request must still have burnt
+    // the window. Asserting the stamp only after the call returns is satisfied
+    // by a stamp written on the way out, which is exactly the ordering bug.
+    await storeRefreshToken('refresh-1', { dataDir });
+    let stampDuringFlight: string | null = 'unset';
+    const fetchImpl = async (): Promise<Response> => {
+      stampDuringFlight = new AccountStateStore(dataDir).read().last_refresh_attempt_at;
+      throw new Error('process killed mid-request');
+    };
+
+    await maybeRefresh({
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+      nowMs: () => T0,
+    });
+    expect(stampDuringFlight).toBe(new Date(T0).toISOString());
+  });
+
   it('reports no_credential without stamping an attempt', async () => {
     const t = transport({});
     const out = await maybeRefresh({
