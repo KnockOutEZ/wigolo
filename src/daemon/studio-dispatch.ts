@@ -140,8 +140,21 @@ export interface StudioActOutput {
 
 /** A typed failure from a host handler (e.g. an evicted spill fetch, a refused action) — surfaced as a tool error, NOT a bare null a caller could read as "no content". */
 export interface StudioToolError {
+  /**
+   * A STABLE MACHINE CODE — `not_holder`, `origin_budget_exhausted`, `capture_refused` — never a sentence.
+   * Same contract as the core failure envelope (docs/rest-api.md "Error shape"), and what
+   * `extractErrorReason` (src/server.ts:105) reads off this envelope for the D10 audit while documenting
+   * it as "a typed reason string … not user content — safe to audit". A refusal that put prose here made
+   * that column unaggregatable and forced consumers to key on free text.
+   */
   error_reason: string;
   hint: string;
+  /**
+   * The human-readable message, when the code alone loses information the caller needs — the live budget
+   * counters, the origin, why a grant was refused. Optional: most refusals say everything they have in
+   * the code plus the hint. Mirrors the core published envelope's `error`.
+   */
+  error?: string;
   /** Present on a `not_holder` refusal — the live control epoch, so the agent can resync its view of whose turn it is. */
   currentEpoch?: number;
   /** Present on an `aborted_reclaimed` from `type` — the partial effect (characters landed before the human reclaimed). */
@@ -359,13 +372,21 @@ export interface DispatchDeps {
   proxyFactory?: (endpoint: string, token: string) => { callTool(name: string, args: Record<string, unknown>): Promise<unknown> };
 }
 
-function refusal(error_reason: string, hint: string): McpToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify({ error_reason, hint }, null, 2) }], isError: true };
+/**
+ * `error` is threaded rather than dropped: it is the only field carrying information the code cannot
+ * (live budget counters, the refused origin), so a route that omitted it would silently degrade the
+ * refusal depending on which helper minted it.
+ */
+function refusal(error_reason: string, hint: string, error?: string): McpToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ error_reason, ...(error ? { error } : {}), hint }, null, 2) }],
+    isError: true,
+  };
 }
 
 /** A typed error becomes a refusal; anything else serializes as the data it is. */
 function refuseOrData(data: StudioHostOutput): McpToolResult {
-  if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+  if (isStudioToolError(data)) return refusal(data.error_reason, data.hint, data.error);
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
 }
 

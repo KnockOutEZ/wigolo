@@ -58,8 +58,10 @@ describe('D9 budget — applies to EVERY origin', () => {
     const v = await checkAgentDrive(g, 'https://a.example/');
     expect(v.ok).toBe(false);
     if (!v.ok) {
-      expect(v.error_reason).toContain('3 of 3');
-      expect(v.error_reason).toContain('https://a.example');
+      // K6: the counters live in `message`; `error_reason` is gone from the producer verdict entirely so a
+      // seam cannot copy it into a published envelope without swapping.
+      expect(v.message).toContain('3 of 3');
+      expect(v.message).toContain('https://a.example');
     }
   });
 

@@ -85,7 +85,7 @@ describe('runStudioFetch — resolving a session', () => {
     });
     const r = await runStudioFetch(d, { url: 'https://example.com/' });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('studio_no_drive');
+    if (!r.ok) expect(r.error_reason).toBe('studio_no_drive');
   });
 
   it('surfaces a spawn refusal as an error instead of pretending there is a session', async () => {
@@ -98,7 +98,7 @@ describe('runStudioFetch — resolving a session', () => {
     });
     const r = await runStudioFetch(d, { url: 'https://example.com/' });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('studio_no_drive');
+    if (!r.ok) expect(r.error_reason).toBe('studio_no_drive');
   });
 });
 
@@ -122,7 +122,7 @@ describe('runStudioFetch — the gated navigation lane', () => {
       { url: 'http://169.254.169.254/latest/meta-data/' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('navigation_blocked');
+    if (!r.ok) expect(r.error_reason).toBe('navigation_blocked');
     // A refused navigation must not be followed by a page read: the tab is still showing whatever the
     // human had open, and returning THAT to the agent is the disclosure the fence exists to prevent.
     expect(readCurrentPage).not.toHaveBeenCalled();
@@ -135,7 +135,7 @@ describe('runStudioFetch — the gated navigation lane', () => {
       { url: 'https://example.com/' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('not_holder');
+    if (!r.ok) expect(r.error_reason).toBe('not_holder');
   });
 });
 
@@ -148,7 +148,7 @@ describe('runStudioFetch — the credential-context refusal', () => {
       { url: 'https://example.com/login' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('capture_refused');
+    if (!r.ok) expect(r.error_reason).toBe('capture_refused');
     // Ordering is the point: a login page's html can contain a displayed one-time code or a prefilled
     // identifier. Reading it and then discarding it still put it in this process's memory and any log.
     expect(readCurrentPage).not.toHaveBeenCalled();
@@ -162,7 +162,7 @@ describe('runStudioFetch — the credential-context refusal', () => {
       { url: 'https://example.com/' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('capture_refused');
+    if (!r.ok) expect(r.error_reason).toBe('capture_refused');
     expect(readCurrentPage).not.toHaveBeenCalled();
   });
 });
@@ -176,7 +176,7 @@ describe('runStudioFetch — input validation', () => {
       { url: '  ' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('invalid_url');
+    if (!r.ok) expect(r.error_reason).toBe('invalid_url');
     expect(gatedNavigate).not.toHaveBeenCalled();
   });
 
@@ -222,7 +222,7 @@ describe('runStudioFetch — a challenge shell is never returned as content', ()
     expect(r.ok).toBe(false);
     // `blocked_by_challenge` deliberately: the agent already handles that path (S9 §5.1), so the caller
     // keeps its honest block instead of learning a new reason code.
-    if (!r.ok) expect(r.error).toBe('blocked_by_challenge');
+    if (!r.ok) expect(r.error_reason).toBe('blocked_by_challenge');
   });
 
   it('reports the challenge CLASS, so a caller can tell a solvable wall from a behavioral one', async () => {
@@ -268,7 +268,7 @@ describe('runStudioFetch — a challenge shell is never returned as content', ()
       { url: 'https://login.example/' },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('capture_refused');
+    if (!r.ok) expect(r.error_reason).toBe('capture_refused');
     // And the page was never read at all — the credential gate runs BEFORE the read (S9 step 5).
     expect(d.readCurrentPage).not.toHaveBeenCalled();
   });

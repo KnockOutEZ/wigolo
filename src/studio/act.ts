@@ -312,7 +312,11 @@ export function createActHandler(
     // beforeNavigate epoch fence is exactly the backstop for it, as on the click path's resolve await.
     if (deps.driveGate) {
       const d9 = await checkAgentDrive(deps.driveGate, url);
-      if (!d9.ok) return { error_reason: d9.error_reason, hint: d9.hint };
+      // K6: this is a PUBLISHED envelope (studio-dispatch serializes a StudioToolError verbatim to the
+      // client), so `error_reason` owes the stable machine code and the sentence goes to `error` — the
+      // same two fields, doing the same two jobs, as the core failure envelope. This forward used to copy
+      // the producer verdict's own `error_reason` straight across, which shipped the sentence as the code.
+      if (!d9.ok) return { error_reason: d9.reason, error: d9.message, hint: d9.hint };
     }
 
     // INVARIANT (amended in S9): this path WAS synchronous from assertCanDrive to the CDP nav command, so a

@@ -34,9 +34,21 @@ export interface StudioFetchInput {
   url: string;
 }
 
+/**
+ * K6 — the failure arm is a PUBLISHED envelope, not a producer `StageError`. Its only consumer,
+ * `src/daemon/studio-mcp-server.ts:55`, serializes this body verbatim to the MCP client and never routes
+ * it through `stageErrorEnvelope`, so no swap happens downstream and the orientation owed here is the
+ * published one: `error_reason` a stable machine code, `error` the human message, `hint` the fix
+ * (docs/rest-api.md "Error shape").
+ *
+ * `src/tools/session-target.ts` is the near-identical session-fetch composition and carries the OPPOSITE
+ * orientation, correctly: it DOES reach `stageErrorEnvelope` (src/server.ts:533-535), so it is a producer
+ * and its prose `error_reason` values are not this defect. The two files deliberately differ; do not
+ * "align" either one without first asking which assembly point its output reaches.
+ */
 export type StudioFetchResult =
   | { ok: true; url: string; html: string; session_id: string }
-  | { ok: false; error: string; error_reason: string; hint?: string; challenge_class?: string };
+  | { ok: false; error_reason: string; error: string; hint?: string; challenge_class?: string };
 
 export interface StudioFetchDeps {
   sessions: StudioSessionsAccessor;
@@ -51,8 +63,8 @@ interface ResolvedSession {
 
 const NO_DRIVE: StudioFetchResult = {
   ok: false,
-  error: 'studio_no_drive',
-  error_reason: 'No live studio session could be driven for this fetch.',
+  error_reason: 'studio_no_drive',
+  error: 'No live studio session could be driven for this fetch.',
   hint: 'The studio host has no drivable session and could not open one. This is never silently downgraded to a headless fetch.',
 };
 
@@ -60,24 +72,26 @@ function navError(nav: Extract<GatedNavResult, { ok: false }>): StudioFetchResul
   if (nav.reason === 'not_holder') {
     return {
       ok: false,
-      error: 'not_holder',
-      error_reason: 'The human holds control of this studio session — the agent cannot drive it.',
+      error_reason: 'not_holder',
+      error: 'The human holds control of this studio session — the agent cannot drive it.',
       hint: 'Observe and wait for a grant; do not retry into the human.',
     };
   }
   if (nav.reason === 'navigation_blocked') {
     return {
       ok: false,
-      error: 'navigation_blocked',
-      error_reason: 'That address is blocked for the agent (cloud-internal is never allowed; localhost/private needs a human grant).',
+      error_reason: 'navigation_blocked',
+      error: 'That address is blocked for the agent (cloud-internal is never allowed; localhost/private needs a human grant).',
     };
   }
-  // D9 refusals arrive with their own reason + hint (live counters included). Pass them through verbatim —
-  // a visible budget that reports itself as a generic nav failure is not visible.
+  // D9 refusals arrive with their own code + sentence + hint (live counters included). Both halves are
+  // kept — a visible budget that reports itself as a generic nav failure is not visible — but they are
+  // SWAPPED onto the published orientation rather than copied across: `GatedNavResult` is a producer
+  // shape, where `reason` holds the code and `error_reason` holds the prose.
   if (nav.error_reason) {
-    return { ok: false, error: nav.reason, error_reason: nav.error_reason, ...(nav.hint ? { hint: nav.hint } : {}) };
+    return { ok: false, error_reason: nav.reason, error: nav.error_reason, ...(nav.hint ? { hint: nav.hint } : {}) };
   }
-  return { ok: false, error: nav.reason, error_reason: `Session navigation did not complete (${nav.reason}).` };
+  return { ok: false, error_reason: nav.reason, error: `Session navigation did not complete (${nav.reason}).` };
 }
 
 /**
@@ -102,7 +116,7 @@ async function resolveSession(deps: StudioFetchDeps): Promise<ResolvedSession | 
 export async function runStudioFetch(deps: StudioFetchDeps, input: StudioFetchInput): Promise<StudioFetchResult> {
   const url = typeof input.url === 'string' ? input.url.trim() : '';
   if (!url) {
-    return { ok: false, error: 'invalid_url', error_reason: 'studio_fetch requires a non-empty url.' };
+    return { ok: false, error_reason: 'invalid_url', error: 'studio_fetch requires a non-empty url.' };
   }
 
   const session = await resolveSession(deps);
@@ -123,8 +137,8 @@ export async function runStudioFetch(deps: StudioFetchDeps, input: StudioFetchIn
   if (credential) {
     return {
       ok: false,
-      error: 'capture_refused',
-      error_reason: 'The live session page is a login/credential context — its content is excluded from the agent and the cache.',
+      error_reason: 'capture_refused',
+      error: 'The live session page is a login/credential context — its content is excluded from the agent and the cache.',
       hint: 'Do not retry; hand the login off to the human.',
     };
   }
@@ -153,8 +167,8 @@ export async function runStudioFetch(deps: StudioFetchDeps, input: StudioFetchIn
   if (isChallengeShell(200, page.html)) {
     return {
       ok: false,
-      error: 'blocked_by_challenge',
-      error_reason: 'The live browser session is also showing a bot-protection challenge for this page.',
+      error_reason: 'blocked_by_challenge',
+      error: 'The live browser session is also showing a bot-protection challenge for this page.',
       // The class decides whether a human could help at all: `behavioral` runs no solve rung
       // (`solve-ladder.ts:95–97`), so surfacing it is what stops a later phase promising a click that
       // cannot exist.
