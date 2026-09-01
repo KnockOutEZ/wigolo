@@ -950,7 +950,7 @@ describe('§7 row 1 — a ref minted from a human-edited snapshot is refused as 
 
   it('the refusal is audited as a refusal, so the run log shows why the act did not run', async () => {
     const db = migratedDb();
-    const audit = new SessionAuditLog(db, 'sess-page-changed');
+    const audit = new SessionAuditLog({ db, sessionId: 'sess-page-changed' });
     const held = heldWith();
     held.humanEdit('form_change');
     const act = createActHandler({
