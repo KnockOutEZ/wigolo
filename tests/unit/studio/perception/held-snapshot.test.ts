@@ -122,6 +122,28 @@ describe('HeldSnapshot — the single snapshot-read seam', () => {
     expect(held.read().state).toBe('invalidated');
   });
 
+  it('takeAnnouncement hands the invalidation over exactly once per invalidation', () => {
+    // Delivery is the event queue's job once it is handed over; minting a second notice would
+    // tell the agent the page changed again when nobody touched it.
+    const held = new HeldSnapshot();
+    held.hold(snap('s1'));
+    expect(held.takeAnnouncement()).toBeNull(); // nothing has changed
+    held.humanEdit('key');
+    expect(held.takeAnnouncement()).toMatchObject({ cause: 'input' });
+    expect(held.takeAnnouncement()).toBeNull();
+    expect(held.read().state).toBe('invalidated'); // handing it over does NOT make the page current
+  });
+
+  it('a NEW human edit after a re-read is announced again', () => {
+    const held = new HeldSnapshot();
+    held.hold(snap('s1'));
+    held.humanEdit('key');
+    expect(held.takeAnnouncement()).not.toBeNull();
+    held.hold(snap('s2'));
+    held.humanEdit('click');
+    expect(held.takeAnnouncement()).toMatchObject({ kind: 'click' });
+  });
+
   it('the announcement text is §7 row 1 verbatim', () => {
     expect(PAGE_CHANGED_BY_HUMAN).toBe('page changed by human — re-read');
   });

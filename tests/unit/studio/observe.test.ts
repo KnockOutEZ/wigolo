@@ -431,16 +431,48 @@ describe('§7 row 1 — a human page edit invalidates the held snapshot and is a
     expect(r.diff).toBeUndefined();
   });
 
-  it('the announcement clears once the agent has re-read', async () => {
+  it('the announcement clears once the agent has re-read AND acked', async () => {
     const held = new HeldSnapshot();
     const obs = createObserver({
       snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
       inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
     });
-    await obs({});
+    let since = ok(await obs({})).eventCursor;
     held.humanEdit('paste');
-    expect(pageChanged(ok(await obs({})))).toBeDefined();
-    expect(pageChanged(ok(await obs({})))).toBeUndefined(); // the re-read satisfied "re-read"
+    const announced = ok(await obs({ since }));
+    expect(pageChanged(announced)).toBeDefined();
+    since = announced.eventCursor;
+    expect(pageChanged(ok(await obs({ since })))).toBeUndefined(); // the re-read satisfied "re-read"
+    expect(pageChanged(ok(await obs({ since: ok(await obs({ since })).eventCursor })))).toBeUndefined();
+  });
+
+  it('an UNACKED announcement replays — a lost observe response never swallows it', async () => {
+    // The notice rides the studio event queue precisely so it inherits exactly-once delivery: the
+    // one signal whose job is to stop the agent acting on a page it no longer knows must not be
+    // lost to a dropped response. MUT: mint the notice with a seq the cursor already covers → the
+    // agent's own `since` filter drops it and this goes RED.
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: new StudioEventQueue(100), held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    const since = ok(await obs({})).eventCursor;
+    held.humanEdit('key');
+    expect(pageChanged(ok(await obs({ since })))).toBeDefined();
+    expect(pageChanged(ok(await obs({ since })))).toBeDefined(); // same cursor: the response was lost
+  });
+
+  it('the notice is minted once per invalidation, not once per call that sees it', async () => {
+    const q = new StudioEventQueue(100);
+    const held = new HeldSnapshot();
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]), eventQueue: q, held,
+      inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir,
+    });
+    const since = ok(await obs({})).eventCursor;
+    held.humanEdit('key');
+    const r = ok(await obs({ since }));
+    expect(r.events.filter((e) => e.type === 'page_changed')).toHaveLength(1);
   });
 
   it('a human NAVIGATION is announced with its own cause', async () => {

@@ -107,6 +107,19 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       return { id: input.base_id ?? '', kind: 'full', trusted: false, untrusted_notice: UNTRUSTED_STUDIO_NOTICE, elements: restored as SnapshotElement[], events: [], eventCursor: input.since ?? 0, eventsDropped: 0, domTruncated: false };
     }
 
+    // §7 row 1's announcement, BEFORE the capture below reads the queue cursor — so the cursor this
+    // response returns covers the notice and the agent acks it like any other event. It is a HUMAN
+    // event, which is what this queue is for, so it inherits the cursor-ack discipline rather than
+    // needing its own: a lost observe response replays it, and an overflow that dropped it would
+    // also raise `eventsDropped`, which already forces a full resync. `takeAnnouncement` hands it
+    // over once per invalidation, so a spill fetch or a credential short-circuit returning before
+    // the drain parks the notice in the queue rather than re-minting it next turn. It carries the
+    // invalidation's SHAPE and none of the human's content — the fresh snapshot below carries that.
+    const announce = held.takeAnnouncement();
+    if (announce) {
+      deps.eventQueue.enqueue({ type: 'page_changed', by: announce.by, cause: announce.cause, notice: PAGE_CHANGED_BY_HUMAN });
+    }
+
     // ATOMIC, BOUNDED capture: snapshot + cursor at one instant; give up to a full resync if the page never settles.
     let snap: PageSnapshot;
     let cursor: number;
@@ -155,14 +168,13 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       };
     }
 
-    const drained = deps.eventQueue.drainSince(input.since ?? 0);
     // §7 row 1: read the held base through its ONE seam. An `invalidated` verdict yields no
     // snapshot at all, so `resolveObserve` gets a null base and answers `full` — a delta against
     // the page as it was BEFORE the human's edit is not a path this code can take, not a rule it
     // remembers to follow. The verdict is read BEFORE `hold()` below, which is what makes it
     // "an invalidation newer than the driver's last read" (mini-spec §4.2).
     const heldRead = held.read();
-    const invalidation = heldRead.state === 'invalidated' ? heldRead.invalidation : null;
+    const drained = deps.eventQueue.drainSince(input.since ?? 0);
     // Force a full snapshot (not a delta) on: a navigation, a dropped-overflow gap, or churn give-up.
     const navigated = churned || drained.dropped > 0 || drained.events.some((e) => e.type === 'navigation');
     const resolved = resolveObserve(heldRead.state === 'live' ? heldRead.snapshot : null, snap, { heldBaseId: input.base_id, navigated });
@@ -175,14 +187,7 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       id: snap.id,
       trusted: false as const, // page-perception payload (elements/diff) is untrusted page data — host-set, not page-forgeable
       untrusted_notice: UNTRUSTED_STUDIO_NOTICE, // P6-a: instruction-channel statement, emitted unconditionally
-      // §7 row 1's announcement rides the drain the agent already reads. It is DERIVED from the
-      // holder's verdict rather than enqueued, so it cannot be lost to the queue's overflow drop —
-      // the one signal whose whole job is to stop the agent acting on a page it no longer knows.
-      // Carries the invalidation's shape and nothing of the human's content (that is what the fresh
-      // snapshot below is for), so it is safe on a page the agent is not otherwise allowed to read.
-      events: invalidation
-        ? [...drained.events, { seq: cursor, type: 'page_changed', by: invalidation.by, cause: invalidation.cause, notice: PAGE_CHANGED_BY_HUMAN }]
-        : drained.events,
+      events: drained.events,
       eventCursor: cursor, // advanced to the captured instant — gap events are acked, never replayed
       eventsDropped: drained.dropped,
       domTruncated: snap.domTruncated,

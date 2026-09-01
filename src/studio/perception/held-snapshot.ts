@@ -79,6 +79,7 @@ export class HeldSnapshot {
   private heldAt = 0;
   private invalidatedAt = 0;
   private invalidation: SnapshotInvalidation | null = null;
+  private announced = false;
 
   constructor(private readonly opts: HeldSnapshotOptions = {}) {}
 
@@ -91,6 +92,22 @@ export class HeldSnapshot {
       return { state: 'invalidated', invalidation: this.invalidation };
     }
     return this.snapshot ? { state: 'live', snapshot: this.snapshot } : { state: 'none' };
+  }
+
+  /**
+   * Hand the pending invalidation to the announcement path — AT MOST ONCE per invalidation. From
+   * there delivery is the studio event queue's problem, and it is already cursor-acked (a lost
+   * observe response replays the notice rather than swallowing it). Announcing twice would tell
+   * the agent the page changed again when nobody touched it.
+   *
+   * Not a second staleness decision: it cannot return a snapshot, and it answers `null` for
+   * exactly the states `read()` calls live.
+   */
+  takeAnnouncement(): SnapshotInvalidation | null {
+    const current = this.read();
+    if (current.state !== 'invalidated' || this.announced) return null;
+    this.announced = true;
+    return current.invalidation;
   }
 
   /**
@@ -112,6 +129,7 @@ export class HeldSnapshot {
     if (!this.snapshot) return null; // §5: the trigger fires only while a snapshot of this tab is LIVE
     if (this.invalidatedAt > this.heldAt) return null; // already stale — "re-read" is already pending
     this.invalidatedAt = ++this.tick;
+    this.announced = false;
     const invalidation: SnapshotInvalidation = {
       by: 'human',
       cause: CAUSE_BY_KIND[kind],
