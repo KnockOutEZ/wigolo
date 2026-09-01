@@ -3,6 +3,11 @@ import { hashArtifact } from './hash.js';
 import { normalizeUrl, sanitizeFtsQuery } from '../../cache/store.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
 import { getDatabase } from '../../cache/db.js';
+import {
+  isStudioEmbedKey,
+  makeStudioEmbedKey,
+  parseStudioEmbedKey,
+} from '../../companion-contract/artifact-keys.js';
 import { isCredentialContext, type FieldSemantics } from '../credential.js';
 
 /**
@@ -214,7 +219,7 @@ function insertArtifact(
     // the same page (no find_similar url-facet pollution). The artifact id unifies with
     // the FTS content_rowid.
     if (inserted && embed) {
-      enqueue({ url: studioEmbedKey(row.type, id), text: embed.text, contentHash: row.contentHash });
+      enqueue({ url: makeStudioEmbedKey(row.type, id), text: embed.text, contentHash: row.contentHash });
     }
 
     return { id, inserted, contentHash: row.contentHash };
@@ -515,24 +520,11 @@ export function curateArtifact(id: number, deps: { db: Database.Database }): voi
 }
 
 /** The embed/vector key scheme the capture pipeline writes (see insertArtifact:
- * `studio://<type>|<id>`). Centralized here so the read path parses exactly the
- * shape the write path constructs. */
-const STUDIO_EMBED_PREFIX = 'studio://';
-
-/** Build the embed/vector-store key for an artifact — the SINGLE source of truth
- * for the scheme. The write path (insertArtifact's embed enqueue) and the FTS
- * read path (searchStudioArtifactKeys) must emit the IDENTICAL string so a clip
- * that matches BOTH the embedding and FTS paths fuses to one result. */
-export function studioEmbedKey(type: string, id: number): string {
-  return `${STUDIO_EMBED_PREFIX}${type}|${id}`;
-}
-
-/** True for a shared-vector-store key that addresses a studio artifact. The `|`
- * makes it a deliberately NON-url-parseable key (it must never reach new URL() /
- * normalizeUrl — callers route on this before url hydration). */
-export function isStudioEmbedKey(key: string): boolean {
-  return key.startsWith(STUDIO_EMBED_PREFIX);
-}
+ * `studio://<type>|<id>`) is owned by the companion contract, so the read path
+ * parses exactly the shape the write path constructs even once the two sides
+ * ship in different packages. Re-exported here for this module's consumers —
+ * never re-derived. */
+export { makeStudioEmbedKey, isStudioEmbedKey };
 
 /** A studio artifact resolved for retrieval (find_similar / future read surfaces). */
 export interface StudioArtifactRow {
@@ -556,13 +548,9 @@ export interface StudioArtifactRow {
  * throw and never an empty-content surface.
  */
 export function getStudioArtifactByEmbedKey(key: string): StudioArtifactRow | null {
-  if (!isStudioEmbedKey(key)) return null;
-  const rest = key.slice(STUDIO_EMBED_PREFIX.length); // <type>|<id>
-  const sep = rest.lastIndexOf('|');
-  if (sep <= 0 || sep >= rest.length - 1) return null;
-  const type = rest.slice(0, sep);
-  const id = Number(rest.slice(sep + 1));
-  if (!Number.isInteger(id) || id <= 0) return null;
+  const parts = parseStudioEmbedKey(key);
+  if (!parts) return null;
+  const { type, id } = parts;
 
   const row = getDatabase()
     .prepare(
@@ -605,5 +593,5 @@ export function searchStudioArtifactKeys(query: string, limit: number): string[]
        LIMIT ?`,
     )
     .all(sanitizeFtsQuery(query), limit) as Array<{ id: number; type: string }>;
-  return rows.map((r) => studioEmbedKey(r.type, r.id));
+  return rows.map((r) => makeStudioEmbedKey(r.type, r.id));
 }
