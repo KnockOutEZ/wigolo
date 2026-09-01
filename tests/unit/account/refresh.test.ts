@@ -34,7 +34,8 @@ const { AccountsClient } = await import('../../../src/account/client.js');
 const { AccountStateStore } = await import('../../../src/account/state.js');
 const { storeRefreshToken, readRefreshToken, getAccessToken, _resetAccessTokenCache } =
   await import('../../../src/account/token-store.js');
-const { maybeRefresh, REFRESH_THROTTLE_MS } = await import('../../../src/account/refresh.js');
+const { maybeRefresh, refreshEntitlementsNow, REFRESH_THROTTLE_MS } =
+  await import('../../../src/account/refresh.js');
 
 const BASE = 'http://127.0.0.1:8787';
 const T0 = Date.parse('2026-09-01T12:00:00.000Z');
@@ -434,5 +435,104 @@ describe('no secret reaches the state file', () => {
     const raw = readFileSync(new AccountStateStore(dataDir).path, 'utf8');
     expect(raw).not.toContain('refresh-SECRET-2');
     expect(raw).not.toContain('access-for-');
+  });
+});
+
+/**
+ * The user-initiated bypass (PX3 §4 / A-226-14).
+ *
+ * Every arm below is paired with the AUTOMATIC path over the identical state,
+ * because "it refreshed" is worth nothing unless the same state provably
+ * throttles `maybeRefresh` — otherwise a broken throttle would make the bypass
+ * arm pass for the wrong reason. The pair is the assertion; neither half is.
+ */
+describe('refreshEntitlementsNow', () => {
+  it('refreshes with a fresh stamp, where the automatic path is throttled', async () => {
+    await storeRefreshToken('refresh-1', { dataDir });
+    new AccountStateStore(dataDir).write({ last_refresh_attempt_at: new Date(T0).toISOString() });
+
+    // The control: one second into the window, the automatic path makes no request.
+    const auto = transport({ '/auth/refresh': [refreshOk('refresh-auto')] });
+    const throttled = await maybeRefresh({
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl: auto.fetchImpl }),
+      nowMs: () => T0 + 1000,
+    });
+    expect(throttled).toEqual({ status: 'throttled', nextEligibleAtMs: T0 + REFRESH_THROTTLE_MS });
+    expect(auto.hits).toEqual([]);
+
+    // The gesture, same state, same clock: it goes to the wire and lands the token.
+    const t = transport({
+      '/auth/refresh': [refreshOk('refresh-2')],
+      '/entitlements/token': [entitlementOk('v1.kid.now.sig')],
+    });
+    const out = await refreshEntitlementsNow({
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl: t.fetchImpl }),
+      nowMs: () => T0 + 1000,
+    });
+
+    expect(out).toEqual({ status: 'refreshed', entitlementUpdated: true, racedRetry: false });
+    expect(t.hits).toEqual(['/auth/refresh', '/entitlements/token']);
+    expect(new AccountStateStore(dataDir).read().entitlement_token).toBe('v1.kid.now.sig');
+  });
+
+  it('is not a one-shot grace: a second gesture inside the window still refreshes', async () => {
+    // The bypass reads nothing it also writes. A gesture stamps
+    // `last_refresh_attempt_at` like any attempt, so an implementation that
+    // consumed the stamp instead of ignoring it would refuse the second press
+    // of the same pill.
+    await storeRefreshToken('refresh-1', { dataDir });
+
+    const t = transport({
+      '/auth/refresh': [refreshOk('refresh-2'), refreshOk('refresh-3')],
+      '/entitlements/token': [entitlementOk()],
+    });
+    const client = new AccountsClient({ baseUrl: BASE, fetchImpl: t.fetchImpl });
+
+    const first = await refreshEntitlementsNow({ dataDir, client, nowMs: () => T0 });
+    const second = await refreshEntitlementsNow({ dataDir, client, nowMs: () => T0 + 5_000 });
+
+    expect([first.status, second.status]).toEqual(['refreshed', 'refreshed']);
+    expect((await readRefreshToken({ dataDir }))?.value).toBe('refresh-3');
+    // The stamp still moves — the gesture is an attempt, it just does not read one.
+    expect(new AccountStateStore(dataDir).read().last_refresh_attempt_at)
+      .toBe(new Date(T0 + 5_000).toISOString());
+  });
+
+  it('leaves the automatic path throttled by the window a gesture just wrote', async () => {
+    // The other direction of "additive": a gesture must not disarm the throttle
+    // for process start. If it did, A-212-13's one-attempt-per-day-per-install
+    // ceiling would be one pill press away from gone.
+    await storeRefreshToken('refresh-1', { dataDir });
+    const t = transport({
+      '/auth/refresh': [refreshOk('refresh-2')],
+      '/entitlements/token': [entitlementOk()],
+    });
+    const client = new AccountsClient({ baseUrl: BASE, fetchImpl: t.fetchImpl });
+
+    await refreshEntitlementsNow({ dataDir, client, nowMs: () => T0 });
+
+    const auto = transport({ '/auth/refresh': [refreshOk('refresh-3')] });
+    const out = await maybeRefresh({
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl: auto.fetchImpl }),
+      nowMs: () => T0 + REFRESH_THROTTLE_MS - 1,
+    });
+    expect(out).toEqual({ status: 'throttled', nextEligibleAtMs: T0 + REFRESH_THROTTLE_MS });
+    expect(auto.hits).toEqual([]);
+  });
+
+  it('bypasses the throttle without inventing a credential', async () => {
+    // A gesture on a logged-out install is `no_credential`, not a request. The
+    // bypass skips one guard and nothing else.
+    const t = transport({});
+    const out = await refreshEntitlementsNow({
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl: t.fetchImpl }),
+      nowMs: () => T0,
+    });
+    expect(out).toEqual({ status: 'no_credential' });
+    expect(t.hits).toEqual([]);
   });
 });
