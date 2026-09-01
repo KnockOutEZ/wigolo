@@ -131,11 +131,21 @@ function sane(v: number | undefined, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 
-/** The refusal an exhausted budget produces. Names the numbers so the agent (and the human) can act on it. */
-export function budgetRefusal(v: OriginBudgetVerdict): { error: string; error_reason: string; hint: string } {
+/**
+ * The refusal an exhausted budget produces, and the ONLY place its wording is minted. Names the numbers
+ * so the agent (and the human) can act on it.
+ *
+ * K6: `reason` is the stable machine code and `message` is the sentence, and neither is called
+ * `error_reason`. That field name means opposite things on the two sides of the envelope seam — the code
+ * on a published envelope (docs/rest-api.md "Error shape"), the prose on a producer `StageError` — so a
+ * refusal that carried it could be, and was, copied straight into a published envelope with no swap and
+ * shipped a sentence as the machine code. Two unambiguous names make that unexpressible instead of
+ * merely wrong: a seam has to choose which half it is publishing.
+ */
+export function budgetRefusal(v: OriginBudgetVerdict): { reason: 'origin_budget_exhausted'; message: string; hint: string } {
   return {
-    error: 'origin_budget_exhausted',
-    error_reason: `This session has already made ${v.used} of ${v.limit} allowed requests to ${v.origin}.`,
+    reason: 'origin_budget_exhausted',
+    message: `This session has already made ${v.used} of ${v.limit} allowed requests to ${v.origin}.`,
     hint: 'Pacing protects the account from looking automated. Work with what you have, use a different source, or ask the human to raise the per-origin budget.',
   };
 }

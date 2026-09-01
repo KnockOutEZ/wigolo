@@ -1,5 +1,5 @@
 import type { ApprovalDecision } from './approvals.js';
-import { budgetOrigin, type OriginBudget, type OriginClass } from './origin-budget.js';
+import { budgetOrigin, budgetRefusal, type OriginBudget, type OriginBudgetVerdict, type OriginClass } from './origin-budget.js';
 import type { PreGrantStore } from './pre-grant.js';
 import type { EscalationCounterKey } from './escalation-counters.js';
 
@@ -33,10 +33,16 @@ import type { EscalationCounterKey } from './escalation-counters.js';
  * exactly the hang this rule removes.
  */
 
-/** Why a navigation was refused. `blocked_by_challenge` is deliberate: the agent already handles that path. */
+/**
+ * Why a navigation was refused. `blocked_by_challenge` is deliberate: the agent already handles that path.
+ *
+ * K6: `reason` is the stable machine code, `message` is the human sentence, and there is no field named
+ * `error_reason` on purpose — see `budgetRefusal` (origin-budget.ts) for the full argument. A seam
+ * publishing this verdict has to map the two halves explicitly onto whichever orientation it owes.
+ */
 export type AgentDriveRefusal =
-  | { reason: 'origin_budget_exhausted'; error_reason: string; hint: string }
-  | { reason: 'blocked_by_challenge'; error_reason: string; hint: string };
+  | { reason: 'origin_budget_exhausted'; message: string; hint: string }
+  | { reason: 'blocked_by_challenge'; message: string; hint: string };
 
 export type AgentDriveVerdict = { ok: true } | ({ ok: false } & AgentDriveRefusal);
 
@@ -86,20 +92,20 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 const SUMMON_HINT =
   'This site needs the human to allow signed-in use for this session. Ask them to open the browser session and approve it, or use a source that does not need a sign-in.';
 
-function budgetExhausted(used: number, limit: number, origin: string): AgentDriveVerdict {
-  return {
-    ok: false,
-    reason: 'origin_budget_exhausted',
-    error_reason: `This session has already made ${used} of ${limit} allowed requests to ${origin}.`,
-    hint: 'Pacing protects the account from looking automated. Work with what you have, use a different source, or ask the human to raise the per-origin budget.',
-  };
+/**
+ * Delegates to `budgetRefusal` rather than re-typing the sentence: the two used to be byte-identical
+ * copies of the same wording, which is one edit away from two refusals that disagree about the same
+ * budget.
+ */
+function budgetExhausted(v: OriginBudgetVerdict): AgentDriveVerdict {
+  return { ok: false, ...budgetRefusal(v) };
 }
 
 function needsGrant(origin: string, why: string): AgentDriveVerdict {
   return {
     ok: false,
     reason: 'blocked_by_challenge',
-    error_reason: `Agent use of the signed-in site ${origin} is not allowed in this session (${why}).`,
+    message: `Agent use of the signed-in site ${origin} is not allowed in this session (${why}).`,
     hint: SUMMON_HINT,
   };
 }
@@ -142,7 +148,7 @@ export async function checkAgentDrive(gate: AgentDriveGate, url: string): Promis
   const spend = gate.budget.spend(url, { originClass });
   if (!spend.ok) {
     gate.bump?.('budgetRefused');
-    return budgetExhausted(spend.used, spend.limit, spend.origin);
+    return budgetExhausted(spend);
   }
 
   if (!carded) return { ok: true };

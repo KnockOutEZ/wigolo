@@ -81,6 +81,11 @@ describe('D9 through the session-drive seam (bridge + fetch(session_id) + crawl)
     const r = await runSessionFetch(accessor, { url: 'https://a.example/next', session_id: 's1' } as FetchInput);
     expect(r.ok).toBe(false);
     if (!r.ok) {
+      // K6: `runSessionFetch` is a PRODUCER — `src/server.ts:533-535` routes it through
+      // `stageErrorEnvelope`, which swaps these two fields on the way out. So the code belongs in
+      // `error` and the prose in `error_reason` HERE, and the agent still sees the code under
+      // `error_reason` on the wire. This is the opposite of the broker's `runStudioFetch`, which
+      // publishes directly; the two look like duplicates and deliberately are not.
       expect(r.error).toBe('origin_budget_exhausted');
       expect(r.error_reason).toContain('1 of 1');
     }
@@ -105,7 +110,11 @@ describe('D9 through the act-navigate lane', () => {
     const act = createActHandler(actDeps(exhaustedGate(), navigate));
     const r = await act({ action: 'navigate', url: 'https://a.example/next' });
     expect('error_reason' in r).toBe(true);
-    if ('error_reason' in r) expect(r.error_reason).toContain('1 of 1');
+    // K6: studio_act's published refusal keys on the code; the counters ride `error`.
+    if ('error_reason' in r) {
+      expect(r.error_reason).toBe('origin_budget_exhausted');
+      expect(r.error).toContain('1 of 1');
+    }
     expect(navigate).not.toHaveBeenCalled();
   });
 

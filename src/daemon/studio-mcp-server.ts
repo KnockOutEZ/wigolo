@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { StudioHostHandlers } from './studio-dispatch.js';
-import { runStudioFetch, STUDIO_FETCH_CAPABILITY, type StudioFetchInput } from '../studio/studio-fetch.js';
+import { runStudioFetch, STUDIO_FETCH_CAPABILITY, type StudioFetchInput, type StudioFetchResult } from '../studio/studio-fetch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { createStudioToolProvider } from '../studio/tool-provider.js';
 
@@ -51,7 +51,9 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
     if (name === STUDIO_FETCH_CAPABILITY) {
       const body = deps.sessions
         ? await runStudioFetch({ sessions: deps.sessions, host: deps.studioHost }, (args ?? {}) as unknown as StudioFetchInput)
-        : ({ ok: false, error: 'studio_no_drive', error_reason: 'This studio gateway was started without a session accessor.' } as const);
+        // Typed as the capability's own result so this literal cannot drift from the orientation
+        // `runStudioFetch` publishes beside it: `error_reason` is the stable machine code (K6).
+        : ({ ok: false, error_reason: 'studio_no_drive', error: 'This studio gateway was started without a session accessor.' } satisfies StudioFetchResult);
       return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: !body.ok };
     }
     const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);

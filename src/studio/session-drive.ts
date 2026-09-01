@@ -18,7 +18,15 @@ import { checkAgentDrive, type AgentDriveGate } from './agent-drive-gate.js';
  * a silent ephemeral fallback.
  */
 
-/** The result of a gated session navigation — mirrors the act handler's navigate verdict shape. */
+/**
+ * The result of a gated session navigation — mirrors the act handler's navigate verdict shape.
+ *
+ * K6: this is a PRODUCER shape, so `reason` is the stable machine code and `error_reason` is the prose —
+ * the `StageError` orientation, which its consumer `src/tools/session-target.ts` forwards unchanged into
+ * `stageErrorEnvelope` (src/server.ts:533-535), where the swap happens once. Its other consumer,
+ * `src/studio/studio-fetch.ts`, publishes directly and therefore has to swap for itself. Anything reading
+ * this type must decide which of the two it is before touching either field.
+ */
 export type GatedNavResult =
   | { ok: true }
   | { ok: false; reason: string; currentEpoch?: number; error_reason?: string; hint?: string };
@@ -107,7 +115,7 @@ export function createSessionDrive(deps: SessionDriveDeps): SessionDrive {
       // AFTER the control gate (a navigation the human has already vetoed should not spend budget) and
       // BEFORE the nav itself.
       const d9 = await checkAgentDrive(deps.driveGate, url);
-      if (!d9.ok) return { ok: false, reason: d9.reason, error_reason: d9.error_reason, hint: d9.hint };
+      if (!d9.ok) return { ok: false, reason: d9.reason, error_reason: d9.message, hint: d9.hint };
       const gateEpoch = deps.controlToken.epoch;
       // EPOCH FENCE on entry (backstop) + SINGLE-SOURCE POLICY off the SAME grant + SSRF inside navigateSession.
       const r = await navigateSession(deps.browser, url, policyForHolder('agent', deps.grant), {

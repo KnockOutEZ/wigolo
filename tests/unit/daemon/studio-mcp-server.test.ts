@@ -93,8 +93,8 @@ describe('createStudioMcpServer — the studio_fetch broker capability', () => {
     const { client } = await connect();
     const res = await client.callTool({ name: 'studio_fetch', arguments: { url: 'https://walled.example/' } });
     expect(res.isError).toBe(true);
-    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error: string };
-    expect(body.error).toBe('studio_no_drive');
+    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error_reason: string; error: string };
+    expect(body.error_reason).toBe('studio_no_drive');
   });
 
   it('reports a refusal as an MCP error so the caller cannot read it as an empty page', async () => {
@@ -102,7 +102,7 @@ describe('createStudioMcpServer — the studio_fetch broker capability', () => {
     const { client } = await connect({ getSessionDrive: () => credentialDrive });
     const res = await client.callTool({ name: 'studio_fetch', arguments: { url: 'https://walled.example/login' } });
     expect(res.isError).toBe(true);
-    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error: string };
-    expect(body.error).toBe('capture_refused');
+    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error_reason: string; error: string };
+    expect(body.error_reason).toBe('capture_refused');
   });
 });
