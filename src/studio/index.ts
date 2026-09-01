@@ -58,6 +58,9 @@ export { PageSnapshotter, buildSnapshot, flattenDom } from './perception/snapsho
 export type { PageSnapshot, SnapshotElement, PerceptionCdp, AxNode, DomNode, DomInfo } from './perception/snapshot.js';
 export { createResolver, isResolveError } from './perception/resolve.js';
 export type { ResolveDeps, ResolveResult, ResolvedTarget, ResolveErrorReason } from './perception/resolve.js';
+// §7 row 1 — the held snapshot's single read seam + the human-edit trigger that invalidates it.
+export { HeldSnapshot, snapshotInvalidatedEvent, isHumanEditKind, HUMAN_EDIT_KINDS, PAGE_CHANGED_BY_HUMAN } from './perception/held-snapshot.js';
+export type { HeldSnapshotRead, HeldSnapshotOptions, HumanEditKind, SnapshotInvalidation, SnapshotInvalidationCause } from './perception/held-snapshot.js';
 export { computeFingerprint } from './perception/id.js';
 
 // Marking domain (P2) — structured target + self-heal + generalize + in-memory store + node-path bridge.
