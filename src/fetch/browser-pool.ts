@@ -797,6 +797,15 @@ export class MultiBrowserPool {
         .catch(() => {});
     }
 
+    // Restore an authenticated session (cookies + origin localStorage) from a
+    // Playwright storage-state file so the fetch runs as the stored account
+    // rather than a logged-out visitor. Mirrors the injectedCookies pattern:
+    // applied to whichever context this fetch acquired, guarded for context
+    // stubs without the Playwright methods (unit-test mocks).
+    if (options.storageStatePath && typeof (ctx as { addCookies?: unknown }).addCookies === 'function') {
+      await this.applyStorageState(ctx, options.storageStatePath).catch(() => {});
+    }
+
     let page: import('playwright').Page;
     try {
       page = await ctx.newPage();
@@ -1305,6 +1314,38 @@ export class MultiBrowserPool {
       } else {
         // Always release the slot — even on abort — so the pool is not leaked.
         this.releaseForType(resolvedType, ctx);
+      }
+    }
+  }
+
+  /**
+   * Restore an authenticated session from a Playwright storage-state file onto
+   * the given context. Loads cookies via `addCookies` and replays any origin
+   * localStorage via an init script, so a `useAuth` fetch runs as the stored
+   * account. Best-effort: any failure logs at debug and is swallowed by the
+   * caller so a stale/malformed file degrades to a logged-out fetch rather than
+   * failing it.
+   */
+  private async applyStorageState(ctx: BrowserContext, storageStatePath: string): Promise<void> {
+    const raw = await readFile(storageStatePath, 'utf8');
+    const state = JSON.parse(raw) as { cookies?: import('playwright').Cookie[]; origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }> };
+    const nowSec = Date.now() / 1000;
+    const live = (state.cookies ?? []).filter((c) => !c.expires || c.expires > nowSec);
+
+    const addCookies = (ctx as { addCookies?: (c: import('playwright').Cookie[]) => Promise<void> }).addCookies;
+    if (live.length > 0 && typeof addCookies === 'function') {
+      await addCookies.call(ctx, live);
+    }
+
+    if (Array.isArray(state.origins)) {
+      const script =
+        'const data = ' +
+        JSON.stringify(state.origins) +
+        ';' +
+        'for (const o of data) { if (location.origin === o.origin) { for (const { name, value } of o.localStorage) { try { localStorage.setItem(name, value); } catch (e) {} } } }';
+      const addInitScript = (ctx as { addInitScript?: (script: string) => Promise<unknown> }).addInitScript;
+      if (typeof addInitScript === 'function') {
+        await addInitScript.call(ctx, script);
       }
     }
   }
