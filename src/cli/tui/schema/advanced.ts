@@ -63,6 +63,13 @@ export const advancedCategory: CategoryDef = {
       max: 65535,
     },
     {
+      key: 'WIGOLO_ACCOUNTS_URL',
+      settingsPath: 'accountsUrl',
+      label: 'Accounts service URL',
+      kind: 'text',
+      help: 'Base URL of the account service used for sign-in, entitlements and telemetry. Leave unset to use the shipped default.',
+    },
+    {
       key: 'WIGOLO_DAEMON_HOST',
       settingsPath: 'daemonHost',
       label: 'Daemon host',
