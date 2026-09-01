@@ -4,6 +4,7 @@ import type { StudioHostHandlers } from './studio-dispatch.js';
 import { runStudioFetch, STUDIO_FETCH_CAPABILITY, type StudioFetchInput, type StudioFetchResult } from '../studio/studio-fetch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { createStudioToolProvider } from '../studio/tool-provider.js';
+import { attachCapabilityHandshake, withClientProfile } from './capability-handshake.js';
 
 /**
  * A MINIMAL MCP server hosting ONLY the `studio_*` tools, for the Electron app's embedded gateway.
@@ -34,6 +35,10 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
     { capabilities: { tools: {} } },
   );
 
+  // SD2 §2. Resolved once at `initialize` and scoped over every call below, so a result-phrasing
+  // site can read it without the profile being threaded through the tool provider.
+  const clientProfile = attachCapabilityHandshake(server);
+
   // This gateway IS the host, so the provider's host is always set — dispatch executes locally and
   // never enters the proxy path.
   const provider = createStudioToolProvider({
@@ -43,7 +48,7 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...provider.tools] }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request) => withClientProfile(clientProfile(), async () => {
     const { name, arguments: args } = request.params;
     // S9 — the broker `studio_fetch` capability. Handled HERE and only here: the provider neither
     // advertises nor handles it, so it is callable over this already-authenticated transport but is
@@ -58,7 +63,7 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
     }
     const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);
     return { content: result.content, isError: result.isError };
-  });
+  }));
 
   return server;
 }
