@@ -18,6 +18,7 @@
 import { resolveObserve, type SnapshotDiff } from './perception/diff.js';
 import { fitElementsToBudget, fitDiffToBudget, readSpill, enforceSpillBudget } from './perception/spill.js';
 import type { PageSnapshot, SnapshotElement } from './perception/snapshot.js';
+import { HeldSnapshot, PAGE_CHANGED_BY_HUMAN } from './perception/held-snapshot.js';
 import type { StudioEventQueue } from './event-queue.js';
 import type { StudioObserveInput, StudioObserveOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import { isCredentialContext } from './credential.js';
@@ -76,11 +77,18 @@ export interface ObserverDeps {
   markObserved?: () => void;
   /** Observability: attribute the inline payload's token count to the session (read-only gauge source). */
   recordTokens?: (n: number) => void;
+  /**
+   * §7 row 1: the session's held page snapshot — the diff base, behind the one seam that decides
+   * whether a human has since edited it. Supply the SESSION's holder so the human-input trigger and
+   * the act path see the same staleness; when absent the observer keeps a private one, so a host
+   * that wires nothing still cannot diff against a base a human has touched.
+   */
+  held?: HeldSnapshot;
 }
 
-/** Build the observe closure. Holds per-session `lastSnapshot` for diffing; otherwise stateless. */
+/** Build the observe closure. Holds the per-session snapshot for diffing; otherwise stateless. */
 export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError> {
-  let lastSnapshot: PageSnapshot | null = null;
+  const held = deps.held ?? new HeldSnapshot();
   const maxTries = deps.maxStableRetries ?? 3;
 
   return async (input: StudioObserveInput): Promise<StudioObserveOutput | StudioToolError> => {
@@ -148,10 +156,17 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
     }
 
     const drained = deps.eventQueue.drainSince(input.since ?? 0);
+    // §7 row 1: read the held base through its ONE seam. An `invalidated` verdict yields no
+    // snapshot at all, so `resolveObserve` gets a null base and answers `full` — a delta against
+    // the page as it was BEFORE the human's edit is not a path this code can take, not a rule it
+    // remembers to follow. The verdict is read BEFORE `hold()` below, which is what makes it
+    // "an invalidation newer than the driver's last read" (mini-spec §4.2).
+    const heldRead = held.read();
+    const invalidation = heldRead.state === 'invalidated' ? heldRead.invalidation : null;
     // Force a full snapshot (not a delta) on: a navigation, a dropped-overflow gap, or churn give-up.
     const navigated = churned || drained.dropped > 0 || drained.events.some((e) => e.type === 'navigation');
-    const resolved = resolveObserve(lastSnapshot, snap, { heldBaseId: input.base_id, navigated });
-    lastSnapshot = snap;
+    const resolved = resolveObserve(heldRead.state === 'live' ? heldRead.snapshot : null, snap, { heldBaseId: input.base_id, navigated });
+    held.hold(snap);
     // D4/A: a real page-read completed (the credential-exclusion + spill-retrieval paths already returned
     // above) → refresh the session lastObserveEpoch so a later capture knows the agent saw THIS page.
     deps.markObserved?.();
@@ -160,7 +175,14 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       id: snap.id,
       trusted: false as const, // page-perception payload (elements/diff) is untrusted page data — host-set, not page-forgeable
       untrusted_notice: UNTRUSTED_STUDIO_NOTICE, // P6-a: instruction-channel statement, emitted unconditionally
-      events: drained.events,
+      // §7 row 1's announcement rides the drain the agent already reads. It is DERIVED from the
+      // holder's verdict rather than enqueued, so it cannot be lost to the queue's overflow drop —
+      // the one signal whose whole job is to stop the agent acting on a page it no longer knows.
+      // Carries the invalidation's shape and nothing of the human's content (that is what the fresh
+      // snapshot below is for), so it is safe on a page the agent is not otherwise allowed to read.
+      events: invalidation
+        ? [...drained.events, { seq: cursor, type: 'page_changed', by: invalidation.by, cause: invalidation.cause, notice: PAGE_CHANGED_BY_HUMAN }]
+        : drained.events,
       eventCursor: cursor, // advanced to the captured instant — gap events are acked, never replayed
       eventsDropped: drained.dropped,
       domTruncated: snap.domTruncated,
