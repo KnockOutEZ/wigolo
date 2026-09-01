@@ -4,13 +4,17 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 
-// --- programmable page/context behaviour (mirrors browser-pool.clearance.test.ts) ---
+// --- programmable browser launcher capturing newContext options ---
 const state: {
-  addCookiesCalls: Array<Array<{ name: string; value: string; domain: string; expires?: number; expiresAt?: number }>>;
-  addInitScriptCalls: string[];
+  newContextOptions: Array<Record<string, unknown>>;
+  closedContexts: number;
+  closedBrowsers: number;
+  releasedToPool: number;
 } = {
-  addCookiesCalls: [],
-  addInitScriptCalls: [],
+  newContextOptions: [],
+  closedContexts: 0,
+  closedBrowsers: 0,
+  releasedToPool: 0,
 };
 
 function makePage() {
@@ -30,15 +34,12 @@ function makePage() {
 
 function makeContext() {
   return {
-    addInitScript: vi.fn().mockImplementation((s: string) => {
-      state.addInitScriptCalls.push(s);
+    addInitScript: vi.fn().mockResolvedValue(undefined),
+    addCookies: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockImplementation(() => {
+      state.closedContexts++;
       return Promise.resolve(undefined);
     }),
-    addCookies: vi.fn().mockImplementation((c: State['addCookiesCalls'][number]) => {
-      state.addCookiesCalls.push(c);
-      return Promise.resolve(undefined);
-    }),
-    close: vi.fn().mockResolvedValue(undefined),
     newPage: vi.fn().mockResolvedValue(makePage()),
     cookies: vi.fn().mockResolvedValue([]),
   };
@@ -46,11 +47,21 @@ function makeContext() {
 
 function makeBrowser() {
   return {
-    newContext: vi.fn().mockImplementation(() => Promise.resolve(makeContext())),
-    close: vi.fn().mockResolvedValue(undefined),
+    newContext: vi.fn().mockImplementation((opts?: Record<string, unknown>) => {
+      state.newContextOptions.push(opts ?? {});
+      const ctx = makeContext();
+      return Promise.resolve(ctx);
+    }),
+    close: vi.fn().mockImplementation(() => {
+      state.closedBrowsers++;
+      return Promise.resolve(undefined);
+    }),
   };
 }
 
+// The pool's context-acquisition path calls pool.launch() -> browser.newContext()
+// for the FIRST pooled fetch. For storage-state fetches we launch a DEDICATED
+// throwaway browser directly (getLauncher().launch), never touching the pool.
 vi.mock('playwright', () => {
   const launch = vi.fn().mockImplementation(() => Promise.resolve(makeBrowser()));
   const stub = { launch };
@@ -64,14 +75,17 @@ vi.mock('node:dns', () => ({
 
 import { MultiBrowserPool } from '../../../src/fetch/browser-pool.js';
 
-const FUTURE = Math.floor(Date.now() / 1000) + 86400;
-const PAST = Math.floor(Date.now() / 1000) - 86400;
-
-type State = typeof state;
-
 function reset() {
-  state.addCookiesCalls = [];
-  state.addInitScriptCalls = [];
+  state.newContextOptions = [];
+  state.closedContexts = 0;
+  state.closedBrowsers = 0;
+  state.releasedToPool = 0;
+}
+
+function makeStateFile(dir: string, body: unknown): string {
+  const path = join(dir, 'state.json');
+  writeFileSync(path, JSON.stringify(body));
+  return path;
 }
 
 describe('browser-pool storage-state restore (useAuth)', () => {
@@ -83,77 +97,74 @@ describe('browser-pool storage-state restore (useAuth)', () => {
     resetConfig();
   });
 
-  it('applies storageStatePath cookies (dropping expired ones) via context.addCookies', async () => {
+  it('creates a dedicated context seeded WITH the storageState option', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-ss-'));
-    const stateFile = join(dir, 'state.json');
-    writeFileSync(
-      stateFile,
-      JSON.stringify({
-        cookies: [
-          { name: 'SID', value: 'live', domain: '.google.com', path: '/', expires: FUTURE, httpOnly: true, secure: true },
-          { name: 'STALE', value: 'dead', domain: '.google.com', path: '/', expires: PAST, httpOnly: true, secure: true },
-        ],
-        origins: [],
-      }),
-    );
+    const stateFile = makeStateFile(dir, {
+      cookies: [{ name: 'SID', value: 'live', domain: '.google.com', path: '/', expires: 1893456000 }],
+      origins: [],
+    });
     try {
       const pool = new MultiBrowserPool();
       await pool.fetchWithBrowser('https://example.com/', { storageStatePath: stateFile });
 
-      expect(state.addCookiesCalls.length).toBe(1);
-      const applied = state.addCookiesCalls[0];
-      const names = applied.map((c) => c.name);
-      expect(names).toContain('SID');
-      expect(names).not.toContain('STALE');
+      // A dedicated context was created for the auth fetch, with the full
+      // storageState handed to Playwright (not manually re-applied).
+      const ctxOpts = state.newContextOptions;
+      expect(ctxOpts.length).toBeGreaterThan(0);
+      expect(ctxOpts[0].storageState).toBe(stateFile);
       await pool.shutdown();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('registers an addInitScript restoring origin localStorage from the storage state', async () => {
+  it('closes the dedicated context + browser (never released to the pool)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-ss-'));
-    const stateFile = join(dir, 'state.json');
-    writeFileSync(
-      stateFile,
-      JSON.stringify({
-        cookies: [],
-        origins: [{ origin: 'https://example.com', localStorage: [{ name: 'theme', value: 'dark' }] }],
-      }),
-    );
+    const stateFile = makeStateFile(dir, { cookies: [], origins: [] });
     try {
       const pool = new MultiBrowserPool();
       await pool.fetchWithBrowser('https://example.com/', { storageStatePath: stateFile });
 
-      expect(state.addInitScriptCalls.length).toBe(1);
-      expect(state.addInitScriptCalls[0]).toContain('theme');
+      expect(state.closedContexts).toBeGreaterThan(0);
+      expect(state.closedBrowsers).toBeGreaterThan(0);
       await pool.shutdown();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('degrades gracefully when the storage state file is unreadable or malformed', async () => {
+  it('does not leak account state to a later pooled fetch', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-ss-'));
-    const stateFile = join(dir, 'bad.json');
-    writeFileSync(stateFile, 'not-json{');
+    const stateFile = makeStateFile(dir, {
+      cookies: [{ name: 'SID', value: 'ACCOUNT_A', domain: '.google.com', path: '/', expires: 1893456000 }],
+      origins: [],
+    });
     try {
       const pool = new MultiBrowserPool();
-      const result = await pool.fetchWithBrowser('https://example.com/', { storageStatePath: stateFile });
-      expect(result).toBeDefined();
-      // Nothing was applied, but the fetch itself still succeeded.
-      expect(state.addCookiesCalls.length).toBe(0);
+
+      // Authenticated fetch (dedicated context seeded with ACCOUNT_A state).
+      await pool.fetchWithBrowser('https://account-a.example/', { storageStatePath: stateFile });
+
+      // Anonymous fetch straight after — must get a POOLED context with NO
+      // storageState, so it cannot see ACCOUNT_A's cookies.
+      await pool.fetchWithBrowser('https://anonymous.example/');
+
+      const anonymousCtxOpts = state.newContextOptions.at(-1) ?? {};
+      expect(anonymousCtxOpts.storageState).toBeUndefined();
       await pool.shutdown();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('does nothing when storageStatePath is absent', async () => {
+  it('left the pooled path byte-identical when no storageStatePath is given', async () => {
     const pool = new MultiBrowserPool();
     await pool.fetchWithBrowser('https://example.com/');
-    expect(state.addCookiesCalls.length).toBe(0);
-    expect(state.addInitScriptCalls.length).toBe(0);
+
+    const ctxOpts = state.newContextOptions;
+    expect(ctxOpts.length).toBeGreaterThan(0);
+    // Pooled acquisition creates a context WITHOUT storageState.
+    expect(ctxOpts[0].storageState).toBeUndefined();
     await pool.shutdown();
   });
 });
