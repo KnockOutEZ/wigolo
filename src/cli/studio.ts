@@ -6,7 +6,14 @@ import { checkBindHost } from '../companion/bind.js';
 import { resolveHostToken } from '../companion/auth.js';
 import { SessionRegistry, SessionLimitError, startIdleSweeper, type IdleSweeper } from '../studio/registry.js';
 import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
-import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
+import {
+  SessionBrowser,
+  SessionConsoleBuffer,
+  settlablePage,
+  type SessionBrowserLauncher,
+  type StorageStateInput,
+} from '../studio/session-browser.js';
+import { settlePage } from '../fetch/settle.js';
 import { ProfileStore } from '../studio/profile-store.js';
 import { SessionController, type InputSink } from '../studio/session-control.js';
 import { NavInterceptor, navigateSession } from '../studio/nav.js';
@@ -81,6 +88,14 @@ interface HostBroadcastSink {
 const STUDIO_EVENT_QUEUE_MAX = 256;
 /** Total byte budget the spill-dir GC enforces (snapshots + diffs + vision PNGs). In-code, not operator-tunable. */
 const STUDIO_SPILL_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * #318 — the post-act quiescence budget. Deliberately WELL BELOW both the shared post-goto cap
+ * (`POST_GOTO_CAP_MS`, 6s) and any MCP tool timeout: a click is not a page load, and an act that has
+ * already LANDED must never be held hostage by a page that keeps repainting. `settlePage()` never
+ * throws on its budget — it returns `settledBy: 'budget'` — so a page that never quiesces still
+ * returns and the snapshot is simply taken at the cap.
+ */
+const STUDIO_ACT_SETTLE_CAP_MS = 1500;
 /**
  * 7d S3 / decision #8: the post-hello audit backfill caps to the most-recent N entries. A connecting client
  * hydrates its timeline from the last 200 recorded actions; older history + "load more" is deferred to 7f.
@@ -400,6 +415,11 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   }
   const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher, loadProfile });
   await sessionBrowser.start();
+  // #318: the session's bounded, drain-on-read console collector — the `consoleSince` half of pin 8's
+  // post-actions. Attached HERE (immediately after start, before any tool can act) so the first act's
+  // window begins at session start rather than at first use; it re-binds itself across crash recovery.
+  const consoleBuffer = new SessionConsoleBuffer();
+  consoleBuffer.attach(sessionBrowser);
 
   const cfg = getConfig();
   // Control token + its coordinator.
@@ -996,6 +1016,34 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     park,
     // S9/D9: the shared pacing + consent gate (same object the session-drive seam uses).
     driveGate,
+    // #318: pin 8's post-actions, wired into the PRODUCTION host. The seam shipped with #57 but had no
+    // host, so every act result was silently pre-pin-8. All five deps are pull-at-eval, so each one
+    // follows a crash-recovery rebind rather than closing over a dead handle.
+    postActions: {
+      // The "after" half of the settle-diff. The SAME snapshotter + live cdp the observer reads at the
+      // call site above, so the delta's two sides come from one perception path, not two.
+      snapshot: () => snapshotter.snapshot(sessionBrowser.cdp),
+      // The ONE shared quiescence wait (`fetch/settle.ts`), reused rather than re-implemented, capped at
+      // STUDIO_ACT_SETTLE_CAP_MS. A page handle that cannot be settled (the unit harness's fake, a future
+      // engine missing one of the three methods) degrades to an immediate snapshot — a delta rather than
+      // a SETTLED delta, which is a smaller claim, never a wrong one.
+      settle: async () => {
+        let page: ReturnType<typeof settlablePage> = null;
+        try {
+          page = settlablePage(sessionBrowser.page);
+        } catch {
+          return; // not started / mid-recovery — nothing to settle against
+        }
+        if (!page) return;
+        await settlePage(page, { budgetMs: STUDIO_ACT_SETTLE_CAP_MS });
+      },
+      // Drain-on-read: this act reports ITS OWN window, not the session's whole console history.
+      consoleSince: () => consoleBuffer.drain(),
+      // Law 1 — a spilled settle-diff / console file is attributed to the run this session drives.
+      // Absent (a session with no run bound) ⇒ `studio/runs/unattributed/output/`, which stays honest.
+      runId: () => opts.runId,
+      dataDir: opts.dataDir,
+    },
     currentUrl: () => {
       try {
         return sessionBrowser.page.url();
