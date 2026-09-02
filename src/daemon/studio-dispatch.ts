@@ -486,14 +486,18 @@ export interface FooterContext {
   /**
    * Read the fields, LIVE. Called once, at the exit, so it sees what the call itself appended: the
    * browser action the act recorded, the messages the delivery queue rode on this very result.
+   *
+   * May answer asynchronously (#331): a host whose store is a port rather than a native handle
+   * projects the same fields over async RPC, and a synchronous-only signature is precisely what
+   * shut that host out. A source that can answer synchronously still may — the exit awaits either.
    */
-  fields(): FooterFields;
+  fields(): FooterFields | Promise<FooterFields>;
   /**
    * Called after the footer is rendered, with the finished result. The one thing it records is the
    * driver's re-read (§4.2's "newer than the driver's last read"), which must NOT clear the
    * `page changed` line on the result that announces it.
    */
-  settle?(result: McpToolResult): void;
+  settle?(result: McpToolResult): void | Promise<void>;
 }
 
 export interface FooterSource {
@@ -521,16 +525,18 @@ async function beginFooter(name: string, args: Record<string, unknown>): Promise
 }
 
 /** THE exit. Attaches the footer to whatever the host branch produced, then records the re-read. */
-function finishStudioResult(footer: FooterContext | undefined, result: McpToolResult): McpToolResult {
+async function finishStudioResult(footer: FooterContext | undefined, result: McpToolResult): Promise<McpToolResult> {
   let fields: FooterFields = {};
   try {
-    fields = footer?.fields() ?? {};
+    fields = (await footer?.fields()) ?? {};
   } catch (err) {
     log.warn('footer fields could not be projected; rendering no-run', { error: String(err) });
   }
   const rendered = applyFooter(result, renderFooter(fields, currentClientProfile().phrasing));
   try {
-    footer?.settle?.(result);
+    // Awaited, not fired and forgotten: a rejected settle has to reach the catch below, and an
+    // unawaited rejection here would surface as an unhandled rejection that exits the process.
+    await footer?.settle?.(result);
   } catch (err) {
     log.warn('footer could not record the re-read', { error: String(err) });
   }

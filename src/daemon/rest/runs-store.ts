@@ -22,14 +22,21 @@ import {
   runExists,
   listRuns,
   eventsSinceBounded,
+  eventsOfTypes,
+  unansweredEvents,
   type CreateRunInput,
   type Driver,
   type ListRunsOptions,
   type ListRunsResult,
+  type ClientInfo,
+  type ProjectableEvent,
   type Run,
   type RunEvent,
+  type RunEventInput,
+  type TypedEventQuery,
+  type UnansweredEventQuery,
 } from '../../studio/run-store.js';
-import { appendRunEventWithTail, createRunWithTail } from '../../studio/run-bus.js';
+import { appendRunEventWithTail, createRunWithTail, subscribeRunEvents } from '../../studio/run-bus.js';
 import { clientAttachedEvent, profileClient } from '../capability-handshake.js';
 import {
   denyWheel,
@@ -42,6 +49,7 @@ import {
 import {
   listMessages,
   queueMessage,
+  unconsumedInterruptEvents,
   type QueueMessageInput,
   type QueueMessageResult,
   type RunMessage,
@@ -83,6 +91,55 @@ export interface RunsStore {
   sendMessage?(runId: string, input: QueueMessageInput): Promise<QueueMessageResult>;
   /** The run's messages, newest first, each folded to the state its rows put it in. */
   messages?(runId: string, limit: number): Promise<RunMessage[]>;
+
+  // -------------------------------------------------------------------------
+  // SD2 dispatch (#331) — the run log as the footer, the baton and the delivery
+  // queue read and write it.
+  //
+  // WHY THESE ARE HERE. The dispatch hooks used to resolve the run through a
+  // native handle and nothing else, so on a host whose store lives behind an
+  // async port — the desktop app's, where a plain-Node child owns the cache DB
+  // so the app's main process never loads a native module — all four mechanisms
+  // were inert. Not failing: inert. Every result rendered `— no run —`, the
+  // baton allowed on absence by design, and a queued message never rode a
+  // result. §7 rows 1, 2, 3 and 12 did not happen in the shipped product.
+  //
+  // They are reads and writes of the LOG rather than of any one feature, which
+  // is the same reason `eventsSince` is here: the footer, the baton and the
+  // queue are three folds over one stream (law 1), so a binding that can serve
+  // these can serve all three, and no mechanism needs a port of its own.
+  //
+  // ALL OPTIONAL, and that is the compatibility contract: a binding that omits
+  // one degrades in exactly the way the mechanism degraded before the seam
+  // existed — a footer without a field, a queue that delivers nothing — and
+  // never fails a tool call over it.
+  // -------------------------------------------------------------------------
+
+  /** Rows of a named set of types. The read behind `page changed`, the message fold and the footer. */
+  typedEvents?(runId: string, query: TypedEventQuery): Promise<ProjectableEvent[]>;
+  /** The anti-join behind "queued but not delivered" and "delivered but not acknowledged". */
+  unansweredEvents?(runId: string, query: UnansweredEventQuery): Promise<ProjectableEvent[]>;
+  /**
+   * The one general WRITE, and the exception this port states rather than hides: `driver` and
+   * `sendMessage` name a gesture because a REST caller is asking for an outcome, but the delivery
+   * queue and the footer are the log's own bookkeeping — a delivery row, an acknowledgement, the
+   * driver's re-read — and naming a gesture for each would put the queue's grammar in the port.
+   * Implementations MUST publish onto the in-process bus, exactly as `create` must.
+   */
+  appendEvent?(runId: string, input: RunEventInput): Promise<RunEvent>;
+  /**
+   * Live tail, for the blocking wait alone (§3.2 mechanism 2). Synchronous because a subscription
+   * is a registration, not a read. A binding without one cannot park a run, and the wait says so
+   * with a typed refusal rather than blocking on a bus that will never publish to it.
+   */
+  subscribeEvents?(runId: string, listener: (event: RunEvent) => void): () => void;
+  /**
+   * §3.2 mechanism 3 — the oldest still-unconsumed interrupt trigger this caller is owed, or
+   * nothing. A named read rather than a generic one because its eligibility rules and its anti-join
+   * on `triggerSeq` are not expressible in `unansweredEvents`, and a caller assembling them out of
+   * raw rows would be the second definition of "pending interrupt".
+   */
+  interruptTrigger?(runId: string, caller?: ClientInfo): Promise<RunEvent | undefined>;
 }
 
 /** The five gestures, and nothing else: there is no way to set the driver field directly. */
@@ -165,6 +222,14 @@ export function sqliteRunsStore(db: Database.Database): RunsStore {
     driver: async (runId, input) => applyGesture(db, runId, input),
     sendMessage: async (runId, input) => queueMessage(db, runId, input),
     messages: async (runId, limit) => listMessages(db, runId, limit),
+    // The dispatch half. Each is the store function this binding already owns, so the native path
+    // through the port runs exactly the code it ran before the port existed — which is what makes
+    // "byte-identical footers over a handle and over a port" a testable claim rather than a hope.
+    typedEvents: async (runId, query) => eventsOfTypes(db, runId, query),
+    unansweredEvents: async (runId, query) => unansweredEvents(db, runId, query),
+    appendEvent: async (runId, input) => appendRunEventWithTail(db, runId, input),
+    subscribeEvents: (runId, listener) => subscribeRunEvents(runId, listener),
+    interruptTrigger: async (runId, caller) => unconsumedInterruptEvents(db, runId, caller)[0],
   };
 }
 

@@ -34,6 +34,7 @@ import {
 import { createLogger } from '../logger.js';
 import { currentClientProfile } from './capability-handshake.js';
 import type { BatonGate, StudioToolError } from './studio-dispatch.js';
+import { resolveDispatchStore, type DispatchStoreOptions } from './dispatch-store.js';
 
 const log = createLogger('studio');
 
@@ -377,13 +378,7 @@ export function toToolError(refused: BatonRefused): StudioToolError {
   };
 }
 
-export interface BatonGateOptions {
-  /**
-   * The run log. Resolved per call and allowed to fail: a process that cannot open the store simply
-   * has no baton to enforce, and saying so by refusing every act would be a worse answer than the
-   * one this surface had before the baton existed.
-   */
-  openDb?: () => Promise<Database.Database | undefined>;
+export interface BatonGateOptions extends DispatchStoreOptions {
   /**
    * Which run this call is about. Today the only run handle available AT THE TOOL BOUNDARY is an
    * optional `run_id` argument — deliberately not advertised in any tool schema, so it costs no
@@ -401,15 +396,6 @@ function runIdFromArgs(_name: string, args: Record<string, unknown>): string | u
   return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
 }
 
-async function defaultDb(): Promise<Database.Database | undefined> {
-  try {
-    const { getDatabase } = await import('../cache/db.js');
-    return getDatabase();
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Build the §7 row 12 gate: refuse an ACT-CLASS call from a client that is not this run's driver,
  * naming who is.
@@ -420,7 +406,7 @@ async function defaultDb(): Promise<Database.Database | undefined> {
  * surface it replaced. The refusal is only ever minted from a POSITIVE answer.
  */
 export function createBatonGate(options: BatonGateOptions = {}): BatonGate {
-  const openDb = options.openDb ?? defaultDb;
+  const openStore = resolveDispatchStore(options);
   const runIdFor = options.runIdFor ?? runIdFromArgs;
   const caller = options.caller ?? (() => currentClientProfile().client);
   return async (name, args) => {
@@ -428,9 +414,12 @@ export function createBatonGate(options: BatonGateOptions = {}): BatonGate {
     const runId = runIdFor(name, args);
     if (!runId) return undefined;
     try {
-      const db = await openDb();
-      if (!db) return undefined;
-      const run = getRun(db, runId);
+      const store = await openStore();
+      if (!store) return undefined;
+      // `get` is the one method every binding has, so the baton is the mechanism a port-only host
+      // gets in full with no widening at all — an observer's act is refused there exactly as it is
+      // on the daemon's own handle.
+      const run = await store.get(runId);
       if (!run) return undefined;
       const refused = notDriving(run, caller());
       return refused ? toToolError(refused) : undefined;

@@ -688,8 +688,12 @@ interface InterruptEventRow { seq: number; ts: string; actor: string; type: stri
  * Read ONLY eligible, still-unconsumed trigger rows. The anti-join is what makes an interrupt a
  * durable flag rather than "something among the last N events": unrelated run traffic can never
  * push a pending human interruption out of the next-call window.
+ *
+ * Exported so `sqliteRunsStore` can bind it as the store port's `interruptTrigger` (#331). It stays
+ * here rather than moving to the binding because the eligibility rules ARE the queue's grammar:
+ * which rows count as an interruption is a fact about mechanism 3, not about SQLite.
  */
-function unconsumedInterruptEvents(db: Database.Database, runId: string, caller: ClientInfo | undefined): RunEvent[] {
+export function unconsumedInterruptEvents(db: Database.Database, runId: string, caller?: ClientInfo): RunEvent[] {
   const rows = db.prepare(`
     SELECT candidate.seq, candidate.ts, candidate.actor, candidate.type, candidate.payload
       FROM studio_run_events candidate
