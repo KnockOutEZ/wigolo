@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import ts from 'typescript';
 
 /*
  * Subpath exports for the companion split (EXTRACT A4, spec §3).
@@ -19,6 +20,14 @@ import { join } from 'node:path';
  * (measured 2026-09-02). They are a ceiling, not a floor: a barrel that grows a symbol
  * nobody measured widens the public surface of a repo whose whole point here is to
  * shrink it, and that reds here.
+ *
+ * A type-only export is INVISIBLE to the runtime probe — `Object.keys` of the imported
+ * module never sees it, so dropping one from a barrel is silent there. The barrels A6
+ * widened therefore also pin `types`, asserted against the exported-name set of the
+ * EMITTED `.d.ts` (parsed, not grepped): that is the artifact the `types` condition of
+ * the exports map actually resolves to, so a symbol missing from the barrel source is
+ * missing from it too. `wigolo/fetch-tiers` gains nothing but a type at A6, so without
+ * this half that whole widening would be unpinned.
  */
 
 const repoRoot = join(__dirname, '..', '..');
@@ -30,6 +39,11 @@ interface Subpath {
   target: string;
   /** Every runtime (non-type) name the subpath is allowed to expose. */
   runtime: string[];
+  /**
+   * Every type-only name the subpath is allowed to expose. Present only for the barrels
+   * whose type surface is pinned; `undefined` means "not pinned here", not "none".
+   */
+  types?: string[];
 }
 
 const SUBPATHS: Subpath[] = [
@@ -48,9 +62,12 @@ const SUBPATHS: Subpath[] = [
     ],
   },
   {
+    // `ClearanceCookie` is the shape a solved challenge hands back to
+    // `human-solve-bridge.ts`; it is this subpath's entire A6 widening and is type-only.
     spec: 'wigolo/fetch-tiers',
     target: './dist/fetch/index.js',
     runtime: ['classifyChallenge', 'isChallengeShell', 'requireBrowserDriver'],
+    types: ['ClearanceCookie'],
   },
   {
     spec: 'wigolo/cache',
@@ -84,16 +101,39 @@ const SUBPATHS: Subpath[] = [
     runtime: ['DaemonHttpServer', 'DaemonProxy'],
   },
   {
-    // The kept companion integration layer (EXTRACT A5, spec §2.2). Of the eleven kept
-    // files only `paths.ts` has a private-side consumer — `run-store.ts`,
-    // `profile-store.ts` and `perception/spill.ts` all resolve their on-disk state
-    // through `studioStateDir`, and every other kept file's consumers are core's own
-    // seams (daemon, cli, fetch, config), which import the module directly. So the
-    // ceiling here is one symbol; a second one appearing means a kept file grew a
-    // private-side consumer and that is a question, not a detail.
+    // The kept companion integration layer (EXTRACT A5, spec §2.2). A4 sized this from a
+    // measurement of `src/studio/**` that came out one symbol wide (`studioStateDir`);
+    // B1 then copied the domain layer into `packages/studio-core`, rewrote its imports
+    // onto these subpaths, and the compiler enumerated ten more that the layer measurably
+    // imports. A6 widened the barrel to exactly that enumeration plus the handle +
+    // `resolveHostToken` set D1's switch table sends here when C4 deletes `wigolo/studio`.
+    // Still a ceiling: each name below has a named import site outside core. Daemon-route
+    // auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately out —
+    // core imports it directly and nothing outside core reaches for it.
     spec: 'wigolo/companion',
     target: './dist/companion/index.js',
-    runtime: ['studioStateDir'],
+    runtime: [
+      'OriginBudget',
+      'budgetOrigin',
+      'budgetRefusal',
+      'getMyInstanceId',
+      'mintHostToken',
+      'normalizeOrigin',
+      'readHandle',
+      'removeHandle',
+      'resolveHostToken',
+      'setMyInstanceId',
+      'studioHandlePath',
+      'studioStateDir',
+      'writeHandle',
+    ],
+    types: [
+      'AuthenticatedOriginOverrides',
+      'EscalationCounterKey',
+      'OriginBudgetVerdict',
+      'OriginClass',
+      'SessionHandle',
+    ],
   },
   {
     spec: 'wigolo/companion-contract',
@@ -144,6 +184,50 @@ type ProbeResult = ProbeOk | ProbeErr;
 
 const SENTINEL = '<<<WIGOLO_EXPORT_PROBE>>>';
 
+/**
+ * Every name the emitted declaration file exports, parsed with the compiler's own parser
+ * rather than matched with a regex — a substring match would call `OriginBudget` present
+ * because `OriginBudgetVerdict` is. Both emit shapes count: a re-export specifier
+ * (`export { x, type Y } from './m.js'`, which is what a barrel emits) and a declaration
+ * carrying the `export` modifier (what a single-module target emits).
+ */
+function declaredExportNames(dtsPath: string): string[] {
+  const text = readFileSync(dtsPath, 'utf-8');
+  const sf = ts.createSourceFile(dtsPath, text, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const names = new Set<string>();
+  for (const st of sf.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) names.add(el.name.text);
+      } else if (st.exportClause && ts.isNamespaceExport(st.exportClause)) {
+        names.add(st.exportClause.name.text);
+      } else {
+        // `export * from ...` — a star re-export makes the pinned set unenforceable,
+        // which is the opposite of a ceiling, so refuse it outright.
+        throw new Error(`${dtsPath} uses a star re-export; the pinned surface cannot be enforced`);
+      }
+      continue;
+    }
+    const modifiers = ts.canHaveModifiers(st) ? (ts.getModifiers(st) ?? []) : [];
+    if (!modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations) {
+        if (ts.isIdentifier(d.name)) names.add(d.name.text);
+      }
+    } else if (
+      (ts.isFunctionDeclaration(st) ||
+        ts.isClassDeclaration(st) ||
+        ts.isInterfaceDeclaration(st) ||
+        ts.isTypeAliasDeclaration(st) ||
+        ts.isEnumDeclaration(st)) &&
+      st.name
+    ) {
+      names.add(st.name.text);
+    }
+  }
+  return [...names].sort();
+}
+
 let probe: Record<string, ProbeResult> = {};
 
 beforeAll(() => {
@@ -176,7 +260,7 @@ process.stdout.write(${JSON.stringify(SENTINEL)} + JSON.stringify(out));
 }, 120_000);
 
 describe('npm subpath exports for the companion split', () => {
-  for (const { spec, target, runtime } of SUBPATHS) {
+  for (const { spec, target, runtime, types } of SUBPATHS) {
     const subpath = `.${spec.slice('wigolo'.length)}`;
 
     it(`${spec} is declared at ${target} with types beside it`, () => {
@@ -201,6 +285,18 @@ describe('npm subpath exports for the companion split', () => {
       expect(result.resolved.endsWith(target.slice(1))).toBe(true);
       expect(result.keys).toEqual([...runtime].sort());
     });
+
+    if (types) {
+      it(`${spec} publishes exactly the measured type surface in its .d.ts`, () => {
+        const entry = pkg.exports[subpath];
+        const dts = typeof entry === 'string' ? undefined : entry?.types;
+        expect(dts, `no types condition for ${subpath}`).toBeDefined();
+        // The runtime probe cannot see a type, so this half is what makes dropping one red.
+        expect(declaredExportNames(join(repoRoot, dts as string))).toEqual(
+          [...runtime, ...types].sort(),
+        );
+      });
+    }
   }
 
   it('keeps every export target inside dist/', () => {
