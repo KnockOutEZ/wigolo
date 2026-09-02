@@ -205,7 +205,8 @@ export class RestRouter {
         return;
       }
 
-      // Run routes: /v1/runs, /v1/runs/{id}, /v1/runs/{id}/events (SD1 §5). These sit BEFORE tool
+      // Run routes: /v1/runs, /v1/runs/{id}, and its /events, /driver and /messages sub-routes
+      // (SD1 §5, SD2 §1 and §3). These sit BEFORE tool
       // dispatch because that branch slices a flat single-segment tool name and would read
       // `runs/abcd` as an unknown tool. Auth is the same gate.
       //

@@ -58,10 +58,19 @@ const CORRELATION_KEY = 'messageId';
  * `via` that could not spell them would have to change shape when they land, and #58's e2e asserts
  * an MCP client observing the states with the mechanism that carried them.
  */
-export type DeliveryMechanism = 'piggyback' | 'wait' | 'interrupt' | 'out_of_band';
+export const DELIVERY_MECHANISM_VALUES = ['piggyback', 'wait', 'interrupt', 'out_of_band'] as const;
+export type DeliveryMechanism = (typeof DELIVERY_MECHANISM_VALUES)[number];
 
-/** The honesty rule's value domain (§3.1). There is no `sent`, and there is no `seen`. */
-export type MessageState = 'queued' | 'delivered' | 'acknowledged';
+/**
+ * The honesty rule's value domain (§3.1). There is no `sent`, and there is no `seen` — not as a
+ * matter of wording but because neither is a thing a pull transport can observe.
+ *
+ * Ordered oldest state first, and exported as the values rather than only as a type: the served
+ * OpenAPI document and the runtime validator both read THIS array, so a fourth state cannot appear
+ * in one and be missing from the other.
+ */
+export const MESSAGE_STATE_VALUES = ['queued', 'delivered', 'acknowledged'] as const;
+export type MessageState = (typeof MESSAGE_STATE_VALUES)[number];
 
 /**
  * Persisted into the log AND onto disk, so it needs a bound that the REST body cap does not give.
@@ -150,7 +159,14 @@ export interface MessageRefused {
 export interface MessageQueued {
   ok: true;
   message: RunMessage;
-  event: RunEvent;
+  /** The `message.queued` row this call appended. Absent on a replay — see `replayed`. */
+  event?: RunEvent;
+  /**
+   * Set when the `messageId` was already in the log and NOTHING was appended: the caller is a retry
+   * and this is the message it queued the first time, at whatever state it has since reached. The
+   * flag exists so a surface can say "already queued" rather than reporting a second send.
+   */
+  replayed?: true;
 }
 
 export type QueueMessageResult = MessageQueued | MessageRefused;
@@ -160,7 +176,11 @@ export interface QueueMessageInput {
   /** Defaults to the human actor: REST's `POST /v1/runs/:id/messages` is a person typing. */
   from?: Actor;
   urgent?: boolean;
-  /** Injectable so a caller can make the append idempotent against its own retry. */
+  /**
+   * An idempotency key. Given one that a `message.queued` row already carries, `queueMessage`
+   * appends nothing and returns that message with `replayed: true` — which is what makes a retried
+   * POST safe. Omitted, one is minted, and every call is a new message.
+   */
   messageId?: string;
 }
 
@@ -194,7 +214,16 @@ export function queueMessage(db: Database.Database, runId: string, input: QueueM
   }
 
   const from = input.from ?? HUMAN;
-  const messageId = input.messageId?.trim() || mintMessageId();
+  const requestedId = input.messageId?.trim();
+  // Idempotency BEFORE the append, and it is not a nicety: a POST that times out on the wire and is
+  // retried would otherwise put a second copy of one human sentence in front of the agent, and the
+  // sentences a human sends mid-run are the ones where twice is worse than never ("cancel that").
+  // The key is the caller's, so this is the caller's own retry it collapses and nobody else's.
+  if (requestedId) {
+    const already = getMessage(db, runId, requestedId);
+    if (already) return { ok: true, replayed: true, message: already };
+  }
+  const messageId = requestedId || mintMessageId();
   const urgent = input.urgent === true;
   const event = appendRunEventWithTail(db, runId, {
     actor: from,
@@ -314,6 +343,28 @@ const DAEMON: Actor = { kind: 'daemon' };
  */
 export function listMessages(db: Database.Database, runId: string, limit = DEFAULT_MESSAGE_LIST_LIMIT): RunMessage[] {
   const n = Math.max(1, Math.min(limit, MAX_MESSAGE_LIST_LIMIT));
+  return [...foldMessages(db, runId).values()].sort((a, b) => b.queuedAtStep - a.queuedAtStep).slice(0, n);
+}
+
+/**
+ * One message read back at its current state, or nothing.
+ *
+ * Bounded by the same window `listMessages` reads, which is what makes this a lookup rather than a
+ * scan — and is also its one limit, stated rather than hidden: an id whose queued row has fallen
+ * out of the newest `MAX_TYPED_EVENT_ROWS` message rows reads as absent. The caller is a POST
+ * carrying an idempotency key, and a retry arrives in seconds; an id older than that window
+ * re-queues, which is exactly the outcome the caller would have had with no key at all.
+ */
+export function getMessage(db: Database.Database, runId: string, messageId: string): RunMessage | undefined {
+  return foldMessages(db, runId).get(messageId);
+}
+
+/**
+ * The fold itself — every message row in the window, replayed in the order it happened, keyed by
+ * message id. Shared by the listing and the single read so there is ONE definition of "the state a
+ * message is in", which is the whole of law 1 at this scale: two folds would be two answers.
+ */
+function foldMessages(db: Database.Database, runId: string): Map<string, RunMessage> {
   const rows = eventsOfTypes(db, runId, { types: MESSAGE_EVENT_TYPES, limit: MAX_TYPED_EVENT_ROWS, newestFirst: true });
   const byId = new Map<string, RunMessage>();
   // Oldest first inside the window, so a fold reads the states in the order they happened.
@@ -333,10 +384,10 @@ export function listMessages(db: Database.Database, runId: string, limit = DEFAU
       byId.set(messageId, { ...held, state: 'acknowledged', acknowledgedAtStep: row.seq });
     }
   }
-  return [...byId.values()].sort((a, b) => b.queuedAtStep - a.queuedAtStep).slice(0, n);
+  return byId;
 }
 
-const MECHANISMS = new Set<string>(['piggyback', 'wait', 'interrupt', 'out_of_band']);
+const MECHANISMS = new Set<string>(DELIVERY_MECHANISM_VALUES);
 
 function mechanismOf(raw: unknown): DeliveryMechanism | undefined {
   return typeof raw === 'string' && MECHANISMS.has(raw) ? (raw as DeliveryMechanism) : undefined;

@@ -2266,3 +2266,200 @@ describe('the SSE fan-out serializes an event once, not once per subscriber', ()
     expect(tails.map((ex) => ex.frames().length)).toEqual([1, 1, 1]);
   });
 });
+
+/**
+ * WHY: law 7 says a pull transport queues and we say so, and this route is where a human's sentence
+ * enters the run. The rows below are the honesty rule as a check rather than as a paragraph — they
+ * read the actual bytes the route puts on the wire and fail if any of them would let a reader
+ * believe the agent already has the message. The rest is the lifecycle: three states, the step
+ * number each one happened at, and a retry that cannot duplicate a sentence a human typed once.
+ */
+describe('REST /v1/runs/{id}/messages — the delivery queue on the wire', () => {
+  let dir: string;
+  let db: Database.Database;
+  let store: RunsStore;
+  let runId: string;
+
+  interface Answer { status: number; body: Record<string, unknown> }
+
+  async function rest(method: string, path: string, payload?: unknown, store_ = store): Promise<Answer> {
+    const { Readable } = await import('node:stream');
+    const req = (payload === undefined
+      ? Object.assign(Readable.from([]), { headers: {} })
+      : Object.assign(Readable.from([Buffer.from(JSON.stringify(payload))]), { headers: { 'content-type': 'application/json' } })
+    ) as unknown as IncomingMessage;
+    const res = { destroyed: false, headersSent: false, setTimeout: () => {}, writeHead: () => {}, end: () => {}, on: () => {}, off: () => {} } as unknown as ServerResponse;
+    let answer: Answer = { status: 0, body: {} };
+    const { handleRunsRequest } = await import('../../../src/daemon/rest/runs.js');
+    // The router hands the handler a pathname with the query already split off, so the helper has
+    // to as well: a `?` left in `pathname` would make every parse fail and every row read 404.
+    const url = new URL(`http://127.0.0.1${path}`);
+    await handleRunsRequest(req, res, {
+      pathname: url.pathname,
+      method,
+      url,
+      respond: (status, body) => { answer = { status, body: body as Record<string, unknown> }; },
+      sendError: (e) => { answer = { status: e.status, body: e.body as unknown as Record<string, unknown> }; },
+      store: store_,
+    });
+    return answer;
+  }
+
+  const send = (payload: unknown): Promise<Answer> => rest('POST', `/v1/runs/${runId}/messages`, payload);
+  const read = async (query = ''): Promise<Array<Record<string, unknown>>> => {
+    const answer = await rest('GET', `/v1/runs/${runId}/messages${query}`);
+    expect(answer.status).toBe(200);
+    return answer.body.messages as Array<Record<string, unknown>>;
+  };
+
+  beforeEach(async () => {
+    _resetMigrationGuard();
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-run-messages-'));
+    db = new Database(join(dir, 'w.db'));
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, { vecLoaded: false });
+    const { sqliteRunsStore } = await import('../../../src/daemon/rest/runs-store.js');
+    store = sqliteRunsStore(db);
+    runId = createRunWithTail(db, { task: 'book the flight' }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('routes the sub-path, and still refuses anything deeper', () => {
+    expect(parseRunsPath('/v1/runs/7fq6/messages')).toEqual({ kind: 'messages', id: '7fq6' });
+    expect(parseRunsPath('/v1/runs/7fq6/messages/hm_1')).toBeNull();
+    expect(parseRunsPath('/v1/runs//messages')).toBeNull();
+  });
+
+  it('answers 202 — accepted into the log, not delivered — and GET reads the same message back', async () => {
+    const posted = await send({ text: 'stop before you pay' });
+    // 202 is the honesty rule in the status line: a 200 here would be the HTTP spelling of "sent".
+    expect(posted.status).toBe(202);
+    const message = posted.body.message as Record<string, unknown>;
+    expect(message.text).toBe('stop before you pay');
+    expect(message.state).toBe('queued');
+    expect(message.state_line).toBe('queued — reaches the agent at its next tool call');
+    expect(message.from).toEqual({ kind: 'human' });
+    expect(message.delivered_at_step).toBeUndefined();
+    expect(typeof message.queued_at_step).toBe('number');
+
+    const listed = await read();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toEqual(message);
+  });
+
+  it('never renders a queued message as sent, seen or instant — asserted on the bytes', async () => {
+    const { MESSAGE_STATE_VALUES } = await import('../../../src/daemon/message-queue.js');
+    const posted = await send({ text: 'the shipping address is wrong' });
+    const listed = await read();
+
+    // The forbidden vocabulary, checked against the WHOLE serialized message rather than against
+    // the one field we happen to remember to look at. A future field that says "sent" reds here.
+    const forbidden = /\b(sent|seen|received|read|instant(ly)?|immediately|notified|pushed)\b/i;
+    for (const wire of [JSON.stringify(posted.body.message), JSON.stringify(listed[0])]) {
+      expect(wire, `queued message must not claim delivery: ${wire}`).not.toMatch(forbidden);
+    }
+    // And the state is one of exactly three, none of which is a claim about the agent's attention.
+    expect(MESSAGE_STATE_VALUES).toEqual(['queued', 'delivered', 'acknowledged']);
+    expect(MESSAGE_STATE_VALUES).toContain(listed[0].state);
+  });
+
+  it('walks queued → delivered at step N → acknowledged, and says which mechanism carried it', async () => {
+    const { deliverMessages, acknowledgeDelivered } = await import('../../../src/daemon/message-queue.js');
+    await send({ text: 'use the other card' });
+    expect((await read())[0].state).toBe('queued');
+
+    const [delivered] = deliverMessages(db, runId, { via: 'piggyback' });
+    const afterDelivery = (await read())[0];
+    expect(afterDelivery.state).toBe('delivered');
+    // Step N is the run-event seq of the delivery row itself (A-51-3) — not a counter of its own.
+    expect(afterDelivery.delivered_at_step).toBe(delivered.deliveredAtStep);
+    expect(afterDelivery.delivered_via).toBe('piggyback');
+    expect(afterDelivery.state_line).toBe(`delivered at step ${delivered.deliveredAtStep} — not yet acknowledged`);
+
+    acknowledgeDelivered(db, runId);
+    const afterAck = (await read())[0];
+    expect(afterAck.state).toBe('acknowledged');
+    expect(afterAck.acknowledged_at_step).toBeGreaterThan(afterDelivery.delivered_at_step as number);
+    expect(afterAck.state_line).toMatch(/^acknowledged at step \d+$/);
+  });
+
+  it('collapses a retried POST onto the message the first one queued, appending nothing', async () => {
+    const first = await send({ text: 'cancel that', message_id: 'hm_retry_key' });
+    expect(first.status).toBe(202);
+    expect(first.body.replayed).toBeUndefined();
+
+    // The wire shape a client retries with is the one it was handed — hence both spellings.
+    const retry = await send({ text: 'cancel that', messageId: 'hm_retry_key' });
+    expect(retry.status).toBe(202);
+    expect(retry.body.replayed).toBe(true);
+    expect((retry.body.message as Record<string, unknown>).queued_at_step)
+      .toBe((first.body.message as Record<string, unknown>).queued_at_step);
+
+    // ONE sentence in front of the agent, not two. A duplicate here is the defect this key exists
+    // for: "cancel that" twice is worse than never.
+    expect(await read()).toHaveLength(1);
+  });
+
+  it('reports a queued message even after the run has gone, because a message is an event', async () => {
+    await send({ text: 'first' });
+    await send({ text: 'second' });
+    const listed = await read();
+    // Newest first, and the limit takes from that end rather than reversing the page.
+    expect(listed.map((m) => m.text)).toEqual(['second', 'first']);
+    expect((await read('?limit=1')).map((m) => m.text)).toEqual(['second']);
+  });
+
+  it('refuses an empty text, an oversized one, a non-boolean urgency and a bad limit', async () => {
+    const { MAX_MESSAGE_TEXT_CHARS, MAX_MESSAGE_LIST_LIMIT } = await import('../../../src/daemon/message-queue.js');
+    for (const bad of [{}, { text: '' }, { text: '   ' }, { text: 42 }, { text: 'x'.repeat(MAX_MESSAGE_TEXT_CHARS + 1) }, { text: 'x', urgent: 'yes' }, { text: 'x', message_id: '' }]) {
+      const answer = await send(bad);
+      expect(answer.status, `should refuse ${JSON.stringify(bad)}`).toBe(400);
+      expect(answer.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+    }
+    for (const limit of ['0', '-1', 'lots', String(MAX_MESSAGE_LIST_LIMIT + 1)]) {
+      const answer = await rest('GET', `/v1/runs/${runId}/messages?limit=${limit}`);
+      expect(answer.status, `should refuse limit=${limit}`).toBe(400);
+    }
+    // Nothing above reached the log.
+    expect(await read()).toEqual([]);
+  });
+
+  it('404s an unknown run on both verbs, and 405s a verb the route does not have', async () => {
+    const posted = await rest('POST', '/v1/runs/zzzz/messages', { text: 'hello' });
+    expect(posted.status).toBe(404);
+    expect(posted.body).toMatchObject({ ok: false, error_reason: 'run_not_found' });
+
+    const listed = await rest('GET', '/v1/runs/zzzz/messages');
+    expect(listed.status).toBe(404);
+    expect(listed.body).toMatchObject({ ok: false, error_reason: 'not_found' });
+
+    const deleted = await rest('DELETE', `/v1/runs/${runId}/messages`);
+    expect(deleted.status).toBe(405);
+  });
+
+  it('accepts the run id in any case, the way every other run route does', async () => {
+    await send({ text: 'case insensitivity' });
+    const answer = await rest('GET', `/v1/runs/${runId.toUpperCase()}/messages`);
+    expect(answer.status).toBe(200);
+    expect((answer.body.messages as unknown[])).toHaveLength(1);
+  });
+
+  it('says store_unavailable rather than pretending, on a binding with no queue', async () => {
+    const noQueue: RunsStore = {
+      create: async () => { throw new Error('not used'); },
+      list: async () => ({ runs: [] }),
+      get: async () => undefined,
+      exists: async () => true,
+      eventsSince: async () => [],
+    };
+    for (const [method, payload] of [['POST', { text: 'hi' }], ['GET', undefined]] as const) {
+      const answer = await rest(method, `/v1/runs/${runId}/messages`, payload, noQueue);
+      expect(answer.status).toBe(503);
+      expect(answer.body).toMatchObject({ ok: false, error_reason: 'store_unavailable' });
+    }
+  });
+});

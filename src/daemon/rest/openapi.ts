@@ -24,9 +24,17 @@ import {
   MAX_CLIENT_FIELD_CHARS,
   MAX_GESTURE_REASON_CHARS,
   MAX_REQUEST_ID_CHARS,
+  MAX_MESSAGE_ID_CHARS,
   RUN_STATUS_VALUES,
   DRIVER_KIND_VALUES,
 } from './runs.js';
+import {
+  MESSAGE_STATE_VALUES,
+  DELIVERY_MECHANISM_VALUES,
+  MAX_MESSAGE_TEXT_CHARS,
+  MAX_MESSAGE_LIST_LIMIT,
+  DEFAULT_MESSAGE_LIST_LIMIT,
+} from '../message-queue.js';
 import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -390,6 +398,50 @@ function driverSchema(): object {
   };
 }
 
+/**
+ * The message representation §3.1 pins, documented field by field — `state`, `delivered_at_step`
+ * and a `state_line` no surface may reword. The enum is imported rather than restated: a document
+ * that spelled the three states itself could drift green while the router accepted a fourth.
+ */
+function messageSchema(): object {
+  return {
+    type: 'object',
+    description:
+      'One message in a run\'s delivery queue. A message is queued into the run log and rides a ' +
+      'later tool result to the agent; it is never pushed. "state_line" is the sentence every ' +
+      'surface renders for the state, and it is the only phrasing of it.',
+    properties: {
+      message_id: { type: 'string' },
+      text: { type: 'string', maxLength: MAX_MESSAGE_TEXT_CHARS },
+      from: { type: 'object', additionalProperties: true, description: 'The actor that queued it.' },
+      urgent: { type: 'boolean', description: 'Present only when set.' },
+      queued_at: { type: 'string', format: 'date-time' },
+      queued_at_step: { type: 'integer', description: 'The run-event sequence number the message entered the log at.' },
+      state: {
+        type: 'string',
+        enum: [...MESSAGE_STATE_VALUES],
+        description:
+          'queued: accepted into the log, the agent does not have it yet. delivered: it rode a ' +
+          'tool result at "delivered_at_step". acknowledged: the agent made a further tool call ' +
+          'after that result, which is what acknowledgement is on a pull transport. There is no ' +
+          '"sent" and no "seen" state, because neither is anything this transport can observe.',
+      },
+      delivered_at_step: {
+        type: 'integer',
+        description: 'Step N — the run-event sequence number of the delivery. Absent while queued.',
+      },
+      delivered_via: {
+        type: 'string',
+        enum: [...DELIVERY_MECHANISM_VALUES],
+        description: 'Which mechanism carried it. "piggyback" is the default: it rode the next result.',
+      },
+      acknowledged_at_step: { type: 'integer' },
+      state_line: { type: 'string', description: 'The rendered state. Render this, do not compose your own.' },
+    },
+    required: ['message_id', 'text', 'from', 'queued_at', 'queued_at_step', 'state', 'state_line'],
+  };
+}
+
 function runSchema(): object {
   return {
     type: 'object',
@@ -649,6 +701,102 @@ function runPaths(): Record<string, object> {
         '200': {
           description: 'The event stream.',
           content: { 'text/event-stream': { schema: { type: 'string' } } },
+        },
+        ...errorResponses(),
+      },
+    },
+  };
+
+  paths['/v1/runs/{id}/messages'] = {
+    post: {
+      operationId: 'sendRunMessage',
+      summary: 'Queue a message for the run\'s agent. Answers 202: accepted, not delivered.',
+      description:
+        'Pull transports queue, and this one says so. The message is appended to the run log and ' +
+        'reaches the agent when the agent next calls a tool — the very next result carries it. ' +
+        'Nothing here pushes, interrupts or wakes anything, and there is no status in which this ' +
+        'endpoint reports a message as sent or seen: read "state" and render "state_line". Send ' +
+        '"message_id" to make a retry idempotent — a key already in the log appends nothing and ' +
+        'comes back with "replayed": true.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', minLength: 1, maxLength: MAX_MESSAGE_TEXT_CHARS },
+                urgent: {
+                  type: 'boolean',
+                  description:
+                    'Recorded on the message. Urgency does not make delivery instant — it selects ' +
+                    'a faster mechanism where one exists.',
+                },
+                message_id: {
+                  type: 'string',
+                  minLength: 1,
+                  maxLength: MAX_MESSAGE_ID_CHARS,
+                  description: 'Idempotency key. Also accepted as "messageId".',
+                },
+              },
+              required: ['text'],
+            },
+          },
+        },
+      },
+      responses: {
+        '202': {
+          description: 'Accepted into the run log. The message has NOT been delivered.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  message: messageSchema(),
+                  replayed: { type: 'boolean', description: 'Set when the idempotency key was already in the log.' },
+                },
+                required: ['ok', 'message'],
+              },
+            },
+          },
+        },
+        ...errorResponses(),
+      },
+    },
+    get: {
+      operationId: 'listRunMessages',
+      summary: 'List the run\'s messages, newest first, each at its current state.',
+      description:
+        'A projection of the run log, so it is durable and survives a daemon restart: a message ' +
+        'queued before a restart is still queued after it, and is delivered by the same rules.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: MAX_MESSAGE_LIST_LIMIT, default: DEFAULT_MESSAGE_LIST_LIMIT },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'The messages, newest first.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  messages: { type: 'array', items: messageSchema() },
+                },
+                required: ['ok', 'messages'],
+              },
+            },
+          },
         },
         ...errorResponses(),
       },

@@ -39,6 +39,13 @@ import {
   takeWheel,
   type BatonResult,
 } from '../driver-baton.js';
+import {
+  listMessages,
+  queueMessage,
+  type QueueMessageInput,
+  type QueueMessageResult,
+  type RunMessage,
+} from '../message-queue.js';
 
 /**
  * Every method the REST surface needs and nothing else. There is deliberately no `append` and no
@@ -67,6 +74,15 @@ export interface RunsStore {
    * than pretending. Additive on purpose: an existing binding stays valid without changing.
    */
   driver?(runId: string, input: DriverGesture): Promise<BatonResult>;
+  /**
+   * SD2 §3 — accept a message into the run's delivery queue. A WRITE, and still not an `append`:
+   * the caller names a text and the queue decides which row that is worth, exactly as `driver`
+   * names a gesture. It delivers nothing; law 7 says a pull transport queues and we say so, and
+   * what comes back is a `queued` message whose own state line says when it will reach the agent.
+   */
+  sendMessage?(runId: string, input: QueueMessageInput): Promise<QueueMessageResult>;
+  /** The run's messages, newest first, each folded to the state its rows put it in. */
+  messages?(runId: string, limit: number): Promise<RunMessage[]>;
 }
 
 /** The five gestures, and nothing else: there is no way to set the driver field directly. */
@@ -133,8 +149,11 @@ export function sqliteRunsStore(db: Database.Database): RunsStore {
     exists: async (runId) => runExists(db, runId),
     eventsSince: async (runId, since, limit) => eventsSince(db, runId, since, limit),
     driver: async (runId, input) => applyGesture(db, runId, input),
+    sendMessage: async (runId, input) => queueMessage(db, runId, input),
+    messages: async (runId, limit) => listMessages(db, runId, limit),
   };
 }
 
 export type { BatonResult };
+export type { QueueMessageInput, QueueMessageResult, RunMessage };
 export type { CreateRunInput, ListRunsOptions, ListRunsResult, Run, RunEvent };
