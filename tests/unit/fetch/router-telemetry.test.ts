@@ -74,6 +74,22 @@ function httpResult(url: string, statusCode: number, html: string): RawFetchResu
   return { url, finalUrl: url, html, contentType: 'text/html', statusCode, method: 'http', headers: {} };
 }
 
+/**
+ * A typed `HttpClient` serving one canned response. Typed rather than cast: the router's
+ * contract requires `finalUrl`, and a stub that omits it would compile only behind an
+ * assertion and then diverge from the shape the tier actually returns.
+ */
+function stubHttp(
+  url: string,
+  statusCode: number,
+  html: string,
+  headers: Record<string, string> = {},
+): HttpClient {
+  return {
+    fetch: vi.fn(async () => ({ url, finalUrl: url, html, contentType: 'text/html', statusCode, headers })),
+  };
+}
+
 describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () => {
   let httpClient: HttpClient;
 
@@ -126,7 +142,7 @@ describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () 
     // A Cloudflare interstitial served AT 403 — the common shape. Reading the status first
     // would relabel most anti-bot walls as ordinary forbidden responses.
     const challengeBody = '<html><head><title>Just a moment...</title></head><body><div id="cf-wrapper">Checking your browser</div></body></html>';
-    httpClient = { fetch: vi.fn(async () => ({ url: PLANTED_URL, html: challengeBody, statusCode: 403, headers: { 'cf-mitigated': 'challenge' }, contentType: 'text/html' })) };
+    httpClient = stubHttp(PLANTED_URL, 403, challengeBody, { 'cf-mitigated': 'challenge' });
     const router = new SmartRouter({ httpClient, pdfProbe: async () => false });
 
     await router.fetch(PLANTED_URL, { renderJs: 'never' });
@@ -138,7 +154,7 @@ describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () 
 
   it('reports a bare 403 as http_403', async () => {
     activate();
-    httpClient = { fetch: vi.fn(async () => ({ url: PLANTED_URL, html: '<html><body>Forbidden. You do not have access to this document.</body></html>', statusCode: 403, headers: {}, contentType: 'text/html' })) };
+    httpClient = stubHttp(PLANTED_URL, 403, '<html><body>Forbidden. You do not have access to this document.</body></html>');
     const router = new SmartRouter({ httpClient, pdfProbe: async () => false });
 
     await router.fetch(PLANTED_URL, { renderJs: 'never' });
@@ -164,7 +180,7 @@ describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () 
 
   it('reports nothing when the base http tier served the page', async () => {
     activate();
-    httpClient = { fetch: vi.fn(async () => ({ url: 'https://example.com/a', html: '<html><body>a perfectly ordinary page with enough words to look substantive</body></html>', statusCode: 200, headers: {}, contentType: 'text/html' })) };
+    httpClient = stubHttp('https://example.com/a', 200, '<html><body>a perfectly ordinary page with enough words to look substantive</body></html>');
     const router = new SmartRouter({ httpClient, pdfProbe: async () => false });
 
     await router.fetch('https://example.com/a', { renderJs: 'never' });
@@ -174,7 +190,7 @@ describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () 
 
   it('drops the event rather than reporting a host with no registrable domain', async () => {
     activate();
-    httpClient = { fetch: vi.fn(async () => ({ url: 'http://127.0.0.1:9/x', html: '<html><body>Forbidden. Access denied to this resource.</body></html>', statusCode: 403, headers: {}, contentType: 'text/html' })) };
+    httpClient = stubHttp('http://127.0.0.1:9/x', 403, '<html><body>Forbidden. Access denied to this resource.</body></html>');
     const router = new SmartRouter({ httpClient, pdfProbe: async () => false });
 
     await router.fetch('http://127.0.0.1:9/x', { renderJs: 'never', source: 'human' });
@@ -186,7 +202,7 @@ describe('SmartRouter telemetry — fetch.blocked and fetch.tier_escalated', () 
 
   it('writes nothing at all on an install that was never activated', async () => {
     // No activate() — the state file has no account id.
-    httpClient = { fetch: vi.fn(async () => ({ url: PLANTED_URL, html: '<html><body>Forbidden. No access.</body></html>', statusCode: 403, headers: {}, contentType: 'text/html' })) };
+    httpClient = stubHttp(PLANTED_URL, 403, '<html><body>Forbidden. No access.</body></html>');
     const router = new SmartRouter({ httpClient, pdfProbe: async () => false });
 
     await router.fetch(PLANTED_URL, { renderJs: 'never' });
