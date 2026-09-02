@@ -2035,3 +2035,277 @@ describe('cli/studio startStudioHost — #317 one held snapshot per session', ()
     }
   });
 });
+
+/**
+ * #318 — pin 8's post-actions, wired into the PRODUCTION host.
+ *
+ * `wigolo-studio-run#57` shipped the seam behind `ActHandlerDeps.postActions` and tested it
+ * exhaustively at the handler boundary, but no core host supplied the capability — so every act a
+ * real daemon served was silently pre-pin-8 and the whole feature was unreachable. That is precisely
+ * the class of gap a handler-level test cannot see, so these arms drive the REAL host: they build it
+ * with `startStudioHost`, act through `host.act`, and read the block off the result.
+ *
+ * Named mutations that RED these (each verified):
+ *  - drop `postActions` from the host's createActHandler → no `post_actions` on any result
+ *  - drop `consoleSince` → the console counts stay 0 with lines emitted
+ *  - drop `settle` → the page's settle methods are never called
+ *  - make the collector non-draining → the second act re-reports the first act's lines
+ */
+type PostActionsLike = {
+  trusted: false;
+  untrusted_notice: string;
+  settled: { base: 'held' | 'none'; added: number; removed: number; changed: number; churn: number; sample?: Array<{ name: string }> };
+  console: { errors: number; warnings: number; sample?: string[] };
+};
+type ActWithPost = { ok?: boolean; error_reason?: string; post_actions?: PostActionsLike };
+
+/**
+ * A launcher whose page CONTENT is mutable (so an act produces a real settle-diff against the held
+ * snapshot), whose cdp records its sends and carries `Log.entryAdded` listeners, and whose page
+ * either can or cannot be settled.
+ *
+ * `settle: 'never'` is a page that keeps growing forever — the probe never fires and the stability
+ * poller never stabilises, so only the budget can end the wait.
+ */
+function makePin8Launcher(opts: { settle?: 'fast' | 'never' | 'absent' } = {}) {
+  const mode = opts.settle ?? 'fast';
+  const state = {
+    specs: [{ be: 10, role: 'button', name: 'Open' }] as Array<{ be: number; role: string; name: string }>,
+    sends: [] as string[],
+    settleCalls: [] as string[],
+    logListeners: [] as Array<(p: unknown) => void>,
+  };
+  const axNodes = () =>
+    state.specs.map((s) => ({ ignored: false, role: { value: s.role }, name: { value: s.name }, backendDOMNodeId: s.be }));
+  const domRoot = () => ({
+    backendNodeId: 1,
+    localName: 'html',
+    children: [
+      {
+        backendNodeId: 2,
+        localName: 'body',
+        children: state.specs.map((s) => ({ backendNodeId: s.be, localName: 'button', attributes: [] })),
+      },
+    ],
+  });
+  let growth = 0;
+  const launch = async (): Promise<LaunchedSessionBrowser> => {
+    const cdp = {
+      send: async (method: string) => {
+        state.sends.push(method);
+        if (method === 'Accessibility.getFullAXTree') return { nodes: axNodes() };
+        if (method === 'DOM.getDocument') return { root: domRoot() };
+        return {};
+      },
+      on: (event: string, cb: (p: unknown) => void) => { if (event === 'Log.entryAdded') state.logListeners.push(cb); },
+      off: (event: string, cb: (p: unknown) => void) => {
+        if (event !== 'Log.entryAdded') return;
+        const i = state.logListeners.indexOf(cb);
+        if (i >= 0) state.logListeners.splice(i, 1);
+      },
+    };
+    const page: Record<string, unknown> = {
+      close: async () => {},
+      goto: async () => null,
+      on: () => {},
+      url: () => 'https://example.com/app',
+    };
+    if (mode !== 'absent') {
+      page.waitForLoadState = async () => { state.settleCalls.push('waitForLoadState'); return null; };
+      page.waitForFunction =
+        mode === 'never'
+          ? () => new Promise(() => {}) // the hydration probe never fires
+          : async () => { state.settleCalls.push('waitForFunction'); return null; };
+      page.evaluate = async () => {
+        state.settleCalls.push('evaluate');
+        // 'never': the page keeps growing, so the stability poller never sees two quiet ticks.
+        growth += mode === 'never' ? 100_000 : 0;
+        return { textLen: 500 + growth, nodes: 5, hasContent: true, hasSpaRoot: false, nearEmpty: false };
+      };
+    }
+    return {
+      browser: { close: async () => {}, on: () => {} },
+      context: { close: async () => {}, storageState: async () => ({ cookies: [], origins: [] }) },
+      page,
+      cdp,
+    } as unknown as LaunchedSessionBrowser;
+  };
+  return {
+    launch,
+    state,
+    emit: (level: string, text: string) => state.logListeners.forEach((cb) => cb({ entry: { level, text } })),
+  };
+}
+
+describe('cli/studio startStudioHost — #318 pin 8 post-actions are wired in the shipped host', () => {
+  let runDataDir: string;
+  beforeEach(() => {
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+    runDataDir = mkdtempSync(join(tmpdir(), 'wigolo-318-'));
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    rmSync(runDataDir, { recursive: true, force: true });
+    resetConfig();
+  });
+
+  // THE issue's headline claim: an act driven through the REAL host comes back carrying what the page
+  // became and what the console said. `base: 'held'` is the load-bearing half — it proves the delta was
+  // taken against the SAME holder the observer wrote, not against a fresh private snapshot.
+  it('an act through the host returns a real settle-diff and a real console summary', async () => {
+    const fake = makePin8Launcher();
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fake.launch,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      await host.observe({ since: 0 }); // the "before" half is now HELD
+
+      // The page changes (as it would under a click) and says something on the way.
+      fake.state.specs.push({ be: 11, role: 'button', name: 'Checkout' });
+      fake.emit('error', 'TypeError: cannot read x of undefined');
+      fake.emit('warning', 'deprecated API used');
+      fake.emit('info', 'hydrated');
+
+      const r = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      expect(r.error_reason, `the act must LAND for post-actions to ride it; got ${JSON.stringify(r)}`).toBeUndefined();
+      const pa = r.post_actions;
+      expect(pa, 'the production host must supply the postActions capability').toBeDefined();
+
+      // The page-derived payload carries the same fence studio_observe carries.
+      expect(pa!.trusted).toBe(false);
+      expect(pa!.untrusted_notice.length).toBeGreaterThan(0);
+
+      // A REAL settle-diff: against the held snapshot, and it saw the element that appeared.
+      expect(pa!.settled.base).toBe('held');
+      expect(pa!.settled.added).toBe(1);
+      expect(pa!.settled.sample?.some((e) => e.name === 'Checkout')).toBe(true);
+
+      // A REAL console summary, collected by the host's own subscription.
+      expect(pa!.console.errors).toBe(1);
+      expect(pa!.console.warnings).toBe(1);
+      expect(pa!.console.sample?.join('\n')).toContain('cannot read x of undefined');
+
+      // The settle ran against the live page rather than being skipped.
+      expect(fake.state.settleCalls.length).toBeGreaterThan(0);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // Drain-on-read at the HOST boundary: one act reports its own window. Without it the second act
+  // re-announces the first act's error and an agent chases a failure it already saw.
+  it('the console buffer is drained per act — a second act does not re-report the first act lines', async () => {
+    const fake = makePin8Launcher();
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fake.launch,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      await host.observe({ since: 0 });
+      fake.emit('error', 'first-act-error');
+      const first = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      expect(first.post_actions!.console.errors).toBe(1);
+
+      const second = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      expect(second.post_actions!.console.errors).toBe(0);
+      expect(second.post_actions!.console.sample ?? []).toEqual([]);
+
+      // …and the collector is still LIVE afterwards — drained, not detached.
+      fake.emit('warning', 'third-act-warning');
+      const third = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      expect(third.post_actions!.console.warnings).toBe(1);
+      expect(third.post_actions!.console.sample?.join('\n')).toContain('third-act-warning');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // DECISIONS-AUTO A-318-1 at the host boundary: the studio session must not acquire the pinned
+  // automation tell as a side effect of collecting console output.
+  it('the host enables the Log domain for collection and never Runtime', async () => {
+    const fake = makePin8Launcher();
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fake.launch,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fake.state.sends).toContain('Log.enable');
+      expect(fake.state.sends).not.toContain('Runtime.enable');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // The cap, proven against a page that CANNOT quiesce: the probe never fires and the content never
+  // stops growing, so only the budget can end the wait. An uncapped settle would hang the act here.
+  it('a page that never quiesces still returns, on the budget', async () => {
+    const fake = makePin8Launcher({ settle: 'never' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fake.launch,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      await host.observe({ since: 0 });
+      const started = Date.now();
+      const r = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      const elapsed = Date.now() - started;
+      expect(r.post_actions, 'the act must still carry its block after a budget exit').toBeDefined();
+      expect(r.post_actions!.settled.base).toBe('held');
+      // Bounded by the cap, not by the tool timeout. The upper bound is generous for a loaded CI box;
+      // an UNCAPPED settle against this page never returns at all, which is what this arm catches.
+      expect(elapsed).toBeLessThan(5000);
+    } finally {
+      await host.daemon.stop();
+    }
+  }, 20_000);
+
+  // Law 1 — run attribution. `opts.runId` IS reachable at this construction site (#317 added it), so an
+  // oversized delta must land under the run that produced it rather than under `unattributed/`, which is
+  // honest but useless: a file nobody can trace back to a run answers no audit question.
+  it('a spilled settle-diff is attributed to the run this session drives', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'attribute the spill' }, { dataDir: runDataDir });
+    const fake = makePin8Launcher();
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: fake.launch, runId: run.id,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      await host.observe({ since: 0 });
+      // Past the inline sample limit, so the whole delta goes to a file.
+      for (let i = 0; i < 9; i++) fake.state.specs.push({ be: 100 + i, role: 'button', name: `Row ${i}` });
+      const r = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost & {
+        post_actions?: { settled: { file?: string; spilled?: number } };
+      };
+      const file = r.post_actions!.settled.file;
+      expect(file, 'nine added elements past a five-element sample must spill to a file').toBeDefined();
+      expect(file).not.toContain('unattributed');
+      expect(file).toContain(run.id.replace(/[^A-Za-z0-9_-]/g, ''));
+      expect(readFileSync(file!, 'utf8').length).toBeGreaterThan(0);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // A page handle that cannot be settled (a browser engine without the three methods) must degrade to
+  // an immediate snapshot — a delta rather than a SETTLED delta — never an act that errors.
+  it('a page with no settle capability still returns its post-actions', async () => {
+    const fake = makePin8Launcher({ settle: 'absent' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fake.launch,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      await host.observe({ since: 0 });
+      fake.state.specs.push({ be: 12, role: 'button', name: 'Late' });
+      const r = (await host.act({ action: 'scroll', direction: 'down' })) as unknown as ActWithPost;
+      expect(r.post_actions!.settled.added).toBe(1);
+      expect(fake.state.settleCalls).toEqual([]);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+});
