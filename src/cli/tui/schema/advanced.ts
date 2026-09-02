@@ -67,7 +67,7 @@ export const advancedCategory: CategoryDef = {
       settingsPath: 'accountsUrl',
       label: 'Accounts service URL',
       kind: 'text',
-      help: 'Base URL of the account service used for sign-in, entitlements and telemetry. Leave unset to use the shipped default.',
+      help: 'Base URL of the account service used for sign-in, entitlements and telemetry. Leave unset to use the hosted wigolo accounts service; set it only to point this install at a self-hosted one.',
     },
     {
       key: 'WIGOLO_TELEMETRY',
@@ -75,7 +75,10 @@ export const advancedCategory: CategoryDef = {
       label: 'Usage and reliability telemetry',
       kind: 'toggle',
       default: true,
-      help: 'Send anonymous usage and reliability counters to your account: which tools ran, how long they took as coarse buckets, error classes, and the registrable domain of a blocked site. Never page content, queries, full URLs, credentials or file paths. Turn it off here, or set WIGOLO_TELEMETRY=off for a single run — off means nothing is queued and nothing leaves the machine.',
+      // NOT "anonymous": every batch is authorised as your account, so the counters are
+      // attributed to it. Claiming anonymity in the same sentence that says "to your
+      // account" was the shipped wording and it contradicted itself.
+      help: 'Send usage and reliability counters to your account: which tools ran, how long they took as coarse buckets, error classes, and the registrable domain of a blocked site. Never page content, queries, full URLs, credentials or file paths. Turn it off here, or set WIGOLO_TELEMETRY=off for a single run — off means nothing is queued and nothing leaves the machine.',
     },
     {
       key: 'WIGOLO_DAEMON_HOST',

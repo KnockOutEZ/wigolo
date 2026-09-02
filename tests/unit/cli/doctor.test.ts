@@ -522,8 +522,11 @@ describe('runDoctor', () => {
       delete process.env.WIGOLO_TELEMETRY;
       resetTelemetryForTest();
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/Telemetry: opt-out inactive \(no account yet/);
+      expect(outBuffer).toMatch(/Telemetry: off — no account on this machine yet/);
       expect(outBuffer).toContain('wigolo register');
+      // The line names the state of TELEMETRY, not the state of the opt-out. The shipped
+      // wording ("opt-out inactive") read as its own inverse.
+      expect(outBuffer).not.toMatch(/Telemetry: opt-out/);
     });
 
     it('reports telemetry enabled on an activated install with the switch untouched', async () => {
@@ -531,7 +534,11 @@ describe('runDoctor', () => {
       activateAccount();
       resetTelemetryForTest();
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/Telemetry: opt-out enabled \(WIGOLO_TELEMETRY=off to opt out\)/);
+      expect(outBuffer).toMatch(/Telemetry: on — usage and reliability counters are sent to your account/);
+      expect(outBuffer).toContain('WIGOLO_TELEMETRY=off');
+      // Anti-inversion: an activated install with telemetry ON must never be described
+      // with the word "off" ahead of the switch hint.
+      expect(outBuffer).not.toMatch(/Telemetry: off/);
     });
 
     it('reports telemetry disabled when WIGOLO_TELEMETRY=off, even when activated', async () => {
@@ -544,9 +551,12 @@ describe('runDoctor', () => {
       } finally {
         delete process.env.WIGOLO_TELEMETRY;
       }
-      expect(outBuffer).toMatch(/Telemetry: opt-out disabled/);
-      expect(outBuffer).toContain('nothing is queued and nothing is sent');
+      expect(outBuffer).toMatch(/Telemetry: off — nothing is queued and nothing is sent/);
       expect(outBuffer).not.toMatch(/wigolo register/);
+      // The inversion this replaces: a user who has JUST opted out must not be told
+      // telemetry is on, nor that their opt-out is "disabled".
+      expect(outBuffer).not.toMatch(/Telemetry: on/);
+      expect(outBuffer).not.toMatch(/Telemetry: opt-out/);
     });
 
     it('still reports disabled for the legacy WIGOLO_TELEMETRY=0 spelling', async () => {
@@ -559,7 +569,8 @@ describe('runDoctor', () => {
       } finally {
         delete process.env.WIGOLO_TELEMETRY;
       }
-      expect(outBuffer).toMatch(/Telemetry: opt-out disabled/);
+      expect(outBuffer).toMatch(/Telemetry: off — nothing is queued and nothing is sent/);
+      expect(outBuffer).not.toMatch(/Telemetry: on/);
     });
   });
 });

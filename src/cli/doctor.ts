@@ -1347,15 +1347,20 @@ function checkTelemetryStatus(): void {
   out('');
   // Opt-OUT as of 0.3.0, and the line distinguishes the two ways it can be off: the switch,
   // and an install that has no account to report against yet.
+  //
+  // The line names the STATE OF TELEMETRY, never the state of the opt-out. "Opt-out
+  // disabled" was the shipped wording and it read as its own inverse — a user who had
+  // just set WIGOLO_TELEMETRY=off was told their opt-out was disabled. Match `wigolo
+  // account`, which already says "Telemetry: on" / "Telemetry: off".
   switch (telemetryStatus()) {
     case 'enabled':
-      out('[wigolo doctor] Telemetry: opt-out enabled (WIGOLO_TELEMETRY=off to opt out)');
+      out('[wigolo doctor] Telemetry: on — usage and reliability counters are sent to your account (set WIGOLO_TELEMETRY=off to turn it off)');
       break;
     case 'disabled':
-      out('[wigolo doctor] Telemetry: opt-out disabled (nothing is queued and nothing is sent)');
+      out('[wigolo doctor] Telemetry: off — nothing is queued and nothing is sent');
       break;
     case 'not_activated':
-      out('[wigolo doctor] Telemetry: opt-out inactive (no account yet — run `wigolo register`)');
+      out('[wigolo doctor] Telemetry: off — no account on this machine yet (nothing is queued or sent until you run `wigolo register`)');
       break;
   }
 }

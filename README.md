@@ -42,6 +42,7 @@ wigolo gives an AI agent one surface for everything web-related: **search, fetch
 ```bash
 npx wigolo init                              # set up the local engine — any system
 npx wigolo init --agents=claude-code,cursor  # …or set up + wire your day-to-day agents in one command
+npx wigolo register                          # free account — email + a mailed code, no password
 ```
 
 Requires **Node ≥ 22** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
@@ -51,6 +52,7 @@ Requires **Node ≥ 22** and ~1.5 GB of free disk on macOS, Linux, or Windows. B
 - **More on the way** — the supported list keeps growing, and a PR to add your agent is welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Interactive setup** — `--interactive` is a plain-text flow; `--wizard` is the full terminal TUI.
 - **Defer downloads** — `--no-warmup` waits until first use. A failed component download never fails setup; init reports what's not ready with the exact fix and still completes.
+- **One free account** — the tools need an activated install, so `init` closes by pointing at `wigolo register`. `wigolo login` signs in a machine you've already got an account for. Diagnostics work without either. See [account & telemetry](#account--telemetry).
 
 `init` is unattended by default, so it's safe in scripts and CI, and any setup problem surfaces right here in the per-component report, before your agent's first call. **Search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy anytime:
 
@@ -297,6 +299,46 @@ flowchart TD
 - **Signal-driven routing.** The fetch ladder escalates to a real browser on observable signals, not domain guesses: SPA markers, challenge bodies, thin content. It learns per domain, unlearns when a site stops needing it, and `wigolo tune list` shows you exactly what it learned.
 - **Reads pages the way a browser does.** Tiered fetching waits out interstitial challenges and reuses clearances per domain, politely: robots.txt respected, per-domain rate limits, research-grade volumes. When a wall stays up, the failure is labeled and reported.
 
+## Account & telemetry
+
+The ten tools need an activated install. `npx wigolo register` creates a free account from
+an email address and a mailed sign-in code — no password, no card, nothing to buy. Five
+verbs own it, separate from `wigolo auth`, which is about signing in to *websites* through
+the browser engine:
+
+```bash
+npx wigolo register      # create the account and activate this machine
+npx wigolo login         # sign in on another machine, or after a sign-in expires
+npx wigolo whoami        # what this machine thinks — fully offline
+npx wigolo account       # summary, grants, telemetry state, export, delete
+npx wigolo logout        # clear the local credential only
+```
+
+Activation is verified offline against a signed token on disk, so ordinary runs never call
+the service and a network outage cannot de-activate you. Diagnostics are never gated:
+`doctor`, `verify` and `warmup` run on a machine that has never registered.
+
+**Usage and reliability telemetry is on by default**, which is a change in 0.3.0 — earlier
+releases sent nothing. It is six counters and no seventh: a tool ran (which one, which
+surface, whether it worked, how long as a coarse bucket), a tool failed (its error
+*class*), a fetch was blocked (the registrable domain and why), a fetch escalated a tier,
+a search engine failed (its error *class*), and a daemon's uptime as a bucket. Every field
+is a fixed choice from a fixed list, a true/false, or a bare domain. Your page content,
+queries, full URLs, credentials and file paths are not sent — and, because the event
+dictionary has no free-text field anywhere, they are not representable. Error classes
+travel with no message at all, sanitized or otherwise.
+
+One switch, and off means nothing is queued and nothing is written:
+
+```bash
+WIGOLO_TELEMETRY=off npx wigolo search "…"     # one run
+npx wigolo config --set WIGOLO_TELEMETRY=off   # permanently
+```
+
+`wigolo doctor` and `wigolo account` both report which state you're in. The full list of
+events and fields, the Never list, and where credentials live are in
+[privacy & security](docs/privacy-security.md#usage-and-reliability-telemetry).
+
 ## Configuration
 
 A clean install works out of the box. Three settings raise output quality:
@@ -350,7 +392,7 @@ The full guide covers per-symptom fixes, a "what still works when X fails" map, 
 <details>
 <summary><b>Free? What's the catch?</b></summary>
 
-No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's sustained by donations, and the AGPL license legally prevents a switch into a closed hosted product.
+No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's sustained by donations, and the AGPL license legally prevents a switch into a closed hosted product. Since 0.3.0 the tools do need a free account — an email address and a mailed code, no card — which is what makes [usage and reliability telemetry](#account--telemetry) attributable; there is still nothing to buy.
 
 </details>
 

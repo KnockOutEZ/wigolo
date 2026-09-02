@@ -31,6 +31,9 @@ describe('advancedCategory', () => {
     expect(telemetry?.help).toMatch(/Never page content/);
     // Capability language: no provider, library or service-implementation name.
     expect(telemetry?.help).not.toMatch(/playwright|searxng|posthog|segment/i);
+    // Every batch is authorised as the account, so the counters are attributed to it.
+    // The shipped help said "anonymous" and "to your account" in one sentence.
+    expect(telemetry?.help).not.toMatch(/anonymous|anonymised|anonymized/i);
   });
 
   it('solver + reader URL fields are opt-in text fields with capability-language help', () => {

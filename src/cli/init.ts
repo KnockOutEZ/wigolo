@@ -207,6 +207,51 @@ async function reportSetupAndDoctor(
 }
 
 /**
+ * The first-run next step, when there is one.
+ *
+ * Every gated command refuses until this install is activated, so `init` finishing with
+ * nothing to say about that is a dead end: setup looks complete and the first tool call
+ * fails. This is the affordance that closes the gap (PX2 mini-spec §8).
+ *
+ * Fully OFFLINE and derived from the SAME gate every dispatch path consults
+ * (`evaluateActivation`), so the line cannot disagree with the refusal a user is about to
+ * hit. An activated install gets `null` — no nag on a machine that is already set up.
+ *
+ * The three refusal reasons get three different lines on purpose. Telling someone whose
+ * sign-in expired to go and register would send them to create a second account.
+ *
+ * Fail-safe: any read/parse failure returns `null`. A hint is never worth failing setup.
+ */
+export async function activationNextStepLine(
+  dataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  nowMs: number = Date.now(),
+): Promise<string | null> {
+  try {
+    const { AccountStateStore } = await import('../account/state.js');
+    const { resolvePinnedKeys } = await import('../account/pinned-keys.js');
+    const { evaluateActivation } = await import('../account/gate.js');
+    const state = new AccountStateStore(dataDir).read();
+    const keys = resolvePinnedKeys(env);
+    const decision = evaluateActivation({ state, keys: keys.keys }, nowMs);
+    if (decision.ok) return null;
+    switch (decision.reason) {
+      case 'never_activated':
+        return 'Next step: run `wigolo register` to activate this install'
+          + ' (already have an account? `wigolo login`).';
+      case 'expired':
+        return 'Next step: run `wigolo login` — the sign-in on this machine has expired.';
+      case 'update_required':
+        return 'Next step: update wigolo, then run `wigolo login` — this build cannot verify'
+          + ' your sign-in.';
+    }
+  } catch {
+    // Best-effort: a hint failure never affects setup or the exit code.
+  }
+  return null;
+}
+
+/**
  * Install skill packs for the selected agents through the shared skills engine.
  *
  * A single engine call (`installSkills`, global scope) covers every selected
@@ -329,6 +374,8 @@ interface InitJsonSummary {
   configPersisted: boolean;
   components?: ComponentSummary;
   doctor?: DoctorSummaryCheck[];
+  /** The first-run activation hint, when this install is not activated yet. Absent when it is. */
+  nextStep?: string;
   readyCount?: number;
   total?: number;
   requiredFailed?: boolean;
@@ -419,6 +466,11 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
   }
 
   const doctor = await reportSetupAndDoctor(components, dataDir, print);
+  const nextStep = await activationNextStepLine(dataDir);
+  if (nextStep !== null) {
+    print('');
+    print(`  ${nextStep}`);
+  }
 
   if (flags.json) {
     emitInitJson({
@@ -429,6 +481,7 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
       configPersisted: true,
       components,
       doctor,
+      ...(nextStep !== null ? { nextStep } : {}),
     });
   }
   return 0;
@@ -762,6 +815,11 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   // requiredFailed. The exit code stays driven by the honest setup summary: a
   // genuinely-failed REQUESTED agent registration is still an exit-1 failure.
   const doctor = await reportSetupAndDoctor(components, config.dataDir, print);
+  const nextStep = await activationNextStepLine(config.dataDir);
+  if (nextStep !== null) {
+    print('');
+    print(`  ${nextStep}`);
+  }
 
   if (flags.json) {
     emitInitJson({
@@ -775,6 +833,7 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       readyCount: summary.readyCount,
       total: summary.total,
       requiredFailed: summary.requiredFailed,
+      ...(nextStep !== null ? { nextStep } : {}),
     });
   }
   return summary.exitCode;

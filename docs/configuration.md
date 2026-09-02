@@ -147,14 +147,59 @@ Per-call `force_refresh: true` skips both and goes to the network. `wigolo cache
 
 Full endpoint + auth semantics — including the opt-in [compat shim](./rest-api.md#compat-shim) — in [REST API](./rest-api.md) and [self-hosting](./self-hosting.md).
 
-## Telemetry
+## Account and telemetry
 
-Off by default, and stays off unless you opt in.
+Two settings, one for each half: where the account service lives, and whether usage and
+reliability telemetry is sent to it.
 
 | Env var | Default | What it does |
 | --- | --- | --- |
-| `WIGOLO_TELEMETRY` | unset | `1` enables event logging to a local file: `~/.wigolo/telemetry/events-YYYYMMDD.ndjson`. Nothing is transmitted. |
-| `WIGOLO_TELEMETRY_ENDPOINT` | unset | Only if you set this does wigolo additionally POST events to that URL (yours). |
+| `WIGOLO_ACCOUNTS_URL` | the hosted wigolo accounts service | Base URL used for sign-in, entitlements and telemetry. Set it only to point this install at a self-hosted service. |
+| `WIGOLO_TELEMETRY` | on | Set to `off` (or `no`, `false`, `0`) to send nothing. Any other value means on. |
+
+Both have persisted equivalents in the settings catalog — `accountsUrl` and
+`telemetryEnabled` — under Advanced in `wigolo config`. Precedence is the usual one: env
+beats persisted, persisted beats the default.
+
+### The telemetry switch
+
+**Telemetry is on by default as of 0.3.0.** This is a change: earlier releases logged
+events to a local file only if you opted in, and transmitted nothing.
+
+Off means off at the source. Nothing is queued, nothing is written to disk, and nothing
+leaves the machine — the switch is checked before an event is constructed, not before it is
+sent. Turn it off for a single run:
+
+```bash
+WIGOLO_TELEMETRY=off wigolo search "…"
+```
+
+…or permanently:
+
+```bash
+wigolo config --set WIGOLO_TELEMETRY=off
+```
+
+`off`, `no`, `false` and `0` all mean off, trimmed and case-insensitive. Every other value
+means on — including `1`, which used to be how you turned telemetry *on*.
+
+Telemetry is also inert on an install that has never registered: there is no account to
+attribute counters to, so nothing is queued or sent regardless of the switch.
+
+`wigolo doctor` and `wigolo account` both report which of the three states you are in:
+
+```text
+[wigolo doctor] Telemetry: off — nothing is queued and nothing is sent
+```
+
+What is actually collected — and the closed list of what cannot be — is in
+[privacy & security](./privacy-security.md#usage-and-reliability-telemetry).
+
+### Retired
+
+| Env var | Status |
+| --- | --- |
+| `WIGOLO_TELEMETRY_ENDPOINT` | **Deprecated and ignored.** Telemetry batches go to your account service or nowhere; there is no arbitrary-URL POST any more. Setting it logs a warning and changes nothing, and it stops being recognised in the release after 0.3.0 — remove it. |
 
 ## Logging
 
