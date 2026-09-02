@@ -46,6 +46,7 @@ import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser
 import { readSubstrateRecord, type SubstrateRecord } from '../companion/substrate-acquire.js';
 import { readTierOccupancy, formatTierOccupancyLines, type TierOccupancy } from '../fetch/tier-occupancy.js';
 import { buildAccountDoctorLines } from './account.js';
+import { accountsUrlOverride } from './accounts-url-notice.js';
 import { AccountStateStore } from '../account/state.js';
 import { resolvePinnedKeys } from '../account/pinned-keys.js';
 import { AccountsClient } from '../account/client.js';
@@ -1331,12 +1332,21 @@ async function checkAccount(dataDir: string): Promise<void> {
   try {
     const state = new AccountStateStore(dataDir).read();
     const keys = resolvePinnedKeys();
+    // One resolution, shared by the probe and the notice, so doctor can never
+    // report on one address while having queried another.
+    const accountsUrl = getConfig().accountsUrl;
     let serviceKids: string[] | null = null;
     if (state.account_id !== null) {
-      const res = await new AccountsClient({ baseUrl: getConfig().accountsUrl }).entitlementsKeys();
+      const res = await new AccountsClient({ baseUrl: accountsUrl }).entitlementsKeys();
       if (res.ok) serviceKids = res.data.keys.map((k) => k.kid);
     }
-    for (const line of buildAccountDoctorLines({ state, keys, nowMs: Date.now(), serviceKids })) out(line);
+    for (const line of buildAccountDoctorLines({
+      state,
+      keys,
+      nowMs: Date.now(),
+      serviceKids,
+      accountsUrl: accountsUrlOverride(accountsUrl),
+    })) out(line);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out(`  (check failed: ${msg.slice(0, 80)})`);
