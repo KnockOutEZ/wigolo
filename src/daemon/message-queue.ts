@@ -529,7 +529,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
   const runIdFor = options.runIdFor ?? runIdFromArgs;
   const profile = options.profile ?? currentClientProfile;
   const caller = options.caller ?? (() => profile().client);
-  const activeWaits = new Set<string>();
+  const activeWaits = new Map<string, () => void>();
   const outOfBandProbe = options.outOfBandProbe ?? ((runId: string, messages: readonly RunMessage[]) => {
     log.debug('out-of-band delivery is eligible but not implemented; falling through', {
       run: runId,
@@ -547,6 +547,9 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
   }
 
   return {
+    dispose() {
+      for (const abort of [...activeWaits.values()]) abort();
+    },
     async interrupt(name, args) {
       try {
         const runId = runIdFor(name, args);
@@ -589,10 +592,10 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
         log.warn('delivery queue could not acknowledge; leaving the messages delivered', { error: String(err) });
       }
     },
-    async deliver(name, args, result) {
+    async deliver(name, args, result, signal) {
       try {
         if (isWaitForHumanResult(name, args, result)) {
-          return await resolveHumanWait(openDb, runIdFor, caller, activeWaits, name, args, result);
+          return await resolveHumanWait(openDb, runIdFor, caller, activeWaits, name, args, result, signal);
         }
         const resolved = await resolve(name, args);
         if (!resolved) return result;
@@ -654,7 +657,7 @@ function callerActor(caller: ClientInfo | undefined, run: Run): Actor {
 }
 
 function pendingInterrupt(db: Database.Database, run: Run, caller: ClientInfo | undefined): PendingInterrupt | undefined {
-  for (const event of unconsumedInterruptEvents(db, run.id)) {
+  for (const event of unconsumedInterruptEvents(db, run.id, caller)) {
     if (event.type === 'driver.changed') {
       if (event.payload.cause !== 'takeover') continue;
       const target = driverFrom(event.payload.from);
@@ -686,13 +689,17 @@ interface InterruptEventRow { seq: number; ts: string; actor: string; type: stri
  * durable flag rather than "something among the last N events": unrelated run traffic can never
  * push a pending human interruption out of the next-call window.
  */
-function unconsumedInterruptEvents(db: Database.Database, runId: string): RunEvent[] {
+function unconsumedInterruptEvents(db: Database.Database, runId: string, caller: ClientInfo | undefined): RunEvent[] {
   const rows = db.prepare(`
     SELECT candidate.seq, candidate.ts, candidate.actor, candidate.type, candidate.payload
       FROM studio_run_events candidate
      WHERE candidate.run_id = ?
        AND (
-         (candidate.type = 'driver.changed' AND json_extract(candidate.payload, '$.cause') = 'takeover')
+         (candidate.type = 'driver.changed' AND json_extract(candidate.payload, '$.cause') = 'takeover'
+           AND (? IS NULL
+             OR json_extract(candidate.payload, '$.from.client.name') IS NULL
+             OR (json_extract(candidate.payload, '$.from.client.name') = ?
+               AND json_extract(candidate.payload, '$.from.client.version') = ?)))
          OR (candidate.type = 'message.queued' AND json_extract(candidate.payload, '$.urgent') = 1
              AND json_extract(candidate.actor, '$.kind') = 'human')
          OR (candidate.type IN ('run.paused', 'run.cancelled')
@@ -705,8 +712,14 @@ function unconsumedInterruptEvents(db: Database.Database, runId: string): RunEve
             AND json_extract(consumed.payload, '$.triggerSeq') = candidate.seq
        )
      ORDER BY candidate.seq ASC
-     LIMIT ?
-  `).all(runId, DELIVERY_INTERRUPT_CONSUMED, MAX_TYPED_EVENT_ROWS) as InterruptEventRow[];
+     LIMIT 1
+  `).all(
+    runId,
+    caller?.name ?? null,
+    caller?.name ?? null,
+    caller?.version ?? null,
+    DELIVERY_INTERRUPT_CONSUMED,
+  ) as InterruptEventRow[];
   return rows.map((row) => ({
     seq: row.seq,
     ts: row.ts,
@@ -797,10 +810,11 @@ async function resolveHumanWait(
   openDb: () => Promise<Database.Database | undefined>,
   runIdFor: (name: string, args: Record<string, unknown>) => string | undefined,
   caller: () => ClientInfo | undefined,
-  activeWaits: Set<string>,
+  activeWaits: Map<string, () => void>,
   name: string,
   args: Record<string, unknown>,
   result: McpToolResult,
+  signal?: AbortSignal,
 ): Promise<McpToolResult> {
   const runId = runIdFor(name, args);
   if (!runId) return waitError('run_required', 'wait_for_human requires the run_id of the run to park.');
@@ -816,7 +830,23 @@ async function resolveHumanWait(
   if (activeWaits.has(run.id)) {
     return waitError('wait_already_pending', 'This run is already waiting for a human answer.');
   }
-  activeWaits.add(run.id);
+  // A request row with no live in-process waiter can only be the tail of a restarted/replaced
+  // coordinator. Close it before starting the replacement so the durable log never claims two
+  // simultaneous waits for one run.
+  const orphaned = unansweredEvents(db, run.id, {
+    askType: DELIVERY_WAIT_REQUESTED,
+    answerType: DELIVERY_WAIT_RESOLVED,
+    correlationKey: 'waitId',
+    limit: 1,
+  })[0];
+  if (orphaned) {
+    appendRunEventWithTail(db, run.id, {
+      actor: actorForRun(run),
+      type: DELIVERY_WAIT_RESOLVED,
+      payload: { waitId: orphaned.payload.waitId, outcome: 'abandoned' },
+    });
+  }
+  activeWaits.set(run.id, () => {});
   const waitId = mintWaitId();
   try {
     appendRunEventWithTail(db, run.id, {
@@ -825,13 +855,17 @@ async function resolveHumanWait(
       payload: { waitId, reason },
     });
 
-    const outcome = await new Promise<{ kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt }>((resolve, reject) => {
+    const outcome = await new Promise<
+      { kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt } | { kind: 'aborted' }
+    >((resolve, reject) => {
       let settled = false;
       let unsubscribe = () => {};
-      const finish = (value: { kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt }): void => {
+      const onAbort = (): void => finish({ kind: 'aborted' });
+      const finish = (value: { kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt } | { kind: 'aborted' }): void => {
         if (settled) return;
         settled = true;
         unsubscribe();
+        signal?.removeEventListener('abort', onAbort);
         resolve(value);
       };
       const check = (): void => {
@@ -859,8 +893,20 @@ async function resolveHumanWait(
         const pending = pendingInterrupt(db, latest, caller());
         if (pending) finish({ kind: 'interrupt', pending });
       });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      activeWaits.set(run.id, onAbort);
+      if (signal?.aborted) onAbort();
       check();
     });
+
+    if (outcome.kind === 'aborted') {
+      appendRunEventWithTail(db, run.id, {
+        actor: actorForRun(run),
+        type: DELIVERY_WAIT_RESOLVED,
+        payload: { waitId, outcome: 'aborted' },
+      });
+      return waitError('wait_aborted', 'The client disconnected or cancelled the human wait; no message was delivered.');
+    }
 
     if (outcome.kind === 'interrupt') {
       const latest = getRun(db, run.id) ?? run;

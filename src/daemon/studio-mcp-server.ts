@@ -1,6 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { StudioHostHandlers } from './studio-dispatch.js';
+import { withStudioDispatchSignal, type StudioHostHandlers } from './studio-dispatch.js';
 import { runStudioFetch, STUDIO_FETCH_CAPABILITY, type StudioFetchInput, type StudioFetchResult } from '../studio/studio-fetch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { createStudioToolProvider } from '../studio/tool-provider.js';
@@ -48,7 +48,7 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...provider.tools] }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => withClientProfile(clientProfile(), async () => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => withClientProfile(clientProfile(), async () => withStudioDispatchSignal(extra.signal, async () => {
     const { name, arguments: args } = request.params;
     // S9 — the broker `studio_fetch` capability. Handled HERE and only here: the provider neither
     // advertises nor handles it, so it is callable over this already-authenticated transport but is
@@ -63,7 +63,7 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
     }
     const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);
     return { content: result.content, isError: result.isError };
-  }));
+  })));
 
   return server;
 }

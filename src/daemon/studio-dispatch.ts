@@ -19,6 +19,7 @@
  */
 import { readHandle, getMyInstanceId } from '../companion/handle.js';
 import { ensureStudioRunning } from '../companion/auto-launch.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { DaemonProxy } from './proxy.js';
 import { createLogger } from '../logger.js';
 import type { ToolName } from '../instructions.js';
@@ -418,19 +419,33 @@ export interface DeliveryHooks {
    */
   interrupt(name: string, args: Record<string, unknown>): Promise<McpToolResult | undefined>;
   acknowledge(name: string, args: Record<string, unknown>): Promise<void>;
-  deliver(name: string, args: Record<string, unknown>, result: McpToolResult): Promise<McpToolResult>;
+  deliver(name: string, args: Record<string, unknown>, result: McpToolResult, signal?: AbortSignal): Promise<McpToolResult>;
+  /** Release any parked listeners when the host/transport delivery coordinator is replaced. */
+  dispose?(): void;
+}
+
+const dispatchSignal = new AsyncLocalStorage<AbortSignal>();
+
+/** Scope the MCP request's cancellation over local dispatch and any daemon-to-host proxy hop. */
+export function withStudioDispatchSignal<T>(signal: AbortSignal, fn: () => T): T {
+  return dispatchSignal.run(signal, fn);
 }
 
 let deliveryHooks: DeliveryHooks | undefined;
 
 /** Install, or (with `undefined`) remove — tests MUST remove theirs, leaked hooks outlive the suite. */
 export function setDeliveryHooks(hooks: DeliveryHooks | undefined): void {
+  if (deliveryHooks !== hooks) deliveryHooks?.dispose?.();
   deliveryHooks = hooks;
 }
 
 /** Injectable for tests; production builds a real DaemonProxy. */
 export interface DispatchDeps {
-  proxyFactory?: (endpoint: string, token: string) => { callTool(name: string, args: Record<string, unknown>): Promise<unknown> };
+  /** Request cancellation; normally supplied by the MCP handler's async-local scope. */
+  signal?: AbortSignal;
+  proxyFactory?: (endpoint: string, token: string) => {
+    callTool(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>;
+  };
 }
 
 /**
@@ -521,7 +536,7 @@ export async function dispatchStudioTool(
       // neither: it is not the run's driver, so the driver's mail is not its to read or to answer.
       await deliveryHooks?.acknowledge(name, args);
       const result = await route(studioHost, args);
-      return deliveryHooks ? deliveryHooks.deliver(name, args, result) : result;
+      return deliveryHooks ? deliveryHooks.deliver(name, args, result, deps?.signal ?? dispatchSignal.getStore()) : result;
     }
     // A name that looks like a control/approval primitive has no route BY DESIGN — PIN-SPLIT(b):
     // there is no agent path to obtain control or self-approve.
@@ -565,7 +580,8 @@ export async function proxyToStudioHost(
   // PROXY — a foreign live host. Pass its result back verbatim.
   try {
     const makeProxy = deps?.proxyFactory ?? ((endpoint: string, token: string) => new DaemonProxy(endpoint, token));
-    const result = await makeProxy(handle.endpoint, handle.token).callTool(name, args);
+    const signal = deps?.signal ?? dispatchSignal.getStore();
+    const result = await makeProxy(handle.endpoint, handle.token).callTool(name, args, signal ? { signal } : undefined);
     return result as McpToolResult;
   } catch (err) {
     log.debug('studio host unreachable', { endpoint: handle.endpoint, error: err instanceof Error ? err.message : String(err) });

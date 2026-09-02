@@ -60,8 +60,12 @@ export class DaemonProxy {
     }
   }
 
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
-    return this.withClient((client) => client.callTool({ name: toolName, arguments: args }));
+  async callTool(toolName: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown> {
+    return this.withClient((client) => client.callTool(
+      { name: toolName, arguments: args },
+      undefined,
+      options?.signal ? { signal: options.signal } : undefined,
+    ));
   }
 
   async listTools(): Promise<unknown> {

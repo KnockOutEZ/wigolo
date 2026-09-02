@@ -310,6 +310,26 @@ describe('mechanisms 2-4 — wait, interrupt and the push-gated stub', () => {
       .toMatchObject({ outcome: 'interrupted' });
   });
 
+  it('cleans up an abandoned wait without delivering a later human message', async () => {
+    const controller = new AbortController();
+    const waiting = dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Choose a route', run_id: runId },
+      host(),
+      dir,
+      { signal: controller.signal },
+    );
+    await expect.poll(() => runEventListenerCount(runId)).toBe(1);
+    controller.abort();
+
+    const result = await waiting;
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error_reason: 'wait_aborted' });
+    expect(runEventListenerCount(runId)).toBe(0);
+    queueMessage(db, runId, { text: 'Too late for the abandoned call' });
+    expect(listMessages(db, runId)[0]!.state).toBe('queued');
+  });
+
   it('interrupts an urgent message exactly once, skips host work, then acknowledges and continues', async () => {
     let hostCalls = 0;
     const handlers = host();
