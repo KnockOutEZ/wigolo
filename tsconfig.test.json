@@ -104,7 +104,12 @@
     "tests/unit/daemon/driver-baton.test.ts",
     "tests/unit/daemon/driver-baton-gate.test.ts",
     "tests/integration/driver-baton-surfaces.test.ts",
-    "tests/integration/studio-wait-for-human-rest.test.ts"
+    "tests/integration/studio-wait-for-human-rest.test.ts",
+    "tests/unit/daemon/studio-footer.test.ts",
+    "tests/unit/daemon/studio-footer-coverage.test.ts",
+    "tests/unit/daemon/result-footer.test.ts",
+    "tests/unit/daemon/browser-closed.test.ts",
+    "tests/integration/studio-footer-surfaces.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

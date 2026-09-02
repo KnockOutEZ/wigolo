@@ -25,6 +25,9 @@ import { createLogger } from '../logger.js';
 import type { ToolName } from '../instructions.js';
 import type { Driver } from '../studio/run-store.js';
 import type { McpToolResult } from '../server/tool-registry.js';
+import { currentClientProfile } from './capability-handshake.js';
+import { applyFooter, renderFooter, NO_RUN_FOOTER, type FooterFields } from './studio-footer.js';
+import { browserClosedError, isBrowserClosedError } from './browser-closed.js';
 
 const log = createLogger('studio');
 
@@ -170,6 +173,12 @@ export interface StudioToolError {
   driver?: Driver;
   /** The same refusal's driver as ONE string, minted by `formatDriver` — identical in REST, on the event stream and here. */
   driver_name?: string;
+  /**
+   * The run this failure happened in, when the call resolved to one (SD2 §4.3's `browser_closed`).
+   * The footer names it too; it is a first-class field here so a machine consumer does not have to
+   * parse rendered text to find the run it must resume or end.
+   */
+  run?: string;
 }
 
 export interface StudioMarksInput {
@@ -424,6 +433,75 @@ export interface DeliveryHooks {
   dispose?(): void;
 }
 
+/**
+ * The §4.4 footer's data seam (#56). A process seam for the same reason `BatonGate` and
+ * `DeliveryHooks` are: every footer field is a projection of the run log, and only the live host
+ * process can read it. Absent — the stdio side, the Electron main, a unit test that installs none —
+ * the footer still lands, rendering `— no run —`, because a result without a footer is the one
+ * shape law 9 does not allow.
+ */
+export interface FooterContext {
+  /** The run this call resolved to, for the arms that name it (the browser-closed error). */
+  readonly runId?: string;
+  /**
+   * Read the fields, LIVE. Called once, at the exit, so it sees what the call itself appended: the
+   * browser action the act recorded, the messages the delivery queue rode on this very result.
+   */
+  fields(): FooterFields;
+  /**
+   * Called after the footer is rendered, with the finished result. The one thing it records is the
+   * driver's re-read (§4.2's "newer than the driver's last read"), which must NOT clear the
+   * `page changed` line on the result that announces it.
+   */
+  settle?(result: McpToolResult): void;
+}
+
+export interface FooterSource {
+  begin(name: string, args: Record<string, unknown>): Promise<FooterContext | undefined>;
+}
+
+let footerSource: FooterSource | undefined;
+
+/** Install, or (with `undefined`) remove — tests MUST remove theirs, a leaked source outlives the suite. */
+export function setFooterSource(source: FooterSource | undefined): void {
+  footerSource = source;
+}
+
+/**
+ * Never throws and never blocks the call: a footer that cannot be sourced degrades to `— no run —`,
+ * which is honest, whereas failing the tool call over a decoration would be absurd.
+ */
+async function beginFooter(name: string, args: Record<string, unknown>): Promise<FooterContext | undefined> {
+  try {
+    return await footerSource?.begin(name, args);
+  } catch (err) {
+    log.warn('footer source could not resolve the run; rendering no-run', { tool: name, error: String(err) });
+    return undefined;
+  }
+}
+
+/** THE exit. Attaches the footer to whatever the host branch produced, then records the re-read. */
+function finishStudioResult(footer: FooterContext | undefined, result: McpToolResult): McpToolResult {
+  let fields: FooterFields = {};
+  try {
+    fields = footer?.fields() ?? {};
+  } catch (err) {
+    log.warn('footer fields could not be projected; rendering no-run', { error: String(err) });
+  }
+  const rendered = applyFooter(result, renderFooter(fields, currentClientProfile().phrasing));
+  try {
+    footer?.settle?.(result);
+  } catch (err) {
+    log.warn('footer could not record the re-read', { error: String(err) });
+  }
+  return rendered;
+}
+
+/** A refusal minted where no run can exist (the stdio side): the footer says exactly that. */
+function noRunRefusal(error_reason: string, hint: string): McpToolResult {
+  return applyFooter(refusal(error_reason, hint), NO_RUN_FOOTER);
+}
+
 const dispatchSignal = new AsyncLocalStorage<AbortSignal>();
 
 /** Scope the MCP request's cancellation over local dispatch and any daemon-to-host proxy hop. */
@@ -501,9 +579,25 @@ const HOST_ROUTES: Record<StudioToolName, HostRoute> = {
 const HOST_ROUTE_TABLE = new Map<string, HostRoute>(Object.entries(HOST_ROUTES));
 
 /**
+ * Every host-executed result path, derived from the route table rather than listed — so #56's
+ * "100% coverage, measured" claim is measured against the table that actually routes, and a tool
+ * added later is in the enumeration the moment it compiles. Read by
+ * `tests/unit/daemon/studio-footer-coverage.test.ts`.
+ */
+export const STUDIO_ROUTE_NAMES: readonly StudioToolName[] = Object.freeze(Object.keys(HOST_ROUTES) as StudioToolName[]);
+
+/**
  * Route a `studio_*` call. `studioHost` is set only in the live host process.
  * Returns the MCP tool result shape; on the proxy path returns the host's result
  * VERBATIM (preserving untrusted tags + every field).
+ *
+ * THE FOOTER'S ONE EXIT (§4.4, law 9). The host branch has exactly one `return`, and it is the
+ * `finishStudioResult` call at the bottom: every result this process mints — a route's answer, an
+ * interrupt receipt, a baton refusal, an unknown tool, the browser-closed error — leaves through
+ * it and therefore carries the footer. That is stronger than routing the three serializers through
+ * a shared constructor (mini-spec §4.1's shape): a NEW serializer would still have to return
+ * through this line. What can defeat it is a new early `return` above it, which is exactly the
+ * throwaway path `tests/unit/daemon/studio-footer-coverage.test.ts` proves it can see.
  */
 export async function dispatchStudioTool(
   name: string,
@@ -516,6 +610,28 @@ export async function dispatchStudioTool(
   // for studio_act runs in studioHost.act() here (where the token lives), never on the
   // stdio proxy side — a stdio caller cannot satisfy or bypass it.
   if (studioHost) {
+    // Opened BEFORE any work so the footer can name the run even when the call is refused before
+    // it reaches the page: a refused observer needs the run id and the watch link more, not less.
+    const footer = await beginFooter(name, args);
+    return finishStudioResult(footer, await executeOnHost(name, args, studioHost, footer, deps));
+  }
+
+  return proxyToStudioHost(name, args, dataDir, deps);
+}
+
+/**
+ * The host-side execution ladder. Returns the result UNFOOTERED — `dispatchStudioTool` owns the one
+ * exit that attaches it — so every arm here can `return` the shape it means without remembering to
+ * decorate it.
+ */
+async function executeOnHost(
+  name: string,
+  args: Record<string, unknown>,
+  studioHost: StudioHostHandlers,
+  footer: FooterContext | undefined,
+  deps?: DispatchDeps,
+): Promise<McpToolResult> {
+  {
     const route = HOST_ROUTE_TABLE.get(name);
     if (route) {
       // Interrupts are receipts addressed to the driver that was active when the trigger landed.
@@ -535,15 +651,24 @@ export async function dispatchStudioTool(
       // delivery rides the result the call was going to produce regardless. A refused caller gets
       // neither: it is not the run's driver, so the driver's mail is not its to read or to answer.
       await deliveryHooks?.acknowledge(name, args);
-      const result = await route(studioHost, args);
+      // §7 row 11: the browser can vanish under a live host — the engine process dies, the tab
+      // group is destroyed — and the engine reports that by throwing. An escaping throw would
+      // reach the agent as a transport-level failure that names nothing; this turns it into the
+      // structured `browser_closed` answer carrying the run id, which the footer then repeats.
+      let result: McpToolResult;
+      try {
+        result = await route(studioHost, args);
+      } catch (err) {
+        if (!isBrowserClosedError(err)) throw err;
+        log.debug('browser engine closed mid-run', { tool: name, run: footer?.runId });
+        return verbatim(browserClosedError(footer?.runId));
+      }
       return deliveryHooks ? deliveryHooks.deliver(name, args, result, deps?.signal ?? dispatchSignal.getStore()) : result;
     }
     // A name that looks like a control/approval primitive has no route BY DESIGN — PIN-SPLIT(b):
     // there is no agent path to obtain control or self-approve.
     return refusal('unknown_studio_tool', `No host handler for ${name}.`);
   }
-
-  return proxyToStudioHost(name, args, dataDir, deps);
 }
 
 /**
@@ -565,7 +690,7 @@ export async function proxyToStudioHost(
   // honestly rather than telling the agent to ask a human who may not be there.
   const handle = readHandle(dataDir) ?? (await ensureStudioRunning({ dataDir }));
   if (!handle) {
-    return refusal(
+    return noRunRefusal(
       'no_studio_session',
       'No browser session is running and one could not be started here. Ask the human to open a browser session, or continue without one.',
     );
@@ -574,7 +699,7 @@ export async function proxyToStudioHost(
   // REFUSE-SELF — handle points at THIS process (wiring-window defense; instance UUID, not pid).
   const myId = getMyInstanceId();
   if (myId !== null && handle.instanceId === myId) {
-    return refusal('studio_self_reference', 'Refusing to proxy a studio_* call to this same process.');
+    return noRunRefusal('studio_self_reference', 'Refusing to proxy a studio_* call to this same process.');
   }
 
   // PROXY — a foreign live host. Pass its result back verbatim.
@@ -586,6 +711,6 @@ export async function proxyToStudioHost(
   } catch (err) {
     log.debug('studio host unreachable', { endpoint: handle.endpoint, error: err instanceof Error ? err.message : String(err) });
     // REFUSE — handle present but the host endpoint is dead (stale handle); fail loud, don't hang.
-    return refusal('studio_host_unreachable', 'The studio host endpoint is not reachable (stale session handle?). Re-run `wigolo studio`.');
+    return noRunRefusal('studio_host_unreachable', 'The studio host endpoint is not reachable (stale session handle?). Re-run `wigolo studio`.');
   }
 }

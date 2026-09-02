@@ -10,9 +10,10 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // only) so that a studio-only gateway (mcpServerFactory set) — which runs in the Electron main where
 // better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
-import { setBatonGate, setDeliveryHooks, type StudioHostHandlers } from './studio-dispatch.js';
+import { setBatonGate, setDeliveryHooks, setFooterSource, type StudioHostHandlers } from './studio-dispatch.js';
 import { createBatonGate } from './driver-baton.js';
 import { createDeliveryHooks } from './message-queue.js';
+import { createFooterSource } from './result-footer.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../companion/auth.js';
@@ -199,6 +200,10 @@ export class DaemonHttpServer {
     // SD2 §3.2 mechanism 1, installed at the same moment and for the same reason: the delivery
     // queue is a fold over the run log, so it can only be drained by the process that can read it.
     setDeliveryHooks(createDeliveryHooks());
+    // SD2 §4.4, installed here for the third time for the third instance of one reason: every field
+    // the footer renders is a projection of the run log, and this process is the only one that can
+    // read it. Elsewhere the footer still lands, saying `— no run —`.
+    setFooterSource(createFooterSource());
   }
 
   /**
