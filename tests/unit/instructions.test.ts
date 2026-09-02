@@ -39,6 +39,15 @@ describe('WIGOLO_INSTRUCTIONS (per-session)', () => {
       expect(fieldsSection, `'${field}' missing from the per-session response-field list`).toContain(field);
     }
   });
+
+  it('routes the pin-8 studio capabilities in the per-session body, inside the char budget', () => {
+    // The per-session body is the ONLY layer an agent reads before it picks a tool, so a capability
+    // that exists solely in the per-tool description is invisible at routing time. Both new ones are
+    // one clause each precisely because this block is capped.
+    expect(WIGOLO_INSTRUCTIONS).toContain('`find` greps the live page');
+    expect(WIGOLO_INSTRUCTIONS).toContain('results report what the page became');
+    expect(WIGOLO_INSTRUCTIONS.length).toBeLessThan(3900);
+  });
 });
 
 describe('WIGOLO_INSTRUCTIONS_FULL (resource)', () => {
