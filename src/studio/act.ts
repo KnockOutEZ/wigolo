@@ -375,7 +375,9 @@ function inertElement(e: SnapshotElement): SnapshotElement {
 
 export function createActHandler(
   deps: ActHandlerDeps,
-): (input: StudioActInput) => Promise<StudioActOutput | StudioToolError> {
+): (
+  input: StudioActInput & { post_actions?: boolean },
+) => Promise<(StudioActOutput & { post_actions?: ActPostActions }) | StudioToolError> {
   const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park, flow, held } = deps;
 
   const refused = (currentEpoch: number): StudioToolError => ({ error_reason: 'not_holder', hint: HOLD_HINT, currentEpoch });
