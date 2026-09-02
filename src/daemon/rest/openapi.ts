@@ -19,7 +19,14 @@ import {
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
 import { MAX_TASK_CHARS, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '../../studio/run-store.js';
-import { MAX_SPACE_ID_CHARS, MAX_CLIENT_FIELD_CHARS, RUN_STATUS_VALUES, DRIVER_KIND_VALUES } from './runs.js';
+import {
+  MAX_SPACE_ID_CHARS,
+  MAX_CLIENT_FIELD_CHARS,
+  MAX_GESTURE_REASON_CHARS,
+  MAX_REQUEST_ID_CHARS,
+  RUN_STATUS_VALUES,
+  DRIVER_KIND_VALUES,
+} from './runs.js';
 import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -393,6 +400,27 @@ function runSchema(): object {
       createdAt: { type: 'string', format: 'date-time' },
       status: { type: 'string', enum: [...RUN_STATUS_VALUES] },
       driver: driverSchema(),
+      driverName: {
+        type: 'string',
+        description:
+          'The driver rendered as one string — "cli (claude-code)", "human". The same string appears ' +
+          'in driver.* events and in a not_the_driver tool refusal; render this rather than composing ' +
+          'your own from kind and client.',
+      },
+      wheelRequests: {
+        type: 'array',
+        description: 'Unanswered requests to drive, oldest first. Answer one by its requestId.',
+        items: {
+          type: 'object',
+          properties: {
+            requestId: { type: 'string' },
+            by: driverSchema(),
+            reason: { type: 'string' },
+            requestedAt: { type: 'string', format: 'date-time' },
+          },
+          required: ['requestId', 'by', 'requestedAt'],
+        },
+      },
       tabIds: { type: 'array', items: { type: 'string' } },
       pendingDecisions: { type: 'array', items: { type: 'object', additionalProperties: true } },
       cost: {
@@ -518,6 +546,63 @@ function runPaths(): Record<string, object> {
                 type: 'object',
                 properties: { ok: { type: 'boolean' }, run: runSchema() },
                 required: ['ok', 'run'],
+              },
+            },
+          },
+        },
+        ...errorResponses(),
+      },
+    },
+  };
+
+  paths['/v1/runs/{id}/driver'] = {
+    post: {
+      operationId: 'driverGesture',
+      summary: 'Move the driver baton: request, grant, release, takeover or deny.',
+      description:
+        'One driver at a time. The wheel moves only by an explicit gesture, and there is no way to ' +
+        'set the driver directly. "request" queues a request to drive and returns its requestId; ' +
+        '"grant" answers a queued requestId (preferred — naming the request is what stops a race ' +
+        'misdelivering the wheel) or names a successor with "to"; "release" hands the wheel to the ' +
+        'oldest waiting request, or, with nobody waiting, to the human, pausing the run; "takeover" ' +
+        'is the human gesture only, and is absolute; "deny" answers a queued requestId, and a ' +
+        'requester may always withdraw its own. A gesture the current state refuses answers 409 ' +
+        'naming who drives; a gesture that would not actually move the wheel is accepted and ' +
+        'appends nothing.',
+      security: [{}, { bearerAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                gesture: { type: 'string', enum: ['request', 'grant', 'release', 'takeover', 'deny'] },
+                by: driverSchema(),
+                requestId: { type: 'string', maxLength: MAX_REQUEST_ID_CHARS },
+                to: driverSchema(),
+                reason: { type: 'string', maxLength: MAX_GESTURE_REASON_CHARS },
+              },
+              required: ['gesture', 'by'],
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'The run after the gesture, plus the events it was worth (empty when it was a no-op).',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  run: runSchema(),
+                  events: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                  requestId: { type: 'string', description: 'Set by "request" — the id a grant answers.' },
+                },
+                required: ['ok', 'run', 'events'],
               },
             },
           },

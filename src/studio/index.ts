@@ -239,12 +239,13 @@ export type {
   Actor,
   ActorKind,
   ClientInfo,
+  WheelRequest,
   CreateRunInput,
   ListRunsOptions,
   ListRunsResult,
   StoredRunFacts,
 } from './run-store.js';
-export { projectRun, normalizeRunId, RUN_ID_ALPHABET, AUTO_DENY_MS, DEFAULT_LIST_LIMIT } from './run-store.js';
+export { projectRun, normalizeRunId, sameDriver, RUN_ID_ALPHABET, AUTO_DENY_MS, DEFAULT_LIST_LIMIT } from './run-store.js';
 
 // Broker child lifecycle — the one stop mechanism the app and its specs both use.
 export { stopBrokerChild, BROKER_STOP_GRACE_MS } from './broker-stop.js';

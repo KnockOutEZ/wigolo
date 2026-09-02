@@ -69,13 +69,28 @@ export interface RunCost {
   spendUsd: number;
 }
 
+/**
+ * A pending "let me drive" gesture (SD2 mini-spec §1.1). Law 3: request-the-wheel is a gesture,
+ * never a race — the queue is FIFO by event `seq`, which the store's single-writer append already
+ * totally orders, so there is no in-memory queue for two callers to race for.
+ */
+export interface WheelRequest {
+  requestId: string;
+  by: Driver;
+  reason?: string;
+  requestedAt: string;
+}
+
 export interface Run {
   id: string;
   task: string;
   spaceId: string;
   createdAt: string;
   status: RunStatus;
+  /** Law 3: exactly one driver, always — from `run.created` to the terminal event. */
   driver: Driver;
+  /** The unanswered wheel requests, oldest first (SD2 §1.1). Empty for the overwhelming majority of runs. */
+  wheelRequests: WheelRequest[];
   tabIds: string[];
   pendingDecisions: PendingDecision[];
   cost: RunCost;
@@ -205,6 +220,11 @@ const DECISION_EVENT_TYPES: readonly string[] = ['decision.requested', 'decision
 const TAB_EVENT_TYPES: readonly string[] = ['tab.attached', 'tab.detached'];
 /** Single-valued, and writer-driven: promote/demote can be flipped all day (law 2). Newest wins. */
 const PRESENTATION_EVENT_TYPES: readonly string[] = ['presentation.promoted', 'presentation.demoted'];
+/**
+ * The baton (SD2 mini-spec §1.2). `driver.receipt_delivered` is deliberately absent: it audits that a
+ * receipt reached a client, and moves no projected field.
+ */
+const DRIVER_EVENT_TYPES: readonly string[] = ['driver.changed', 'driver.wheel_requested', 'driver.wheel_denied'];
 
 /**
  * The only types `foldStatus` can be moved by. The append path recomputes the `studio_runs.status`
@@ -243,7 +263,25 @@ export const STATUS_EVENT_TYPES: readonly string[] = [
  * source guard in the run-store tests enforces that, because a case added to neither would silently
  * drop from every projected row.
  */
-export const PROJECTION_EVENT_TYPES: readonly string[] = ['run.created', ...TAB_EVENT_TYPES];
+export const PROJECTION_EVENT_TYPES: readonly string[] = ['run.created', ...TAB_EVENT_TYPES, ...DRIVER_EVENT_TYPES];
+
+/**
+ * Why the baton triple is READ AS ROWS rather than seeded like the pause pair it superficially
+ * resembles. Two of the three answers are not single-valued: `wheelRequests` is an unanswered-set,
+ * whose SQL form is the anti-join `PENDING_DECISION_SQL` uses — and that shape needs a `ts` bound to
+ * stay bounded, which a wheel request (like a held tab, and unlike a decision card) does not have.
+ *
+ * The rows themselves are bounded by what produces them: every `driver.*` row is a DELIBERATE
+ * GESTURE by a human or a driver (law 3 — "never a race"), so their cardinality tracks how many
+ * times someone chose to hand over a run, not how much work the run did. That is categorically
+ * unlike `cost.recorded` (one per browser action) and unlike the decision pair (writer-driven,
+ * unbounded), which is what pushed both of those into the SQL folds.
+ *
+ * Reversal condition (A-52-1): if a run is ever measured accumulating `driver.*` rows at a rate
+ * that tracks its work rather than its handovers — an automated hand-back loop, say — the driver
+ * moves to a newest-row seek (it IS single-valued) and the queue to the anti-join, and both move to
+ * `AGGREGATED_EVENT_TYPES`.
+ */
 
 /**
  * The types a projection folds in SQL instead of reading row by row, and the reason the filter above
@@ -405,6 +443,30 @@ function clientOf(value: unknown): ClientInfo | undefined {
   const name = str(c.name);
   const version = str(c.version);
   return name && version ? { name, version } : undefined;
+}
+
+/**
+ * Rebuild a driver badge out of an event payload rather than casting one out of it, for the reason
+ * `anchorOf` exists: this object is on its way to a REST response and to a tool result, so a caller
+ * that hung extra fields on it would have them projected as if the store had blessed them.
+ */
+function driverOf(value: unknown): Driver | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const raw = value as { kind?: unknown; client?: unknown };
+  if (typeof raw.kind !== 'string' || !DRIVER_KINDS.has(raw.kind)) return undefined;
+  const client = clientOf(raw.client);
+  return client ? { kind: raw.kind as DriverKind, client } : { kind: raw.kind as DriverKind };
+}
+
+/**
+ * Identity for the five-kind badge: same kind, same client (or neither). Used to decide whether a
+ * transition is the no-op law 3 says emits nothing, and to retire a queued request the transition
+ * has just answered.
+ */
+export function sameDriver(a: Driver, b: Driver): boolean {
+  if (a.kind !== b.kind) return false;
+  if (!a.client || !b.client) return a.client === undefined && b.client === undefined;
+  return a.client.name === b.client.name && a.client.version === b.client.version;
 }
 
 function assertDriver(driver: Driver | undefined): Driver {
@@ -1428,6 +1490,10 @@ export function projectRun(
   // per detach whatever the index, since one of the two always walks (297 ms at 64k attach+detach).
   // Order is materialized once, on the way out.
   const held = new Set<string>();
+  // Keyed by requestId, and a Map is the FIFO: it iterates in insertion order — which IS `seq` order,
+  // because the rows arrive ordered — and `set` on a key it already holds does not move it, so a
+  // client repeating its request cannot jump the queue by repeating it.
+  const wheel = new Map<string, WheelRequest>();
   const pending = new Map<string, PendingDecision>((opts.pendingDecisions ?? []).map((d) => [d.decisionId, d]));
   const cost: RunCost = { ...(opts.cost ?? { browserActions: 0, tokensIn: 0, tokensOut: 0, spendUsd: 0 }) };
 
@@ -1435,13 +1501,38 @@ export function projectRun(
     const p = event.payload;
     switch (event.type) {
       case 'run.created': {
-        const d = p.driver as Driver | undefined;
-        if (d && DRIVER_KINDS.has(d.kind)) {
-          // Rebuilt from the payload rather than cast out of it, for the reason `anchorOf` exists:
-          // this is a projected field on its way to a REST response.
-          const client = clientOf(d.client);
-          driver = client ? { kind: d.kind, client } : { kind: d.kind };
-        }
+        const d = driverOf(p.driver);
+        if (d) driver = d;
+        break;
+      }
+      // The baton (SD2 §1.2). `driver.changed` is the ONLY transition event — there is no second way
+      // for the wheel to move, which is what makes "one driver at a time" replayable rather than
+      // asserted.
+      case 'driver.changed': {
+        const to = driverOf(p.to);
+        if (!to) break;
+        driver = to;
+        // A transition retires the request it answers (`requestId`, set by grant-by-request and by
+        // release-into-a-queue) AND anything else the new driver had queued: they are driving, so a
+        // request of theirs left standing would be a gesture nobody can answer.
+        const answered = str(p.requestId);
+        if (answered) wheel.delete(answered);
+        for (const [id, request] of wheel) if (sameDriver(request.by, to)) wheel.delete(id);
+        break;
+      }
+      case 'driver.wheel_requested': {
+        const requestId = str(p.requestId);
+        const by = driverOf(p.by);
+        if (!requestId || !by) break;
+        const reason = str(p.reason);
+        // `event.ts` rather than a payload field: the queue's order and its clock both come from the
+        // log, so a caller cannot back-date its way to the head of the queue.
+        wheel.set(requestId, { requestId, by, ...(reason ? { reason } : {}), requestedAt: event.ts });
+        break;
+      }
+      case 'driver.wheel_denied': {
+        const requestId = str(p.requestId);
+        if (requestId) wheel.delete(requestId);
         break;
       }
       // run.completed / run.failed / run.cancelled / run.paused / run.resumed move only the status,
@@ -1496,6 +1587,7 @@ export function projectRun(
     createdAt: facts.createdAt,
     status: projected,
     driver,
+    wheelRequests: [...wheel.values()],
     tabIds: [...held],
     pendingDecisions,
     cost,

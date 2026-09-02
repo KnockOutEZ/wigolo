@@ -23,6 +23,7 @@ import {
   listRuns,
   eventsSince,
   type CreateRunInput,
+  type Driver,
   type ListRunsOptions,
   type ListRunsResult,
   type Run,
@@ -30,6 +31,14 @@ import {
 } from '../../studio/run-store.js';
 import { appendRunEventWithTail, createRunWithTail } from '../../studio/run-bus.js';
 import { clientAttachedEvent, profileClient } from '../capability-handshake.js';
+import {
+  denyWheel,
+  grantWheel,
+  releaseWheel,
+  requestWheel,
+  takeWheel,
+  type BatonResult,
+} from '../driver-baton.js';
 
 /**
  * Every method the REST surface needs and nothing else. There is deliberately no `append` and no
@@ -48,6 +57,51 @@ export interface RunsStore {
    */
   exists(runId: string): Promise<boolean>;
   eventsSince(runId: string, since: number, limit: number): Promise<RunEvent[]>;
+  /**
+   * SD2 §1.3 — move the baton. The one WRITE besides `create`, and it is still not an `append`: the
+   * caller names a GESTURE and the baton decides which events (if any) that gesture is worth, which
+   * is what keeps "transitions happen only via the explicit gesture" true of every surface at once.
+   *
+   * OPTIONAL because a binding that cannot reach the log directly — the Electron main's
+   * broker-backed store — has no baton to move; the route answers `store_unavailable` there rather
+   * than pretending. Additive on purpose: an existing binding stays valid without changing.
+   */
+  driver?(runId: string, input: DriverGesture): Promise<BatonResult>;
+}
+
+/** The five gestures, and nothing else: there is no way to set the driver field directly. */
+export type DriverGestureKind = 'request' | 'grant' | 'release' | 'takeover' | 'deny';
+
+export interface DriverGesture {
+  gesture: DriverGestureKind;
+  /** Who is making the gesture. */
+  by: Driver;
+  /** `grant`/`deny`: the queued request being answered. */
+  requestId?: string;
+  /** `grant`: an explicit successor, when the queue holds no request to answer. */
+  to?: Driver;
+  reason?: string;
+}
+
+function applyGesture(db: Database.Database, runId: string, input: DriverGesture): BatonResult {
+  const reason = input.reason !== undefined ? { reason: input.reason } : {};
+  switch (input.gesture) {
+    case 'request':
+      return requestWheel(db, runId, { by: input.by, ...reason });
+    case 'grant':
+      return grantWheel(db, runId, {
+        by: input.by,
+        ...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
+        ...(input.to !== undefined ? { to: input.to } : {}),
+        ...reason,
+      });
+    case 'release':
+      return releaseWheel(db, runId, { by: input.by, ...reason });
+    case 'takeover':
+      return takeWheel(db, runId, { by: input.by, ...reason });
+    case 'deny':
+      return denyWheel(db, runId, { by: input.by, requestId: input.requestId ?? '', ...reason });
+  }
 }
 
 /**
@@ -78,7 +132,9 @@ export function sqliteRunsStore(db: Database.Database): RunsStore {
     get: async (runId) => getRun(db, runId),
     exists: async (runId) => runExists(db, runId),
     eventsSince: async (runId, since, limit) => eventsSince(db, runId, since, limit),
+    driver: async (runId, input) => applyGesture(db, runId, input),
   };
 }
 
+export type { BatonResult };
 export type { CreateRunInput, ListRunsOptions, ListRunsResult, Run, RunEvent };
