@@ -209,9 +209,8 @@ describe('OpenAPI run surface', () => {
     expect(schema.properties.gesture.enum).toEqual(['request', 'grant', 'release', 'takeover', 'deny']);
     expect(schema.required).toEqual(['gesture', 'by']);
 
-    const run = runPaths()['/v1/runs/{id}'].get.responses['200'].content['application/json'].schema.properties.run as unknown as {
-      properties: Record<string, { description?: string }>;
-    };
+    const doc = buildOpenApi() as { paths: Record<string, { get: { responses: Record<string, { content: { 'application/json': { schema: { properties: { run: { properties: Record<string, unknown> } } } } } }> } }> };
+    const run = doc.paths['/v1/runs/{id}'].get.responses['200'].content['application/json'].schema.properties.run;
     expect(run.properties.driverName).toBeDefined();
     expect(run.properties.wheelRequests).toBeDefined();
   });
