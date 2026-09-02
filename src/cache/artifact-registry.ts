@@ -111,7 +111,7 @@ export function clearArtifactProviders(): void {
  * laziness is preserved. `tests/unit/cache/bundle-provider-inlining.test.ts` is the guard.
  */
 const IN_TREE_PROVIDER_LOADERS: Array<() => Promise<unknown>> = [
-  () => import('../studio/artifact-provider.js'),
+  () => import('../companion/artifact-provider.js'),
 ];
 
 let bootstrap: Promise<void> | null = null;

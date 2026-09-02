@@ -33,6 +33,17 @@
  * predicate. F5 only has to be good enough to keep the card rare and well-targeted.
  */
 
+/*
+ * `normalizeOrigin` and the override-store SHAPE moved to `companion/origin.ts` (spec §2.2's split):
+ * they are plumbing the companion layer's own override store needs and carry no credential knowledge.
+ * Both are re-exported here so this module's existing consumers keep one import site while the
+ * predicate is still in core.
+ */
+import { normalizeOrigin, type AuthenticatedOriginOverrides } from '../companion/origin.js';
+
+export { normalizeOrigin };
+export type { AuthenticatedOriginOverrides };
+
 /** The projection of a browser cookie this predicate reads. Deliberately has NO `value` field. */
 export interface CookieFacts {
   /** The cookie's own Domain attribute as the browser stored it ('.example.com' or host-only 'login.example.com'). */
@@ -83,29 +94,12 @@ export function projectCookies(cookies: readonly RawCookie[]): CookieFacts[] {
   }));
 }
 
-export interface AuthenticatedOriginOverrides {
-  /** Human-marked authenticated (covers the SPA/bearer false-negative class). */
-  authenticated?: ReadonlySet<string>;
-  /** Human-marked anonymous (suppresses a persistent false positive). Wins over everything. */
-  anonymous?: ReadonlySet<string>;
-}
-
 export interface AuthenticatedOriginInputs {
   origin: string;
   cookies: readonly CookieFacts[];
   /** Origins that reached the login-handoff COMPLETING terminal on this profile (clause (a)). */
   ledger: ReadonlySet<string>;
   overrides?: AuthenticatedOriginOverrides;
-}
-
-/** Canonical origin form ('https://example.com'), or null when the input is not a usable absolute URL. */
-export function normalizeOrigin(raw: string): string | null {
-  try {
-    const u = new URL(raw);
-    return u.origin === 'null' ? null : u.origin;
-  } catch {
-    return null;
-  }
 }
 
 /**

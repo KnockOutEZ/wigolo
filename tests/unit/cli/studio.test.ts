@@ -31,14 +31,14 @@ vi.mock('../../../src/providers/embed-provider.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/studio/handle.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/studio/handle.js')>();
+vi.mock('../../../src/companion/handle.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/companion/handle.js')>();
   return { ...actual, writeHandle: vi.fn(() => { events.push('handle'); }) };
 });
 
 import { parseStudioArgs, startStudioHost, runStudio, type StudioChild } from '../../../src/cli/studio.js';
 import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
-import { writeHandle } from '../../../src/studio/handle.js';
+import { writeHandle } from '../../../src/companion/handle.js';
 import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
 import type { LaunchedSessionBrowser, StorageStateOut } from '../../../src/studio/session-browser.js';
 import { MarkStore } from '../../../src/studio/mark/store.js';
@@ -48,7 +48,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'nod
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
+import { SUBSTRATE_RECORD } from '../../../src/companion/substrate-acquire.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { flowIdForSession } from '../../../src/studio/flow/store.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';

@@ -17,7 +17,7 @@ import { randomInt } from 'node:crypto';
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import { createLogger } from '../logger.js';
-import { studioStateDir } from './paths.js';
+import { studioStateDir } from '../companion/paths.js';
 
 const log = createLogger('studio');
 

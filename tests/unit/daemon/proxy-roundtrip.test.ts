@@ -54,7 +54,7 @@ vi.mock('../../../src/searxng/docker.js', () => ({
 }));
 
 import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
-import { writeHandle, removeHandle } from '../../../src/studio/handle.js';
+import { writeHandle, removeHandle } from '../../../src/companion/handle.js';
 import { studioProxyFromHandle, DaemonProxy } from '../../../src/daemon/proxy.js';
 
 describe('studio proxy ↔ host round-trip', () => {

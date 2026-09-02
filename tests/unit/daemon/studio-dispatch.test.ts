@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dispatchStudioTool, type StudioHostHandlers, type McpToolResult, type StudioGeneralizeOutput, type StudioCaptureInput } from '../../../src/daemon/studio-dispatch.js';
-import { writeHandle, setMyInstanceId, type SessionHandle } from '../../../src/studio/handle.js';
+import { writeHandle, setMyInstanceId, type SessionHandle } from '../../../src/companion/handle.js';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler } from '../../../src/studio/capture/handler.js';

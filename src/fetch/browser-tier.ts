@@ -1,5 +1,5 @@
 import { createLogger } from '../logger.js';
-import { installedSubstrateExists } from '../studio/auto-launch.js';
+import { installedSubstrateExists } from '../companion/auto-launch.js';
 
 /**
  * D-S10-2 — the ONE function that decides which browser rung this install gets.

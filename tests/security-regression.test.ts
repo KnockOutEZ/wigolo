@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { escalate, VisionBudget } from '../src/studio/perception/vision.js';
 import { classifyHost, guardNavigation } from '../src/security/ssrf.js';
 import { dispatchStudioTool, type StudioHostHandlers } from '../src/daemon/studio-dispatch.js';
-import { writeHandle, setMyInstanceId, type SessionHandle } from '../src/studio/handle.js';
+import { writeHandle, setMyInstanceId, type SessionHandle } from '../src/companion/handle.js';
 import { createObserver } from '../src/studio/observe.js';
 import { StudioEventQueue } from '../src/studio/event-queue.js';
 import type { PageSnapshot } from '../src/studio/perception/snapshot.js';

@@ -84,6 +84,18 @@ const SUBPATHS: Subpath[] = [
     runtime: ['DaemonHttpServer', 'DaemonProxy'],
   },
   {
+    // The kept companion integration layer (EXTRACT A5, spec §2.2). Of the eleven kept
+    // files only `paths.ts` has a private-side consumer — `run-store.ts`,
+    // `profile-store.ts` and `perception/spill.ts` all resolve their on-disk state
+    // through `studioStateDir`, and every other kept file's consumers are core's own
+    // seams (daemon, cli, fetch, config), which import the module directly. So the
+    // ceiling here is one symbol; a second one appearing means a kept file grew a
+    // private-side consumer and that is a question, not a detail.
+    spec: 'wigolo/companion',
+    target: './dist/companion/index.js',
+    runtime: ['studioStateDir'],
+  },
+  {
     spec: 'wigolo/companion-contract',
     target: './dist/companion-contract/index.js',
     runtime: [

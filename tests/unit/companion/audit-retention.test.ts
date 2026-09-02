@@ -5,7 +5,7 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { pruneStudioAudit } from '../../../src/studio/audit-retention.js';
+import { pruneStudioAudit } from '../../../src/companion/audit-retention.js';
 
 /**
  * D9 — studio_audit retention prune. The forensic audit log is INSERT-only by construction

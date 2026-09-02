@@ -2,7 +2,7 @@
  * The in-tree artifact provider must survive `packaging/binary/bundle.mjs`.
  *
  * WHY THIS EXISTS, and why the obvious tests did not catch it. The bootstrap originally held its
- * specifier as an array element (`const MODULES = ['../studio/artifact-provider.js']` iterated into
+ * specifier as an array element (`const MODULES = ['../companion/artifact-provider.js']` iterated into
  * `await import(path)`). esbuild — which the binary bundler runs with `bundle: true, format: 'cjs'` —
  * CANNOT follow a non-literal specifier. It does not inline the module and it does not warn: it emits
  * the `import()` call verbatim. In the packaged binary that specifier resolved relative to
@@ -71,7 +71,7 @@ describe('the in-tree artifact provider survives binary bundling', () => {
     expect(bundled, 'a dynamic import() survived — esbuild did not inline the provider')
       .not.toMatch(/\bimport\(/);
     expect(bundled, 'the module specifier lingers as a data string — it was never followed')
-      .not.toContain('../studio/artifact-provider');
+      .not.toContain('../companion/artifact-provider');
   }, 60_000);
 
   it("the provider's artifact-type policy is inlined too, not just its name", async () => {

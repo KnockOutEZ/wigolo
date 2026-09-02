@@ -2,7 +2,7 @@ import { createServer } from 'node:net';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
-import { checkBindHost } from '../studio/bind.js';
+import { checkBindHost } from '../companion/bind.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { resolveApiToken, evaluateBindGate } from '../daemon/rest/auth.js';
 

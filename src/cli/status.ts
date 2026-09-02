@@ -5,10 +5,10 @@ import { readCacheStats } from './tui/status-cache.js';
 import { probePythonPackages } from './tui/status-python.js';
 import { readConnectedAgents } from './tui/status-agents.js';
 import { formatStatus, type StatusBag } from './tui/status-format.js';
-import { readEscalationCounters } from '../studio/escalation-counters.js';
+import { readEscalationCounters } from '../companion/escalation-counters.js';
 import { resolveBrowserTier } from '../fetch/browser-tier.js';
 import { readTierOccupancy } from '../fetch/tier-occupancy.js';
-import { readSubstrateRecord } from '../studio/substrate-acquire.js';
+import { readSubstrateRecord } from '../companion/substrate-acquire.js';
 
 const require = createRequire(import.meta.url);
 interface PackageJson { version?: string }

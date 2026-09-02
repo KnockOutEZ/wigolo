@@ -13,7 +13,7 @@ import type { Subsystems } from '../server.js';
 import type { StudioHostHandlers } from './studio-dispatch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
-import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
+import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../companion/auth.js';
 import { getConfig } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { createLogger } from '../logger.js';

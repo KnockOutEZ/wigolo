@@ -43,6 +43,10 @@
       "import": "./dist/account/index.js",
       "types": "./dist/account/index.d.ts"
     },
+    "./companion": {
+      "import": "./dist/companion/index.js",
+      "types": "./dist/companion/index.d.ts"
+    },
     "./companion-contract": {
       "import": "./dist/companion-contract/index.js",
       "types": "./dist/companion-contract/index.d.ts"

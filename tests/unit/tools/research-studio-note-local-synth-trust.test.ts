@@ -16,7 +16,7 @@ import { captureFromPage, captureHumanNote } from '../../../src/studio/capture/a
  * clip stays false.
  *
  * Real db + real cache/store so the note enters via the REAL path (captureHumanNote → FTS
- * → searchStudioArtifactKeys → getStudioArtifactByEmbedKey); read seam is artifacts.ts only
+ * → the companion artifact provider's searchKeys → its hydrate); the read seam is that provider only
  * (check-gate stays 23). The local-synth citation mirror is a 2-part promote: localSources
  * must CARRY trusted (pipeline.ts:296-298) for the citation build (pipeline.ts:313) to mirror
  * it — this test REDs if EITHER half regresses.

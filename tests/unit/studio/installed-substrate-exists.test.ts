@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
-import { installedSubstrateExists, studioLaunchable } from '../../../src/studio/auto-launch.js';
-import { acquireSubstrate, localPathSource, resetSubstratePresenceCache, substrateRoot } from '../../../src/studio/substrate-acquire.js';
+import { installedSubstrateExists, studioLaunchable } from '../../../src/companion/auto-launch.js';
+import { acquireSubstrate, localPathSource, resetSubstratePresenceCache, substrateRoot } from '../../../src/companion/substrate-acquire.js';
 
 /**
  * D-S10-3's seam, made real by S10-d. Until this slice `installedSubstrateExists()` returned a

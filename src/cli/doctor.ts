@@ -23,8 +23,8 @@ import {
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
 import { readPersistedConfig } from '../persisted-config.js';
-import { authenticatedOriginCount } from '../studio/auth-origin-store.js';
-import { readEscalationCounters, formatEscalationCounterLines } from '../studio/escalation-counters.js';
+import { authenticatedOriginCount } from '../companion/auth-origin-store.js';
+import { readEscalationCounters, formatEscalationCounterLines } from '../companion/escalation-counters.js';
 import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
@@ -43,7 +43,7 @@ import { getVersion } from './help.js';
 // tests partially mock node:fs.
 import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser-tier.js';
-import { readSubstrateRecord, type SubstrateRecord } from '../studio/substrate-acquire.js';
+import { readSubstrateRecord, type SubstrateRecord } from '../companion/substrate-acquire.js';
 import { readTierOccupancy, formatTierOccupancyLines, type TierOccupancy } from '../fetch/tier-occupancy.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }

@@ -1,7 +1,7 @@
 import type { ApprovalDecision } from './approvals.js';
-import { budgetOrigin, budgetRefusal, type OriginBudget, type OriginBudgetVerdict, type OriginClass } from './origin-budget.js';
+import { budgetOrigin, budgetRefusal, type OriginBudget, type OriginBudgetVerdict, type OriginClass } from '../companion/origin-budget.js';
 import type { PreGrantStore } from './pre-grant.js';
-import type { EscalationCounterKey } from './escalation-counters.js';
+import type { EscalationCounterKey } from '../companion/escalation-counters.js';
 
 /**
  * S9 / D9 — the single gate every agent-driven navigation passes, and the reason the two halves of D9 are
