@@ -7,6 +7,7 @@ import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
 import { BingEngine } from '../search/engines/bing.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { BackendStatus } from '../server/backend-status.js';
+import { checkActivation } from '../server/activation.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { parseArgs, type ParsedArgs } from '../repl/parser.js';
@@ -182,6 +183,17 @@ export async function runTool(command: string, rawArgs: string[]): Promise<numbe
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     writeOut(TOOL_HELP[command]);
     return 0;
+  }
+
+  // THE ACTIVATION GATE for one-shot tool runs (PX2 mini-spec §3). Checked once,
+  // at process entry: the command is short-lived, so there is no boundary for it
+  // to cross mid-run and nothing to re-check. It sits BELOW `--help` on purpose —
+  // help is not a tool call, and an un-activated install must still be able to
+  // tell you what a command does.
+  const activation = checkActivation();
+  if (!activation.ok) {
+    process.stderr.write(`${activation.message}\n`);
+    return 1;
   }
 
   const useJson = rawArgs.includes('--json');

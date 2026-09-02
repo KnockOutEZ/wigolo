@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetConfig } from '../../src/config.js';
+import { installActivated } from '../unit/server/activation-fixture.js';
 import { getDatabase, closeDatabase } from '../../src/cache/db.js';
 import { _resetBackgroundIndexQueueForTest } from '../../src/embedding/background-queue.js';
 import { _resetMigrationGuard } from '../../src/cache/migrations/runner.js';
@@ -71,15 +72,21 @@ async function callTool(
 
 describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatch, no browser)', () => {
   let tmp: string;
+  let restoreActivation: () => void;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'wigolo-d19-'));
     process.env.WIGOLO_DATA_DIR = tmp; // the host's initSubsystems inits + migrates the db here; getDatabase() returns it
     resetConfig();
     _resetMigrationGuard();
+    // A fresh temp data dir is an un-activated install, so every tools/call here
+    // would return the activation refusal instead of the session envelope under
+    // test. The gate's own arms live in tests/unit/server/activation-gate.test.ts.
+    restoreActivation = installActivated();
   });
 
   afterEach(() => {
+    restoreActivation();
     try {
       closeDatabase();
     } catch {

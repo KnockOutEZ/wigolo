@@ -6,6 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { createMcpServer, type Subsystems } from '../../src/server.js';
 import { resetConfig } from '../../src/config.js';
+import { installActivated } from '../unit/server/activation-fixture.js';
 import { resetPersistedConfig } from '../../src/persisted-config.js';
 import type { StudioHostHandlers } from '../../src/daemon/studio-dispatch.js';
 
@@ -22,6 +23,7 @@ import type { StudioHostHandlers } from '../../src/daemon/studio-dispatch.js';
 // keep returning the real home and the isolation would silently no-op.
 let homeDir: string;
 let saved: Record<string, string | undefined>;
+let restoreActivation: () => void;
 const ISOLATED_VARS = ['HOME', 'USERPROFILE', 'WIGOLO_DATA_DIR'] as const;
 beforeEach(() => {
   homeDir = mkdtempSync(join(tmpdir(), 'wigolo-studio-seam-'));
@@ -32,8 +34,14 @@ beforeEach(() => {
   delete process.env.WIGOLO_DATA_DIR;
   resetConfig();
   resetPersistedConfig();
+  // The isolated home has no account state, which is exactly what an
+  // un-activated install looks like — so without this every studio_* call below
+  // would come back as the activation refusal instead of the seam envelope it
+  // asserts. The gate's own arms live in tests/unit/server/activation-gate.test.ts.
+  restoreActivation = installActivated();
 });
 afterEach(() => {
+  restoreActivation();
   for (const k of ISOLATED_VARS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];

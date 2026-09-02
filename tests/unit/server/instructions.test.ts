@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ACTIVATION_NOTICE,
   WIGOLO_INSTRUCTIONS,
   WIGOLO_INSTRUCTIONS_FULL,
   TOOL_DESCRIPTIONS,
+  serverInstructions,
 } from '../../../src/instructions.js';
 
 function wordCount(s: string): number {
@@ -10,6 +12,17 @@ function wordCount(s: string): number {
 }
 
 describe('WIGOLO_INSTRUCTIONS (Layer 1 — per-session strategy)', () => {
+  // PX2 #222: an un-activated install prepends a one-line activation notice to
+  // this string. The notice is COMPOSED at server construction and must never be
+  // baked into the constant — every word-budget assertion in this block is
+  // written against the activated form, and an install that has registered must
+  // receive exactly what it received before 0.3.0.
+  it('is exactly what an activated session receives — the notice is composed, not baked in', () => {
+    expect(serverInstructions(true)).toBe(WIGOLO_INSTRUCTIONS);
+    expect(WIGOLO_INSTRUCTIONS).not.toContain(ACTIVATION_NOTICE);
+    expect(serverInstructions(false)).toBe(`${ACTIVATION_NOTICE}\n\n${WIGOLO_INSTRUCTIONS}`);
+  });
+
   it('is a non-empty string', () => {
     expect(typeof WIGOLO_INSTRUCTIONS).toBe('string');
     expect(WIGOLO_INSTRUCTIONS.trim().length).toBeGreaterThan(0);
