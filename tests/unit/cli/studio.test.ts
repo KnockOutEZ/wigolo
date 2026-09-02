@@ -56,6 +56,8 @@ import { createCaptureHandler, type StudioCaptureInput } from '../../../src/stud
 import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
 import { dispatchStudioTool } from '../../../src/daemon/studio-dispatch.js';
 import { SessionRegistry } from '../../../src/studio/registry.js';
+import { createRunWithTail, subscribeRunEvents } from '../../../src/studio/run-bus.js';
+import { eventsSince } from '../../../src/studio/run-store.js';
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
 // can drive the login-handoff window: an agent act lands on a credential URL (wall), then the human
@@ -1835,5 +1837,201 @@ describe('runStudio — the deleted workspace leaves no residue in the source', 
     const src = readFileSync(new URL('../../../src/cli/studio.ts', import.meta.url), 'utf-8');
     expect(src).not.toContain('apps/studio');
     expect(src).not.toMatch(/'-w'|"-w"/);
+  });
+});
+
+/**
+ * #317 — §7 row 1 ("human edits a page mid-run → invalidate the snapshot; next result says
+ * `page changed by human — re-read`") wired into the CORE host.
+ *
+ * `wigolo-studio-run#55` shipped `HeldSnapshot` and the three seams that read it, but nothing in a core
+ * process constructed one: each consumer fell back to its own private default, so the mechanism was
+ * reachable only from a test that built the holder itself and a real daemon never invalidated. These
+ * drive the REAL `startStudioHost` boundary instead — the ingress, the observer, the act handler, the
+ * nav interceptor and the run log — which is the wiring, not the mechanism.
+ */
+type ActLike = { error_reason?: string };
+
+/**
+ * A session-browser launcher whose cdp records its event listeners, so a test can fire the
+ * `Fetch.requestPaused` Document hop the nav interceptor bumps the epoch on. The fake in
+ * `tests/unit/studio/nav.test.ts` does the same for the interceptor in isolation; here it has to reach
+ * through the host so the HOST's callback (the half #317 adds) is what runs.
+ */
+function makeHopLauncher() {
+  const listeners = new Map<string, Set<(p: unknown) => void>>();
+  const launch = async (): Promise<LaunchedSessionBrowser> =>
+    ({
+      browser: { close: async () => {}, on: () => {} },
+      context: { close: async () => {}, storageState: async () => ({ cookies: [], origins: [] }) },
+      page: { close: async () => {}, goto: async () => null, on: () => {}, url: () => 'https://example.com/' },
+      cdp: {
+        send: async () => ({}),
+        on: (e: string, cb: (p: never) => void) => {
+          if (!listeners.has(e)) listeners.set(e, new Set());
+          listeners.get(e)!.add(cb as (p: unknown) => void);
+        },
+        off: (e: string, cb: (p: never) => void) => listeners.get(e)?.delete(cb as (p: unknown) => void),
+      },
+    }) as unknown as LaunchedSessionBrowser;
+  const hop = (url: string) =>
+    [...(listeners.get('Fetch.requestPaused') ?? [])].forEach((cb) =>
+      cb({ requestId: `r${listeners.size}`, request: { url }, resourceType: 'Document' } as never),
+    );
+  return { launch, hop };
+}
+
+describe('cli/studio startStudioHost — #317 one held snapshot per session', () => {
+  let runDataDir: string;
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+    runDataDir = mkdtempSync(join(tmpdir(), 'wigolo-317-'));
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    rmSync(runDataDir, { recursive: true, force: true });
+    resetConfig();
+  });
+
+  // The AC's "not three": the invalidation goes IN through the session controller and comes OUT of both
+  // the observer AND the act handler. Only one object can do that. NAMED mutation that REDs each wiring:
+  //  - drop `held` from the SessionController call   → onHumanInput returns false (nothing to invalidate)
+  //  - drop `held` from createObserver               → no page_changed event in the drain
+  //  - drop `held` from createActHandler             → the click is refused for a resolve reason, not page_changed_by_human
+  it('the controller, the observer and the act handler read ONE holder, not three', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fakeBrowserLauncher });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' }); // the human holds by default
+      await host.observe({ since: 0 }); // a live snapshot is now HELD — the trigger fires only against one
+
+      // IN through the controller's ingress…
+      expect(host.onHumanInput('key')).toBe(true);
+
+      // …OUT of the observer: §7 row 1's words, on the event the agent acks like any other.
+      const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      const changed = obs.events.find((e) => e.type === 'page_changed');
+      expect(changed, `page_changed present; got ${JSON.stringify(obs.events)}`).toBeTruthy();
+      expect(changed!.notice).toBe('page changed by human — re-read');
+      expect(changed!.by).toBe('human');
+      expect(changed!.cause).toBe('input');
+
+      // …and OUT of the act handler. The observe above re-held the page (that IS "re-read"), so invalidate
+      // again and watch a ref chosen from the pre-edit page be refused rather than resolved against the new one.
+      expect(host.onHumanInput('click')).toBe(true);
+      const refused = (await host.act({ action: 'click', ref: 'e1' })) as ActLike;
+      expect(refused.error_reason).toBe('page_changed_by_human');
+
+      // The negative arm that proves the refusal above is the HOLDER talking and not just a broken fake:
+      // a fresh read clears it, and the same click then fails for a resolve reason instead.
+      await host.observe({ since: 0 });
+      const other = (await host.act({ action: 'click', ref: 'e1' })) as ActLike;
+      expect(other.error_reason).toBeDefined();
+      expect(other.error_reason).not.toBe('page_changed_by_human');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // The AC's "reaches the run log when the HOST is driven": law 1 — the run log is the one event stream
+  // every surface projects, and the in-process bus is the SSE tail's only feed.
+  it('a human edit appends snapshot.invalidated to the session run and publishes it on the tail', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'wire the holder' }, { dataDir: runDataDir });
+    const tailed: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeRunEvents(run.id, (e) => tailed.push({ type: e.type, payload: e.payload }));
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: fakeBrowserLauncher, runId: run.id, tabId: 'tab-317',
+    });
+    try {
+      await host.observe({ since: 0 });
+      expect(host.onHumanInput('paste')).toBe(true);
+
+      const logged = eventsSince(getDatabase(), run.id, 0).filter((e) => e.type === 'snapshot.invalidated');
+      expect(logged.length).toBe(1);
+      // `kind` stays host-side by design — the log publishes the cause, not the keystroke.
+      expect(logged[0].payload).toEqual({ tabId: 'tab-317', by: 'human', cause: 'input' });
+      expect(logged[0].actor.kind).toBe('human');
+      // And the same envelope reached the live tail (the SSE feed), not only the table.
+      expect(tailed.filter((e) => e.type === 'snapshot.invalidated').length).toBe(1);
+    } finally {
+      unsubscribe();
+      await host.daemon.stop();
+    }
+  });
+
+  // The AC's coercion arm. The kind crosses IPC from the app, so it is untrusted: an unrecognised shape,
+  // and a real input shape that mutates NOTHING (§5 leaves mouse-move/scroll/hover out deliberately —
+  // announcing "the page changed" on a scroll would teach the agent to ignore the line that matters),
+  // must both be ignored rather than guessed at, and must leave no run event behind.
+  it('the ingress coerces its argument: an unrecognised or non-mutating kind is ignored', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'coerce' }, { dataDir: runDataDir });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: fakeBrowserLauncher, runId: run.id,
+    });
+    try {
+      await host.observe({ since: 0 });
+      for (const bogus of ['scroll', 'mousemove', 'KEY', '', 42, null, undefined, { kind: 'key' }]) {
+        expect(host.onHumanInput(bogus), `kind ${JSON.stringify(bogus)} must be ignored`).toBe(false);
+      }
+      expect(eventsSince(getDatabase(), run.id, 0).filter((e) => e.type === 'snapshot.invalidated').length).toBe(0);
+      // …and the holder is still LIVE afterwards: a rejected kind must not have half-invalidated it.
+      const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      expect(obs.events.some((e) => e.type === 'page_changed')).toBe(false);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // The AC's navigation arm: `NavEpoch.bumpNavigation()` is source-agnostic, so the host's callback is the
+  // one place a HUMAN hop is distinguishable — the cause must not be left to the app alone. Attribution is
+  // the control token (law 3), not a diff: the agent's own hop cannot reach the trigger.
+  it('a human navigation invalidates the snapshot; the same hop under the agent does not', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'human nav' }, { dataDir: runDataDir });
+    const launcher = makeHopLauncher();
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: launcher.launch, runId: run.id, tabId: 'tab-nav',
+    });
+    try {
+      await host.observe({ since: 0 });
+      // The human holds the token by default → a committed Document hop is a human navigation.
+      launcher.hop('https://example.com/next');
+      await flush();
+      const invalidations = eventsSince(getDatabase(), run.id, 0).filter((e) => e.type === 'snapshot.invalidated');
+      expect(invalidations.length).toBe(1);
+      expect(invalidations[0].payload.cause).toBe('navigation'); // NOT 'input' — the cause is carried, not flattened
+      const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike & { eventCursor: number };
+      expect(obs.events.find((e) => e.type === 'page_changed')?.notice).toBe('page changed by human — re-read');
+
+      // Same hop, agent holding: the holder is not reachable from the agent's input path even in principle.
+      // The drain is cursor-ACKED, so the next observe passes the cursor back — at `since: 0` the human
+      // notice above would replay (by design) and say nothing about whether the agent's hop announced one.
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      launcher.hop('https://example.com/agent-drove-here');
+      await flush();
+      expect(eventsSince(getDatabase(), run.id, 0).filter((e) => e.type === 'snapshot.invalidated').length).toBe(1);
+      const after = (await host.observe({ since: obs.eventCursor })) as unknown as ObserveLike;
+      expect(after.events.some((e) => e.type === 'page_changed')).toBe(false);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // A session with no run bound (the browserless harness, or a session spawned before its run exists) must
+  // still invalidate — refusing to would be the one outcome that keeps serving a snapshot known to be stale.
+  it('invalidates with no run bound, and records nothing', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir, browserLauncher: fakeBrowserLauncher });
+    try {
+      await host.observe({ since: 0 });
+      expect(host.onHumanInput('form_change')).toBe(true);
+      const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      expect(obs.events.find((e) => e.type === 'page_changed')?.cause).toBe('input');
+    } finally {
+      await host.daemon.stop();
+    }
   });
 });

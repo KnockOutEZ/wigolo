@@ -629,6 +629,14 @@ export const STUDIO_OBSERVE_TOOL_SCHEMA = {
       type: 'string',
       description: 'Optional short note shown to the watching human (e.g. why you are reading the page now). Display-only and shown as inert text; it is not a command and is never stored.',
     },
+    find: {
+      type: 'string',
+      description: 'Grep the live page: the elements whose role or name matches are named in `found`, with their refs. Case-insensitive substring by default. Additive — it points you at the match instead of making you scan the snapshot yourself.',
+    },
+    find_regex: {
+      type: 'boolean',
+      description: 'Treat `find` as a regular expression instead of literal text. A pattern that does not compile is refused, never silently matched as text.',
+    },
   },
   required: [],
 };
@@ -665,6 +673,10 @@ export const STUDIO_ACT_TOOL_SCHEMA = {
     narration: {
       type: 'string',
       description: 'Optional short note shown to the watching human alongside this action (e.g. why you are clicking it). Display-only and shown as inert text; it is not a command and is never stored.',
+    },
+    post_actions: {
+      type: 'boolean',
+      description: 'Default true: the result also reports what the page became and what the console said. Set false when you already know, to get the smaller result.',
     },
   },
   required: ['action'],

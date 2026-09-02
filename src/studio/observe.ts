@@ -24,6 +24,7 @@ import type { StudioObserveInput, StudioObserveOutput, StudioToolError } from '.
 import { isCredentialContext } from './credential.js';
 import type { LoginHandoffSignal } from './handoff.js';
 import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
+import { excerptToFile } from '../server/large-output.js';
 
 /**
  * D8b structural containment for the studio_observe sink: neutralize the untrusted-data boundary marker
@@ -49,6 +50,77 @@ const neutralizeDiff = (d: SnapshotDiff): SnapshotDiff => ({
     removed: d.lowConfidenceChurn.removed.map(neutralizeElement),
   },
 });
+
+/**
+ * PIN 8 — GREP-OVER-THE-PAGE RIDES `studio_observe` AS A `find` PARAM.
+ *
+ * The brief pins the shape as well as the feature: a grep is not worth a new MCP tool (that register
+ * is ~11–13 seams including five instruction test files), and it is not worth an act verb either,
+ * because it reads rather than drives. It is a parameter on the read tool, and the tool description
+ * names it so the agent can find it.
+ *
+ * It searches the LIVE page's element descriptors — `role` and `name` — not the diff, so the answer
+ * is "what is on the page now", the same question a person asking "where is the checkout button"
+ * means. That is deliberately narrower than a full-text grep: the perception layer builds its
+ * snapshot from the accessibility tree, so non-interactive prose is not in scope here, and saying so
+ * in the schema is cheaper than a second CDP read on every observe.
+ */
+export interface ObserveFindInput {
+  /** Substring (default) or regular expression to match against each element's role + name. */
+  find?: string;
+  /** Treat `find` as a regular expression rather than a literal substring. */
+  find_regex?: boolean;
+}
+
+/** The find sub-result. Page-derived, so it inherits the payload's `trusted: false` + notice. */
+export interface ObserveFindResult {
+  query: string;
+  regex: boolean;
+  /** Total matches on the live page — the count is the whole set, even when the sample is an excerpt. */
+  matches: number;
+  /** Neutralized matching descriptors, capped. */
+  sample: SnapshotElement[];
+  /** Matches that are only in `file`. */
+  spilled?: number;
+  /** Absolute path to every match on disk (law 11). Absent when the sample is the whole set. */
+  file?: string;
+}
+
+/** Matches kept inline before the rest goes to a file. A grep wants breadth, so this is wider than act's. */
+const FIND_INLINE_LIMIT = 20;
+/**
+ * Longest accepted pattern. A caller-supplied regular expression runs on the host's CPU, so the input
+ * is bounded rather than trusted: a short pattern cannot express the nested-quantifier shapes that
+ * make catastrophic backtracking expensive, and a long one is refused instead of being run.
+ */
+const FIND_PATTERN_MAX = 200;
+
+/** Compile the caller's query into a predicate, or return the typed refusal to surface. */
+function findMatcher(input: ObserveFindInput): ((e: SnapshotElement) => boolean) | StudioToolError {
+  const query = input.find ?? '';
+  if (query.length > FIND_PATTERN_MAX) {
+    return {
+      error_reason: 'find_pattern_too_long',
+      error: `find accepts at most ${FIND_PATTERN_MAX} characters; this pattern is ${query.length}.`,
+      hint: 'Search for a shorter distinctive fragment, then narrow with a second find.',
+    };
+  }
+  if (!input.find_regex) {
+    const needle = query.toLowerCase();
+    return (e) => `${e.role} ${e.name}`.toLowerCase().includes(needle);
+  }
+  let re: RegExp;
+  try {
+    re = new RegExp(query, 'i');
+  } catch (err) {
+    return {
+      error_reason: 'find_pattern_invalid',
+      error: `find_regex was set but the pattern does not compile: ${err instanceof Error ? err.message : String(err)}`,
+      hint: 'Fix the expression, or drop find_regex to search for the text literally.',
+    };
+  }
+  return (e) => re.test(`${e.role} ${e.name}`);
+}
 
 export interface ObserverDeps {
   /** Take the live snapshot (the host binds this to sessionBrowser.cdp). */
@@ -84,14 +156,24 @@ export interface ObserverDeps {
    * that wires nothing still cannot diff against a base a human has touched.
    */
   held?: HeldSnapshot;
+  /**
+   * Pin 8: run attribution for the file an oversized `find` writes (law 1). Pull-at-eval, matching the
+   * other deps here; absent ⇒ the file lands under `unattributed`, which is visible in the path rather
+   * than silently pooled.
+   */
+  runId?: () => string | undefined;
 }
 
 /** Build the observe closure. Holds the per-session snapshot for diffing; otherwise stateless. */
-export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError> {
+export function createObserver(
+  deps: ObserverDeps,
+): (input: StudioObserveInput & ObserveFindInput) => Promise<(StudioObserveOutput & { found?: ObserveFindResult }) | StudioToolError> {
   const held = deps.held ?? new HeldSnapshot();
   const maxTries = deps.maxStableRetries ?? 3;
 
-  return async (input: StudioObserveInput): Promise<StudioObserveOutput | StudioToolError> => {
+  return async (
+    input: StudioObserveInput & ObserveFindInput,
+  ): Promise<(StudioObserveOutput & { found?: ObserveFindResult }) | StudioToolError> => {
     // Spill retrieval (route-to-host): the spill dir is host-local, so a stdio agent
     // fetches a ref by calling studio_observe({snapshot_ref}), which proxies here.
     if (input.snapshot_ref) {
@@ -184,6 +266,29 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
     // above) → refresh the session lastObserveEpoch so a later capture knows the agent saw THIS page.
     deps.markObserved?.();
 
+    // Pin 8's `find`, run against the LIVE page rather than the delta: an agent asking "where is the
+    // checkout button" wants what is on the page now, not what changed since it last looked. It sits
+    // BELOW the credential short-circuit on purpose — that path withholds page content, and a grep is
+    // page content — and its matches carry the same neutralization the elements payload carries.
+    let found: ObserveFindResult | undefined;
+    if (typeof input.find === 'string' && input.find.length > 0) {
+      const matcher = findMatcher(input);
+      if (typeof matcher !== 'function') return matcher;
+      const matches = snap.elements.filter(matcher).map(neutralizeElement);
+      const fit = excerptToFile(matches, FIND_INLINE_LIMIT, {
+        dataDir: deps.dataDir,
+        runId: deps.runId?.(),
+        kind: 'find',
+      });
+      found = {
+        query: input.find,
+        regex: input.find_regex === true,
+        matches: matches.length,
+        sample: fit.inline,
+        ...(fit.file ? { spilled: fit.spilled, file: fit.file } : {}),
+      };
+    }
+
     const base = {
       id: snap.id,
       trusted: false as const, // page-perception payload (elements/diff) is untrusted page data — host-set, not page-forgeable
@@ -199,12 +304,12 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       const fit = fitElementsToBudget(resolved.snapshot.elements, deps.inlineBudget, deps.dataDir);
       deps.recordTokens?.(fit.tokenCount);
       enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fit.spillRef ? [fit.spillRef] : []), dataDir: deps.dataDir });
-      return { ...base, kind: 'full', elements: fit.elements.map(neutralizeElement), ...(fit.spillRef ? { snapshotRef: fit.spillRef } : {}) };
+      return { ...base, kind: 'full', elements: fit.elements.map(neutralizeElement), ...(fit.spillRef ? { snapshotRef: fit.spillRef } : {}), ...(found ? { found } : {}) };
     }
 
     const fitD = fitDiffToBudget(resolved.diff, deps.inlineBudget, deps.dataDir);
     deps.recordTokens?.(fitD.tokenCount);
     enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fitD.spillRef ? [fitD.spillRef] : []), dataDir: deps.dataDir });
-    return { ...base, kind: 'diff', diff: fitD.diff ? neutralizeDiff(fitD.diff) : fitD.summary, ...(fitD.spillRef ? { snapshotRef: fitD.spillRef } : {}) };
+    return { ...base, kind: 'diff', diff: fitD.diff ? neutralizeDiff(fitD.diff) : fitD.summary, ...(fitD.spillRef ? { snapshotRef: fitD.spillRef } : {}), ...(found ? { found } : {}) };
   };
 }

@@ -431,6 +431,43 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
   });
 
+  /**
+   * PIN 8 (#57). The reshaping is only half-done if the capability ships and the description does
+   * not name it: an agent discovers `find` and `post_actions` from the description or not at all,
+   * and the pin's own words are "grep-over-page rides `studio_observe` as a `find` param AND ITS
+   * DESCRIPTION NAMES IT".
+   */
+  it('studio_observe description names the find param and its found result (pin 8)', () => {
+    const desc = TOOL_DESCRIPTIONS.studio_observe;
+    expect(desc).toContain('find');
+    expect(desc).toContain('find_regex');
+    expect(desc).toContain('found');
+    expect(desc).toMatch(/grep|search|match/i);
+  });
+
+  it('studio_act description names the post-actions it now attaches, and how to turn them off (pin 8)', () => {
+    const desc = TOOL_DESCRIPTIONS.studio_act;
+    expect(desc).toContain('post_actions');
+    expect(desc).toMatch(/console/i);
+    expect(desc).toMatch(/settle|what the page became/i);
+  });
+
+  it('the reshaped descriptions cross-reference the cheaper sibling for the job (pin 8)', () => {
+    // A tool description is the only place an agent learns that a cheaper tool exists for what it
+    // is about to do. Driving a session to read a page, or clicking around to find an element, are
+    // the two expensive habits these two tools invite; each now names the cheaper route.
+    expect(TOOL_DESCRIPTIONS.studio_observe).toMatch(/`fetch` reads it/i);
+    expect(TOOL_DESCRIPTIONS.studio_act).toMatch(/`find`/);
+  });
+
+  it('the reshaped descriptions keep capability language — no engine or library names', () => {
+    const both = TOOL_DESCRIPTIONS.studio_observe + TOOL_DESCRIPTIONS.studio_act;
+    expect(both).toMatch(/browser engine/i); // the capability name, not the implementation
+    for (const banned of ['CDP', 'Playwright', 'Chromium', 'Chrome DevTools', 'Puppeteer', 'Electron']) {
+      expect(both, `capability language: '${banned}' is an implementation name`).not.toContain(banned);
+    }
+  });
+
   it('studio_capture description covers both the clip and the qa (save-session-as-research) capture types', () => {
     const desc = TOOL_DESCRIPTIONS.studio_capture;
     expect(desc).toContain('clip');

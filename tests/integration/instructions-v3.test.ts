@@ -5,6 +5,7 @@ import {
   TOOL_DESCRIPTIONS,
 } from '../../src/instructions.js';
 import type { ToolName } from '../../src/instructions.js';
+import { TOOL_SCHEMAS } from '../../src/server/tool-schemas.js';
 
 describe('knowledge layer integration', () => {
   it('WIGOLO_INSTRUCTIONS is usable as MCP server instructions field', () => {
@@ -88,3 +89,28 @@ describe('knowledge layer integration', () => {
     expect(WIGOLO_INSTRUCTIONS_FULL).toContain('keyword forms');
   });
 });
+
+/**
+ * PIN 8 (#57) at the wire. The description and the schema reach an MCP client as one ListTools
+ * entry, so the coherence that matters is not "both files were edited" but "the entry a client
+ * actually receives advertises a param the same entry accepts".
+ */
+describe('pin-8 params are coherent in the ListTools entry a client receives', () => {
+  const entryFor = (name: ToolName) =>
+    JSON.parse(
+      JSON.stringify({ name, description: TOOL_DESCRIPTIONS[name], inputSchema: TOOL_SCHEMAS[name] }),
+    ) as { description: string; inputSchema: { properties: Record<string, { description?: string }> } };
+
+  it.each([
+    ['studio_observe', ['find', 'find_regex']],
+    ['studio_act', ['post_actions']],
+  ] as const)('%s advertises and accepts the same new params', (name, params) => {
+    const entry = entryFor(name as ToolName);
+    for (const param of params) {
+      expect(entry.inputSchema.properties[param], `${name} schema is missing ${param}`).toBeDefined();
+      expect(entry.description, `${name} description never names ${param}`).toContain(param);
+      expect(entry.inputSchema.properties[param].description, `${param} ships with no description`).toBeTruthy();
+    }
+  });
+});
+
