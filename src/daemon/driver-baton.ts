@@ -18,6 +18,16 @@
  * be a coordination gate pretending to be a fence.
  *
  * Takeover receipts, the §1.4 interrupted-once shape and the token bridge are `wigolo-studio-run#217`.
+ *
+ * THE FOURTH PARAMETER. Every gesture takes an optional `RunStoreOptions`, threaded to the appends
+ * it makes, for exactly the reason `createRun`/`appendEvent` take one: the in-process bus these
+ * writes publish on has subscribers only in the process that owns the handle, and the process that
+ * owns the handle is not always the process the run's watchers live in. The studio DB broker is a
+ * plain-Node CHILD of the app's main process, so a baton moved there publishes to a bus nobody in
+ * that child is listening to, and the host's live tail — every panel, every SSE client — never sees
+ * the `driver.changed` row that was committed. `onEvent` is how the committed envelope leaves the
+ * process it was written in. Omitted, nothing changes: the local bus is still fed by
+ * `appendRunEventWithTail`, which is what an in-daemon caller needs and all it ever needed.
  */
 import type Database from 'better-sqlite3';
 import { appendRunEventWithTail } from '../studio/run-bus.js';
@@ -29,6 +39,7 @@ import {
   type Driver,
   type Run,
   type RunEvent,
+  type RunStoreOptions,
   type WheelRequest,
 } from '../studio/run-store.js';
 import { createLogger } from '../logger.js';
@@ -154,6 +165,7 @@ function changeDriver(
   cause: DriverChangeCause,
   by: Driver,
   extra: { requestId?: string; reason?: string },
+  opts: RunStoreOptions = {},
 ): BatonAccepted {
   if (sameDriver(run.driver, to)) return { ok: true, run, events: [] };
   const actor = actorFor(by);
@@ -168,7 +180,7 @@ function changeDriver(
         ...(extra.requestId ? { requestId: extra.requestId } : {}),
         ...(extra.reason ? { reason: extra.reason } : {}),
       },
-    }),
+    }, opts),
   ];
   // A-51-10: a release into an empty queue lands on `human` AND pauses the run, so it shows in the
   // tray as needing someone rather than sitting silently idle with nobody driving it.
@@ -177,7 +189,7 @@ function changeDriver(
       actor,
       type: 'run.paused',
       payload: { reason: 'agent', detail: 'driver released' },
-    }));
+    }, opts));
   }
   log.debug('driver changed', { runId: run.id, cause, to: formatDriver(to) });
   return { ok: true, run: getRun(db, run.id) ?? run, events };
@@ -197,7 +209,12 @@ export interface WheelRequestInput {
  * Idempotent per client: a second request while one is pending returns the ORIGINAL `requestId` and
  * appends nothing, so a client that retries cannot flood the queue or lose its place in it.
  */
-export function requestWheel(db: Database.Database, runId: string, input: WheelRequestInput): BatonResult {
+export function requestWheel(
+  db: Database.Database,
+  runId: string,
+  input: WheelRequestInput,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const run = readRun(db, runId);
   if (isRefusal(run)) return run;
   const pending = run.wheelRequests.find((r) => sameDriver(r.by, input.by));
@@ -211,7 +228,7 @@ export function requestWheel(db: Database.Database, runId: string, input: WheelR
       by: driverPayload(input.by),
       ...(input.reason ? { reason: input.reason } : {}),
     },
-  });
+  }, opts);
   return { ok: true, run: getRun(db, run.id) ?? run, events: [event], requestId };
 }
 
@@ -225,7 +242,12 @@ export interface WheelDenyInput {
  * Decline a request, or withdraw your own. The driver and any human may deny; a requester may
  * always withdraw its own request, which is why the third arm exists.
  */
-export function denyWheel(db: Database.Database, runId: string, input: WheelDenyInput): BatonResult {
+export function denyWheel(
+  db: Database.Database,
+  runId: string,
+  input: WheelDenyInput,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const run = readRun(db, runId);
   if (isRefusal(run)) return run;
   const target = run.wheelRequests.find((r) => r.requestId === input.requestId);
@@ -244,7 +266,7 @@ export function denyWheel(db: Database.Database, runId: string, input: WheelDeny
       by: input.by.kind,
       ...(input.reason ? { reason: input.reason } : {}),
     },
-  });
+  }, opts);
   return { ok: true, run: getRun(db, run.id) ?? run, events: [event] };
 }
 
@@ -257,7 +279,12 @@ export interface WheelGrantInput {
   reason?: string;
 }
 
-export function grantWheel(db: Database.Database, runId: string, input: WheelGrantInput): BatonResult {
+export function grantWheel(
+  db: Database.Database,
+  runId: string,
+  input: WheelGrantInput,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const run = readRun(db, runId);
   if (isRefusal(run)) return run;
   if (!mayHandOver(run, input.by)) {
@@ -278,7 +305,7 @@ export function grantWheel(db: Database.Database, runId: string, input: WheelGra
     return refuse('no_successor', 'A grant must name either a queued "requestId" or an explicit "to" driver.',
       'Grant by requestId whenever the queue holds one — naming the request is what stops a race misdelivering the wheel.', run);
   }
-  return changeDriver(db, run, to, 'grant', input.by, { ...(requestId ? { requestId } : {}), ...(input.reason ? { reason: input.reason } : {}) });
+  return changeDriver(db, run, to, 'grant', input.by, { ...(requestId ? { requestId } : {}), ...(input.reason ? { reason: input.reason } : {}) }, opts);
 }
 
 export interface WheelReleaseInput {
@@ -290,7 +317,12 @@ export interface WheelReleaseInput {
  * Give the wheel up without naming a successor: the head of the queue takes it (lowest `seq`,
  * FIFO), or — with nobody waiting — it lands on `human` and the run pauses (A-51-10).
  */
-export function releaseWheel(db: Database.Database, runId: string, input: WheelReleaseInput): BatonResult {
+export function releaseWheel(
+  db: Database.Database,
+  runId: string,
+  input: WheelReleaseInput,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const run = readRun(db, runId);
   if (isRefusal(run)) return run;
   if (!mayHandOver(run, input.by)) {
@@ -298,9 +330,9 @@ export function releaseWheel(db: Database.Database, runId: string, input: WheelR
   }
   const head = run.wheelRequests[0];
   if (head) {
-    return changeDriver(db, run, head.by, 'release', input.by, { requestId: head.requestId, ...(input.reason ? { reason: input.reason } : {}) });
+    return changeDriver(db, run, head.by, 'release', input.by, { requestId: head.requestId, ...(input.reason ? { reason: input.reason } : {}) }, opts);
   }
-  return changeDriver(db, run, { kind: 'human' }, 'release', input.by, { ...(input.reason ? { reason: input.reason } : {}) });
+  return changeDriver(db, run, { kind: 'human' }, 'release', input.by, { ...(input.reason ? { reason: input.reason } : {}) }, opts);
 }
 
 export interface WheelTakeoverInput {
@@ -313,14 +345,19 @@ export interface WheelTakeoverInput {
  * Human takeover: absolute, instant, never queued, never refusable. Bypasses `wheelRequests`
  * entirely — a human does not join a queue for their own browser.
  */
-export function takeWheel(db: Database.Database, runId: string, input: WheelTakeoverInput): BatonResult {
+export function takeWheel(
+  db: Database.Database,
+  runId: string,
+  input: WheelTakeoverInput,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const run = readRun(db, runId);
   if (isRefusal(run)) return run;
   if (input.by.kind !== 'human') {
     return refuse('not_the_driver', 'Takeover is a human gesture; an agent driver asks for the wheel instead.',
       'Machine drivers use the request/grant gestures. Only a human surface takes the wheel outright.', run);
   }
-  return changeDriver(db, run, input.by, 'takeover', input.by, { ...(input.reason ? { reason: input.reason } : {}) });
+  return changeDriver(db, run, input.by, 'takeover', input.by, { ...(input.reason ? { reason: input.reason } : {}) }, opts);
 }
 
 /**

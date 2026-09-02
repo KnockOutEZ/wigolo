@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { createRunWithTail } from '../../../src/studio/run-bus.js';
+import { createRunWithTail, subscribeRunEvents } from '../../../src/studio/run-bus.js';
 import { eventsSince, type Actor, type Driver, type Run } from '../../../src/studio/run-store.js';
 import type { McpToolResult } from '../../../src/daemon/studio-dispatch.js';
 import {
@@ -361,5 +361,58 @@ describe('the piggyback merge (§3.2 mechanism 1)', () => {
     expect(withHumanMessages({ content: [{ type: 'text', text: 'not json' }], isError: false }, messages)).toBeUndefined();
     expect(withHumanMessages({ content: [{ type: 'text', text: '[1,2,3]' }], isError: false }, messages)).toBeUndefined();
     expect(withHumanMessages({ content: [], isError: false }, messages)).toBeUndefined();
+  });
+});
+
+/**
+ * The fourth parameter (#334) — same reason the baton's gestures have one. `queueMessage` is the
+ * only door into the queue, and the studio DB broker walks through it inside a plain-Node child
+ * whose in-process bus nobody in that child subscribes to. Without a hook the `message.queued` row
+ * commits and the host's live tail hears nothing, so `queued → delivered at step N → acknowledged`
+ * starts with a step no surface can see happen.
+ */
+describe('queueMessage publishes its committed envelope to an out-of-process hook', () => {
+  it('carries the same envelope it returns — seq, type and the payload the state line is folded from', () => {
+    const run = newRun();
+    const seen: Array<{ runId: string; seq: number; type: string; messageId: unknown }> = [];
+    const result = queueMessage(db, run.id, { text: 'stop at the checkout page' }, {
+      onEvent: (runId, event) => {
+        seen.push({ runId, seq: event.seq, type: event.type, messageId: (event.payload as { messageId?: unknown }).messageId });
+      },
+    });
+    expect(result.ok).toBe(true);
+    const queued = result as { event?: { seq: number }; message: RunMessage };
+    expect(seen).toEqual([{
+      runId: run.id,
+      seq: queued.event?.seq,
+      type: MESSAGE_QUEUED,
+      messageId: queued.message.messageId,
+    }]);
+  });
+
+  it('publishes nothing on a refusal, and nothing on an idempotent replay — only a real append has a tail', () => {
+    const run = newRun();
+    const seen: string[] = [];
+    const hook = { onEvent: (_id: string, event: { type: string }) => { seen.push(event.type); } };
+
+    expect(queueMessage(db, run.id, { text: '   ' }, hook).ok).toBe(false);
+    expect(queueMessage(db, 'zzzz', { text: 'nobody home' }, hook).ok).toBe(false);
+    expect(queueMessage(db, run.id, { text: 'once', messageId: 'hm_fixed' }).ok).toBe(true);
+    const replay = queueMessage(db, run.id, { text: 'once', messageId: 'hm_fixed' }, hook);
+    expect((replay as { replayed?: true }).replayed).toBe(true);
+
+    expect(seen).toEqual([]);
+  });
+
+  it('still feeds the in-process bus when no hook is given — the daemon path is unchanged', () => {
+    const run = newRun();
+    const tailed: string[] = [];
+    const stop = subscribeRunEvents(run.id, (event) => { tailed.push(event.type); });
+    try {
+      expect(queueMessage(db, run.id, { text: 'hello' }).ok).toBe(true);
+    } finally {
+      stop();
+    }
+    expect(tailed).toEqual([MESSAGE_QUEUED]);
   });
 });

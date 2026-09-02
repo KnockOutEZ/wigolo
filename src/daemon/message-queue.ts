@@ -37,6 +37,7 @@ import {
   type Run,
   type RunEvent,
   type RunEventInput,
+  type RunStoreOptions,
   type TypedEventQuery,
   type UnansweredEventQuery,
 } from '../studio/run-store.js';
@@ -206,8 +207,18 @@ function refuse(reason: MessageRefusalReason, error: string, hint: string): Mess
 /**
  * Accept a message into the run log. This is the ONLY way a message enters the queue, and it does
  * not deliver anything: what a sender gets back is a `queued` message whose state line says so.
+ *
+ * `opts` is threaded to the append for the reason the baton's gestures thread theirs: the studio DB
+ * broker writes this row in a plain-Node child whose in-process bus has no subscribers, so without
+ * `onEvent` the committed `message.queued` envelope never reaches the host's live tail and a panel
+ * shows nothing until it re-reads. Omitted, the local bus is fed exactly as before.
  */
-export function queueMessage(db: Database.Database, runId: string, input: QueueMessageInput): QueueMessageResult {
+export function queueMessage(
+  db: Database.Database,
+  runId: string,
+  input: QueueMessageInput,
+  opts: RunStoreOptions = {},
+): QueueMessageResult {
   const text = typeof input.text === 'string' ? input.text : '';
   if (text.trim() === '') return refuse('invalid_message', 'message text is required', 'Send a non-empty "text".');
   if (text.length > MAX_MESSAGE_TEXT_CHARS) {
@@ -240,7 +251,7 @@ export function queueMessage(db: Database.Database, runId: string, input: QueueM
     // lives for every event type, and §3.1 pins the payload. Both are written from one value here,
     // so there is no second source that could disagree with the first.
     payload: { messageId, text, from, ...(urgent ? { urgent: true } : {}) },
-  });
+  }, opts);
   return {
     ok: true,
     event,

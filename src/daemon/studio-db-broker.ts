@@ -33,15 +33,35 @@ import {
   listRuns,
   eventsSince,
   eventsSinceBounded,
+  eventsOfTypes,
+  unansweredEvents,
   resolveRunId,
+  type ClientInfo,
   type CreateRunInput,
   type ListRunsOptions,
   type ListRunsResult,
+  type ProjectableEvent,
   type Run,
   type RunEvent,
   type RunEventInput,
   type StoredRunFacts,
+  type TypedEventQuery,
+  type UnansweredEventQuery,
 } from '../studio/run-store.js';
+import {
+  applyDriverGesture,
+  type BatonResult,
+  type DriverGesture,
+} from './rest/runs-store.js';
+import {
+  listMessages,
+  queueMessage,
+  unconsumedInterruptEvents,
+  DEFAULT_MESSAGE_LIST_LIMIT,
+  type QueueMessageInput,
+  type QueueMessageResult,
+  type RunMessage,
+} from './message-queue.js';
 import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
 import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
 import { buildResearchBrief } from '../research/brief.js';
@@ -523,6 +543,78 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
       return eventsSinceBounded(deps.db, p.runId, p.since ?? 0, limit);
     },
+
+    // -----------------------------------------------------------------------------------------
+    // SD2's remaining run-log surface (#334).
+    //
+    // WHY THESE ARE HERE AND NOT APP-SIDE. `RunsStore` names nine members the SD2 REST routes and
+    // dispatch mechanisms read; the daemon's native binding had all nine and the broker-backed one
+    // could bind three, because the six below had no door. Measured on the launched app: `GET
+    // /v1/runs/:id` answered 200 and the footer came alive from `get` alone, while
+    // `POST /v1/runs/:id/driver` and both `/messages` routes answered `503 store_unavailable` — so
+    // with the app as host there was no gesture that moved the baton and no way to queue a message,
+    // from ANY surface, the panel included.
+    //
+    // Each is a THIN DELEGATE to the function that already owns the grammar. The baton and the
+    // queue are grammars, not queries: which events a `grant` is worth, what `queued` means and
+    // when it becomes `delivered at step N`. Re-deriving any of that in the host would be a second
+    // source of truth for one event stream, which law 1 forbids — so the widening is transport and
+    // nothing else, and the answers are the same values `sqliteRunsStore` returns for the same
+    // input by construction rather than by resemblance.
+    //
+    // REFUSALS CROSS AS VALUES. `BatonRefused` and `MessageRefused` are returned, never thrown, and
+    // that is load-bearing over this wire: the transport flattens a thrown error to a bare message,
+    // so a thrown refusal would arrive as a 500 on a route whose documented answer is 404/409/400.
+    // A throw here is reserved for what a throw means everywhere else in this file — a caller that
+    // asked an unanswerable question, e.g. an unbounded page.
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Move the baton (§1.3). The caller names a GESTURE, not a driver: there is no path that sets
+     * the field directly, and this method inherits that because it is the REST port's own mapping.
+     *
+     * Threads the tail hook, without which the `driver.changed` row commits into silence — the
+     * gestures publish on the bus of the process that appends, and in this process that bus has no
+     * subscribers at all. §7 rows 2 and 3 are the receipts that ride out on it.
+     */
+    runDriver: async (p: { runId: string; input: DriverGesture }): Promise<BatonResult> =>
+      applyDriverGesture(deps.db, p.runId, p.input, { onEvent: deps.onRunEvent }),
+
+    /**
+     * Accept a message into the run's delivery queue (§3). Delivers nothing — law 7 says a pull
+     * transport queues and we say so, and what comes back is a `queued` message whose own state
+     * line names when it reaches the agent. Threads the tail hook for the same reason `runDriver`
+     * does: `queued → delivered at step N → acknowledged` begins with a row the host has to see.
+     */
+    runSendMessage: async (p: { runId: string; input: QueueMessageInput }): Promise<QueueMessageResult> =>
+      queueMessage(deps.db, p.runId, p.input, { onEvent: deps.onRunEvent }),
+
+    /**
+     * The run's messages, newest first, each folded to the state its rows put it in.
+     *
+     * `limit` is optional here, unlike `runEventsSince`'s, because this read is bounded whatever it
+     * says: `listMessages` clamps to `MAX_MESSAGE_LIST_LIMIT` and the fold behind it reads a
+     * windowed page of message rows, so there is no argument that asks for the whole log.
+     */
+    runMessages: async (p: { runId: string; limit?: number }): Promise<RunMessage[]> =>
+      listMessages(deps.db, p.runId, p.limit ?? DEFAULT_MESSAGE_LIST_LIMIT),
+
+    /** Rows of a named set of types — the read behind `page changed`, the message fold, the footer. */
+    runTypedEvents: async (p: { runId: string; query: TypedEventQuery }): Promise<ProjectableEvent[]> =>
+      eventsOfTypes(deps.db, p.runId, p.query),
+
+    /** The anti-join behind "queued but not delivered" and "delivered but not acknowledged". */
+    runUnansweredEvents: async (p: { runId: string; query: UnansweredEventQuery }): Promise<ProjectableEvent[]> =>
+      unansweredEvents(deps.db, p.runId, p.query),
+
+    /**
+     * §3.2 mechanism 3 — the oldest still-unconsumed interrupt trigger this caller is owed, or
+     * nothing. ONE event, not the list: the port's member answers one, so sending the rest would
+     * put rows on the wire that no caller reads, and a caller assembling the eligibility rules out
+     * of raw rows would be the second definition of "pending interrupt".
+     */
+    runInterruptTrigger: async (p: { runId: string; caller?: ClientInfo }): Promise<RunEvent | undefined> =>
+      unconsumedInterruptEvents(deps.db, p.runId, p.caller)[0],
   };
 }
 export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;

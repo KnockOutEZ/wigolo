@@ -108,8 +108,17 @@ describe('studio-db-broker — run store methods', () => {
     // `runUpdate` has a second source of truth no matter what the store module refuses.
     // Still a CLOSED enum, not a "contains no update/delete" predicate: a new mutation method has to
     // be added here deliberately, which is the point. `runExists`, `runFacts` and `runListLogs` are reads.
+    //
+    // #334 added six. Four are reads (`runMessages`, `runTypedEvents`, `runUnansweredEvents`,
+    // `runInterruptTrigger`). The two WRITES do not weaken the guarantee this row makes: `runDriver`
+    // and `runSendMessage` name a GESTURE, and every row either of them is worth is an APPEND made
+    // by the baton or the queue — neither has, or can reach, a path that rewrites or drops one.
     const names = Object.keys(handlers).filter((n) => n.startsWith('run'));
-    expect(names.sort()).toEqual(['runAppend', 'runCreate', 'runEventsSince', 'runExists', 'runFacts', 'runGet', 'runList', 'runListLogs']);
+    expect(names.sort()).toEqual([
+      'runAppend', 'runCreate', 'runDriver', 'runEventsSince', 'runExists', 'runFacts', 'runGet',
+      'runInterruptTrigger', 'runList', 'runListLogs', 'runMessages', 'runSendMessage',
+      'runTypedEvents', 'runUnansweredEvents',
+    ]);
   });
 
   /**
