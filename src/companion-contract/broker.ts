@@ -35,6 +35,26 @@ export const BROKER_TABLES = Object.freeze([
 
 export type BrokerTable = (typeof BROKER_TABLES)[number];
 
+/**
+ * The HTTP route broker ops ride, appended to the base URL of whichever core owns the database — the
+ * paired external daemon, or the app's own embedded core. The ADDRESS belongs to the wire for the same
+ * reason the op set does: two sides that disagree about it trade 404s, and a 404 is indistinguishable at
+ * the client from "no core there". One route, two base URLs, one client code path.
+ */
+export const BROKER_ROUTE = '/companion/broker';
+
+/**
+ * Ceiling on the rows one read may name, enforced BEFORE the storage is touched (`row_limit_exceeded`).
+ *
+ * A broker read answers as one JSON body that the caller parses in a single synchronous step, so an
+ * unbounded `limit` is an unbounded parse on whichever thread asked. The bound is stated in ROWS because
+ * that is the only quantity the op carries — the broker does not own the column set, so it cannot price a
+ * row before reading it. Callers that want more paginate with `since`/`before`, which is what the cursor is
+ * for. Reversal condition: if a caller ever needs a whole table in one frame, that is a streaming op with
+ * its own shape, not a bigger number here.
+ */
+export const MAX_BROKER_ROWS = 1_000;
+
 /** What a stored cell can be — the storage engine's value domain, nothing richer. */
 export type BrokerCell = string | number | boolean | null;
 

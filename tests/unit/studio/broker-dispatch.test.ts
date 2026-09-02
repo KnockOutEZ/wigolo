@@ -1,303 +1,112 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { SearchEngine } from '../../../src/types.js';
-import type { SmartRouter } from '../../../src/fetch/router.js';
-import type { IndexJobInput } from '../../../src/embedding/background-queue.js';
-import type { ArtifactDelta } from '../../../src/studio/capture/artifacts.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, getDatabase, closeDatabase } from '../../../src/cache/db.js';
-// The P3 broker's PURE dispatch map — no process, tested against a real in-memory DB. Reds until
-// createBrokerHandlers exists.
-import { createBrokerHandlers } from '../../../src/daemon/studio-db-broker.js';
+import * as broker from '../../../src/daemon/studio-db-broker.js';
+import { BROKER_TABLES } from '../../../src/companion-contract/index.js';
 
 /**
- * P3 T1 — broker dispatch. The broker runs the SALVAGED capture pipeline + find_similar; these cases
- * prove each RPC method routes correctly AND that the security gates (credential choke on every persist
- * path, nav-epoch TOCTOU, trust-by-construction) survive the broker seam. The Electron host supplies the
- * gate inputs (session id, epochs, credential signal) per call; here we drive them directly.
+ * EXTRACT C3 (spec D8) — what the broker's dispatch is now, and what it must never grow back into.
+ *
+ * The broker used to dispatch domain methods: capture a mark, synthesise a session, create a run. All of
+ * that is the companion's, re-implemented on top of the table ops below. These cases pin the shape of the
+ * replacement — dispatch is on the op KIND, over a table named from a closed set — and pin the absence of
+ * the old surface, because a re-grown domain method would compile, pass every other test in this repo, and
+ * silently put the extracted layer back.
  */
-describe('studio-db-broker — createBrokerHandlers (dispatch, real in-memory DB)', () => {
+describe('companion broker — dispatch is by op kind, never by domain method', () => {
   const originalEnv = process.env;
-  const mockSearchEngine: SearchEngine = { name: 'mock', search: vi.fn().mockResolvedValue([]) };
-  const mockRouter = { fetch: vi.fn() } as unknown as SmartRouter;
-
-  let jobs: IndexJobInput[];
-  let deltas: ArtifactDelta[];
-  let handlers: ReturnType<typeof createBrokerHandlers>;
+  let grants: broker.BrokerGrantStore;
+  let token: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv, LOG_LEVEL: 'error' };
     resetConfig();
     initDatabase(':memory:');
-    jobs = [];
-    deltas = [];
-    handlers = createBrokerHandlers({
-      db: getDatabase(),
-      engines: [mockSearchEngine],
-      router: mockRouter,
-      backendStatus: undefined,
-      enqueue: (j) => { jobs.push(j); },
-      onArtifact: (d) => { deltas.push(d); },
-    });
+    grants = new broker.BrokerGrantStore();
+    token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+    getDatabase()
+      .prepare('INSERT INTO studio_sessions (id, created_at) VALUES (?, ?)')
+      .run('sess-1', '2026-09-03T00:00:00.000Z');
   });
+
   afterEach(() => {
     closeDatabase();
-    process.env = originalEnv;
     resetConfig();
+    process.env = originalEnv;
   });
 
-  const db = () => getDatabase();
-  const artifactCount = (): number => (db().prepare('SELECT COUNT(*) AS n FROM studio_artifacts').get() as { n: number }).n;
-  const clip = (over: Record<string, unknown> = {}) => ({
-    input: { type: 'clip', content: 'Hello world', url: 'https://ex.com/a' },
-    sessionId: 's1', currentNavEpoch: 2, lastObserveEpoch: 2, credentialSignal: {}, ...over,
-  });
+  it('exports no domain handler surface at all', () => {
+    const exported = Object.keys(broker);
 
-  it('ping → pong', async () => {
-    expect(await handlers.ping()).toBe('pong');
-  });
-
-  it('capture clip → inserted; a re-capture dedups (inserted:false, no new row)', async () => {
-    const a = await handlers.capture(clip());
-    expect(a).toMatchObject({ inserted: true });
-    expect('artifact_id' in a && a.artifact_id).toBeGreaterThan(0);
-    const b = await handlers.capture(clip());
-    expect(b).toMatchObject({ inserted: false });
-    expect(artifactCount()).toBe(1);
-  });
-
-  it('credential — URL arm: a login-URL capture is refused with no row', async () => {
-    const r = await handlers.capture(clip({ credentialSignal: { pageUrl: 'https://ex.com/login', fields: [] } }));
-    expect(r).toMatchObject({ error_reason: 'capture_refused' });
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('credential — FIELD arm: a password field on a NON-login URL is refused (independent of URL detection)', async () => {
-    const r = await handlers.capture(clip({
-      input: { type: 'clip', content: 'x', url: 'https://ex.com/settings' },
-      credentialSignal: { pageUrl: 'https://ex.com/settings', fields: [{ tag: 'input', type: 'password' }] },
-    }));
-    expect(r).toMatchObject({ error_reason: 'capture_refused' });
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('nav-epoch TOCTOU: current !== lastObserve → refused (stale capture)', async () => {
-    const r = await handlers.capture(clip({ currentNavEpoch: 3, lastObserveEpoch: 2 }));
-    expect(r).toMatchObject({ error_reason: 'capture_refused' });
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('a quote-shaped clip under a credential signal is refused at the broker (not only the host)', async () => {
-    const r = await handlers.capture(clip({
-      input: { type: 'clip', content: '> secret code', url: 'https://ex.com/login' },
-      credentialSignal: { pageUrl: 'https://ex.com/login' },
-    }));
-    expect(r).toMatchObject({ error_reason: 'capture_refused' });
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('persistMark stores a type=mark row (present via direct SELECT, ABSENT from listArtifacts panel)', async () => {
-    const r = await handlers.persistMark({
-      sessionId: 's1', url: 'https://ex.com/a',
-      target: { role: 'button', name: 'Buy', ancestorPath: 'main>div>button', fingerprint: '{}', attrs: {} },
-      credentialSignal: {},
-    });
-    expect(r.inserted).toBe(true);
-    const markRow = db().prepare("SELECT id FROM studio_artifacts WHERE artifact_type='mark' AND session_id='s1'").get() as { id: number } | undefined;
-    expect(markRow?.id).toBe(r.id);
-    const list = await handlers.listArtifacts({ sessionId: 's1', limit: 50 });
-    expect(list.some((a) => a.id === r.id)).toBe(false); // marks route to the Marks panel, not Captures
-  });
-
-  it('persistMark REFUSES on a credential signal — the broker has its own defense, not just host ordering', async () => {
-    await expect(handlers.persistMark({
-      sessionId: 's1', url: 'https://ex.com/login',
-      target: { role: 'button', name: 'X', ancestorPath: 'main>button', fingerprint: '{}', attrs: {} },
-      credentialSignal: { pageUrl: 'https://ex.com/login' },
-    })).rejects.toThrow(/capture refused|credential/i);
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('persistScreenshot stores a type=screenshot row (present in listArtifacts) with content_trusted=0; dedups on repeat', async () => {
-    const p = { sessionId: 's1', url: 'https://ex.com/a', title: 'shot', mediaPath: '/m/x.png', contentHash: 'abc', credentialSignal: {} };
-    const a = await handlers.persistScreenshot(p);
-    expect(a.inserted).toBe(true);
-    const row = db().prepare('SELECT artifact_type, content_trusted FROM studio_artifacts WHERE id=?').get(a.id) as { artifact_type: string; content_trusted: number };
-    expect(row.artifact_type).toBe('screenshot');
-    expect(row.content_trusted).toBe(0);
-    const list = await handlers.listArtifacts({ sessionId: 's1', limit: 50 });
-    expect(list.some((x) => x.id === a.id && x.type === 'screenshot')).toBe(true);
-    const b = await handlers.persistScreenshot(p);
-    expect(b.inserted).toBe(false);
-  });
-
-  it('persistScreenshot REFUSES on a credential signal — no row', async () => {
-    await expect(handlers.persistScreenshot({
-      sessionId: 's1', url: 'https://ex.com/login', title: 't', mediaPath: '/m/y.png', contentHash: 'z', credentialSignal: { pageUrl: 'https://ex.com/login' },
-    })).rejects.toThrow(/capture refused|credential/i);
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('P6 F1: persistExtraction stores a type=extraction row (in listArtifacts) content_trusted=0; dedups on identical rows', async () => {
-    const p = { sessionId: 's1', url: 'https://ex.com/plans', columns: ['name', 'price'], rows: [{ name: 'Pro', price: '$20' }], credentialSignal: {} };
-    const a = await handlers.persistExtraction(p);
-    expect(a.inserted).toBe(true);
-    const row = db().prepare('SELECT artifact_type, content_trusted FROM studio_artifacts WHERE id=?').get(a.id) as { artifact_type: string; content_trusted: number };
-    expect(row.artifact_type).toBe('extraction');
-    expect(row.content_trusted).toBe(0);
-    const list = await handlers.listArtifacts({ sessionId: 's1', limit: 50 });
-    expect(list.some((x) => x.id === a.id && x.type === 'extraction')).toBe(true);
-    const b = await handlers.persistExtraction(p);
-    expect(b.inserted).toBe(false);
-  });
-
-  it('P6 F1: persistExtraction REFUSES on a credential signal — no row (broker defense, not just host ordering)', async () => {
-    await expect(handlers.persistExtraction({
-      sessionId: 's1', url: 'https://ex.com/login', columns: ['user'], rows: [{ user: 'a' }], credentialSignal: { pageUrl: 'https://ex.com/login' },
-    })).rejects.toThrow(/capture refused|credential/i);
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('persistSessionFetch stores a session-targeted fetch as a clip (returns CaptureResult)', async () => {
-    const r = await handlers.persistSessionFetch({ sessionId: 's1', url: 'https://ex.com/doc', title: 'Doc', markdown: 'fetched body', credentialSignal: {} });
-    expect(r.inserted).toBe(true);
-    expect(typeof r.id).toBe('number');
-  });
-
-  it('persistSessionFetch REFUSES on a credential signal — no row (a session fetch of a login page never persists)', async () => {
-    await expect(handlers.persistSessionFetch({ sessionId: 's1', url: 'https://ex.com/login', title: '', markdown: 'secret', credentialSignal: { pageUrl: 'https://ex.com/login' } }))
-      .rejects.toThrow(/capture refused|credential/i);
-    expect(artifactCount()).toBe(0);
-  });
-
-  it('findSimilar (concept, local corpus) returns results without throwing', async () => {
-    await handlers.capture(clip());
-    const r = await handlers.findSimilar({ input: { concept: 'Hello world', max_results: 5 } });
-    expect(r).toBeDefined();
-    expect(Array.isArray(r.results)).toBe(true);
-    expect(typeof r.method).toBe('string');
-  });
-
-  it('onArtifact fires once on a real clip insert, never on a dedup', async () => {
-    await handlers.capture(clip());
-    await handlers.capture(clip());
-    expect(deltas.filter((d) => d.type === 'clip')).toHaveLength(1);
-  });
-
-  // ─── P6 F4: audit persistence (append-only, no prune — M2) ───
-  const rec = (over: Record<string, unknown> = {}) => ({ action: 'click', epoch: 1, outcome: { ok: true as const }, ...over });
-
-  it('P6 F4: persistAudit inserts an audit row + returns a monotonic seq; a second persist appends (append-only)', async () => {
-    const a = await handlers.persistAudit({ sessionId: 's1', entry: rec({ target: { ref: 'r1' } }) });
-    expect(a.seq).toBe(1);
-    const b = await handlers.persistAudit({ sessionId: 's1', entry: rec({ action: 'type', outcome: { ok: true, charsLanded: 5 } }) });
-    expect(b.seq).toBe(2);
-    const n = (db().prepare('SELECT COUNT(*) AS n FROM studio_audit WHERE session_id=?').get('s1') as { n: number }).n;
-    expect(n).toBe(2);
-    const row = db().prepare('SELECT action, target_ref FROM studio_audit WHERE session_id=? AND seq=1').get('s1') as { action: string; target_ref: string };
-    expect(row).toEqual({ action: 'click', target_ref: 'r1' });
-  });
-
-  it('P6 F4: listAudit returns rows reverse-chronological, bounded by limit, paged by before', async () => {
-    for (let i = 0; i < 5; i++) await handlers.persistAudit({ sessionId: 's1', entry: rec({ action: `a${i}` }) });
-    const top = await handlers.listAudit({ sessionId: 's1', limit: 2 });
-    expect(top.map((r) => r.seq)).toEqual([5, 4]);
-    const next = await handlers.listAudit({ sessionId: 's1', limit: 2, before: 4 });
-    expect(next.map((r) => r.seq)).toEqual([3, 2]);
-    expect(next[0].action).toBe('a2');
-  });
-
-  it('P6 F4: listAudit is session-scoped — never bleeds another session', async () => {
-    await handlers.persistAudit({ sessionId: 's1', entry: rec() });
-    await handlers.persistAudit({ sessionId: 's2', entry: rec() });
-    expect(await handlers.listAudit({ sessionId: 's1', limit: 50 })).toHaveLength(1);
-    expect(await handlers.listAudit({ sessionId: 's2', limit: 50 })).toHaveLength(1);
-  });
-
-  it('P6 F4: audit is append-only — the broker exposes NO update/delete/prune method (M2 sealed)', () => {
-    const methods = Object.keys(handlers);
-    expect(methods.some((m) => /delete|update|prune|remove|clear/i.test(m))).toBe(false);
-    expect(methods).toContain('persistAudit');
-    expect(methods).toContain('listAudit');
-  });
-
-  // ─── K34: the flow sidecar's writer, so the Electron surface can record at all ───
-  const flowStep = (over: Record<string, unknown> = {}) => ({
-    flowId: 'flw_abc', sessionId: 's1', seq: 1, auditSeq: 1, action: 'navigate',
-    pageUrl: 'https://ex.com/a', ts: 1_700_000_000, ...over,
-  });
-  const flowCount = (): number =>
-    (db().prepare('SELECT COUNT(*) AS n FROM studio_flow_steps').get() as { n: number }).n;
-
-  it('K34: recordFlowStep inserts a step the Electron host cannot insert itself', async () => {
-    // The host holds no DB handle — this child owns the native module — so without this method the app
-    // records nothing while the CLI surface records normally.
-    const r = await handlers.recordFlowStep({ step: flowStep() as never });
-    expect(r.ok).toBe(true);
-    expect(flowCount()).toBe(1);
-  });
-
-  it('K34: recordFlowStep refuses through the SAME allow-list as the CLI path, not a broker-local copy', async () => {
-    // The projection runs where the row is written. A disallowed key must be refused identically here;
-    // two allow-lists would mean the app and the CLI could store different things.
-    const r = await handlers.recordFlowStep({ step: flowStep({ smuggled: 'value' }) as never });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('disallowed_key');
-    expect(flowCount()).toBe(0);
-  });
-
-  it('K34: flowMaxSeq reports 0 for an unseen flow and MAX(seq) after appends, so a restart resumes', async () => {
-    // Without this the host would restart numbering at 1 and the unique (flow_id, seq) index would
-    // SILENTLY drop the colliding row — a flow missing its middle rather than a loud failure.
-    expect(await handlers.flowMaxSeq({ flowId: 'flw_none' })).toEqual({ seq: 0 });
-    await handlers.recordFlowStep({ step: flowStep({ seq: 1 }) as never });
-    await handlers.recordFlowStep({ step: flowStep({ seq: 2, auditSeq: 2 }) as never });
-    expect(await handlers.flowMaxSeq({ flowId: 'flw_abc' })).toEqual({ seq: 2 });
-    // Scoped per flow, not per database.
-    expect(await handlers.flowMaxSeq({ flowId: 'flw_other' })).toEqual({ seq: 0 });
-  });
-
-  it('K34: both new methods are reachable by the NAME the host calls them with', () => {
-    // `broker-client.ts` types `call` as `(method: string, params?: unknown)`, so a misspelled method
-    // name compiles clean and fails only at runtime — the same shape as the studio tool name-guard that
-    // 404s with a green typecheck. Asserted on the literal strings the host passes.
-    const methods = Object.keys(handlers);
-    expect(methods).toContain('recordFlowStep');
-    expect(methods).toContain('flowMaxSeq');
-  });
-
-  // ─── P6 F3: cross-tab synthesis (brief-shaping over the local corpus, no network) ───
-  it('P6 F3: synthesizeSession shapes captured clips into a brief + persists a qa artifact', async () => {
-    // Two clips across the session (observe stamps the epoch so the capture TOCTOU passes).
-    await handlers.capture(clip({ input: { type: 'clip', content: 'Wigolo is a local-first web intelligence tool for agents.', url: 'https://ex.com/1' } }));
-    await handlers.capture(clip({ input: { type: 'clip', content: 'It runs search, fetch, crawl, and extract with no API keys.', url: 'https://ex.com/2' } }));
-    const before = artifactCount();
-
-    const out = await handlers.synthesizeSession({ sessionId: 's1' });
-    expect('brief' in out).toBe(true);
-    if ('brief' in out) {
-      expect(out.provenance.length).toBeGreaterThanOrEqual(2);
-      // a key_finding_sources index (if any) resolves back into the provenance array (never out of range)
-      for (const i of out.brief.key_finding_sources ?? []) {
-        expect(out.provenance[i]).toBeDefined();
-      }
+    expect(exported).not.toContain('createBrokerHandlers');
+    for (const domainName of ['capture', 'synthesize', 'runCreate', 'findSimilar', 'listArtifacts', 'audit']) {
+      expect(
+        exported.filter((name) => name.toLowerCase().includes(domainName.toLowerCase())),
+        `the broker must export nothing named for the domain method ${domainName}`,
+      ).toEqual([]);
     }
-    // the synthesis persisted a qa artifact (save-as-research) — one more row than before
-    expect(artifactCount()).toBe(before + 1);
-    const qa = db().prepare("SELECT COUNT(*) AS n FROM studio_artifacts WHERE session_id='s1' AND artifact_type='qa'").get() as { n: number };
-    expect(qa.n).toBe(1);
   });
 
-  it('P6 F3: a zero-capture session synthesizes to an HONEST empty (no fabricated brief, no qa row)', async () => {
-    const out = await handlers.synthesizeSession({ sessionId: 'empty-sess' });
-    expect(out).toEqual({ empty: true });
-    expect(artifactCount()).toBe(0);
+  it('routes each op kind to its own statement against the named table', () => {
+    const db = getDatabase();
+    const row = {
+      session_id: 'sess-1',
+      artifact_type: 'clip',
+      url: 'https://example.com/a',
+      content_hash: 'hash-1',
+      fetched_at: '2026-09-03T00:00:00.000Z',
+    };
+
+    expect(broker.executeBrokerOp(db, grants, { grant: token, kind: 'insert', table: 'studio_artifacts', row }).ok).toBe(true);
+
+    const read = broker.executeBrokerOp(db, grants, {
+      grant: token,
+      kind: 'read',
+      table: 'studio_artifacts',
+      where: { content_hash: 'hash-1' },
+      limit: 10,
+    });
+    expect(read.ok && read.rows).toHaveLength(1);
+
+    const updated = broker.executeBrokerOp(db, grants, {
+      grant: token,
+      kind: 'update',
+      table: 'studio_artifacts',
+      row: { curated_by_human: 1 },
+      where: { content_hash: 'hash-1' },
+    });
+    expect(updated.ok && updated.rows[0]).toEqual({ changes: 1 });
+    expect(
+      (db.prepare('SELECT curated_by_human AS c FROM studio_artifacts').get() as { c: number }).c,
+    ).toBe(1);
+
+    const deleted = broker.executeBrokerOp(db, grants, {
+      grant: token,
+      kind: 'delete',
+      table: 'studio_artifacts',
+      where: { content_hash: 'hash-1' },
+    });
+    expect(deleted.ok && deleted.rows[0]).toEqual({ changes: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_artifacts').get()).toEqual({ n: 0 });
   });
 
-  it('P6 F3: synthesis does NOT recursively feed a prior qa synthesis back in', async () => {
-    await handlers.capture(clip({ input: { type: 'clip', content: 'A first captured page body about pricing tiers.', url: 'https://ex.com/1' } }));
-    await handlers.synthesizeSession({ sessionId: 's1' }); // writes a qa row
-    // a second synthesis must not treat the qa row as a source (listSessionArtifactsFull excludes qa)
-    const out2 = await handlers.synthesizeSession({ sessionId: 's1' });
-    if ('brief' in out2) expect(out2.provenance.every((p) => p.url !== null)).toBe(true); // only the real clip, no url-less qa
+  it('accepts every table in the closed contract set and nothing else', () => {
+    const db = getDatabase();
+
+    for (const table of BROKER_TABLES) {
+      const result = broker.executeBrokerOp(db, grants, { grant: token, kind: 'read', table, limit: 1 });
+      expect(result.ok, `granted table ${table} must be readable`).toBe(true);
+    }
+
+    for (const table of ['url_cache', 'schema_migrations', 'sqlite_master']) {
+      const result = broker.executeBrokerOp(db, grants, {
+        grant: token,
+        kind: 'read',
+        table,
+        limit: 1,
+      } as unknown as Parameters<typeof broker.executeBrokerOp>[2]);
+      expect(result, `${table} is not a shared studio table`).toEqual({ ok: false, reason: 'unknown_table' });
+    }
   });
 });

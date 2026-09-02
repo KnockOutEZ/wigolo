@@ -1,246 +1,159 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { Readable } from 'node:stream';
-import type { IncomingMessage, ServerResponse } from 'node:http';
-import Database from 'better-sqlite3';
+
+import { resetConfig } from '../../src/config.js';
 import { applyMigrations, _resetMigrationGuard } from '../../src/cache/migrations/runner.js';
-import { handleRunsRequest } from '../../src/daemon/rest/runs.js';
+import { BrokerGrantStore, executeBrokerOp, schemaHead } from '../../src/daemon/studio-db-broker.js';
 import { sqliteRunsStore, type RunsStore } from '../../src/daemon/rest/runs-store.js';
-import { createRun } from '../../src/studio/run-store.js';
+import { BROKER_TABLES } from '../../src/companion-contract/index.js';
+import type { BrokerRow } from '../../src/companion-contract/index.js';
 
 /**
- * #334 demo — SD2's three REST routes answered identically by the two store bindings.
+ * One event stream, two readers (law 1), across the seam C3 draws.
  *
- * `POST /v1/runs/:id/driver`, `POST /v1/runs/:id/messages` and `GET /v1/runs/:id/messages` are the
- * routes that answered `503 store_unavailable` on the launched app, because the store the app binds
- * lives behind a plain-Node child that had no method for any of them. This drives all three — plus
- * `GET /v1/runs/:id` — twice over one run: once through `sqliteRunsStore` on a native handle, once
- * through a store bound to a REALLY SPAWNED broker child, and asserts the answers match.
+ * #334 put this claim at the level of nine RPC delegates: the same run had to answer identically through
+ * the daemon's native store and through the broker. D8 removes the delegates — the broker serves tables —
+ * so the claim moves DOWN a layer and gets stronger for it: what a paired companion writes through the
+ * dumb ops is the same rows the daemon's own `RunsStore` reads, with no translation between them, because
+ * there is nothing left in the middle to translate.
  *
- * WHY IT IS HERE AND NOT IN THE APP. The app-side binding of these members is the next issue's
- * work. The binding below is therefore a TEST binding — the smallest thing that turns the child's
- * six new methods into the port — and its whole job is to make the sufficiency claim checkable in
- * core: if the routes can be served from these methods alone, the app's binding has everything it
- * needs, and if a method is missing or misnamed the route reds here rather than in another repo.
+ * That is the property the extraction actually depends on. If the two ever disagreed, the app's
+ * re-implemented run projection would be a second source of truth for one run, which law 1 forbids, and
+ * the disagreement would surface as a panel and a REST answer that quietly differ.
  *
- * WHAT IS NORMALIZED, AND NOTHING ELSE. The two sides run in different processes against different
- * files, so the wall clock and the minted ids cannot agree. Every id a caller can pin IS pinned —
- * the run id is minted into the native handle from the broker's answer, message ids are supplied —
- * and only ISO timestamps are scrubbed. Statuses, `error_reason`s, event types, seqs, step numbers,
- * driver lines and state lines are compared verbatim, which is where a divergence would live.
+ * The projections themselves stay out of core deliberately — they are the private layer's, and rebuilding
+ * one here to compare against would be building the second source of truth this test exists to rule out.
  */
-const BROKER = fileURLToPath(new URL('../../dist/daemon/studio-db-broker.js', import.meta.url));
-
-const CLI = { kind: 'cli', client: { name: 'claude-code', version: '2.1.0' } };
-const SDK = { kind: 'sdk', client: { name: 'wigolo-sdk', version: '0.4.0' } };
-const HUMAN = { kind: 'human' };
-const ABSENT = 'zzzzzzz';
-
-interface Answer { status: number; body: unknown }
-interface Frame { id?: number; ok?: boolean; result?: unknown; error?: { message: string }; notify?: string }
-
-const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
-/** Replace every ISO timestamp with a marker, at any depth. Structure and every other value stay. */
-function scrub(value: unknown): unknown {
-  if (typeof value === 'string') return ISO.test(value) ? '<ts>' : value;
-  if (Array.isArray(value)) return value.map(scrub);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, scrub(v)]));
-  }
-  return value;
-}
-
-describe('SD2 REST routes — the native binding and a spawned-broker binding answer the same', () => {
-  let child: ChildProcess;
+describe('companion broker — the daemon and a paired companion read one run', () => {
+  const originalEnv = process.env;
   let dir: string;
-  let buf = '';
-  const frames: Frame[] = [];
-  const waiters: Array<(f: Frame) => boolean> = [];
-  const resolvers: Array<() => void> = [];
-  let nextId = 1;
-
   let db: Database.Database;
-  let nativeStore: RunsStore;
-  let brokerStore: RunsStore;
-  let runId = '';
+  let store: RunsStore;
+  let grants: BrokerGrantStore;
+  let token: string;
 
-  const pump = (): void => {
-    for (let i = waiters.length - 1; i >= 0; i--) {
-      if (frames.find((f) => waiters[i](f))) { resolvers[i](); waiters.splice(i, 1); resolvers.splice(i, 1); }
-    }
-  };
-  const waitFor = (pred: (f: Frame) => boolean): Promise<Frame> =>
-    new Promise((resolve, reject) => {
-      const existing = frames.find(pred);
-      if (existing) return resolve(existing);
-      const timer = setTimeout(() => reject(new Error('broker message timeout')), 30_000);
-      waiters.push(pred);
-      resolvers.push(() => { clearTimeout(timer); resolve(frames.find(pred)!); });
-    });
+  // A real mintable run id: the daemon's store resolves ids through the mint alphabet, so a
+  // human-readable stand-in would be rejected before the row was ever looked for — and the test would
+  // then be measuring the id format, not the shared stream.
+  const RUN = 'shrd9';
 
-  /** One JSON-RPC round-trip. A thrown transport error stays thrown — a refusal must not be one. */
-  async function rpc<T>(method: string, params?: unknown): Promise<T> {
-    const id = nextId++;
-    child.stdin!.write(JSON.stringify({ id, method, params }) + '\n');
-    const frame = await waitFor((f) => f.id === id);
-    if (frame.ok !== true) throw new Error(`broker ${method} failed: ${frame.error?.message ?? 'unknown'}`);
-    return frame.result as T;
+  function op(o: Parameters<typeof executeBrokerOp>[2]): BrokerRow[] {
+    const result = executeBrokerOp(db, grants, o);
+    if (!result.ok) throw new Error(`op refused: ${result.reason}`);
+    return result.rows as BrokerRow[];
   }
 
-  /**
-   * The port, over the wire. Exactly the nine members `RunsStore` names, each one method of the
-   * child — which is the point: no logic, no fold, no second grammar on this side of the pipe.
-   */
-  function brokerBoundStore(): RunsStore {
-    return {
-      create: (input) => rpc('runCreate', { input }),
-      list: (opts) => rpc('runList', opts),
-      get: (id) => rpc('runGet', { runId: id }),
-      exists: (id) => rpc('runExists', { runId: id }),
-      eventsSince: (id, since, limit) => rpc('runEventsSince', { runId: id, since, limit }),
-      driver: (id, input) => rpc('runDriver', { runId: id, input }),
-      sendMessage: (id, input) => rpc('runSendMessage', { runId: id, input }),
-      messages: (id, limit) => rpc('runMessages', { runId: id, limit }),
-      typedEvents: (id, query) => rpc('runTypedEvents', { runId: id, query }),
-      unansweredEvents: (id, query) => rpc('runUnansweredEvents', { runId: id, query }),
-      appendEvent: (id, event) => rpc('runAppend', { runId: id, event }),
-      interruptTrigger: (id, caller) => rpc('runInterruptTrigger', { runId: id, caller }),
-    };
-  }
-
-  async function rest(store: RunsStore, method: string, path: string, payload?: unknown): Promise<Answer> {
-    const req = (payload === undefined
-      ? Object.assign(Readable.from([]), { headers: {} })
-      : Object.assign(Readable.from([Buffer.from(JSON.stringify(payload))]), { headers: { 'content-type': 'application/json' } })
-    ) as unknown as IncomingMessage;
-    const res = { destroyed: false, headersSent: false, setTimeout: () => {}, writeHead: () => {}, end: () => {}, on: () => {}, off: () => {} } as unknown as ServerResponse;
-    let answer: Answer = { status: 0, body: {} };
-    const url = new URL(`http://127.0.0.1${path}`);
-    await handleRunsRequest(req, res, {
-      pathname: url.pathname,
-      method,
-      url,
-      respond: (status, body) => { answer = { status, body }; },
-      sendError: (e) => { answer = { status: e.status, body: e.body }; },
-      store,
-    });
-    return answer;
-  }
-
-  /** The same request to both bindings. Returns the native answer; the equality IS the assertion. */
-  async function both(method: string, path: string, payload?: unknown): Promise<Answer> {
-    const native = await rest(nativeStore, method, path, payload);
-    const broker = await rest(brokerStore, method, path, payload);
-    expect(scrub(broker), `${method} ${path}`).toEqual(scrub(native));
-    return native;
-  }
-
-  beforeAll(async () => {
+  beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'wigolo-broker-routes-'));
-    child = spawn(process.execPath, [BROKER], {
-      stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env, WIGOLO_STUDIO_BROKER_MAIN: '1', WIGOLO_DATA_DIR: join(dir, 'child'), LOG_LEVEL: 'error' },
-    });
-    child.unref();
-    child.stdout!.setEncoding('utf8');
-    child.stdout!.on('data', (c: string) => {
-      buf += c;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-        if (line.trim()) { try { frames.push(JSON.parse(line) as Frame); } catch { /* stray */ } }
-      }
-      pump();
-    });
-    await waitFor((f) => f.notify === 'ready');
-    brokerStore = brokerBoundStore();
-
-    // The broker mints the id; the native handle is then seeded to mint the SAME one, so one id
-    // names one run on both sides and no answer has to be normalized to compare.
-    const created = await brokerStore.create({ task: 'compare two monitors', driver: CLI as never });
-    runId = created.id;
-
+    process.env = { ...originalEnv, WIGOLO_DATA_DIR: dir, LOG_LEVEL: 'error' };
+    resetConfig();
     _resetMigrationGuard();
-    db = new Database(join(dir, 'native.db'));
-    db.pragma('foreign_keys = ON');
+    db = new Database(join(dir, 'shared.db'));
     applyMigrations(db, { vecLoaded: false });
-    createRun(db, { task: 'compare two monitors', driver: CLI as never }, { mintId: () => runId, dataDir: join(dir, 'native') });
-    nativeStore = sqliteRunsStore(db);
-  }, 90_000);
-
-  afterAll(() => {
-    try { child.kill('SIGKILL'); } catch { /* ignore */ } // force — the child loads the local ML runtime
-    try { db?.close(); } catch { /* ignore */ }
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    store = sqliteRunsStore(db);
+    grants = new BrokerGrantStore();
+    token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db) }).token;
   });
 
-  it('GET /v1/runs/:id — the run, the driver line, and the same projection from both', async () => {
-    const answer = await both('GET', `/v1/runs/${runId}`);
-    expect(answer.status).toBe(200);
-    expect(answer.body).toMatchObject({ run: { id: runId, driverName: 'cli (claude-code)' } });
-  }, 60_000);
+  afterEach(() => {
+    db.close();
+    resetConfig();
+    process.env = originalEnv;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* the OS owns the temp dir */ }
+  });
 
-  it('POST /v1/runs/:id/driver — a human takeover, and the events it was worth', async () => {
-    const answer = await both('POST', `/v1/runs/${runId}/driver`, { gesture: 'takeover', by: HUMAN, reason: 'I will finish this' });
-    expect(answer.status).toBe(200);
-    expect(answer.body).toMatchObject({ ok: true, run: { driverName: 'human' } });
-    expect((answer.body as { events: Array<{ type: string }> }).events.map((e) => e.type)).toEqual(['driver.changed']);
-  }, 60_000);
-
-  it('POST /v1/runs/:id/driver — the refusals, with the SAME status and the SAME error_reason', async () => {
-    // The status line is the half a thrown refusal would get wrong: the transport flattens a throw,
-    // and the route answers 500 for one. Every arm here is a documented 4xx on both bindings.
-    const notDriver = await both('POST', `/v1/runs/${runId}/driver`, { gesture: 'release', by: SDK });
-    expect(notDriver.status).not.toBe(500);
-    expect(notDriver.body).toMatchObject({ ok: false, error_reason: 'not_the_driver' });
-
-    const noSuccessor = await both('POST', `/v1/runs/${runId}/driver`, { gesture: 'grant', by: HUMAN });
-    expect(noSuccessor.body).toMatchObject({ ok: false, error_reason: 'no_successor' });
-
-    const absent = await both('POST', `/v1/runs/${ABSENT}/driver`, { gesture: 'takeover', by: HUMAN });
-    expect(absent.status).toBe(404);
-    expect(absent.body).toMatchObject({ ok: false, error_reason: 'run_not_found' });
-  }, 60_000);
-
-  it('POST /v1/runs/:id/messages — 202 accepted into the log, and the retry that replays it', async () => {
-    const posted = await both('POST', `/v1/runs/${runId}/messages`, { text: 'stop before you pay', message_id: 'hm_demo' });
-    // 202, not 200: law 7 says a pull transport queues and we say so, in the status line too.
-    expect(posted.status).toBe(202);
-    expect(posted.body).toMatchObject({
-      message: { message_id: 'hm_demo', state: 'queued', state_line: 'queued — reaches the agent at its next tool call' },
+  it('lets the daemon’s own store see a run the companion created through table ops', async () => {
+    op({
+      grant: token,
+      kind: 'insert',
+      table: 'studio_runs',
+      row: { id: RUN, task: 'compare two monitors', created_at: '2026-09-03T00:00:00.000Z' },
     });
 
-    const retry = await both('POST', `/v1/runs/${runId}/messages`, { text: 'stop before you pay', message_id: 'hm_demo' });
-    expect(retry.status).toBe(202);
-  }, 60_000);
+    await expect(store.exists(RUN)).resolves.toBe(true);
+    const run = await store.get(RUN);
+    expect(run).toMatchObject({ id: RUN, task: 'compare two monitors' });
+  });
 
-  it('POST /v1/runs/:id/messages — the refusals match too, including the one that comes FROM the store', async () => {
-    // Blank text never reaches the store: the route validates it and answers `invalid_input`. Kept
-    // because it pins WHERE the refusal is made — a store binding that started answering this one
-    // would mean the route stopped guarding it.
-    const blank = await both('POST', `/v1/runs/${runId}/messages`, { text: '   ' });
-    expect(blank.status).not.toBe(500);
-    expect(blank.body).toMatchObject({ ok: false, error_reason: 'invalid_input' });
+  it('reads back the companion’s appended events through the daemon’s paging port, in order', async () => {
+    op({
+      grant: token,
+      kind: 'insert',
+      table: 'studio_runs',
+      row: { id: RUN, task: 'append then read', created_at: '2026-09-03T00:00:00.000Z' },
+    });
+    for (const seq of [1, 2, 3]) {
+      op({
+        grant: token,
+        kind: 'insert',
+        table: 'studio_run_events',
+        // `actor` and `payload` are JSON TEXT in this table. The broker stores the cell and asks no
+        // questions about it — which is the design — so it is the writer's job to store what the other
+        // reader parses. A test that wrote a bare `agent` here would pass the broker and break the daemon.
+        row: {
+          run_id: RUN,
+          seq,
+          ts: `2026-09-03T00:00:0${seq}.000Z`,
+          actor: JSON.stringify({ kind: 'agent' }),
+          type: 'step',
+          payload: JSON.stringify({ seq }),
+        },
+      });
+    }
+    op({ grant: token, kind: 'update', table: 'studio_runs', row: { last_seq: 3 }, where: { id: RUN } });
 
-    // This one IS the store's. `zzzzzzz` is a well-formed run id, so it passes the route's decode
-    // and the 404 is `MessageRefused` crossing the wire as a value — a thrown one would be a 500.
-    const absent = await both('POST', `/v1/runs/${ABSENT}/messages`, { text: 'nobody home' });
-    expect(absent.status).toBe(404);
-    expect(absent.body).toMatchObject({ ok: false, error_reason: 'run_not_found' });
-  }, 60_000);
+    const viaDaemon = await store.eventsSince(RUN, 0, 50);
+    const viaBroker = op({ grant: token, kind: 'read', table: 'studio_run_events', where: { run_id: RUN }, limit: 50 });
 
-  it('GET /v1/runs/:id/messages — the same queue, folded to the same states', async () => {
-    const answer = await both('GET', `/v1/runs/${runId}/messages`);
-    expect(answer.status).toBe(200);
-    const messages = (answer.body as { messages: Array<{ message_id: string; state: string; queued_at_step: number }> }).messages;
-    expect(messages.map((m) => m.message_id)).toEqual(['hm_demo']);
-    expect(messages[0]).toMatchObject({ state: 'queued' });
-    // The step number is a log seq, so it is only equal if both logs took the same shape.
-    expect(messages[0].queued_at_step).toBeGreaterThan(0);
-  }, 60_000);
+    expect(viaDaemon.map((e) => e.seq)).toEqual([1, 2, 3]);
+    // Not "both non-empty": the same sequence, in the same order, from both readers.
+    expect(viaBroker.map((e) => e.seq)).toEqual(viaDaemon.map((e) => e.seq));
+    expect(viaDaemon[1]!.actor).toEqual({ kind: 'agent' });
+  });
+
+  it('shows the daemon’s own writes to the companion, in the same rows', async () => {
+    const created = await store.create({ task: 'daemon writes first' });
+
+    const rows = op({ grant: token, kind: 'read', table: 'studio_runs', where: { id: created.id }, limit: 5 });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: created.id, task: 'daemon writes first' });
+
+    // `appendEvent` is optional on the port; the daemon's native binding has it, and a binding that
+    // did not would fail here rather than silently skip the half of the claim it carries.
+    expect(store.appendEvent).toBeDefined();
+    await store.appendEvent!(created.id, { actor: { kind: 'agent' }, type: 'agent.step', payload: { n: 1 } });
+    const events = op({
+      grant: token,
+      kind: 'read',
+      table: 'studio_run_events',
+      where: { run_id: created.id },
+      limit: 50,
+    });
+    // `run.created` is the daemon's own first row: the companion sees the WHOLE stream, not the part
+    // it happened to write, which is what makes one shared log a shared log.
+    expect(events.map((e) => e.type)).toEqual(['run.created', 'agent.step']);
+    // The tail the daemon advanced is the tail the companion reads — one column, not two beliefs.
+    const [run] = op({ grant: token, kind: 'read', table: 'studio_runs', where: { id: created.id }, limit: 1 });
+    expect(run!.last_seq).toBe(events.length);
+  });
+
+  it('cuts the companion off without touching the daemon’s access to the same run', async () => {
+    const created = await store.create({ task: 'unpair mid-run' });
+    grants.revokeAll('unpaired');
+
+    const refused = executeBrokerOp(db, grants, {
+      grant: token,
+      kind: 'read',
+      table: 'studio_runs',
+      limit: 5,
+    });
+
+    expect(refused).toEqual({ ok: false, reason: 'grant_revoked', table: 'studio_runs' });
+    // The run is the daemon's and outlives the pairing: unpairing ends an access, not a run.
+    await expect(store.exists(created.id)).resolves.toBe(true);
+  });
 });

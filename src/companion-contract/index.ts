@@ -7,12 +7,19 @@ export {
   parseStudioEmbedKey,
 } from './artifact-keys.js';
 export type { StudioEmbedKeyParts } from './artifact-keys.js';
-export { COMPANION_CONTRACT_VERSION, evaluateHandshake } from './handshake.js';
+export {
+  COMPANION_CONTRACT_VERSION,
+  PAIRING_ROUTE,
+  evaluateHandshake,
+  isHandshakeRefusal,
+} from './handshake.js';
 export type {
   CompanionHello,
   CompanionHelloApp,
   HandshakeRefusal,
   HandshakeResult,
+  PairingRequest,
+  PairingResponse,
 } from './handshake.js';
 export {
   ESCALATION_DECLINE_REASONS,
@@ -45,8 +52,10 @@ export type {
 export {
   BROKER_REFUSAL_REASONS,
   BROKER_REVOCATION_REASONS,
+  BROKER_ROUTE,
   BROKER_TABLES,
   BROKER_WRITE_KINDS,
+  MAX_BROKER_ROWS,
   grantCovers,
   isBrokerRefusal,
 } from './broker.js';
