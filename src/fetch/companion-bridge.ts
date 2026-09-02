@@ -10,6 +10,7 @@ import {
 } from '../companion-contract/escalation.js';
 import { bumpEscalationCounter } from '../companion/escalation-counters.js';
 import { ensureStudioRunning } from '../companion/auto-launch.js';
+import { COMPANION_TIMEOUT_MS, postCompanion } from '../companion/transport.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');
@@ -22,28 +23,15 @@ const log = createLogger('fetch');
  * handle: with no live companion it declines instantly and the caller keeps its honest
  * `blocked_by_challenge`.
  *
- * The transport is a plain HTTP POST of the §4 escalation wire to the endpoint the handle publishes,
- * bearing the handle's token — the same trust-on-file bootstrap the proxy used, minus the proxy. It rides
- * no MCP client and no tool dispatch on purpose: the capability is not a tool, the companion is not
- * required to be an MCP server for this rung, and core must be able to speak this wire with the domain
- * layer extracted out of the repo entirely.
+ * The transport is the shared companion POST (`companion/transport.ts`): the §4 escalation wire sent to the
+ * endpoint the handle publishes, bearing the handle's token. This module owns only what is escalation-
+ * specific — the route it addresses, which bodies count as an answer, and the counters.
  *
  * Every failure mode returns null (decline) rather than throwing, because this is an OPPORTUNISTIC rung:
  * a bridge problem must never turn a clean challenge report into a crash.
  */
 
-/**
- * Ceiling on one escalation round-trip.
- *
- * Anchored to the §7 approval ceiling: a pending approval auto-denies after 2 minutes, so a companion
- * that has not answered within that window is not "still deciding" — there is nothing left on the other
- * side to wait for, and the caller has an honest challenge report to fall back to. Reversal condition:
- * if the companion ever answers escalations behind a human-solve step that is allowed to outlive the
- * approval ceiling, this and that ceiling move together.
- */
-const ESCALATION_TIMEOUT_MS = 120_000;
-
-/** The escalation transport: one POST, typed answer or null. Shared with the session-target seam. */
+/** The escalation transport: one POST, typed answer or null. Injectable so tests reach no socket. */
 export type EscalationTransport = (
   handle: SessionHandle,
   request: EscalationRequest,
@@ -55,11 +43,6 @@ export interface CompanionBridgeDeps {
   call?: EscalationTransport;
   /** Amended-D4 auto-launch. Injectable so tests never spawn a real app. */
   ensureRunning?: (opts: { dataDir?: string }) => Promise<{ endpoint: string } | null>;
-}
-
-/** Endpoints are published as a base URL (`http://127.0.0.1:PORT`); tolerate a trailing slash anyway. */
-function escalationUrl(endpoint: string): string {
-  return `${endpoint.replace(/\/+$/, '')}${ESCALATION_ROUTE}`;
 }
 
 /**
@@ -78,28 +61,16 @@ export async function postEscalation(
   handle: SessionHandle,
   request: EscalationRequest,
 ): Promise<EscalationResponse | null> {
-  let parsed: unknown;
-  try {
-    const response = await fetch(escalationUrl(handle.endpoint), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${handle.token}`,
-      },
-      body: JSON.stringify(request),
-      signal: AbortSignal.timeout(ESCALATION_TIMEOUT_MS),
-    });
-    parsed = await response.json();
-    if (!response.ok && !isEscalationDecline(parsed)) return null;
-  } catch (err) {
-    log.debug('companion escalation transport failed', {
-      endpoint: handle.endpoint,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-  if (isEscalationServed(parsed) || isEscalationDecline(parsed)) return parsed;
-  return null;
+  return postCompanion<EscalationResponse>(handle, {
+    route: ESCALATION_ROUTE,
+    body: request,
+    timeoutMs: COMPANION_TIMEOUT_MS,
+    accept: (parsed, httpOk) => {
+      if (!httpOk && !isEscalationDecline(parsed)) return null;
+      if (isEscalationServed(parsed) || isEscalationDecline(parsed)) return parsed;
+      return null;
+    },
+  });
 }
 
 /** True when a companion has published a live handle — the rung's gate. */

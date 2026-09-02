@@ -164,6 +164,7 @@ const SUBPATHS: Subpath[] = [
       'RESEARCHABLE_TYPES',
       'SESSION_TARGET_OPS',
       'SESSION_TARGET_REFUSAL_REASONS',
+      'SESSION_TARGET_ROUTE',
       'STUDIO_EMBED_PREFIX',
       'STUDIO_FETCH_CAPABILITY',
       'evaluateHandshake',
