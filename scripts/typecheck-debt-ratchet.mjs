@@ -39,7 +39,7 @@ import { execSync } from 'node:child_process';
 // branch that merges the studio program branch cannot pick up the lower baseline without
 // the fix. (That branch was `studio-handoff`, deleted from `origin` at PX0 exit; the
 // invariant is about the pairing, not about the name, and outlives it.)
-const BASELINE = 343;
+const BASELINE = 341;
 
 let count = 0;
 try {
