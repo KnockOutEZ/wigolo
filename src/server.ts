@@ -53,11 +53,12 @@ import { getEmbeddingService, resetEmbeddingService } from './embedding/embed.js
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
 import {
-  WIGOLO_INSTRUCTIONS,
   WIGOLO_INSTRUCTIONS_FULL,
   WIGOLO_DOCS_URI,
   TOOL_DESCRIPTIONS,
+  serverInstructions,
 } from './instructions.js';
+import { checkActivation, activationToolError } from './server/activation.js';
 import {
   FETCH_TOOL_SCHEMA,
   SEARCH_TOOL_SCHEMA,
@@ -396,7 +397,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
     { name: 'wigolo', version: SERVER_VERSION },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions: WIGOLO_INSTRUCTIONS,
+      // PX2 §3: the notice is computed here, at construction — per session on the
+      // daemon, per process on stdio. Tool calls re-check per dispatch, so a stale
+      // notice never outlives the behaviour it describes by more than a session.
+      instructions: serverInstructions(checkActivation().ok),
     },
   );
 
@@ -490,6 +494,22 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
+
+    // THE ACTIVATION GATE (PX2 mini-spec §3, A-212-2). It is the FIRST statement in
+    // this handler and that position is load-bearing, not tidiness: the watch
+    // scheduler below re-fetches overdue URLs and posts webhooks, so a gate placed
+    // under it would refuse the call and still egress on behalf of an install that
+    // has no account. One check covers stdio, the daemon's per-session HTTP MCP
+    // (both build their servers from this factory) and the hosted `studio_*`
+    // pass-through, because every one of them arrives here.
+    //
+    // `initialize` and `tools/list` are untouched — the protocol still works, and
+    // the refusal is a designed tool error rather than a dead connection.
+    const activation = checkActivation();
+    if (!activation.ok) {
+      log.info('tool call refused — install not activated', { tool: name, step: activation.step });
+      return activationToolError(activation);
+    }
 
     // Lazy-execution hook for the `watch` tool. Every non-watch tool call
     // gives us a chance to run overdue watch jobs in the background. This

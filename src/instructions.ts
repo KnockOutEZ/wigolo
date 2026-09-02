@@ -66,6 +66,35 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 
 Full usage detail: read resource \`wigolo://docs/usage\`.`;
 
+/**
+ * The one-line activation notice prepended to the per-session instructions when
+ * the install has no account yet (PX2 mini-spec §3).
+ *
+ * It exists because the refusal a harness gets back from `tools/call` arrives
+ * AFTER the model has already decided to call a tool. Saying it once, up front,
+ * is the difference between an agent that reports "wigolo needs an account" and
+ * one that keeps retrying a tool it can never run. It is deliberately not a
+ * second copy of the refusal line — the refusal is the gate's to word (see
+ * `src/account/gate.ts`); this only tells the model the surface is inert.
+ */
+export const ACTIVATION_NOTICE =
+  'NOT ACTIVATED: this wigolo install has no account, so every tool call is refused until `wigolo register` completes (already have one? `wigolo login`). Registering takes effect on the next call — no restart.';
+
+/**
+ * The per-session instructions for a server, with the activation notice when the
+ * install is un-activated.
+ *
+ * HONEST LIMITATION, stated in the mini-spec rather than papered over: this
+ * string is composed once at server construction — per session on the daemon,
+ * per PROCESS on stdio — so after registering, the notice lingers until the
+ * harness restarts the server. Harmless, because tool calls re-check per
+ * dispatch and start working immediately; the notice's own last sentence says
+ * exactly that, so a model reading a stale notice is not misled.
+ */
+export function serverInstructions(activated: boolean): string {
+  return activated ? WIGOLO_INSTRUCTIONS : `${ACTIVATION_NOTICE}\n\n${WIGOLO_INSTRUCTIONS}`;
+}
+
 // Full usage guide. Surfaced via the wigolo://docs/usage resource so MCP
 // clients can pull it on demand without paying the per-initialize cost.
 export const WIGOLO_INSTRUCTIONS_FULL = `# Wigolo Usage Guide

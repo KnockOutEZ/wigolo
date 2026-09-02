@@ -1,8 +1,58 @@
 import { describe, it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateMintKeyPair, mintToken, grant, payload } from '../unit/account/mint-entitlement.js';
 
 const BIN_PATH = join(import.meta.dirname, '..', '..', 'dist', 'index.js');
+
+/**
+ * An ACTIVATED data dir for the spawned children (PX2 #222).
+ *
+ * 0.3.0's REPL and one-shot tool runs refuse to start on an install with no
+ * account, so a child pointed at the bare fixture directory now exits with the
+ * refusal line and every assertion below reads it instead of shell output. The
+ * fix is to give the child what a registered user has — a real signed perpetual
+ * `core` grant at the real `state.json` path, with the public half of the key
+ * pinned through `WIGOLO_ACCOUNTS_PUBKEY`, which is the same override dev and RC
+ * runs use. Nothing is bypassed: the child evaluates the shipped gate in full.
+ *
+ * It is built in $TMPDIR rather than in `tests/fixtures/`, with the seeded cache
+ * DB copied in, because a repo tree is not scratch space and the fixture is
+ * committed.
+ */
+const CHILD_ACCOUNT = (() => {
+  const keys = generateMintKeyPair();
+  const dataDir = mkdtempSync(join(tmpdir(), 'wigolo-repl-e2e-'));
+  const seededDb = join(import.meta.dirname, '..', 'fixtures', 'repl-test-data', 'wigolo.db');
+  if (existsSync(seededDb)) copyFileSync(seededDb, join(dataDir, 'wigolo.db'));
+  const { token } = mintToken(
+    keys,
+    payload({
+      account_id: 'acct_repl_e2e',
+      valid_until: '2099-01-01T00:00:00.000Z',
+      grants: [grant({ product: 'core', type: 'perpetual' })],
+    }),
+  );
+  mkdirSync(join(dataDir, 'account'), { recursive: true });
+  writeFileSync(
+    join(dataDir, 'account', 'state.json'),
+    JSON.stringify({
+      account_id: 'acct_repl_e2e',
+      email: 'repl@example.invalid',
+      entitlement_token: token,
+      last_refresh_at: new Date().toISOString(),
+      last_refresh_attempt_at: null,
+      refresh_expires_at: null,
+      needs_relogin: false,
+      disclosure_version: null,
+      marketing_consent: null,
+    }),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  return { dataDir, pubkey: keys.publicKeyB64Url };
+})();
 
 // The REPL prints this banner once readline is attached (src/repl/shell.ts) and this
 // line on a clean exit. We gate stdin on the banner and settle on the exit marker so the
@@ -20,7 +70,8 @@ function runShellCommand(input: string, args: string[] = []): Promise<{ stdout: 
       env: {
         ...process.env,
         LOG_LEVEL: 'error',
-        WIGOLO_DATA_DIR: join(import.meta.dirname, '..', 'fixtures', 'repl-test-data'),
+        WIGOLO_DATA_DIR: CHILD_ACCOUNT.dataDir,
+        WIGOLO_ACCOUNTS_PUBKEY: CHILD_ACCOUNT.pubkey,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -149,7 +200,8 @@ function runShellScript(
       env: {
         ...process.env,
         LOG_LEVEL: 'error',
-        WIGOLO_DATA_DIR: join(import.meta.dirname, '..', 'fixtures', 'repl-test-data'),
+        WIGOLO_DATA_DIR: CHILD_ACCOUNT.dataDir,
+        WIGOLO_ACCOUNTS_PUBKEY: CHILD_ACCOUNT.pubkey,
         WIGOLO_SHELL_HISTORY_PATH: historyPath,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -234,7 +286,8 @@ function runTool(
       env: {
         ...process.env,
         LOG_LEVEL: 'error',
-        WIGOLO_DATA_DIR: join(import.meta.dirname, '..', 'fixtures', 'repl-test-data'),
+        WIGOLO_DATA_DIR: CHILD_ACCOUNT.dataDir,
+        WIGOLO_ACCOUNTS_PUBKEY: CHILD_ACCOUNT.pubkey,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

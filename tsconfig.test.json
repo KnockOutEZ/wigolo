@@ -98,7 +98,10 @@
     "tests/integration/crawl-link-target-untrusted.test.ts",
     "tests/unit/fetch/browser-request-guard.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf.test.ts",
-    "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts"
+    "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts",
+    "tests/unit/daemon/driver-baton.test.ts",
+    "tests/unit/daemon/driver-baton-gate.test.ts",
+    "tests/integration/driver-baton-surfaces.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

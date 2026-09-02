@@ -22,6 +22,7 @@ import { ensureStudioRunning } from '../companion/auto-launch.js';
 import { DaemonProxy } from './proxy.js';
 import { createLogger } from '../logger.js';
 import type { ToolName } from '../instructions.js';
+import type { Driver } from '../studio/run-store.js';
 import type { McpToolResult } from '../server/tool-registry.js';
 
 const log = createLogger('studio');
@@ -159,6 +160,13 @@ export interface StudioToolError {
   currentEpoch?: number;
   /** Present on an `aborted_reclaimed` from `type` — the partial effect (characters landed before the human reclaimed). */
   charsLanded?: number;
+  /**
+   * Present on a `not_the_driver` refusal (SD2 §1.5) — who actually drives this run, whole, so an
+   * observer can resync in one hop instead of polling to find out.
+   */
+  driver?: Driver;
+  /** The same refusal's driver as ONE string, minted by `formatDriver` — identical in REST, on the event stream and here. */
+  driver_name?: string;
 }
 
 export interface StudioMarksInput {
@@ -367,6 +375,25 @@ export interface StudioHostHandlers {
 
 export type { McpToolResult };
 
+/**
+ * The baton gate (SD2 §1.5 / §7 row 12). Installed by the process that becomes the live studio host
+ * — `DaemonHttpServer.setStudioHost` — because that is the only moment a process both owns the
+ * handlers and can reach the run log. Returns a refusal to serve INSTEAD of the call, or `undefined`
+ * to let it through.
+ *
+ * A module-level seam rather than a `DispatchDeps` field on purpose: `dispatchStudioTool`'s deps are
+ * threaded by `tool-provider.ts` per call, and the gate is a property of the PROCESS, not of a call.
+ * Absent (the default), dispatch behaves exactly as it did before the baton existed.
+ */
+export type BatonGate = (name: string, args: Record<string, unknown>) => Promise<StudioToolError | undefined>;
+
+let batonGate: BatonGate | undefined;
+
+/** Install, or (with `undefined`) remove — tests MUST remove theirs, a leaked gate outlives the suite. */
+export function setBatonGate(gate: BatonGate | undefined): void {
+  batonGate = gate;
+}
+
 /** Injectable for tests; production builds a real DaemonProxy. */
 export interface DispatchDeps {
   proxyFactory?: (endpoint: string, token: string) => { callTool(name: string, args: Record<string, unknown>): Promise<unknown> };
@@ -441,7 +468,15 @@ export async function dispatchStudioTool(
   // stdio proxy side — a stdio caller cannot satisfy or bypass it.
   if (studioHost) {
     const route = HOST_ROUTE_TABLE.get(name);
-    if (route) return route(studioHost, args);
+    if (route) {
+      // The baton is checked AFTER the route resolves, so an unknown tool still reads as unknown,
+      // and BEFORE the handler runs, so an observer's act never reaches the page at all. Serialized
+      // with `verbatim` because a `not_the_driver` refusal carries `driver` + `driver_name`, which
+      // the bare `refusal()` shape would drop — the same reason studio_act uses it.
+      const refused = await batonGate?.(name, args);
+      if (refused) return verbatim(refused);
+      return route(studioHost, args);
+    }
     // A name that looks like a control/approval primitive has no route BY DESIGN — PIN-SPLIT(b):
     // there is no agent path to obtain control or self-approve.
     return refusal('unknown_studio_tool', `No host handler for ${name}.`);
