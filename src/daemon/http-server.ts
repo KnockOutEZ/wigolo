@@ -11,13 +11,21 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
 import type { DispatchStoreOptions } from './dispatch-store.js';
-import { setBatonGate, setDeliveryHooks, setFooterSource, setReceiptDelivery, type StudioHostHandlers } from './studio-dispatch.js';
+import { setBatonGate, setDeliveryHooks, setFooterSource, setReceiptDelivery } from './studio-dispatch.js';
 import { createBatonGate } from './driver-baton.js';
 import { createReceiptDelivery } from './driver-receipt.js';
 import { createDeliveryHooks } from './message-queue.js';
 import { createFooterSource } from './result-footer.js';
-import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
+import {
+  BROKER_ROUTE,
+  BROKER_TABLES,
+  COMPANION_CONTRACT_VERSION,
+  PAIRING_ROUTE,
+  evaluateHandshake,
+} from '../companion-contract/index.js';
+import type { CompanionHello, CompanionHelloApp, PairingResponse } from '../companion-contract/index.js';
+import { BrokerGrantStore, BrokerOpError, executeBrokerOp, schemaHead } from './studio-db-broker.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../companion/auth.js';
 import { getConfig } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
@@ -61,6 +69,24 @@ import type { RestRouter } from './rest/router.js';
 import type { RunsStore } from './rest/runs-store.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
+
+/**
+ * The two host-injection slots, typed off the SUBSYSTEM shape rather than off the modules that own them.
+ *
+ * The daemon only stores these and hands them back; it has no business knowing what a host handler or a
+ * session drive can do. Sourcing the types here keeps the file free of any import from the domain layer
+ * while the companion extraction proceeds, and — unlike moving them onto the public companion contract —
+ * it puts no domain method name on a wire whose whole design (spec D8) is that it names storage, never
+ * behaviour.
+ */
+type HostHandlerSlot = NonNullable<Subsystems['studioHost']>;
+type SessionsAccessorSlot = NonNullable<Subsystems['studioSessions']>;
+
+/**
+ * Cap on a companion request body. Broker writes carry rows, not documents, and the read side answers
+ * at most {@link MAX_BROKER_ROWS} rows — a megabyte is already far past any legitimate op.
+ */
+const COMPANION_BODY_CAP_BYTES = 1024 * 1024;
 
 const log = createLogger('server');
 
@@ -158,8 +184,14 @@ export class DaemonHttpServer {
   /** Set by start() in full-daemon mode from the dynamically-imported `../server.js`; null in studio-only mode. */
   private createMcpServerFn: ((subsystems: Subsystems) => Server) | null = null;
   private mcpRequestCount = 0;
-  private studioHost: StudioHostHandlers | null = null;
-  private studioSessions: StudioSessionsAccessor | null = null;
+  private studioHost: HostHandlerSlot | null = null;
+  private studioSessions: SessionsAccessorSlot | null = null;
+  /**
+   * Live broker grants (EXTRACT C3 / spec D8). Built on first pairing: a daemon nobody paired with holds
+   * no credential at all, and a daemon restart un-pairs, which is the same shape as the handle file the
+   * companion already re-reads.
+   */
+  private companionGrants: BrokerGrantStore | null = null;
   private readonly apiToken: string | null;
   private readonly allowUnauthenticated: boolean;
   private readonly restBindHost: string;
@@ -203,7 +235,7 @@ export class DaemonHttpServer {
    * per-session createMcpServer reads subsystems.studioHost, so a late-set value is
    * picked up by every subsequent agent connection.
    */
-  setStudioHost(handlers: StudioHostHandlers, options: StudioHostStoreOptions = {}): void {
+  setStudioHost(handlers: HostHandlerSlot, options: StudioHostStoreOptions = {}): void {
     this.studioHost = handlers;
     if (this.subsystems) this.subsystems.studioHost = handlers;
     // THE SEAM (#331). A host that reaches its run store some other way passes it here, and all
@@ -238,7 +270,7 @@ export class DaemonHttpServer {
    * per-session createMcpServer reads subsystems.studioSessions, so a late-set value is picked up by every
    * subsequent agent connection — a session-targeted fetch/extract/crawl forwarded to this host resolves here.
    */
-  setStudioSessions(accessor: StudioSessionsAccessor): void {
+  setStudioSessions(accessor: SessionsAccessorSlot): void {
     this.studioSessions = accessor;
     if (this.subsystems) this.subsystems.studioSessions = accessor;
   }
@@ -476,6 +508,14 @@ export class DaemonHttpServer {
       return this.handleSseMessageRequest(req, res, sessionId);
     }
 
+    if (pathname === PAIRING_ROUTE && method === 'POST') {
+      return this.handleCompanionPair(req, res);
+    }
+
+    if (pathname === BROKER_ROUTE && method === 'POST') {
+      return this.handleCompanionBroker(req, res);
+    }
+
     if (pathname === '/admin/reset-breakers' && method === 'POST') {
       return this.handleAdminResetBreakers(req, res);
     }
@@ -591,6 +631,159 @@ export class DaemonHttpServer {
    * Loopback source IP is deliberately NOT trusted (cloudflared delivers remote
    * requests from 127.0.0.1).
    */
+  /** The live grant store, built on first use. */
+  private grants(): BrokerGrantStore {
+    if (!this.companionGrants) this.companionGrants = new BrokerGrantStore();
+    return this.companionGrants;
+  }
+
+  private writeJson(res: ServerResponse, status: number, body: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body));
+  }
+
+  /**
+   * Read a companion request body, or answer the client and return undefined.
+   *
+   * The two companion routes share one door for the same reason they share `mcpTransportRejected`: a
+   * body cap and a parse failure are transport facts, and a second spelling of either would be a second
+   * credential-shaped decision to keep in step.
+   */
+  private async readCompanionBody(req: IncomingMessage, res: ServerResponse): Promise<unknown | undefined> {
+    try {
+      return await this.readJsonBody(req, COMPANION_BODY_CAP_BYTES);
+    } catch (err) {
+      const tooLarge = err instanceof Error && /too large/i.test(err.message);
+      this.writeJson(res, tooLarge ? 413 : 400, {
+        ok: false,
+        error: tooLarge ? 'body_too_large' : 'invalid_json',
+        error_reason: err instanceof Error ? err.message : String(err),
+        stage: 'companion',
+      });
+      return undefined;
+    }
+  }
+
+  /** The database this daemon owns. Imported lazily so the studio-only gateway never loads it. */
+  private async companionDatabase(res: ServerResponse): Promise<import('better-sqlite3').Database | undefined> {
+    if (this.mcpServerFactory) {
+      this.writeJson(res, 503, {
+        ok: false,
+        error: 'no_shared_cache',
+        error_reason: 'This process serves an injected session surface and owns no shared cache.',
+        stage: 'companion',
+      });
+      return undefined;
+    }
+    const { getDatabase } = await import('../cache/db.js');
+    return getDatabase();
+  }
+
+  /**
+   * Pairing (spec §2.1 seam 2 / §6). The companion says who it is and what schema head it needs; the
+   * daemon answers with its own hello and, when the heads and the contract MAJOR agree, a broker grant.
+   *
+   * The schema heads are compared by the CONTRACT's own `evaluateHandshake`, not by a rule spelled out
+   * here, so the two sides cannot drift into disagreeing about what a skew is. Only the external core
+   * migrates the shared cache — a refusal is the answer, never a migration on the app's behalf.
+   */
+  private async handleCompanionPair(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (this.mcpTransportRejected(req, res)) return;
+    const body = await this.readCompanionBody(req, res);
+    if (body === undefined) return;
+
+    const app = body as Partial<CompanionHelloApp>;
+    if (
+      typeof app.contractVersion !== 'string' ||
+      typeof app.schemaHead !== 'number' ||
+      typeof app.minSchemaHead !== 'number'
+    ) {
+      return this.writeJson(res, 400, {
+        ok: false,
+        error: 'malformed_hello',
+        error_reason: 'A pairing hello carries contractVersion, schemaHead and minSchemaHead.',
+        stage: 'companion',
+      });
+    }
+
+    const db = await this.companionDatabase(res);
+    if (!db) return;
+
+    const external: CompanionHello = {
+      contractVersion: COMPANION_CONTRACT_VERSION,
+      schemaHead: schemaHead(db),
+      capabilities: ['broker'],
+    };
+    const verdict = evaluateHandshake(external, {
+      contractVersion: app.contractVersion,
+      schemaHead: app.schemaHead,
+      minSchemaHead: app.minSchemaHead,
+      capabilities: app.capabilities ?? [],
+    });
+    if (!verdict.ok) {
+      log.info('companion pairing refused', { reason: verdict.reason, hint: verdict.hint });
+      return this.writeJson(res, 409, verdict satisfies PairingResponse);
+    }
+
+    // One companion at a time. A second pairing SUPERSEDES the first rather than running beside it, so a
+    // relaunched app cannot leave its predecessor's token alive on a database nobody is watching.
+    this.grants().revokeAll('superseded');
+    const grant = this.grants().issue({
+      mode: 'readwrite',
+      tables: BROKER_TABLES,
+      schemaHead: external.schemaHead,
+    });
+    log.info('companion paired', { schemaHead: external.schemaHead });
+    return this.writeJson(res, 200, { ok: true, external, grant } satisfies PairingResponse);
+  }
+
+  /**
+   * One broker op (spec §2.1 seam 4 / D8).
+   *
+   * A typed refusal answers 200: the wire's own guard reads the BODY, and a refusal is a decision this
+   * route made successfully. A malformed op — a column the table does not have, a missing filter on a
+   * whole-table write — answers 400, because it is a protocol error and not an access decision.
+   */
+  private async handleCompanionBroker(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (this.mcpTransportRejected(req, res)) return;
+    const body = await this.readCompanionBody(req, res);
+    if (body === undefined) return;
+
+    const op = body as { grant?: unknown; kind?: unknown; table?: unknown };
+    if (typeof op.grant !== 'string' || typeof op.kind !== 'string' || typeof op.table !== 'string') {
+      return this.writeJson(res, 400, {
+        ok: false,
+        error: 'malformed_op',
+        error_reason: 'A broker op carries a grant token, a kind and a table.',
+        stage: 'companion',
+      });
+    }
+
+    const db = await this.companionDatabase(res);
+    if (!db) return;
+
+    try {
+      const result = executeBrokerOp(db, this.grants(), body as Parameters<typeof executeBrokerOp>[2]);
+      return this.writeJson(res, 200, result);
+    } catch (err) {
+      if (err instanceof BrokerOpError) {
+        return this.writeJson(res, 400, {
+          ok: false,
+          error: 'malformed_op',
+          error_reason: err.detail,
+          stage: 'companion',
+        });
+      }
+      log.warn('broker op failed', { error: err instanceof Error ? err.message : String(err) });
+      return this.writeJson(res, 500, {
+        ok: false,
+        error: 'broker_failed',
+        error_reason: err instanceof Error ? err.message : String(err),
+        stage: 'companion',
+      });
+    }
+  }
+
   private handleAdminResetBreakers(req: IncomingMessage, res: ServerResponse): void {
     const deny = (code: number, message: string): void => {
       res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -777,6 +970,10 @@ export class DaemonHttpServer {
     this.stopped = true;
 
     log.info('Stopping daemon HTTP server');
+
+    // The daemon going away IS an unpairing: the grants live in this process, so leaving them behind
+    // would leave a companion holding a token against a database this process no longer serves.
+    this.companionGrants?.revokeAll('unpaired');
 
     for (const [id, session] of this.sessions) {
       try {
