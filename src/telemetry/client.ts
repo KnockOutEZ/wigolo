@@ -232,7 +232,9 @@ export class TelemetryClient {
   }
 
   private async runFlush(): Promise<FlushResult> {
-    const idle = (status: FlushStatus): FlushResult => ({ status, sent: 0, dropped: 0, retained: this.queue.count() });
+    // Early exits can happen on every threshold emit. Use the count this client already
+    // maintains instead of synchronously parsing the whole queue merely to report status.
+    const idle = (status: FlushStatus): FlushResult => ({ status, sent: 0, dropped: 0, retained: this.queuedSinceFlush });
     if (!this.enabled) return idle('disabled');
     if (!this.isActivated()) return idle('not_activated');
 

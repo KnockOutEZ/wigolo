@@ -30,7 +30,7 @@ const {
   MIN_FLUSH_SPACING_MS,
   TelemetryClient,
 } = await import('../../../src/telemetry/client.js');
-const { TelemetryQueue, queuePath } = await import('../../../src/telemetry/queue.js');
+const { TelemetryQueue, queuePath, telemetryDir } = await import('../../../src/telemetry/queue.js');
 const { MAX_EVENTS_PER_BATCH } = await import('../../../src/telemetry/envelope.js');
 
 type TelemetryEvent = import('../../../src/telemetry/events.js').TelemetryEvent;
@@ -644,6 +644,31 @@ describe('TelemetryClient', () => {
 
         expect(queueParses).toHaveBeenCalledTimes(0);
         expect(sentBatches).toHaveLength(1);
+      } finally {
+        telemetry.stop();
+      }
+    });
+
+    it('does not parse the queue when another process owns the flush lease', async () => {
+      const telemetry = makeTelemetry();
+      telemetry.start();
+      try {
+        const { writeFileSync } = await import('node:fs');
+        writeFileSync(
+          join(telemetryDir(dataDir), '.flush.lock'),
+          JSON.stringify({ pid: process.pid, token: 'live-owner', createdAtMs: Date.now() }),
+        );
+        for (let i = 1; i < FLUSH_EVENT_THRESHOLD; i += 1) telemetry.emit(toolRun());
+        const queueParses = vi.spyOn(TelemetryQueue.prototype, 'readAll');
+        queueParses.mockClear();
+
+        for (let i = 0; i < 3; i += 1) {
+          telemetry.emit(toolRun('fetch'));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        expect(queueParses).toHaveBeenCalledTimes(0);
+        expect(sentBatches).toHaveLength(0);
       } finally {
         telemetry.stop();
       }
