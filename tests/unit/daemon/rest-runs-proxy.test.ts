@@ -8,7 +8,7 @@ import { networkInterfaces } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeHandle, removeHandle, setMyInstanceId } from '../../../src/studio/handle.js';
+import { writeHandle, removeHandle, setMyInstanceId } from '../../../src/companion/handle.js';
 import {
   resolveRunsOwner,
   proxyRunsRequest,

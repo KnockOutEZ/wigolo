@@ -17,8 +17,8 @@
  *
  * Identity is a collision-resistant instance UUID, not a bare pid (see handle.ts).
  */
-import { readHandle, getMyInstanceId } from '../studio/handle.js';
-import { ensureStudioRunning } from '../studio/auto-launch.js';
+import { readHandle, getMyInstanceId } from '../companion/handle.js';
+import { ensureStudioRunning } from '../companion/auto-launch.js';
 import { DaemonProxy } from './proxy.js';
 import { createLogger } from '../logger.js';
 import type { ToolName } from '../instructions.js';

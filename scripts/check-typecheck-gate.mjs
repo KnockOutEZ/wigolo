@@ -13,7 +13,7 @@
  * Safety-critical modules: NavInterceptor/navigateSession (studio/nav), the act
  * handler + resolver (studio/act, studio/perception/resolve), the single input
  * channel (studio/input, studio/session-control), the control token/epoch
- * (studio/control-token), the session handle (studio/handle), the studio
+ * (studio/control-token), the session handle (companion/handle), the studio
  * dispatch/auth seam (daemon/studio-dispatch), the mark layer (studio/mark/* —
  * the structured target, inspector, and store the agent acts on; a wrong target is
  * a wrong action), the per-session append-only audit log (studio/audit — the
@@ -43,7 +43,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Longest alternatives first so e.g. `nav-policy` / `session-control` are not
 // shadowed by `nav` / `control-token`.
-const SAFETY = /from\s+['"][^'"]*(?:fetch\/browser-request-guard|studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
+const SAFETY = /from\s+['"][^'"]*(?:fetch\/browser-request-guard|studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|companion\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
 
 // tsconfig `include` entries are always `/`-separated; `path.relative` yields `\` on win32.
 // Compare in POSIX form on both sides or the guard flags EVERY gated file as missing.

@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { defaultLaunch, ensureStudioRunning, normalizeLaunch, resetAutoLaunchState } from '../../../src/studio/auto-launch.js';
-import { readSubstrateRecord, SUBSTRATE_RECORD } from '../../../src/studio/substrate-acquire.js';
-import type { SessionHandle } from '../../../src/studio/handle.js';
+import { defaultLaunch, ensureStudioRunning, normalizeLaunch, resetAutoLaunchState } from '../../../src/companion/auto-launch.js';
+import { readSubstrateRecord, SUBSTRATE_RECORD } from '../../../src/companion/substrate-acquire.js';
+import type { SessionHandle } from '../../../src/companion/handle.js';
 
 /**
  * S9 — amended-D4 auto-launch.
@@ -63,7 +63,7 @@ afterEach(async () => {
   resetAutoLaunchState();
   // `substratePresent()` memoizes for 5s, which is forever at test speed: without this, a test
   // that plants an acquisition record hands its `true` to every test that runs after it.
-  const { resetSubstratePresenceCache } = await import('../../../src/studio/substrate-acquire.js');
+  const { resetSubstratePresenceCache } = await import('../../../src/companion/substrate-acquire.js');
   resetSubstratePresenceCache();
   // AFTER the env restore above, and paired with it. `plantAcquiredSubstrate` repoints
   // `WIGOLO_DATA_DIR` and drops the memoized config to move `substrateRoot()` inside `dir`;
@@ -96,7 +96,7 @@ describe('ensureStudioRunning', () => {
   });
 
   it('is prompt-less — nothing in the module asks for a decision', async () => {
-    const src = readFileSync(new URL('../../../src/studio/auto-launch.ts', import.meta.url), 'utf-8');
+    const src = readFileSync(new URL('../../../src/companion/auto-launch.ts', import.meta.url), 'utf-8');
     expect(src).not.toMatch(/approval|confirm|prompt\(|readline/i);
   });
 
@@ -180,7 +180,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
    */
   async function plantAcquiredSubstrate(): Promise<string> {
     const { substrateRoot, SUBSTRATE_RECORD, resetSubstratePresenceCache } = await import(
-      '../../../src/studio/substrate-acquire.js'
+      '../../../src/companion/substrate-acquire.js'
     );
     const { resetConfig } = await import('../../../src/config.js');
 
@@ -217,7 +217,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     // this repo's own suite really did try to run `npm run dev -w apps/studio` and then wait out its budget.
     // An unasked desktop launch out of someone's checkout is not acceptable.
     delete process.env.WIGOLO_STUDIO_AUTO_LAUNCH;
-    const { studioLaunchable } = await import('../../../src/studio/auto-launch.js');
+    const { studioLaunchable } = await import('../../../src/companion/auto-launch.js');
     expect(studioLaunchable()).toBe(false);
   });
 
@@ -227,7 +227,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     // them forever. This is the arm that fails on that stub.
     const root = await plantAcquiredSubstrate();
     try {
-      const { studioLaunchable } = await import('../../../src/studio/auto-launch.js');
+      const { studioLaunchable } = await import('../../../src/companion/auto-launch.js');
       expect(studioLaunchable()).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -240,7 +240,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
     // dependency, so there is no sibling workspace to start and the opt-in half of the variable
     // went with it. What remains is the disable half, pinned by the test below.
     process.env.WIGOLO_STUDIO_AUTO_LAUNCH = '1';
-    const { studioLaunchable } = await import('../../../src/studio/auto-launch.js');
+    const { studioLaunchable } = await import('../../../src/companion/auto-launch.js');
     expect(studioLaunchable()).toBe(false);
   });
 
@@ -282,7 +282,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
       process.env.WIGOLO_DATA_DIR = decoy;
       const { resetConfig } = await import('../../../src/config.js');
       resetConfig();
-      const { substrateRoot } = await import('../../../src/studio/substrate-acquire.js');
+      const { substrateRoot } = await import('../../../src/companion/substrate-acquire.js');
       expect(substrateRoot()).toBe(join(decoy, 'substrate'));
 
       const root = await plantAcquiredSubstrate();
@@ -291,7 +291,7 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
         // …and the isolation did not buy safety by planting where nothing reads: the record is
         // still the one `studioLaunchable()` answers from. Without this the helper could satisfy
         // the arm above by writing to a directory no production path consults.
-        const { studioLaunchable } = await import('../../../src/studio/auto-launch.js');
+        const { studioLaunchable } = await import('../../../src/companion/auto-launch.js');
         expect(studioLaunchable()).toBe(true);
       } finally {
         rmSync(root, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { checkAgentDrive, type AgentDriveGate } from '../../../src/studio/agent-drive-gate.js';
-import { OriginBudget, DEFAULT_ORIGIN_BUDGET, budgetOrigin } from '../../../src/studio/origin-budget.js';
+import { OriginBudget, DEFAULT_ORIGIN_BUDGET, budgetOrigin } from '../../../src/companion/origin-budget.js';
 import { PreGrantStore } from '../../../src/studio/pre-grant.js';
 
 /**

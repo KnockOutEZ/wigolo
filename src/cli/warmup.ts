@@ -21,7 +21,7 @@ import {
   type BrowserTierReason,
 } from '../fetch/browser-tier.js';
 import { systemBrowserPresent } from '../fetch/cdp-direct.js';
-import { acquireSubstrate, type SubstrateOutcome } from '../studio/substrate-acquire.js';
+import { acquireSubstrate, type SubstrateOutcome } from '../companion/substrate-acquire.js';
 import { BROWSER_DRIVER_MISSING_ERROR, resolveDriverPackageJson } from '../fetch/browser-driver.js';
 import { acquireBrowserDriver } from '../fetch/driver-acquire.js';
 

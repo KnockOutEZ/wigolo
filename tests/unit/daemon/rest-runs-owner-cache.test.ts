@@ -16,8 +16,8 @@ import { join } from 'node:path';
  */
 const counters = vi.hoisted(() => ({ reads: 0 }));
 
-vi.mock('../../../src/studio/handle.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/studio/handle.js')>();
+vi.mock('../../../src/companion/handle.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/companion/handle.js')>();
   return {
     ...actual,
     readHandle: (dataDir?: string) => {
@@ -27,7 +27,7 @@ vi.mock('../../../src/studio/handle.js', async (importOriginal) => {
   };
 });
 
-const { writeHandle, removeHandle } = await import('../../../src/studio/handle.js');
+const { writeHandle, removeHandle } = await import('../../../src/companion/handle.js');
 const { resolveRunsOwner, _resetRunsOwnerHandleCache } = await import('../../../src/daemon/rest/runs-owner.js');
 
 describe('the studio handle is re-read only when it changes', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createSessionDrive, type SessionDriveDeps, type DriveControlToken } from '../../../src/studio/session-drive.js';
 import { createActHandler } from '../../../src/studio/act.js';
-import { OriginBudget } from '../../../src/studio/origin-budget.js';
+import { OriginBudget } from '../../../src/companion/origin-budget.js';
 import { PreGrantStore } from '../../../src/studio/pre-grant.js';
 import type { AgentDriveGate } from '../../../src/studio/agent-drive-gate.js';
 import { runSessionFetch } from '../../../src/tools/session-target.js';

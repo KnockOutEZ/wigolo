@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { getConfig } from '../config.js';
-import { studioStateDir } from './paths.js';
+import { studioStateDir } from '../companion/paths.js';
 import { encryptToFile, decryptFromFile } from '../security/key-crypto.js';
 import { keychainAvailable, keychainGet, keychainSet } from '../security/keychain.js';
 

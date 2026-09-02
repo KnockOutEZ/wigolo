@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkBindHost, isLoopbackHost } from '../../../src/studio/bind.js';
+import { checkBindHost, isLoopbackHost } from '../../../src/companion/bind.js';
 
 describe('studio/bind', () => {
   describe('isLoopbackHost', () => {

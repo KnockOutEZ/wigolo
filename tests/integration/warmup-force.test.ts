@@ -45,8 +45,8 @@ vi.mock('../../src/fetch/driver-acquire.js', async () => {
 
 // `no_source` is what a real host reports today, so the branch runWarmup takes is unchanged —
 // this only guarantees a published component can never turn this test into a download.
-vi.mock('../../src/studio/substrate-acquire.js', async () => {
-  const actual = await vi.importActual<typeof import('../../src/studio/substrate-acquire.js')>('../../src/studio/substrate-acquire.js');
+vi.mock('../../src/companion/substrate-acquire.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/companion/substrate-acquire.js')>('../../src/companion/substrate-acquire.js');
   return {
     ...actual,
     acquireSubstrate: vi.fn().mockResolvedValue({

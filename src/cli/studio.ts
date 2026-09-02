@@ -2,8 +2,8 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
-import { checkBindHost } from '../studio/bind.js';
-import { resolveHostToken } from '../studio/auth.js';
+import { checkBindHost } from '../companion/bind.js';
+import { resolveHostToken } from '../companion/auth.js';
 import { SessionRegistry, SessionLimitError, startIdleSweeper, type IdleSweeper } from '../studio/registry.js';
 import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
@@ -11,7 +11,7 @@ import { ProfileStore } from '../studio/profile-store.js';
 import { SessionController, type InputSink } from '../studio/session-control.js';
 import { NavInterceptor, navigateSession } from '../studio/nav.js';
 import { policyForHolder, type NavGrant } from '../studio/nav-policy.js';
-import { writeHandle, removeHandle, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
+import { writeHandle, removeHandle, setMyInstanceId, type SessionHandle } from '../companion/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { PageSnapshotter, buildSnapshot, flattenDom, type AxNode, type DomNode } from '../studio/perception/snapshot.js';
 import { createResolver } from '../studio/perception/resolve.js';
@@ -31,10 +31,10 @@ import type { ParkedAction } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
-import { recordAuthOrigin, readAuthOriginLedger, readOriginOverrides } from '../studio/auth-origin-store.js';
+import { recordAuthOrigin, readAuthOriginLedger, readOriginOverrides } from '../companion/auth-origin-store.js';
 import { isAuthenticatedOrigin, projectCookies, type CookieFacts } from '../studio/authenticated-origin.js';
-import { OriginBudget } from '../studio/origin-budget.js';
-import { bumpEscalationCounter } from '../studio/escalation-counters.js';
+import { OriginBudget } from '../companion/origin-budget.js';
+import { bumpEscalationCounter } from '../companion/escalation-counters.js';
 import type { AgentDriveGate } from '../studio/agent-drive-gate.js';
 import { readPersistedConfig, defaultConfigPath } from '../persisted-config.js';
 import { LoginHandoff } from '../studio/handoff.js';
@@ -59,7 +59,7 @@ import type {
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { readSubstrateRecord, type SubstrateRecord } from '../studio/substrate-acquire.js';
+import { readSubstrateRecord, type SubstrateRecord } from '../companion/substrate-acquire.js';
 
 /**
  * Headless broadcast sink. The v1 WS hub delivered these to a connected browser tab; the Electron app is now

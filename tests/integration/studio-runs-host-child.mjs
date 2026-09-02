@@ -22,7 +22,7 @@
  */
 import { createServer } from 'node:http';
 import { DaemonHttpServer } from '../../dist/daemon/http-server.js';
-import { setMyInstanceId, writeHandle } from '../../dist/studio/handle.js';
+import { setMyInstanceId, writeHandle } from '../../dist/companion/handle.js';
 import { getDatabase } from '../../dist/cache/db.js';
 import { appendRunEventWithTail } from '../../dist/studio/run-bus.js';
 

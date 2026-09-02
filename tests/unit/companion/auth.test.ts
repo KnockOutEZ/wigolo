@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mintHostToken, checkAuth, checkAuthSubprotocol, checkOriginHost, resolveHostToken } from '../../../src/studio/auth.js';
+import { mintHostToken, checkAuth, checkAuthSubprotocol, checkOriginHost, resolveHostToken } from '../../../src/companion/auth.js';
 
 describe('studio/auth', () => {
   describe('mintHostToken', () => {

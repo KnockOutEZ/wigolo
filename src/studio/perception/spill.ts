@@ -14,7 +14,7 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { studioStateDir } from '../paths.js';
+import { studioStateDir } from '../../companion/paths.js';
 import { countTokens } from '../../search/tokens.js';
 import { hash } from './id.js';
 import type { SnapshotElement } from './snapshot.js';

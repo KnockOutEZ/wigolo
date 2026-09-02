@@ -267,7 +267,7 @@ beforeAll(async () => {
 
   // The daemon's own view of who is live. Same content as the handle the child wrote for itself —
   // the child reads it as SELF (its instance id), this process reads it as a foreign live host.
-  const { writeHandle } = await import('../../src/studio/handle.js');
+  const { writeHandle } = await import('../../src/companion/handle.js');
   writeHandle({
     id: 'integration-session',
     endpoint: `http://127.0.0.1:${hostRestPort}`,
@@ -522,7 +522,7 @@ describe('the owner goes away', () => {
         s.close(() => resolve(port));
       });
     });
-    const { writeHandle } = await import('../../src/studio/handle.js');
+    const { writeHandle } = await import('../../src/companion/handle.js');
     writeHandle({
       id: 'integration-session',
       endpoint: `http://127.0.0.1:${dead}`,
