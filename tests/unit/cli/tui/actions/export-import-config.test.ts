@@ -17,7 +17,11 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resetPersistedConfig } from '../../../../../src/persisted-config.js';
+import {
+  readPersistedConfig,
+  resetPersistedConfig,
+  writePersistedConfig,
+} from '../../../../../src/persisted-config.js';
 import {
   exportConfig,
   importConfig,
@@ -188,6 +192,26 @@ describe('importConfig — round-trip', () => {
     expect(loaded.settings['braveApiKey']).toBeUndefined();
     expect(loaded.settings['githubToken']).toBeUndefined();
     expect(loaded.settings['WIGOLO_SEARCH']).toBe('core');
+  });
+
+  it('refuses an invalid new-tab search engine without changing config', async () => {
+    writePersistedConfig(configPath, { settings: { newTabSearchEngine: 'google' } });
+    writeFileSync(
+      exportPath,
+      JSON.stringify({
+        version: 1,
+        settings: {
+          newTabSearchEngine: 'http://search.example.test/?q={searchTerms}',
+        },
+      }),
+      'utf-8',
+    );
+
+    const result = await importConfig(exportPath, configPath);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.error).toContain('HTTPS');
+    resetPersistedConfig();
+    expect(readPersistedConfig(configPath).settings.newTabSearchEngine).toBe('google');
   });
 });
 

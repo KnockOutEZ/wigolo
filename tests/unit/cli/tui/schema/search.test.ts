@@ -2,16 +2,28 @@ import { describe, it, expect } from 'vitest';
 import { searchCategory } from '../../../../../src/cli/tui/schema/search.js';
 
 describe('searchCategory', () => {
-  it('has id search and the four expected fields', () => {
+  it('has id search and the five expected fields', () => {
     expect(searchCategory.id).toBe('search');
-    expect(searchCategory.fields.length).toBe(4);
+    expect(searchCategory.fields.length).toBe(5);
     const keys = searchCategory.fields.map((f) => f.key);
     expect(keys).toEqual([
       'WIGOLO_SEARCH',
+      'WIGOLO_NEW_TAB_SEARCH_ENGINE',
       'WIGOLO_RERANKER',
       'WIGOLO_RERANKER_MODEL',
       'WIGOLO_EMBEDDING_MODEL',
     ]);
+  });
+
+  it('offers a validated, local-only new-tab search engine field', () => {
+    const f = searchCategory.fields.find((x) => x.key === 'WIGOLO_NEW_TAB_SEARCH_ENGINE');
+    expect(f?.kind).toBe('text');
+    expect(f?.default).toBe('google');
+    expect(f?.propagateToAgents).toBe(false);
+    expect(f?.validate?.('wigolo')).toBeNull();
+    expect(f?.validate?.('https://search.example.test/?q={searchTerms}')).toBeNull();
+    expect(f?.validate?.('http://search.example.test/?q={searchTerms}')).toContain('HTTPS');
+    expect(f?.validate?.('https://search.example.test/')).toContain('{searchTerms}');
   });
 
   it('WIGOLO_SEARCH offers core/searxng/hybrid with core default', () => {

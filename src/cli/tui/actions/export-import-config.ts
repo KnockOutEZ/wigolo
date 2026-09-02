@@ -21,6 +21,7 @@ import {
   writePersistedConfig,
   SETTINGS_SECRETS_DENYLIST,
 } from '../../../persisted-config.js';
+import { validateNewTabSearchEngine } from '../../../config.js';
 
 /**
  * Upper bound on an import file's size; a larger file is treated as corrupt and
@@ -160,6 +161,16 @@ export async function importConfig(
 
     // Strip secrets from imported settings (second line of defense)
     const cleanSettings = stripSecrets(envelope.settings as Record<string, unknown>);
+
+    if (Object.hasOwn(cleanSettings, 'newTabSearchEngine')) {
+      const validation = validateNewTabSearchEngine(cleanSettings.newTabSearchEngine);
+      if (!validation.valid) {
+        return {
+          ok: false,
+          error: `Invalid new-tab search engine: ${validation.message}`,
+        };
+      }
+    }
 
     writePersistedConfig(configPath, { settings: cleanSettings });
 

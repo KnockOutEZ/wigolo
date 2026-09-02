@@ -1,4 +1,5 @@
 import type { CategoryDef } from './types.js';
+import { validateNewTabSearchEngine } from '../../../config.js';
 
 export const searchCategory: CategoryDef = {
   id: 'search',
@@ -17,6 +18,19 @@ export const searchCategory: CategoryDef = {
       ],
       default: 'core',
       help: 'Search backend',
+    },
+    {
+      key: 'WIGOLO_NEW_TAB_SEARCH_ENGINE',
+      settingsPath: 'newTabSearchEngine',
+      label: 'New-tab search engine',
+      kind: 'text',
+      default: 'google',
+      help: 'google, duckduckgo, bing, wigolo, or an HTTPS URL containing {searchTerms}',
+      validate: (value) => {
+        const result = validateNewTabSearchEngine(value);
+        return result.valid ? null : result.message;
+      },
+      propagateToAgents: false,
     },
     {
       key: 'WIGOLO_RERANKER',
