@@ -36,7 +36,7 @@ vi.mock('../../../src/companion/handle.js', async (importOriginal) => {
   return { ...actual, writeHandle: vi.fn(() => { events.push('handle'); }) };
 });
 
-import { parseStudioArgs, startStudioHost, runStudio, type StudioChild } from '../../../src/cli/studio.js';
+import { parseStudioArgs, startStudioHost, runStudio, teardownStudioHost, type StudioChild } from '../../../src/cli/studio.js';
 import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { writeHandle } from '../../../src/companion/handle.js';
 import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
@@ -56,8 +56,9 @@ import { createCaptureHandler, type StudioCaptureInput } from '../../../src/stud
 import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
 import { dispatchStudioTool } from '../../../src/daemon/studio-dispatch.js';
 import { SessionRegistry } from '../../../src/studio/registry.js';
-import { createRunWithTail, subscribeRunEvents } from '../../../src/studio/run-bus.js';
-import { eventsSince } from '../../../src/studio/run-store.js';
+import { createRunWithTail, runEventListenerCount, subscribeRunEvents } from '../../../src/studio/run-bus.js';
+import { eventsSince, getRun } from '../../../src/studio/run-store.js';
+import { grantWheel, requestWheel, takeWheel } from '../../../src/daemon/driver-baton.js';
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
 // can drive the login-handoff window: an agent act lands on a credential URL (wall), then the human
@@ -2307,5 +2308,115 @@ describe('cli/studio startStudioHost — #318 pin 8 post-actions are wired in th
     } finally {
       await host.daemon.stop();
     }
+  });
+});
+
+describe('cli/studio startStudioHost — #217 the baton bridge in the shipped host', () => {
+  let runDataDir: string;
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+    runDataDir = mkdtempSync(join(tmpdir(), 'wigolo-217-'));
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    rmSync(runDataDir, { recursive: true, force: true });
+    resetConfig();
+  });
+
+  const changes = (runId: string): Array<Record<string, unknown>> =>
+    eventsSince(getDatabase(), runId, 0).filter((e) => e.type === 'driver.changed').map((e) => e.payload);
+
+  /**
+   * §1.6's first named survivor: the credential wall. `handoff.ts:228` reclaims the token and the arc
+   * around it — abort in-flight nav, supersede pending approvals, drop content events at source — is
+   * unchanged; what #217 adds is that the RUN now knows, and knows why.
+   *
+   * The reason is the load-bearing half. `detectWall()` reclaims BEFORE it marks itself
+   * `human-holding`, so a bridge that asked "why?" inside the token callback would record this exact
+   * takeover — the one with the best reason there is — as an anonymous grab. MUTATION that REDs it:
+   * run the bridge reflection synchronously instead of on the next microtask.
+   */
+  it('a credential wall reclaims the token AND appends the takeover with `sign-in needs you`', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'buy the monitor' }, { dataDir: runDataDir });
+    const wall = makeWallLauncher({ url: 'https://shop.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: wall.launch, runId: run.id,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' }); // the agent is driving the session
+      expect(host.session.controlToken.holder).toBe('agent');
+      const pending = host.approvals.request({ action: 'use signed-in site', risk: 'credential', target: { url: 'https://shop.example' } });
+
+      await host.handoff.detectWall(); // the wall: reclaim + human-holding, exactly as 5e-a wrote it
+      await flush();
+
+      // The arc still works, by name.
+      expect(host.session.controlToken.holder).toBe('human');
+      expect(host.handoff.state).toBe('human-holding');
+      expect(await pending).toBe('superseded'); // approvals.ts:104, still keyed on the token's onChange
+
+      // …and the run log now carries it, with the reason the session could name.
+      expect(changes(run.id)).toEqual([
+        expect.objectContaining({ cause: 'takeover', reason: 'sign-in needs you', to: expect.objectContaining({ kind: 'human' }) }),
+      ]);
+      expect(getRun(getDatabase(), run.id)!.driver).toEqual({ kind: 'human' });
+
+      host.handoff.onClientGone(); // settle the window → disarm the deadline timer
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  /**
+   * The other direction, live: the wheel moving on the run moves the session's input gate. This is the
+   * only place the projection is observable against a REAL `ControlToken` inside a real host, which is
+   * what makes "the bridge is wired at all" a fact rather than a unit-test fixture.
+   */
+  it('a baton takeover on the run reclaims the live session, and an agent↔agent swap does not', async () => {
+    const run = createRunWithTail(
+      getDatabase(),
+      { task: 'compare monitors', driver: { kind: 'cli', client: { name: 'claude-code', version: '2.1.0' } } },
+      { dataDir: runDataDir },
+    );
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: fakeBrowserLauncher, runId: run.id,
+    });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      const epochBefore = host.session.controlToken.epoch;
+
+      // An agent↔agent swap is run authority only: input gating has not changed, so neither has the epoch.
+      requestWheel(getDatabase(), run.id, { by: { kind: 'sdk', client: { name: 'wigolo-sdk', version: '0.4.0' } }, requestId: 'wr_sdk' });
+      grantWheel(getDatabase(), run.id, { by: { kind: 'cli', client: { name: 'claude-code', version: '2.1.0' } }, requestId: 'wr_sdk' });
+      await flush();
+      expect(getRun(getDatabase(), run.id)!.driver.kind).toBe('sdk');
+      expect(host.session.controlToken.holder).toBe('agent');
+      expect(host.session.controlToken.epoch).toBe(epochBefore);
+
+      // A human takeover on the run IS an input change, and the session must feel it.
+      takeWheel(getDatabase(), run.id, { by: { kind: 'human' }, reason: 'I will finish this' });
+      await flush();
+      expect(host.session.controlToken.holder).toBe('human');
+      expect(host.session.controlToken.epoch).toBe(epochBefore + 1);
+      expect(changes(run.id)).toHaveLength(2); // the swap and the takeover; no reflection of the bridge's own flip
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('teardown releases the bridge`s run-log subscription', async () => {
+    const run = createRunWithTail(getDatabase(), { task: 'tear down' }, { dataDir: runDataDir });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, dataDir: runDataDir,
+      browserLauncher: fakeBrowserLauncher, runId: run.id,
+    });
+    expect(runEventListenerCount(run.id)).toBe(1);
+    await teardownStudioHost(host, { removeHandle: () => {}, closeDaemonBrowser: async () => {} });
+    expect(runEventListenerCount(run.id)).toBe(0);
   });
 });

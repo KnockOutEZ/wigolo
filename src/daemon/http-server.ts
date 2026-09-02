@@ -10,8 +10,9 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // only) so that a studio-only gateway (mcpServerFactory set) — which runs in the Electron main where
 // better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
-import { setBatonGate, setDeliveryHooks, setFooterSource, type StudioHostHandlers } from './studio-dispatch.js';
+import { setBatonGate, setDeliveryHooks, setFooterSource, setReceiptDelivery, type StudioHostHandlers } from './studio-dispatch.js';
 import { createBatonGate } from './driver-baton.js';
+import { createReceiptDelivery } from './driver-receipt.js';
 import { createDeliveryHooks } from './message-queue.js';
 import { createFooterSource } from './result-footer.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
@@ -204,6 +205,10 @@ export class DaemonHttpServer {
     // the footer renders is a projection of the run log, and this process is the only one that can
     // read it. Elsewhere the footer still lands, saying `— no run —`.
     setFooterSource(createFooterSource());
+    // SD2 §1.4 / §7 row 3, and the fourth instance of the same reason: the release receipt is a
+    // projection of `driver.changed`, so the process that can read the run log is the process that
+    // can tell a stranded driver where its wheel went.
+    setReceiptDelivery(createReceiptDelivery());
   }
 
   /**

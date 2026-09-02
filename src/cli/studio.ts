@@ -29,6 +29,7 @@ import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { HeldSnapshot, snapshotInvalidatedEvent } from '../studio/perception/held-snapshot.js';
 import { appendRunEventWithTail } from '../studio/run-bus.js';
+import { createBatonTokenBridge, type BatonTokenBridge } from '../daemon/driver-baton-bridge.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
 import { captureFromPage, captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta, type CaptureResult } from '../studio/capture/artifacts.js';
@@ -239,6 +240,11 @@ export interface StudioHost {
   sessionDrive: ReturnType<typeof createSessionDrive>;
   /** Slice 5e-a: the login-wall handoff machine — wall-detect → human-holding → completing/aborted/vanished. Exposed for the host-boundary/headed tests. */
   handoff: LoginHandoff;
+  /**
+   * SD2 §1.6: this session's control token wired to its run's baton. Exposed so teardown can release
+   * the run-log subscription — a leaked bridge would keep reflecting token flips onto a dead run.
+   */
+  batonBridge: BatonTokenBridge;
   hub: HostBroadcastSink;
   handle: SessionHandle;
   endpoint: string;
@@ -672,6 +678,22 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // A control-token flip TO the agent during the window can only be an explicit human WS grant —
   // end the window (the machine never grants itself; the agent can't self-grant).
   controlToken.onChange((s) => loginHandoff.onControlChange(s.holder));
+
+  // SD2 §1.6 (A-51-1): the run's baton delegates to this session's token, and a human grab the
+  // baton did not initiate is reported back up as `driver.changed {cause:'takeover'}`.
+  //
+  // Wired HERE, after the two handlers above, for two reasons. First, the reason provider needs the
+  // login machine, which does not exist earlier in this function. Second, a baton-driven takeover
+  // then flows through those handlers exactly as a hand-driven one does — the in-flight navigation
+  // is aborted and every pending approval is superseded — rather than through a second copy of that
+  // logic keyed on the baton. The credential wall's `reclaim()` at `handoff.ts:228` is untouched;
+  // this only names it, which is also what makes §7 row 9's "run blocks" visible everywhere for free.
+  const batonBridge = createBatonTokenBridge({
+    token: controlToken,
+    runId: opts.runId,
+    openDb: () => getDatabase(),
+    takeoverReason: () => (loginHandoff.state === 'human-holding' ? 'sign-in needs you' : undefined),
+  });
 
   const navigate = async (url: string): Promise<void> => {
     // Finding C: navigation is holder-gated. {t:nav} is the host-stamped HUMAN channel,
@@ -1207,7 +1229,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, originBudget, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m), onHumanInput: onHumanInputHandler };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, originBudget, studioSessions, sessionDrive, handoff: loginHandoff, batonBridge, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m), onHumanInput: onHumanInputHandler };
 }
 
 /** The teardown-relevant slice of a StudioHost (structural — StudioHost satisfies it). */
@@ -1215,6 +1237,8 @@ export interface StudioTeardownTarget {
   idleSweeper: { stop(): void };
   hub: { closeAll(): void };
   navInterceptor: { stop(): Promise<void> };
+  /** SD2 §1.6. Optional so every existing structural fake still satisfies this slice. */
+  batonBridge?: { dispose(): void };
   sessionBrowser: { close(): Promise<void> };
   registry: { closeAll(): void };
   daemon: { stop(): Promise<void> };
@@ -1237,6 +1261,8 @@ export async function teardownStudioHost(
   const closeDB = deps.closeDaemonBrowser ?? closeDaemonBrowser;
   const log = deps.log ?? (() => {});
   host.idleSweeper.stop();
+  // Before the hub and the browser go: a bridge left subscribed keeps a dead run's tail alive.
+  host.batonBridge?.dispose();
   removeH();
   host.hub.closeAll();
   await host.navInterceptor.stop().catch((e) =>
