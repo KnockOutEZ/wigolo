@@ -22,7 +22,7 @@ import { checkAgentDrive, type AgentDriveGate } from './agent-drive-gate.js';
  * The result of a gated session navigation — mirrors the act handler's navigate verdict shape.
  *
  * K6: this is a PRODUCER shape, so `reason` is the stable machine code and `error_reason` is the prose —
- * the `StageError` orientation, which its consumer `src/tools/session-target.ts` forwards unchanged into
+ * the `StageError` orientation, which its consumer `src/studio/session-target-host.ts` forwards unchanged into
  * `stageErrorEnvelope` (src/server.ts:533-535), where the swap happens once. Its other consumer,
  * `src/studio/studio-fetch.ts`, publishes directly and therefore has to swap for itself. Anything reading
  * this type must decide which of the two it is before touching either field.

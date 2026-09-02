@@ -12,6 +12,7 @@ import {
 import {
   SESSION_TARGET_OPS,
   SESSION_TARGET_REFUSAL_REASONS,
+  SESSION_TARGET_ROUTE,
   isSessionTargetRefusal,
   isSessionTargeted,
 } from '../../../src/companion-contract/session-target.js';
@@ -178,8 +179,21 @@ describe('session-target wire', () => {
     }
   });
 
+  it('owns the route both sides address, so a disagreement cannot become a silent 404', () => {
+    expect(SESSION_TARGET_ROUTE).toBe('/companion/session');
+    // The client must ADDRESS the constant, not a copy of its value: a literal path on either side is
+    // exactly the drift this module exists to prevent.
+    expect(sourceOf('src', 'tools', 'session-target.ts')).toContain('SESSION_TARGET_ROUTE');
+  });
+
   it('declares a CLOSED refusal enum that covers every code the composition emits', () => {
-    const emitted = literalsOf(sourceOf('src', 'tools', 'session-target.ts'), 'error');
+    // BOTH producers, while both exist: the forwarding client core keeps, and the host-side composition
+    // that still lives in `src/studio/` until the Phase-C deletion takes it (spec 2.3). Reading only the
+    // client would silently stop covering the host codes the day the composition moved out of tools/.
+    const emitted = [
+      ...literalsOf(sourceOf('src', 'tools', 'session-target.ts'), 'error'),
+      ...literalsOf(sourceOf('src', 'studio', 'session-target-host.ts'), 'error'),
+    ];
     expect(emitted.length).toBeGreaterThan(0);
     for (const code of emitted) expect(SESSION_TARGET_REFUSAL_REASONS).toContain(code);
   });

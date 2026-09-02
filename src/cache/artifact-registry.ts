@@ -97,9 +97,11 @@ export function clearArtifactProviders(): void {
  * never appears here.
  *
  * The laziness buys a smaller import graph for the GATEWAY only. It does NOT defer `better-sqlite3`
- * on stdio: `server.ts -> tools/session-target.ts -> studio/capture/artifacts.ts -> cache/db.ts` is a
- * pre-existing STATIC edge, so the native binding loads on that path regardless of what this module
- * does. Do not rely on this for stdio load timing.
+ * on stdio: `server.ts -> cache/db.ts` (server.ts:16) is a STATIC edge, so the native binding loads
+ * on that path regardless of what this module does. (The seam-5 rewrite removed the second such edge,
+ * `server.ts -> tools/session-target.ts -> studio/capture/artifacts.ts`, when session-targeted calls
+ * became a forwarding client — one fewer edge, same conclusion.) Do not rely on this for stdio load
+ * timing.
  *
  * EACH ENTRY MUST BE A THUNK WRAPPING A **LITERAL** `import()` SPECIFIER — never a variable, and never
  * an array of path strings iterated into `import(path)`. `packaging/binary/bundle.mjs` runs esbuild

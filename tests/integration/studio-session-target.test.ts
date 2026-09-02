@@ -2,22 +2,37 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { resetConfig } from '../../src/config.js';
 import { installActivated } from '../unit/server/activation-fixture.js';
-import { getDatabase, closeDatabase } from '../../src/cache/db.js';
+import { closeDatabase } from '../../src/cache/db.js';
 import { _resetBackgroundIndexQueueForTest } from '../../src/embedding/background-queue.js';
 import { _resetMigrationGuard } from '../../src/cache/migrations/runner.js';
 import { DaemonProxy } from '../../src/daemon/proxy.js';
+import { removeHandle, writeHandle } from '../../src/companion/handle.js';
+import { SESSION_TARGET_ROUTE } from '../../src/companion-contract/session-target.js';
 import type { LaunchedSessionBrowser } from '../../src/studio/session-browser.js';
 
 /**
- * D19 — session_id-targeting on fetch/extract/crawl, RUNNABLE (no headed browser) against the REAL
- * bearer-gated daemon + REAL MCP dispatch. Mirrors studio-bearer-grant.test.ts: the real DaemonHttpServer
- * listens, a real DaemonProxy MCP client (the SAME wire the stdio server's cross-process forward produces)
- * drives `POST /mcp`, and the host runs the real createMcpServer CallTool dispatch → runSessionFetch →
- * getSessionDrive(id).gatedNavigate. A FAKE session-browser launcher stands in for Playwright: its page.goto
- * records navigations and its CDP Runtime.evaluate returns canned HTML, so the GATING / ROUTING / TRUSTED-0 /
- * SSRF / CONTRACT pins run with no browser. (The actual-navigation e2e — real page bytes — is the headed lane.)
+ * EXTRACT seam 5 — session_id-targeting on fetch/extract/crawl, RUNNABLE against the REAL bearer-gated
+ * daemon + REAL MCP dispatch. A real DaemonProxy MCP client (the same wire the stdio server produces)
+ * drives `POST /mcp`, the host runs the real createMcpServer CallTool dispatch, and the dispatch reaches
+ * the session-target FORWARDING CLIENT — which is all core owns of this seam now.
+ *
+ * What moved, and why this file changed shape: the composition that drives a live session (the
+ * control-token gate, the SSRF-fenced navigate, the trusted-0 capture, the credential-page capture
+ * refusal) belongs to the side that owns the browser. Its pins run against that side, in the app's own
+ * e2e (spec §10). Asserting them here would only prove that a stand-in we wrote answers the way we wrote
+ * it to. What IS core's, and is pinned below, is the boundary:
+ *
+ *  - a session-targeted call with no companion paired refuses EXPLICITLY and never downgrades to an
+ *    anonymous ephemeral fetch (the property the old PIN 2 protected, at the new boundary);
+ *  - a paired call is forwarded verbatim over the contract route, bearing the handle's token;
+ *  - the companion's own typed refusal reaches the agent through the real MCP error envelope with its
+ *    machine code intact, rather than being re-narrated here;
+ *  - a fetch WITHOUT session_id still takes the ephemeral path, untouched (old PIN 5, kept verbatim);
+ *  - core never drives a local session browser for these calls, whatever it has lying around.
  *
  * getEmbedProvider is mocked (no ONNX subprocess); DaemonHttpServer is NOT mocked (the whole point).
  */
@@ -28,10 +43,9 @@ vi.mock('../../src/providers/embed-provider.js', () => ({
 const { startStudioHost } = await import('../../src/cli/studio.js');
 
 const SESSION_HTML =
-  '<html><head><title>Live Session Page</title></head><body><main><h1>hello from the live session</h1>' +
-  '<p>This is authenticated co-browse content the agent fetched through the session.</p></main></body></html>';
+  '<html><head><title>Live Session Page</title></head><body><main><h1>hello from the live session</h1></main></body></html>';
 
-/** A fake headed-browser launcher: page.goto records nav (count + last url); CDP Runtime.evaluate returns canned HTML. */
+/** A fake headed-browser launcher: page.goto records nav. Its ONLY job here is to prove nav never happens. */
 function makeFakeLauncher() {
   const state = { gotoCalls: 0, currentUrl: 'about:blank' };
   const launcher = async (): Promise<LaunchedSessionBrowser> =>
@@ -57,6 +71,46 @@ function makeFakeLauncher() {
   return { launcher, state };
 }
 
+interface CompanionCall {
+  url?: string;
+  auth?: string;
+  body: unknown;
+}
+
+/** A stand-in companion: the far side of the session-target wire, recording exactly what core sent it. */
+function makeCompanion(): {
+  start: () => Promise<{ endpoint: string }>;
+  stop: () => Promise<void>;
+  calls: CompanionCall[];
+  reply: (body: unknown, status?: number) => void;
+} {
+  const calls: CompanionCall[] = [];
+  let next: { body: unknown; status: number } = { body: { ok: true, data: {} }, status: 200 };
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf-8');
+      calls.push({ url: req.url, auth: req.headers.authorization, body: raw === '' ? undefined : JSON.parse(raw) });
+      res.writeHead(next.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(next.body));
+    });
+  });
+  return {
+    calls,
+    reply: (body, status = 200) => {
+      next = { body, status };
+    },
+    start: async () => {
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      return { endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+    },
+    stop: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 type ToolReply = { isError: boolean; body: Record<string, unknown> };
 
 /** Drive a real MCP tool call against the host over the bearer-gated front door (the cross-process wire). */
@@ -70,18 +124,18 @@ async function callTool(
   return { isError: res.isError, body: JSON.parse(res.content[0].text) as Record<string, unknown> };
 }
 
-describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatch, no browser)', () => {
+describe('seam 5: session_id-targeting forwards over the companion wire (real daemon + dispatch)', () => {
   let tmp: string;
   let restoreActivation: () => void;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'wigolo-d19-'));
-    process.env.WIGOLO_DATA_DIR = tmp; // the host's initSubsystems inits + migrates the db here; getDatabase() returns it
+    tmp = mkdtempSync(join(tmpdir(), 'wigolo-st-'));
+    process.env.WIGOLO_DATA_DIR = tmp;
     resetConfig();
     _resetMigrationGuard();
-    // A fresh temp data dir is an un-activated install, so every tools/call here
-    // would return the activation refusal instead of the session envelope under
-    // test. The gate's own arms live in tests/unit/server/activation-gate.test.ts.
+    // A fresh temp data dir is an un-activated install, so every tools/call here would return the
+    // activation refusal instead of the envelope under test. The gate's own arms live in
+    // tests/unit/server/activation-gate.test.ts.
     restoreActivation = installActivated();
   });
 
@@ -92,11 +146,8 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     } catch {
       /* already closed */
     }
-    // The artifact writer (PIN 3) enqueues an embedding job, which opens
-    // <dataDir>/jobs.db through a module singleton the daemon never owns — so
-    // `closeDatabase()` does not close it and it survives every test in the file.
-    // POSIX unlinks an open file happily; Windows raises EBUSY, so the leak only
-    // ever surfaced there, as a teardown failure after the assertions had passed.
+    // The embedding job queue opens <dataDir>/jobs.db through a module singleton the daemon never owns,
+    // so closeDatabase() does not close it. POSIX unlinks an open file happily; Windows raises EBUSY.
     _resetBackgroundIndexQueueForTest();
     delete process.env.WIGOLO_DATA_DIR;
     resetConfig();
@@ -109,100 +160,98 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     return { host, state };
   }
 
-  // PIN 1 + PIN 6 — navigate-class gating + the GATED-ACCESSOR route. The primary session is human-spawned
-  // (holder='human'), so a session fetch by the agent is BLOCKED (not_holder) and the session browser is NEVER
-  // navigated. PIN 1 mutation: skip assertCanDrive inside session-drive.gatedNavigate ⇒ it navigates ⇒ RED.
-  // PIN 6 mutation: bypass the drive.gatedNavigate route in runSessionFetch (force nav ok) ⇒ content returned ⇒ RED.
-  it('PIN 1+6: a session fetch when the human holds is BLOCKED (not_holder) — the gated drive refuses, browser never navigates', async () => {
+  it('UNPAIRED: a session-targeted fetch is an explicit companion_unavailable, never a silent ephemeral fetch', async () => {
     const { host, state } = await makeHost();
     try {
-      const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: host.session.id });
-      expect(r.isError, 'a non-holder session fetch is a tool error').toBe(true);
-      expect(r.body.error_reason, 'blocked at the control-token gate').toBe('not_holder');
-      expect(state.gotoCalls, 'the session browser was never navigated').toBe(0);
+      // No companion: whatever this process happens to have running, core is a CLIENT of this seam now
+      // and there is nobody on the other end of the wire.
+      removeHandle(tmp);
+      const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: 'sess-1' });
+      expect(r.isError, 'a session fetch with no companion is a tool error').toBe(true);
+      expect(r.body.error_reason, 'explicit refusal, not an ephemeral downgrade').toBe('companion_unavailable');
+      expect(state.gotoCalls, 'no browser was driven — and certainly not a local one').toBe(0);
     } finally {
       await host.daemon.stop();
     }
   }, 30_000);
 
-  // PIN 1 (composes with S5) + PIN 3 — once the human grants control to the agent (holder='agent'), the SAME
-  // gate ALLOWS the navigate, the page is read, and the content is persisted content_trusted=0 (captureFromPage,
-  // the trusted-0 writer). PIN 3 mutation: route insertSessionContent through captureHumanNote (trusted=1) ⇒
-  // the persisted row flips to content_trusted=1 ⇒ RED.
-  it('PIN 1(allowed)+3: an agent-held session fetch navigates, returns the live content, and persists it content_trusted=0', async () => {
+  it('PAIRED: the call is forwarded verbatim to the contract route with the handle bearer token', async () => {
     const { host, state } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
     try {
-      host.controller.handleControl({ op: 'grant', to: 'agent' }); // the human grants the turn to the agent
-      const r = await callTool(host, 'fetch', { url: 'https://example.com/page', session_id: host.session.id });
-      expect(r.isError, 'an agent-held session fetch succeeds').toBe(false);
-      expect(String(r.body.markdown), 'the live session content is returned').toContain('hello from the live session');
-      expect(state.gotoCalls, 'the session browser navigated').toBeGreaterThan(0);
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
+      companion.reply({ ok: true, data: { url: 'https://example.com/live', title: 'Live', markdown: 'hello from the live session' } });
 
-      const row = getDatabase()
-        .prepare('SELECT artifact_type, content_trusted FROM studio_artifacts ORDER BY id DESC LIMIT 1')
-        .get() as { artifact_type: string; content_trusted: number } | undefined;
-      expect(row, 'the session fetch persisted an artifact').toBeTruthy();
-      expect(row!.content_trusted, 'session-fetched content is trusted-0 (page bytes are data, never instructions)').toBe(0);
+      const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: 'sess-9' });
+
+      expect(companion.calls).toHaveLength(1);
+      expect(companion.calls[0]!.url, 'addressed the contract route').toBe(SESSION_TARGET_ROUTE);
+      expect(companion.calls[0]!.auth, 'bore the handle token, not the daemon session token').toBe('Bearer companion-tok');
+      expect(companion.calls[0]!.body).toMatchObject({ op: 'fetch', session_id: 'sess-9', input: { url: 'https://example.com', session_id: 'sess-9' } });
+      expect(r.isError).toBe(false);
+      expect(String(r.body.markdown), 'the companion page came back through the real envelope').toContain('hello from the live session');
+      expect(state.gotoCalls, 'core drove no browser of its own').toBe(0);
     } finally {
+      await companion.stop();
       await host.daemon.stop();
     }
   }, 30_000);
 
-  // PIN 2 — an unknown/closed session_id is an EXPLICIT error, NEVER a silent ephemeral fallback. Mutation:
-  // fall back to the ephemeral router when getSessionDrive returns undefined ⇒ an ephemeral result (not the
-  // no_such_session error) ⇒ RED.
-  it('PIN 2: an unknown session_id is an explicit no_such_session error (never a silent ephemeral fetch)', async () => {
+  it("PAIRED: a companion refusal reaches the agent with its machine code intact, in the companion's words", async () => {
     const { host } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
     try {
-      const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: 'does-not-exist' });
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
+      // The refusal a companion authors when the human is driving. Re-narrating it here would strip the
+      // reason the human needs; the envelope swap (error ⇄ error_reason) is the only thing core does to it.
+      companion.reply(
+        { ok: false, error: 'not_holder', error_reason: 'The human holds control of this session.', stage: 'fetch', hint: 'Observe and wait for a grant.' },
+        403,
+      );
+      const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: 'sess-9' });
       expect(r.isError).toBe(true);
-      expect(r.body.error_reason, 'explicit error, not an ephemeral downgrade').toBe('no_such_session');
+      expect(r.body.error_reason, 'the machine code survives the envelope').toBe('not_holder');
+      expect(String(r.body.error), "the companion's own sentence survives too").toContain('The human holds control');
+      expect(r.body.hint).toBe('Observe and wait for a grant.');
     } finally {
+      await companion.stop();
       await host.daemon.stop();
     }
   }, 30_000);
 
-  // PIN 4 — the SSRF fence holds on session-targeted navigation: even when the agent holds control (and even
-  // if private nav were granted), cloud-metadata (169.254.169.254 = link_local) is blocked, and the browser is
-  // never navigated. Mutation: bypass the SSRF guard in gatedNavigate (call browser.navigate directly, skipping
-  // navigateSession→guardNavigation) ⇒ the blocked target navigates ⇒ RED.
-  it('PIN 4: a session fetch of a cloud-metadata address is SSRF-blocked even with the agent holding', async () => {
-    const { host, state } = await makeHost();
+  it('PAIRED: a session-targeted crawl refusal comes back in the crawl shape, not a stage-error envelope', async () => {
+    const { host } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
     try {
-      host.controller.handleControl({ op: 'grant', to: 'agent' });
-      const r = await callTool(host, 'fetch', { url: 'http://169.254.169.254/latest/meta-data/', session_id: host.session.id });
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
+      companion.reply({ ok: false, error: 'navigation_blocked', error_reason: 'cloud-internal is never allowed', stage: 'crawl' }, 403);
+      const r = await callTool(host, 'crawl', { url: 'http://169.254.169.254/latest/meta-data/', session_id: 'sess-9' });
       expect(r.isError).toBe(true);
-      expect(r.body.error_reason, 'cloud-internal is never reachable').toBe('navigation_blocked');
-      expect(state.gotoCalls, 'the blocked target was never navigated (guard runs before goto)').toBe(0);
+      expect(String(r.body.error), 'the crawl envelope carries its failure in `error`').toContain('navigation_blocked');
+      expect(r.body.pages, 'no pages are invented for a refused crawl').toEqual([]);
     } finally {
+      await companion.stop();
       await host.daemon.stop();
     }
   }, 30_000);
 
-  // PIN 5 — the CONTRACT: a no-session_id fetch is UNCHANGED (the ephemeral path). With mode:'cache' it returns
-  // the deterministic ephemeral cache_miss and the session browser is never touched. Mutation: make
-  // isSessionTargeted always true ⇒ a no-session_id fetch routes to the session path ⇒ no_such_session ⇒ RED.
-  it('PIN 5: a fetch without session_id uses the ephemeral path unchanged (cache_miss), never the session drive', async () => {
+  it('the CONTRACT: a fetch without session_id uses the ephemeral path unchanged (cache_miss), and forwards nothing', async () => {
+    // Mutation: make isSessionTargeted always true ⇒ a no-session_id fetch routes to the wire ⇒ RED.
     const { host, state } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
     try {
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
       const r = await callTool(host, 'fetch', { url: 'https://example.com', mode: 'cache' });
       expect(r.isError).toBe(true);
       expect(r.body.error_reason, 'the ephemeral cache path ran (not the session path)').toBe('cache_miss');
-      expect(state.gotoCalls, 'the session browser was never navigated for an ephemeral fetch').toBe(0);
+      expect(companion.calls, 'a paired companion is not consulted for an ordinary fetch').toHaveLength(0);
+      expect(state.gotoCalls).toBe(0);
     } finally {
-      await host.daemon.stop();
-    }
-  }, 30_000);
-
-  // BONUS — extract on a session reads the CURRENT page WITHOUT navigating (the sole token-free read). No
-  // control-token gate is consulted (a read, not a drive); the session browser is never navigated.
-  it('extract(session_id) reads the current page without navigating (token-free read)', async () => {
-    const { host, state } = await makeHost();
-    try {
-      const r = await callTool(host, 'extract', { mode: 'metadata', session_id: host.session.id });
-      expect(r.isError, 'extract reads the current page even when the human holds (no drive, no gate)').toBe(false);
-      expect(state.gotoCalls, 'extract never navigates — it reads the current page').toBe(0);
-    } finally {
+      await companion.stop();
       await host.daemon.stop();
     }
   }, 30_000);

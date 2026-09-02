@@ -113,7 +113,7 @@ export const FETCH_TOOL_SCHEMA = {
     },
     session_id: {
       type: 'string',
-      description: 'Optional live Studio session id (from studio_spawn/studio_list). When set, fetch navigates that session\'s authenticated browser to the URL (control-token gated, SSRF-fenced) and returns the live page; an unknown/closed id is an explicit error, never a silent ephemeral fallback.',
+      description: 'Optional live companion browser session id. When set, fetch navigates that session\'s authenticated browser to the URL (control-token gated, SSRF-fenced) and returns the live page; no paired companion, or an unknown/closed id, is an explicit error — never a silent ephemeral fallback.',
     },
   },
   required: ['url'],
@@ -276,7 +276,7 @@ export const CRAWL_TOOL_SCHEMA = {
     },
     session_id: {
       type: 'string',
-      description: 'Optional live Studio session id. When set, crawl runs against that session\'s authenticated browser (navigation is control-token gated + SSRF-fenced); an unknown/closed id is an explicit error, never a silent ephemeral fallback.',
+      description: 'Optional live companion browser session id. When set, crawl runs against that session\'s authenticated browser (navigation is control-token gated + SSRF-fenced); no paired companion, or an unknown/closed id, is an explicit error, never a silent ephemeral fallback.',
     },
   },
   required: ['url'],
@@ -382,7 +382,7 @@ export const EXTRACT_TOOL_SCHEMA = {
     },
     session_id: {
       type: 'string',
-      description: 'Optional live Studio session id. When set, extract reads the session browser\'s CURRENT page (no navigation) instead of fetching url/html; an unknown/closed id is an explicit error.',
+      description: 'Optional live companion browser session id. When set, extract reads the session browser\'s CURRENT page (no navigation) instead of fetching url/html; no paired companion, or an unknown/closed id, is an explicit error.',
     },
   },
 };

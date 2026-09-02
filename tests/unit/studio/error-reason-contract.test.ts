@@ -156,8 +156,8 @@ describe('D9 refusals through the published MCP envelope (studio_act)', () => {
  * `runStudioFetch` is a PUBLISHED envelope, not a producer: its only consumer,
  * `src/daemon/studio-mcp-server.ts:55`, serializes the body verbatim and never routes it through
  * `stageErrorEnvelope`. So it owes the published orientation on every failure path, and the near-identical
- * `src/tools/session-target.ts` — which DOES reach `stageErrorEnvelope` (src/server.ts:533-535) — owes the
- * opposite one. The two files read as duplicates and deliberately differ.
+ * `src/studio/session-target-host.ts` — whose results reach `stageErrorEnvelope` through the session-target
+ * wire — owes the opposite one. The two files read as duplicates and deliberately differ.
  */
 describe('runStudioFetch — every failure path publishes a machine code (K6 class guard)', () => {
   const liveDrive = (over: Partial<SessionDrive> = {}): SessionDrive => ({
