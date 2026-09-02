@@ -15,7 +15,7 @@
  * test walks the table and fails if the two ever disagree, or if any prop admits a string
  * that is not a closed enum member or a registrable domain.
  */
-import { isRegistrableDomain } from './domain.js';
+import { isRegistrableDomain, type RegistrableDomain } from './domain.js';
 
 /** The ten wigolo tools. A tool outside this list is not reportable. */
 export const TOOL_NAMES = [
@@ -106,7 +106,7 @@ export type UptimeBucket = (typeof UPTIME_BUCKETS)[number];
 export type TelemetryEvent =
   | { name: 'tool.run'; props: { tool: ToolName; surface: Surface; ok: boolean; duration_bucket: DurationBucket } }
   | { name: 'tool.error'; props: { tool: ToolName; surface: Surface; error_class: ErrorClass } }
-  | { name: 'fetch.blocked'; props: { domain: string; signal: BlockSignal } }
+  | { name: 'fetch.blocked'; props: { domain: RegistrableDomain; signal: BlockSignal } }
   | { name: 'fetch.tier_escalated'; props: { to_tier: FetchTier } }
   | { name: 'search.engine_failure'; props: { engine: EngineId; error_class: ErrorClass } }
   | { name: 'daemon.uptime'; props: { bucket: UptimeBucket } };

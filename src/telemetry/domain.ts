@@ -14,6 +14,19 @@
  */
 import { getDomain } from 'tldts';
 
+declare const registrableDomainBrand: unique symbol;
+
+/**
+ * A hostname proven to be a bare registrable domain (eTLD+1).
+ *
+ * The brand is module-private, so first-party code cannot construct this type from a raw
+ * string. Values enter the event dictionary only through {@link registrableDomain} (or the
+ * equivalent runtime check in {@link isRegistrableDomain} when reading an untrusted queue).
+ */
+export type RegistrableDomain = string & {
+  readonly [registrableDomainBrand]: true;
+};
+
 /**
  * Reduce a URL or hostname to its registrable domain, lowercased.
  *
@@ -21,10 +34,10 @@ import { getDomain } from 'tldts';
  * bare public suffix, or anything unparseable. Callers drop the event rather than
  * substituting a placeholder: a host we cannot reduce is a host we must not report.
  */
-export function registrableDomain(input: string): string | null {
+export function registrableDomain(input: string): RegistrableDomain | null {
   if (typeof input !== 'string' || input.length === 0) return null;
   const domain = getDomain(input, { allowPrivateDomains: false });
-  return domain === null || domain.length === 0 ? null : domain.toLowerCase();
+  return domain === null || domain.length === 0 ? null : (domain.toLowerCase() as RegistrableDomain);
 }
 
 /**
@@ -35,7 +48,7 @@ export function registrableDomain(input: string): string | null {
  * whitespace-bearing string and a multi-label host all fail it, because none of them is
  * equal to its own eTLD+1.
  */
-export function isRegistrableDomain(value: unknown): value is string {
+export function isRegistrableDomain(value: unknown): value is RegistrableDomain {
   if (typeof value !== 'string') return false;
   if (value !== value.trim().toLowerCase()) return false;
   if (/[\s/:?#@]/.test(value)) return false;

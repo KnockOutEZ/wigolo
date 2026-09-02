@@ -7,6 +7,7 @@ import {
   clientInfo,
 } from '../../../src/telemetry/envelope.js';
 import type { QueuedEvent } from '../../../src/telemetry/queue.js';
+import type { RegistrableDomain } from '../../../src/telemetry/domain.js';
 
 const CLIENT = { version: '0.3.0', os: 'darwin', arch: 'arm64' };
 
@@ -64,7 +65,9 @@ describe('chunkEvents', () => {
     // reason counting events is not enough.
     const fat: QueuedEvent = {
       name: 'fetch.blocked',
-      props: { domain: `${'a'.repeat(200)}.example.com`, signal: 'challenge' },
+      // Deliberately impossible at the dictionary boundary: this transport-unit fixture
+      // isolates the 1 MiB chunker guard from queue validation.
+      props: { domain: `${'a'.repeat(200)}.example.com` as RegistrableDomain, signal: 'challenge' },
       ts: '2026-09-02T00:00:00.000Z',
     };
     const events = Array.from({ length: 20_000 }, () => fat);
@@ -86,7 +89,8 @@ describe('chunkEvents', () => {
     // "server is down". Chunking must not decide that on its own.
     const huge: QueuedEvent = {
       name: 'fetch.blocked',
-      props: { domain: `${'b'.repeat(2 * 1024 * 1024)}.example.com`, signal: 'challenge' },
+      // Deliberately impossible at the dictionary boundary; see the chunker test above.
+      props: { domain: `${'b'.repeat(2 * 1024 * 1024)}.example.com` as RegistrableDomain, signal: 'challenge' },
       ts: '2026-09-02T00:00:00.000Z',
     };
     const chunks = chunkEvents([huge, event(1)], CLIENT);

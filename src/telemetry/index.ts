@@ -100,7 +100,7 @@ export {
   type TelemetryEvent,
   type TelemetryEventName,
 } from './events.js';
-export { registrableDomain, isRegistrableDomain } from './domain.js';
+export { registrableDomain, isRegistrableDomain, type RegistrableDomain } from './domain.js';
 export {
   TELEMETRY_ENV,
   TELEMETRY_ENDPOINT_ENV,

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isRegistrableDomain, registrableDomain } from '../../../src/telemetry/domain.js';
+import {
+  isRegistrableDomain,
+  registrableDomain,
+  type RegistrableDomain,
+} from '../../../src/telemetry/domain.js';
 
 describe('registrableDomain', () => {
   it('reduces a full URL to eTLD+1, dropping path, query and fragment', () => {
@@ -7,7 +11,8 @@ describe('registrableDomain', () => {
   });
 
   it('handles multi-part public suffixes — the co.uk case', () => {
-    expect(registrableDomain('https://shop.checkout.example.co.uk/basket')).toBe('example.co.uk');
+    const domain: RegistrableDomain | null = registrableDomain('https://shop.checkout.example.co.uk/basket');
+    expect(domain).toBe('example.co.uk');
     expect(registrableDomain('example.co.uk')).toBe('example.co.uk');
     expect(registrableDomain('a.b.c.example.co.uk')).toBe('example.co.uk');
     expect(registrableDomain('sub.example.com.au')).toBe('example.com.au');
@@ -71,7 +76,7 @@ describe('isRegistrableDomain', () => {
     for (const url of ['https://a.b.example.co.uk/x?y=1', 'http://www.example.com', 'sub.github.io']) {
       const reduced = registrableDomain(url);
       expect(reduced).not.toBeNull();
-      expect(isRegistrableDomain(reduced as string), url).toBe(true);
+      expect(isRegistrableDomain(reduced), url).toBe(true);
     }
   });
 });

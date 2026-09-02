@@ -15,6 +15,13 @@ import {
   type PropSpec,
   type TelemetryEvent,
 } from '../../../src/telemetry/events.js';
+import { registrableDomain, type RegistrableDomain } from '../../../src/telemetry/domain.js';
+
+function domain(input: string): RegistrableDomain {
+  const value = registrableDomain(input);
+  if (value === null) throw new Error(`test fixture is not registrable: ${input}`);
+  return value;
+}
 
 /**
  * The Never list — page content, markdown, query text, full URLs, credentials, file paths —
@@ -106,7 +113,7 @@ describe('isValidEvent', () => {
     const samples: TelemetryEvent[] = [
       good,
       { name: 'tool.error', props: { tool: 'fetch', surface: 'cli', error_class: 'timeout' } },
-      { name: 'fetch.blocked', props: { domain: 'example.com', signal: 'challenge' } },
+      { name: 'fetch.blocked', props: { domain: domain('www.example.com'), signal: 'challenge' } },
       { name: 'fetch.tier_escalated', props: { to_tier: 'browser' } },
       { name: 'search.engine_failure', props: { engine: 'duckduckgo', error_class: 'http_5xx' } },
       { name: 'daemon.uptime', props: { bucket: 'lt_8h' } },
@@ -222,7 +229,15 @@ describe('the dictionary is closed at the type level', () => {
     // @ts-expect-error — an unlisted event name is not in the union.
     const unlisted: TelemetryEvent = { name: 'page.scraped', props: {} };
 
+    // @ts-expect-error — even a syntactically valid raw domain is opaque until the eTLD+1 helper validates it.
+    const rawDomain: TelemetryEvent = { name: 'fetch.blocked', props: { domain: 'example.com', signal: 'challenge' } };
+
+    const reducedDomain: TelemetryEvent = {
+      name: 'fetch.blocked',
+      props: { domain: domain('a.b.example.co.uk'), signal: 'challenge' },
+    };
+
     // The values are only here so the declarations are used; the assertion is the directive.
-    expect([withQuery, openTool, withMessage, unlisted]).toHaveLength(4);
+    expect([withQuery, openTool, withMessage, unlisted, rawDomain, reducedDomain]).toHaveLength(6);
   });
 });
