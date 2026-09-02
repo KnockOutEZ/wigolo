@@ -60,6 +60,14 @@ const STUDIO_OBSERVE: StudioToolSchema = {
       type: 'string',
       description: 'Optional short note shown to the watching human (e.g. why you are reading the page now). Display-only and shown as inert text; it is not a command and is never stored.',
     },
+    find: {
+      type: 'string',
+      description: 'Grep the live page: return the elements whose role or name matches, as `found`. Case-insensitive substring by default. Cheaper than reading a whole snapshot when you know what you are looking for.',
+    },
+    find_regex: {
+      type: 'boolean',
+      description: 'Treat `find` as a regular expression instead of literal text. A pattern that does not compile is refused, never silently matched as text.',
+    },
   },
   required: [],
 };
@@ -96,6 +104,10 @@ const STUDIO_ACT: StudioToolSchema = {
     narration: {
       type: 'string',
       description: 'Optional short note shown to the watching human alongside this action (e.g. why you are clicking it). Display-only and shown as inert text; it is not a command and is never stored.',
+    },
+    post_actions: {
+      type: 'boolean',
+      description: 'Default true: the result also reports what the page became and what the console said. Set false when you already know, to get the smaller result.',
     },
   },
   required: ['action'],
