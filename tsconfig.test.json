@@ -98,6 +98,7 @@
     "tests/integration/fetch/browser-redirect-ssrf.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts",
     "tests/unit/daemon/message-queue.test.ts",
+    "tests/unit/daemon/message-queue-dispatch.test.ts",
     "tests/unit/daemon/driver-baton.test.ts",
     "tests/unit/daemon/driver-baton-gate.test.ts",
     "tests/integration/driver-baton-surfaces.test.ts"
