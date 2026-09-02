@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { advancedCategory } from '../../../../../src/cli/tui/schema/advanced.js';
 
 describe('advancedCategory', () => {
-  it('has id advanced and nine fields (incl. opt-in escape-hatch URLs + accounts service)', () => {
+  it('has id advanced and ten fields (incl. opt-in escape-hatch URLs, accounts service + telemetry)', () => {
     expect(advancedCategory.id).toBe('advanced');
-    expect(advancedCategory.fields.length).toBe(9);
+    expect(advancedCategory.fields.length).toBe(10);
     const keys = advancedCategory.fields.map((f) => f.key);
     expect(keys).toEqual([
       'WIGOLO_LOG_LEVEL',
@@ -15,8 +15,22 @@ describe('advancedCategory', () => {
       'USER_AGENT',
       'WIGOLO_DAEMON_PORT',
       'WIGOLO_ACCOUNTS_URL',
+      'WIGOLO_TELEMETRY',
       'WIGOLO_DAEMON_HOST',
     ]);
+  });
+
+  it('telemetry is a default-on toggle whose help names the opt-out and the Never list', () => {
+    const telemetry = advancedCategory.fields.find((x) => x.key === 'WIGOLO_TELEMETRY');
+    expect(telemetry?.kind).toBe('toggle');
+    expect(telemetry?.settingsPath).toBe('telemetryEnabled');
+    // Opt-OUT as of 0.3.0: the toggle has to arrive already on, or the catalog would
+    // contradict the resolver.
+    expect(telemetry?.default).toBe(true);
+    expect(telemetry?.help).toMatch(/WIGOLO_TELEMETRY=off/);
+    expect(telemetry?.help).toMatch(/Never page content/);
+    // Capability language: no provider, library or service-implementation name.
+    expect(telemetry?.help).not.toMatch(/playwright|searxng|posthog|segment/i);
   });
 
   it('solver + reader URL fields are opt-in text fields with capability-language help', () => {
