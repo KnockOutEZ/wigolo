@@ -198,6 +198,41 @@ describe('seam 5: session_id-targeting forwards over the companion wire (real da
     }
   }, 30_000);
 
+  it('PIN 2: an unknown session id stays targeted and returns no_such_session, never an ephemeral result', async () => {
+    // Mutation: bypass the session-target dispatch branch => this deterministic cache request returns
+    // cache_miss instead, proving the assertion distinguishes targeted routing from the ephemeral path.
+    const { host, state } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
+    try {
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
+      companion.reply(
+        { ok: false, error: 'no_such_session', error_reason: 'No live session has id does-not-exist.', stage: 'fetch' },
+        404,
+      );
+
+      const r = await callTool(host, 'fetch', {
+        url: 'https://example.com',
+        mode: 'cache',
+        session_id: 'does-not-exist',
+      });
+
+      expect(companion.calls).toHaveLength(1);
+      expect(companion.calls[0]!.body).toEqual({
+        op: 'fetch',
+        session_id: 'does-not-exist',
+        input: { url: 'https://example.com', mode: 'cache', session_id: 'does-not-exist' },
+      });
+      expect(r.isError).toBe(true);
+      expect(r.body.error_reason, 'the unknown-id routing verdict survives real dispatch').toBe('no_such_session');
+      expect(String(r.body.error), "the companion's explanation survives too").toContain('No live session');
+      expect(state.gotoCalls, 'core never drives a local browser for a targeted call').toBe(0);
+    } finally {
+      await companion.stop();
+      await host.daemon.stop();
+    }
+  }, 30_000);
+
   it("PAIRED: a companion refusal reaches the agent with its machine code intact, in the companion's words", async () => {
     const { host } = await makeHost();
     const companion = makeCompanion();
@@ -215,6 +250,43 @@ describe('seam 5: session_id-targeting forwards over the companion wire (real da
       expect(r.body.error_reason, 'the machine code survives the envelope').toBe('not_holder');
       expect(String(r.body.error), "the companion's own sentence survives too").toContain('The human holds control');
       expect(r.body.hint).toBe('Observe and wait for a grant.');
+    } finally {
+      await companion.stop();
+      await host.daemon.stop();
+    }
+  }, 30_000);
+
+  it('extract(session_id) forwards the token-free current-page read without navigating locally', async () => {
+    // Mutation: bypass the session-target dispatch branch => url/html are absent and ephemeral extract
+    // returns source_missing. Collapsing the forwarded op to fetch also fails the exact wire assertion.
+    const { host, state } = await makeHost();
+    const companion = makeCompanion();
+    const { endpoint } = await companion.start();
+    try {
+      writeHandle({ id: 'c1', endpoint, token: 'companion-tok', pid: 1, instanceId: 'companion' }, tmp);
+      companion.reply({
+        ok: true,
+        data: {
+          mode: 'metadata',
+          data: { title: 'Current page' },
+          source_url: 'https://example.com/current',
+        },
+      });
+
+      const r = await callTool(host, 'extract', { mode: 'metadata', session_id: 'sess-9' });
+
+      expect(companion.calls).toHaveLength(1);
+      expect(companion.calls[0]!.url).toBe(SESSION_TARGET_ROUTE);
+      expect(companion.calls[0]!.auth).toBe('Bearer companion-tok');
+      expect(companion.calls[0]!.body).toEqual({
+        op: 'extract',
+        session_id: 'sess-9',
+        input: { mode: 'metadata', session_id: 'sess-9' },
+      });
+      expect(r.isError).toBe(false);
+      expect(r.body.mode).toBe('metadata');
+      expect(r.body.source_url).toBe('https://example.com/current');
+      expect(state.gotoCalls, 'the core-side host did not navigate for the current-page read').toBe(0);
     } finally {
       await companion.stop();
       await host.daemon.stop();
