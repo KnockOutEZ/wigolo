@@ -20,6 +20,13 @@ export type Command =
   | 'verify'
   | 'flow'
   | 'skills'
+  // Account verbs (PX2). Gate-exempt by construction — they are how an install
+  // becomes activated in the first place.
+  | 'register'
+  | 'login'
+  | 'logout'
+  | 'whoami'
+  | 'account'
   // One-shot tool commands (D7) — thin over the REPL executors.
   | 'search'
   | 'fetch'
@@ -63,6 +70,12 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'verify',
   'flow',
   'skills',
+  // Account verbs (PX2).
+  'register',
+  'login',
+  'logout',
+  'whoami',
+  'account',
   // One-shot tool commands (D7).
   'search',
   'fetch',

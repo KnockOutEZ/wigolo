@@ -118,8 +118,11 @@ export async function runAuth(args: string[]): Promise<number> {
       write('Usage: wigolo auth <subcommand>');
       write('');
       write('Subcommands:');
-      write('  discover    List active Chrome CDP debugging sessions');
+      write('  discover    List active browser debugging sessions');
       write('  status      Show current auth configuration');
+      write('');
+      write('`wigolo auth` manages site sign-ins for the browser engine.');
+      write('For your wigolo account, use `wigolo account`.');
       return 1;
   }
 }
