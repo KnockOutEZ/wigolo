@@ -29,6 +29,7 @@ import { appendRunEventWithTail } from '../studio/run-bus.js';
 import {
   eventsOfTypes,
   getRun,
+  MAX_TYPED_EVENT_ROWS,
   type Actor,
   type ClientInfo,
   type Driver,
@@ -143,13 +144,23 @@ function receiptFor(runId: string, event: ProjectableEvent): ReleaseReceipt | un
   };
 }
 
-function deliveredTriggerSeqs(db: Database.Database, runId: string): Set<number> {
-  const seqs = new Set<number>();
-  for (const row of eventsOfTypes(db, runId, { types: [RECEIPT_DELIVERED], limit: MAX_RECEIPT_SCAN, newestFirst: true })) {
+/**
+ * The once-ness key: one transition, one recipient. Keyed on the RECIPIENT as well as the seq
+ * because two clients can be stranded by the same handover, and a run-wide key would let whichever
+ * of them called first swallow the other's receipt.
+ */
+function receiptKey(seq: number, caller: ClientInfo | undefined): string {
+  return `${seq}|${caller ? `${caller.name}@${caller.version}` : '-'}`;
+}
+
+function deliveredKeys(db: Database.Database, runId: string): Set<string> {
+  const keys = new Set<string>();
+  for (const row of eventsOfTypes(db, runId, { types: [RECEIPT_DELIVERED], limit: MAX_TYPED_EVENT_ROWS, newestFirst: true })) {
     const at = row.payload.at_seq;
-    if (typeof at === 'number') seqs.add(at);
+    if (typeof at !== 'number') continue;
+    keys.add(receiptKey(at, driverFrom(row.payload.to)?.client));
   }
-  return seqs;
+  return keys;
 }
 
 /**
@@ -167,19 +178,31 @@ export function pendingReleaseReceipt(
   run: Run,
   caller: ClientInfo | undefined,
 ): PendingReceipt | undefined {
-  const delivered = deliveredTriggerSeqs(db, run.id);
-  for (const event of eventsOfTypes(db, run.id, { types: [DRIVER_CHANGED], limit: MAX_RECEIPT_SCAN, newestFirst: true })) {
-    const to = driverFrom(event.payload.to);
-    if (to && reinstatedCaller(to, caller)) return undefined; // you drive again — nothing was lost
+  const history = eventsOfTypes(db, run.id, { types: [DRIVER_CHANGED], limit: MAX_RECEIPT_SCAN, newestFirst: true });
+  const latest = history[0];
+  if (!latest) return undefined; // the wheel has never moved
+
+  const to = driverFrom(latest.payload.to);
+  if (!to) return undefined;
+  // You drive again: "no further results will arrive" would be the opposite of true.
+  if (reinstatedCaller(to, caller)) return undefined;
+
+  // Who this caller is, in the run's own driver vocabulary — read off the handover it appears in
+  // rather than assumed from its badge, and simultaneously the proof that it ever held the wheel
+  // here at all. A client that never drove this run is owed nothing about it.
+  const mine = history.find((event) => {
     const from = driverFrom(event.payload.from);
-    if (!from || !strandedCaller(from, caller)) continue;
-    // The newest transition that stranded this caller is the only one it can still be owed: an
-    // older handover it already heard about, or never asked about, is not news twice.
-    if (delivered.has(event.seq)) return undefined;
-    const receipt = receiptFor(run.id, event);
-    return receipt ? { triggerSeq: event.seq, target: from, receipt } : undefined;
-  }
-  return undefined;
+    return from !== undefined && strandedCaller(from, caller);
+  });
+  const target = mine ? driverFrom(mine.payload.from) : undefined;
+  if (!target) return undefined;
+
+  // Disjointness from §7 row 2 is enforced in ONE place — `RECEIPTED_CAUSES`, read by `receiptFor`
+  // below — and deliberately not also guarded here. A second check keyed on the same predicate
+  // would be unfalsifiable, and an unfalsifiable guard reads as protection that nothing is testing.
+  if (deliveredKeys(db, run.id).has(receiptKey(latest.seq, caller))) return undefined;
+  const receipt = receiptFor(run.id, latest);
+  return receipt ? { triggerSeq: latest.seq, target, receipt } : undefined;
 }
 
 /** The audit actor: the old driver as it was, wearing the badge that just called. */

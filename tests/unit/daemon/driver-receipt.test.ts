@@ -156,6 +156,35 @@ describe('the receipt is owed to the OLD driver, exactly once', () => {
     expect(pendingReleaseReceipt(db, live(run), A.client)).toBeUndefined();
   });
 
+  it('tells a client stranded by a TAKEOVER where the wheel finally went, once the human hands it on', () => {
+    // The interrupted shape answers "you are not driving any more". It cannot answer "and the wheel
+    // is now with the panel", because at takeover time that is not yet a fact. So the caller is owed
+    // the receipt for the NEXT handover — otherwise a client that was taken over from can only ever
+    // learn where the wheel went by being refused, which is law 7 the wrong way round.
+    const run = newRun(A);
+    takeWheel(db, run.id, { by: HUMAN, reason: 'I will do the checkout' });
+    expect(pendingReleaseReceipt(db, live(run), A.client)).toBeUndefined(); // the takeover itself: not a receipt
+
+    grantWheel(db, run.id, { by: HUMAN, to: STUDIO });
+    const pending = pendingReleaseReceipt(db, live(run), A.client)!;
+    expect(pending.receipt.to).toEqual({ kind: 'studio', client: null });
+    expect(pending.target).toEqual(A); // audited against the caller, not against the human it left
+  });
+
+  it('gives two stranded clients one receipt EACH — the key is the transition AND the recipient', () => {
+    // A drove, then B drove, then the human took the wheel to the panel. BOTH of them are now
+    // stranded by that one handover, and a run-wide once-ness key would let whichever of them
+    // called first swallow the other's answer.
+    const run = newRun(A);
+    grantWheel(db, run.id, { by: HUMAN, to: B });
+    grantWheel(db, run.id, { by: HUMAN, to: STUDIO });
+
+    expect(deliver(run, B.client, textResult({ ok: true }))).toBeDefined();
+    expect(deliver(run, B.client, textResult({ ok: true }))).toBeUndefined(); // B: once
+    expect(deliver(run, A.client, textResult({ ok: true }))).toBeDefined(); // A: not swallowed by B
+    expect(deliver(run, A.client, textResult({ ok: true }))).toBeUndefined(); // A: once
+  });
+
   it('survives the old driver never calling again — the transition is on the log regardless', () => {
     const run = newRun(A);
     releaseWheel(db, run.id, { by: A });
