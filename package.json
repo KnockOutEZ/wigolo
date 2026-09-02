@@ -42,6 +42,38 @@
     "./account": {
       "import": "./dist/account/index.js",
       "types": "./dist/account/index.d.ts"
+    },
+    "./companion-contract": {
+      "import": "./dist/companion-contract/index.js",
+      "types": "./dist/companion-contract/index.d.ts"
+    },
+    "./security": {
+      "import": "./dist/security/index.js",
+      "types": "./dist/security/index.d.ts"
+    },
+    "./fetch-tiers": {
+      "import": "./dist/fetch/index.js",
+      "types": "./dist/fetch/index.d.ts"
+    },
+    "./cache": {
+      "import": "./dist/cache/index.js",
+      "types": "./dist/cache/index.d.ts"
+    },
+    "./embedding-queue": {
+      "import": "./dist/embedding/index.js",
+      "types": "./dist/embedding/index.d.ts"
+    },
+    "./search-tokens": {
+      "import": "./dist/search/index.js",
+      "types": "./dist/search/index.d.ts"
+    },
+    "./logger": {
+      "import": "./dist/logger.js",
+      "types": "./dist/logger.d.ts"
+    },
+    "./daemon": {
+      "import": "./dist/daemon/index.js",
+      "types": "./dist/daemon/index.d.ts"
     }
   },
   "types": "dist/types.d.ts",
