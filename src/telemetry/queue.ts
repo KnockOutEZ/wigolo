@@ -125,7 +125,6 @@ export class TelemetryQueue {
     const appended = this.withWriteLock(() => {
       this.reconcileTransientUnlocked();
       appendFileSync(this.path, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
-      this.reconcilePendingUnlocked();
       this.evictIfOverCapUnlocked();
       return true;
     }, false);

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,19 @@ import {
   type QueuedEvent,
 } from '../../../src/telemetry/queue.js';
 import type { ToolName } from '../../../src/telemetry/events.js';
+
+const fsProbe = vi.hoisted(() => ({ telemetryDir: '', directoryReads: 0 }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: (...args: unknown[]) => {
+      if (args[0] === fsProbe.telemetryDir) fsProbe.directoryReads += 1;
+      return Reflect.apply(actual.readdirSync, actual, args);
+    },
+  };
+});
 
 let dataDir: string;
 
@@ -30,6 +43,8 @@ function marked(tool: ToolName, ts: string): QueuedEvent {
 describe('TelemetryQueue', () => {
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'wigolo-telemetry-queue-'));
+    fsProbe.telemetryDir = telemetryDir(dataDir);
+    fsProbe.directoryReads = 0;
   });
 
   afterEach(() => {
@@ -45,6 +60,15 @@ describe('TelemetryQueue', () => {
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0] as string)).toMatchObject({ name: 'tool.run' });
     expect(q.count()).toBe(2);
+  });
+
+  it('scans pending fragments at most once per ordinary append', () => {
+    const q = new TelemetryQueue(dataDir);
+    fsProbe.directoryReads = 0;
+
+    expect(q.append(event(1))).toBe(true);
+
+    expect(fsProbe.directoryReads).toBeLessThanOrEqual(1);
   });
 
   it('reads back nothing when the queue file does not exist', () => {
