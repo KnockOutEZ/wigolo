@@ -736,6 +736,7 @@ describe('doctor account section', () => {
       keys: resolvePinnedKeys(process.env),
       nowMs: T0,
       serviceKids: [rotated.kid],
+      accountsUrl: null,
     });
 
     const text = lines.join('\n');
@@ -751,6 +752,7 @@ describe('doctor account section', () => {
       keys: resolvePinnedKeys(process.env),
       nowMs: T0,
       serviceKids: null,
+      accountsUrl: null,
     });
     expect(lines.join('\n')).toContain('Service keys: not checked');
     expect(lines.join('\n')).toContain('Not signed in');
