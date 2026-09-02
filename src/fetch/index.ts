@@ -7,3 +7,6 @@
 export { isChallengeShell } from './tls-tier.js';
 export { classifyChallenge } from './challenge-classify.js';
 export { requireBrowserDriver } from './browser-driver.js';
+
+// `human-solve-bridge.ts` — the cookie shape a solved challenge hands back.
+export { type ClearanceCookie } from './challenge-completion.js';
