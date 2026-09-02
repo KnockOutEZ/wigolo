@@ -254,6 +254,9 @@ describe('mechanisms 2-4 — wait, interrupt and the push-gated stub', () => {
     expect(deliveryEvents[3]!.payload.waitId).toBe(deliveryEvents[0]!.payload.waitId);
     expect(deliveryEvents[3]!.payload.messageId).toBe(resolved.answer.message_id);
     expect(listMessages(db, runId).map((message) => message.deliveredVia)).toEqual(['wait', 'wait']);
+
+    await call();
+    expect(listMessages(db, runId).every((message) => message.state === 'acknowledged')).toBe(true);
   });
 
   it('returns a typed refusal instead of treating a wait with no run id as success', async () => {
