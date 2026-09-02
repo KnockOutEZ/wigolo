@@ -6,6 +6,7 @@ import {
   WIGOLO_INSTRUCTIONS_FULL,
   TOOL_DESCRIPTIONS,
   serverInstructions,
+  type ToolName,
 } from '../../../src/instructions.js';
 
 function wordCount(s: string): number {
@@ -181,28 +182,16 @@ describe('TOOL_DESCRIPTIONS (Layer 2 — per-tool tactics)', () => {
 });
 
 /**
- * PIN 8 (#57). Every description this issue touched grew, and the pin's own rule is that a tool
- * description is a budget, not a scratchpad — announcing a field is supposed to cost a trim first.
- * These arms hold the two reshaped descriptions to the budget in BOTH directions: still under the
- * per-tool cap, and still carrying the trims that paid for the additions rather than quietly
- * reverting to the longer phrasings.
+ * PIN 8 (#57)'s rule, kept after its subject moved. A tool description is a budget, not a
+ * scratchpad — announcing a field is supposed to cost a trim first. The two reshaped studio
+ * descriptions those arms held to the cap left core with the surface, so the cap is asserted where
+ * it still binds: every description core serves, with no exception for the long ones.
  */
-describe('reshaped studio descriptions stay inside the description budget', () => {
+describe('every description stays inside the per-tool budget', () => {
   const TOOL_DESC_BUDGET = 400;
 
-  it.each(['studio_observe', 'studio_act'] as const)('%s is under the per-tool token budget', (name) => {
+  it.each(Object.keys(TOOL_DESCRIPTIONS) as ToolName[])('%s is under the per-tool token budget', (name) => {
     const tokens = encode(TOOL_DESCRIPTIONS[name]).length;
     expect(tokens, `${name} is ${tokens} tokens (budget ${TOOL_DESC_BUDGET})`).toBeLessThanOrEqual(TOOL_DESC_BUDGET);
   });
-
-  it('keeps the redundancy the pin-8 additions were paid for out of', () => {
-    const observe = TOOL_DESCRIPTIONS.studio_observe;
-    const act = TOOL_DESCRIPTIONS.studio_act;
-    // `snapshot_ref` was named twice in one sentence ("spill to a snapshot_ref you retrieve by
-    // calling studio_observe again with that snapshot_ref"); once is enough.
-    expect(observe.split('snapshot_ref').length - 1).toBeLessThanOrEqual(1);
-    expect(observe).not.toContain('the event cursor you last received');
-    expect(act).not.toContain('resolved live at action time');
-  });
 });
-

@@ -143,42 +143,13 @@ describe('tool description ↔ input schema param policy', () => {
 });
 
 /**
- * PIN 8 (#57) — the same claim, for the studio tools this suite structurally cannot reach.
- *
- * `paramBlock` finds params through a `Key parameters:` header, and no studio description has one
- * (adding one would enrol the tool in the pinned core set above, which is a different policy).
- * But the underlying claim — an agent keying off the description never sends a key the server does
- * not accept — is exactly as load-bearing for a param the description advertises in prose. So the
- * named studio params are pinned here explicitly instead of extracted.
+ * PIN 8 (#57) pinned the same claim for the two studio descriptions this suite structurally
+ * cannot reach: `paramBlock` finds params through a `Key parameters:` header and no studio
+ * description had one, so their prose-named params were listed explicitly instead of extracted.
+ * Those two descriptions left core with the surface, and the companion pins its own; the core
+ * policy above — every param a description names is a param the schema accepts — is unchanged and
+ * still covers every description core owns.
  */
-const STUDIO_NAMED_PARAMS: Record<string, string[]> = {
-  studio_observe: ['since', 'base_id', 'snapshot_ref', 'find', 'find_regex'],
-  studio_act: ['action', 'ref', 'text', 'direction', 'amount', 'reason', 'post_actions'],
-};
-
-describe('studio description ↔ input schema param policy (pin 8)', () => {
-  describe.each(Object.keys(STUDIO_NAMED_PARAMS))('%s', (name) => {
-    it('every param the description names exists in the input schema', () => {
-      const props = schemaProps(TOOL_SCHEMAS[name as ToolName]);
-      const missing = STUDIO_NAMED_PARAMS[name].filter((param) => !props.has(param));
-      expect(missing, `'${name}' description names param(s) its schema does not accept`).toEqual([]);
-    });
-
-    it('the description actually names each of them (guards a pin that has gone stale)', () => {
-      const desc = TOOL_DESCRIPTIONS[name as ToolName];
-      const unnamed = STUDIO_NAMED_PARAMS[name].filter((param) => !desc.includes(param));
-      expect(unnamed, `'${name}' pins param(s) its description no longer mentions`).toEqual([]);
-    });
-  });
-
-  it('the pin-8 params are the ones actually added — not a list that drifted off the schema', () => {
-    // Anti-vacuity: the two assertions above are both satisfiable by an empty pin, so name the
-    // params this issue introduced and require the schema to carry them.
-    expect(schemaProps(TOOL_SCHEMAS.studio_observe)).toContain('find');
-    expect(schemaProps(TOOL_SCHEMAS.studio_observe)).toContain('find_regex');
-    expect(schemaProps(TOOL_SCHEMAS.studio_act)).toContain('post_actions');
-  });
-});
 
 describe('param-policy predicate (controls)', () => {
   it('fires when a description names a param the schema does not have', () => {

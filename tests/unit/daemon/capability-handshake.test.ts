@@ -4,7 +4,6 @@ import {
   DETECTED_CLIENT_TABLE,
   MAX_CLIENT_FIELD_CHARS,
   UNKNOWN_CLIENT_PROFILE,
-  clientAttachedEvent,
   currentClientProfile,
   hasCapability,
   profileClient,
@@ -129,38 +128,5 @@ describe('the ambient profile seam — queryable wherever a result is phrased', 
     const [seenA, seenB] = await Promise.all([read(a, 8), read(b, 1)]);
     expect(seenA).toEqual(a);
     expect(seenB).toEqual(b);
-  });
-});
-
-describe('clientAttachedEvent — the run-log record of an attach', () => {
-  it('mints a `client.attached` event carrying the whole profile', () => {
-    const profile = profileClient({ name: 'claude-code', version: '1.0.0' });
-    const event = clientAttachedEvent(profile);
-    expect(event.type).toBe('client.attached');
-    expect(event.payload).toEqual({
-      tier: 'detected',
-      phrasing: 'mcp-tools',
-      capabilities: [],
-      client: { name: 'claude-code', version: '1.0.0' },
-    });
-  });
-
-  it('names the client as the actor, and claims no driver kind — the baton is not this issue`s', () => {
-    const event = clientAttachedEvent(profileClient({ name: 'foo-agent', version: '1' }));
-    expect(event.actor).toEqual({ kind: 'agent', client: { name: 'foo-agent', version: '1' } });
-    expect(event.actor).not.toHaveProperty('driver');
-  });
-
-  it('omits the badge, not the event, when the handshake carried no client', () => {
-    const event = clientAttachedEvent(UNKNOWN_CLIENT_PROFILE);
-    expect(event.payload).toEqual({ tier: 'detected', phrasing: 'generic', capabilities: [] });
-    expect(event.actor).toEqual({ kind: 'agent' });
-  });
-
-  it('satisfies the run store`s event-type grammar', () => {
-    // `client.attached` must be appendable and streamable without an enum edit; the grammar is the
-    // only gate, and `tab.attached` already owns the neighbouring name.
-    expect(clientAttachedEvent(UNKNOWN_CLIENT_PROFILE).type).toMatch(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/);
-    expect(clientAttachedEvent(UNKNOWN_CLIENT_PROFILE).type).not.toBe('tab.attached');
   });
 });

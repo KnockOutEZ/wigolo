@@ -80,21 +80,6 @@ describe('tryConnectDaemon', () => {
   });
 });
 
-describe('shouldProxyToStudioHost', () => {
-  it('proxies studio_* tools to the host', async () => {
-    const { shouldProxyToStudioHost } = await import('../../../src/daemon/proxy.js');
-    expect(shouldProxyToStudioHost('studio_observe')).toBe(true);
-    expect(shouldProxyToStudioHost('studio_act')).toBe(true);
-  });
-
-  it('runs every other tool locally (incl. the bare "studio" string)', async () => {
-    const { shouldProxyToStudioHost } = await import('../../../src/daemon/proxy.js');
-    for (const t of ['fetch', 'search', 'cache', 'crawl', 'research', 'studio']) {
-      expect(shouldProxyToStudioHost(t)).toBe(false);
-    }
-  });
-});
-
 describe('studioProxyFromHandle', () => {
   it('returns null when no host handle exists', async () => {
     const { studioProxyFromHandle } = await import('../../../src/daemon/proxy.js');

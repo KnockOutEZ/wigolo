@@ -24,12 +24,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * REST exposes the CORE tool surface only. The `studio_*` tools are MCP-only (D13:
- * the studio surface requires a live studio session and is never served over REST),
- * so they are excluded from the tool name here rather than stubbed into every map
- * below. Adding a core tool still fails the compile until all three maps cover it.
+ * REST exposes the CORE tool surface, which after the companion extraction is the whole of
+ * `ToolName`: the studio tools this alias used to subtract were hosted here and are not any more.
+ * The alias stays because the three maps below key off it — adding a core tool still fails the
+ * compile until all three cover it — and because a REST surface that must exclude a hosted tool is
+ * a thing that can come back.
  */
-type RestToolName = Exclude<ToolName, `studio_${string}`>;
+type RestToolName = ToolName;
 
 /** Ordered tool list — drives path assembly and the /v1/tools index. */
 const TOOL_ORDER: RestToolName[] = [

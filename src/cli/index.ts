@@ -18,7 +18,6 @@ export type Command =
   | 'backfill'
   | 'export'
   | 'verify'
-  | 'flow'
   | 'skills'
   // Account verbs (PX2). Gate-exempt by construction — they are how an install
   // becomes activated in the first place.
@@ -68,7 +67,6 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'backfill',
   'export',
   'verify',
-  'flow',
   'skills',
   // Account verbs (PX2).
   'register',

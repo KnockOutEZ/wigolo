@@ -26,11 +26,6 @@ import { defineConfig, configDefaults } from 'vitest/config';
  * dist/-spawning file that is NOT below reds that guard.
  */
 const DIST_SPAWNING_UNIT_TESTS = [
-  'tests/unit/studio/broker-transport.test.ts',
-  'tests/unit/studio/run-store-restart.test.ts',
-  // Spawns `tests/unit/studio/fixtures/run-store-exit-drain-child.mjs`, which imports
-  // `dist/cache/migrations/runner.js` and `dist/studio/run-store.js` in the child.
-  'tests/unit/studio/run-store-disk-projection.test.ts',
   // Probes every `wigolo/*` subpath export in a child Node process, so every one of them
   // resolves into `dist/` — the reader half of the same race.
   'tests/unit/package-exports.test.ts',
@@ -97,19 +92,6 @@ export default defineConfig({
       },
       {
         test: {
-          // The studio_* wire contract's deterministic half (drift check + wire predicates). It runs
-          // HERE, in the ordinary suite, because a drift check that only runs when someone remembers to
-          // run it is not a drift check — a core-side schema edit has to red on the same command that
-          // already gates every change. Its own setup is deliberately absent: the contract must not
-          // depend on core's test bootstrap, or it stops being checkable from outside.
-          name: 'contract',
-          environment: 'node',
-          globals: true,
-          include: ['contracts/*/tests/**/*.test.ts'],
-        },
-      },
-      {
-        test: {
           ...shared,
           name: 'spawn-serial',
           // The spawn-heavy lane: one fork, no file parallelism.
@@ -117,8 +99,8 @@ export default defineConfig({
           // DO NOT move a dist/-touching test back out of this lane. It is also the ONLY
           // lane in which rebuilding `dist/` is safe. tsup runs `clean: true`, so a rebuild
           // DELETES dist/ before writing it, while `tests/e2e/mcp-startup.test.ts` spawns
-          // `dist/index.js`, `tests/integration/build-output.test.ts` asserts over dist/
-          // files and `tests/integration/studio-runs-proxy.test.ts` imports dist/ in a child.
+          // `dist/index.js` and `tests/integration/build-output.test.ts` asserts over dist/
+          // files.
           // Serialised here they take turns; in the parallel `unit` project — which vitest
           // runs CONCURRENTLY with this one — a rebuild deletes dist/ under a test that has
           // just spawned it, and the red lands in an unrelated file with nothing pointing at

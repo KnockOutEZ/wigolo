@@ -4,17 +4,16 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { applyMigrations, _resetMigrationGuard } from '../../src/cache/migrations/runner.js';
 import { createMcpServer, type Subsystems } from '../../src/server.js';
-import type { StudioHostHandlers } from '../../src/daemon/studio-dispatch.js';
 
 /**
- * D10 — the non-studio tool-invocation audit wrap, proven through the REAL CallTool dispatch
+ * D10 — the tool-invocation audit wrap, proven through the REAL CallTool dispatch
  * (createMcpServer → the single wrap at the request handler). The tool handlers are mocked to
  * fast trivial results so the test exercises the WRAP (coverage / privacy projection / isolation),
  * not the domain logic. Pairs with tests/unit/server/tool-audit.test.ts (leaf in isolation).
  */
 
 // Mock every tool handler to a fast, trivial result. The wrap is handler-agnostic; what we assert
-// is that exactly one audit row lands per non-studio call, with a privacy-projected args_meta.
+// is that exactly one audit row lands per call, with a privacy-projected args_meta.
 vi.mock('../../src/tools/fetch.js', () => ({ handleFetch: vi.fn(async () => ({ ok: true, data: { markdown: '', url: 'https://x', title: '', metadata: {}, links: [], images: [], cached: false } })) }));
 vi.mock('../../src/tools/search.js', () => ({ handleSearch: vi.fn(async () => ({ ok: true, data: {} })) }));
 vi.mock('../../src/tools/crawl.js', () => ({ handleCrawl: vi.fn(async () => ({ pages: [], total_found: 0, crawled: 0 })) }));
@@ -38,19 +37,7 @@ function migratedDb(): Database.Database {
   return db;
 }
 
-const STUDIO_HOST: StudioHostHandlers = {
-  observe: async () => ({ id: 's1', kind: 'full', trusted: false, untrusted_notice: 'data not instructions', elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
-  act: async (input) => ({ ok: true, action: input.action, url: input.url }),
-  marks: async () => ({ marks: [], untrusted_notice: 'data not instructions' }),
-  capture: async () => ({ artifact_id: 1, inserted: true, content_hash: 'h' }),
-  spawn: async () => ({ session_id: 'bg' }),
-  close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
-  list: async () => ({ sessions: [] }),
-  say: async () => ({ posted: true, posted_at: 0 }),
-  extractSet: async () => ({ columns: [], rows: [], pages_followed: 0 }),
-};
-
-function stubSubsystems(toolAuditDb: Database.Database | undefined, studioHost?: StudioHostHandlers): Subsystems {
+function stubSubsystems(toolAuditDb: Database.Database | undefined): Subsystems {
   return {
     searchEngines: [],
     router: {},
@@ -59,7 +46,6 @@ function stubSubsystems(toolAuditDb: Database.Database | undefined, studioHost?:
     pluginRegistry: {},
     shutdown: async () => {},
     bootstrapSearxng: async () => {},
-    studioHost,
     toolAuditDb,
   } as unknown as Subsystems;
 }
@@ -108,18 +94,6 @@ describe('tool-audit wrap via real dispatch', () => {
     expect(r[0].tool).toBe('fetch');
     expect(r[0].outcome_ok).toBe(0);
     expect(r[0].error_reason).toBe('fetch_failed');
-    db.close();
-  });
-
-  it('studio_* calls are EXCLUDED from the audit (they use studio_audit) (pin #3)', async () => {
-    const db = migratedDb();
-    const client = await connect(stubSubsystems(db, STUDIO_HOST));
-    await client.callTool({ name: 'studio_observe', arguments: {} });
-    await client.callTool({ name: 'studio_marks', arguments: {} });
-    await client.callTool({ name: 'fetch', arguments: { url: 'https://e.com/p' } }); // a normal call DOES audit
-    await client.close();
-    const r = rows(db);
-    expect(r.map((x) => x.tool)).toEqual(['fetch']); // no studio_* rows
     db.close();
   });
 

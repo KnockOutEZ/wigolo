@@ -3,7 +3,7 @@ import type { SearchEngine, RawSearchResult, RawFetchResult, ExtractionResult } 
 import type { SmartRouter } from '../../../src/fetch/router.js';
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
-import { captureFromPage, captureHumanNote, curateArtifact } from '../../../src/studio/capture/artifacts.js';
+import { seedCapture, seedNote, curateArtifact } from '../../helpers/companion-tables.js';
 import { cacheContent } from '../../../src/cache/store.js';
 
 /**
@@ -144,10 +144,7 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
   it('surfaces the studio clip with hydrated content + source=studio through the public entry', async () => {
     // 1. Real 4c capture → a studio_artifacts row with known markdown. no-op
     //    enqueue so the capture does not touch the background index queue.
-    const capture = captureFromPage(
-      { type: 'clip', sessionId: 'sess-leak', url: 'https://research.example.com/q3', title: 'Q3', markdown: CLIP_MARKDOWN },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
+    const capture = seedCapture(getDatabase(), { type: 'clip', sessionId: 'sess-leak', url: 'https://research.example.com/q3', title: 'Q3', markdown: CLIP_MARKDOWN });
     expect(capture.inserted).toBe(true);
 
     // The 4c embed key — what the shared vec store holds and the KNN returns.
@@ -192,10 +189,7 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
     // dropping the co-resident url_cache hit too. NONMATCHING_CONCEPT keeps the
     // cached page out of the FTS path, so it can ONLY surface via embedding.
     seedUrlCache('https://realpage.example.com/revenue', 'Quarterly Revenue', 'Q3 revenue grew on cloud demand.');
-    const capture = captureFromPage(
-      { type: 'clip', sessionId: 'sess-coll', url: 'https://x.example.com/p', title: 'Clip', markdown: CLIP_MARKDOWN },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
+    const capture = seedCapture(getDatabase(), { type: 'clip', sessionId: 'sess-coll', url: 'https://x.example.com/p', title: 'Clip', markdown: CLIP_MARKDOWN });
     const studioKey = `studio://clip|${capture.id}`;
 
     mockEmbeddingState.available = true;
@@ -238,10 +232,7 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
 
   it('tags studio clip + url_cache results trusted:false (mirrors content_trusted, page-derived)', async () => {
     seedUrlCache('https://page.example.com/doc', 'Doc', 'A fetched page body.');
-    const capture = captureFromPage(
-      { type: 'clip', sessionId: 'sess-trust', url: 'https://x.example.com/c', title: 'Clip', markdown: CLIP_MARKDOWN },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
+    const capture = seedCapture(getDatabase(), { type: 'clip', sessionId: 'sess-trust', url: 'https://x.example.com/c', title: 'Clip', markdown: CLIP_MARKDOWN });
     const studioKey = `studio://clip|${capture.id}`;
     mockEmbeddingState.available = true;
     mockEmbeddingState.subprocessReady = true;
@@ -263,10 +254,7 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
   });
 
   it('tags a human-authored studio note trusted:true (content_trusted=1)', async () => {
-    const note = captureHumanNote(
-      { sessionId: 'sess-note', text: 'A note the human typed — safe as instructions.' },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
+    const note = seedNote(getDatabase(), { sessionId: 'sess-note', text: 'A note the human typed — safe as instructions.' });
     const noteKey = `studio://note|${note.id}`;
     mockEmbeddingState.available = true;
     mockEmbeddingState.subprocessReady = true;
@@ -285,11 +273,8 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
   });
 
   it('a curated studio clip stays trusted:false (trusted tracks content_trusted, NOT curation)', async () => {
-    const capture = captureFromPage(
-      { type: 'clip', sessionId: 'sess-cur', url: 'https://x.example.com/cur', title: 'Clip', markdown: CLIP_MARKDOWN },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
-    curateArtifact(capture.id, { db: getDatabase() }); // curated_by_human = 1; content_trusted untouched
+    const capture = seedCapture(getDatabase(), { type: 'clip', sessionId: 'sess-cur', url: 'https://x.example.com/cur', title: 'Clip', markdown: CLIP_MARKDOWN });
+    curateArtifact(getDatabase(), capture.id); // curated_by_human = 1; content_trusted untouched
     const studioKey = `studio://clip|${capture.id}`;
     mockEmbeddingState.available = true;
     mockEmbeddingState.subprocessReady = true;
@@ -309,10 +294,7 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
     // First insert into each table => both rowid 1. The raw INTEGER rowid must
     // NOT be the cross-surface identity — the URI key + source tag keep them apart.
     seedUrlCache('https://shared-rowid.example.com/p', 'Shared', 'Shares integer rowid with the clip.');
-    const capture = captureFromPage(
-      { type: 'clip', sessionId: 'sess-id', url: 'https://x.example.com/id', title: 'Clip', markdown: CLIP_MARKDOWN },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
+    const capture = seedCapture(getDatabase(), { type: 'clip', sessionId: 'sess-id', url: 'https://x.example.com/id', title: 'Clip', markdown: CLIP_MARKDOWN });
     const cacheRow = getDatabase().prepare('SELECT id FROM url_cache LIMIT 1').get() as { id: number };
     expect(cacheRow.id).toBe(capture.id); // both share the same integer rowid
 

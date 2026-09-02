@@ -4,7 +4,7 @@ import type { SmartRouter } from '../../../src/fetch/router.js';
 import type { MergedSearchResult } from '../../../src/search/dedup.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { captureFromPage, captureHumanNote } from '../../../src/studio/capture/artifacts.js';
+import { seedCapture, seedNote as seedNoteRow } from '../../helpers/companion-tables.js';
 
 /**
  * C3 slice-2 — a human NOTE is the FIRST trusted research source. Notes are the only
@@ -84,13 +84,13 @@ function stubRouter(): SmartRouter {
 }
 
 function seedNote(sessionId = 's1', text = NOTE_TEXT): number {
-  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedNoteRow(getDatabase(), { sessionId, text }).id;
 }
 function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedCapture(getDatabase(), { type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }).id;
 }
 function seedQa(sessionId = 's1', question = QA_Q, answer = QA_A): number {
-  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedCapture(getDatabase(), { type: 'qa', sessionId, question, answer }).id;
 }
 
 async function research() {
@@ -205,10 +205,7 @@ describe('research — a human note is the first trusted source (C3 slice-2)', (
     // so the `art.markdown === null || length === 0` backstop must drop it (an empty artifact
     // has no content to cite). A mark — the other null-markdown case — is double-guarded
     // (type-set AND markdown), so an in-set clip is what isolates the markdown guard.
-    const emptyClipId = captureFromPage(
-      { type: 'clip', sessionId: 's1', url: 'https://example.com/empty', title: QUESTION, markdown: '' },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    ).id;
+    const emptyClipId = seedCapture(getDatabase(), { type: 'clip', sessionId: 's1', url: 'https://example.com/empty', title: QUESTION, markdown: '' }).id;
     const r = await research();
     const out = r.ok ? r.data : null;
     const emptyKey = `studio://clip|${emptyClipId}`;

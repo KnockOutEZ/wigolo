@@ -7,14 +7,6 @@ import type { HealthReport } from './health-check.js';
 
 const log = createLogger('server');
 
-/**
- * Routing rule: the user's stdio MCP server proxies ONLY `studio_*` tool calls
- * to the live Studio host; every other tool runs locally in-process.
- */
-export function shouldProxyToStudioHost(toolName: string): boolean {
-  return toolName.startsWith('studio_');
-}
-
 export async function tryConnectDaemon(port: number, host: string): Promise<HealthReport | null> {
   const url = `http://${host}:${port}/health`;
 

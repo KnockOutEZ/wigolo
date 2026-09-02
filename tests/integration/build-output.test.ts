@@ -114,18 +114,27 @@ describe('exports map resolves against the built dist/', () => {
     expect(JSON.parse(stdout.trim())).toEqual([]);
   }, 30_000);
 
-  it('still exposes every specifier the studio app imports', () => {
+  it('still exposes every specifier the companion app imports', () => {
     // Mirrors wigolo-studio's CI probe. Listed literally rather than derived, because the point
     // is to red HERE when core drops one — a derived list would just shrink with the manifest
     // and agree with it. Growing the map is fine; losing one of these is a consumer break.
+    //
+    // The list is the POST-extraction set: the app's domain imports moved into its own package and
+    // the barrels that served them (`wigolo/studio`, its run-store/run-bus subpaths and the studio
+    // MCP contract) are gone, so what it consumes from core is the seam set the split defined.
     const consumerSpecifiers = [
-      'wigolo/studio',
-      'wigolo/studio-db-broker',
+      'wigolo/companion',
+      'wigolo/companion-contract',
+      'wigolo/companion-broker',
+      'wigolo/daemon',
+      'wigolo/cache',
       'wigolo/cache/db',
       'wigolo/config',
-      'wigolo/studio/run-store',
-      'wigolo/studio/run-bus',
-      'wigolo/studio-mcp-contract',
+      'wigolo/security',
+      'wigolo/fetch-tiers',
+      'wigolo/embedding-queue',
+      'wigolo/search-tokens',
+      'wigolo/logger',
       'wigolo/account',
     ];
     const declared = Object.keys(pkg.exports).map(specifierFor);

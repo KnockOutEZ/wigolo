@@ -23,8 +23,9 @@ function err(text: string): void {
   process.stderr.write(`${text}\n`);
 }
 
+/** `argv` is the post-verb tail the CLI parser hands every command: `['setup']` for `studio setup`. */
 export async function runStudioSetup(argv: string[]): Promise<number> {
-  const sub = argv[1];
+  const sub = argv[0];
   if (!sub || sub === '--help' || sub === '-h') {
     out(USAGE);
     return sub ? 0 : 1;

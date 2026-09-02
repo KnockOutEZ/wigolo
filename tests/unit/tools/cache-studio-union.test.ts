@@ -28,7 +28,7 @@ vi.mock('../../../src/providers/vector-store.js', () => ({
 }));
 
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
-import { captureFromPage, captureHumanNote, curateArtifact } from '../../../src/studio/capture/artifacts.js';
+import { seedCapture, seedNote, curateArtifact } from '../../helpers/companion-tables.js';
 import { cacheContent } from '../../../src/cache/store.js';
 import { handleCache } from '../../../src/tools/cache.js';
 
@@ -49,10 +49,7 @@ function vec(url: string, score: number): VectorSearchResult {
 }
 
 function captureClip(sessionId: string): number {
-  return captureFromPage(
-    { type: 'clip', sessionId, url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-    { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-  ).id;
+  return seedCapture(getDatabase(), { type: 'clip', sessionId, url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD }).id;
 }
 
 // C5 PIN-5: a url-less qa pair. Written via captureFromPage (the primitive the studio_capture
@@ -60,10 +57,7 @@ function captureClip(sessionId: string): number {
 // at the dispatch seam) so this file stays a pure surfacing test. The answer carries the QUERY
 // terms so it matches the studio FTS index; surfacing is type-agnostic so a qa hydrates like a clip.
 function captureQa(sessionId: string): number {
-  return captureFromPage(
-    { type: 'qa', sessionId, question: 'How does the capture pipeline work?', answer: CLIP_MD },
-    { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-  ).id;
+  return seedCapture(getDatabase(), { type: 'qa', sessionId, question: 'How does the capture pipeline work?', answer: CLIP_MD }).id;
 }
 
 describe('cache tool — captured studio artifact (4d slice-3)', () => {
@@ -96,17 +90,14 @@ describe('cache tool — captured studio artifact (4d slice-3)', () => {
 
     it('a curated studio clip stays trusted:false (tracks content_trusted, NOT curation)', async () => {
       const id = captureClip('sess-cur');
-      curateArtifact(id, { db: getDatabase() }); // curated_by_human = 1; content_trusted untouched
+      curateArtifact(getDatabase(), id); // curated_by_human = 1; content_trusted untouched
       const out = await handleCache({ query: QUERY });
       const hit = (out.results ?? []).find((r) => r.url === `studio://clip|${id}`);
       expect(hit?.trusted).toBe(false);
     });
 
     it('a human-authored studio note surfaces trusted:true', async () => {
-      const note = captureHumanNote(
-        { sessionId: 'sess-note', text: `wigolo studio capture pipeline moat — a human note safe as instructions.` },
-        { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-      );
+      const note = seedNote(getDatabase(), { sessionId: 'sess-note', text: `wigolo studio capture pipeline moat — a human note safe as instructions.` });
       const out = await handleCache({ query: QUERY });
       const hit = (out.results ?? []).find((r) => r.url === `studio://note|${note.id}`);
       expect(hit?.source).toBe('studio');
