@@ -507,7 +507,11 @@ async function runAccountSummary(
   write(`Created:    ${summary.data.created_at}`);
   write(`Product-update emails: ${summary.data.consent.marketing ? 'yes' : 'no'}`);
   write(`Telemetry disclosure shown: ${summary.data.telemetry.disclosure_version ?? 'none'}`);
-  write(`Telemetry: ${telemetry} (WIGOLO_TELEMETRY=off turns it off)`);
+  write(
+    telemetry === 'on'
+      ? 'Telemetry: on — set WIGOLO_TELEMETRY=off to turn it off'
+      : 'Telemetry: off',
+  );
   for (const line of grantLines(state, keys)) write(line);
   // The withdrawal gap, said out loud rather than implied: PX1's only
   // consent-write surfaces are the field on verify and the emailed unsubscribe
