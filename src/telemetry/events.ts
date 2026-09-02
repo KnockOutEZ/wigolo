@@ -111,6 +111,12 @@ export type TelemetryEvent =
   | { name: 'search.engine_failure'; props: { engine: EngineId; error_class: ErrorClass } }
   | { name: 'daemon.uptime'; props: { bucket: UptimeBucket } };
 
+// Compile-time tripwire for the Never list. It lives in src/ so the root typecheck always
+// evaluates it; tests/ are intentionally outside that compiler project.
+type Assert<T extends true> = T;
+type FetchBlockedDomain = Extract<TelemetryEvent, { name: 'fetch.blocked' }>['props']['domain'];
+export type DomainIsClosed = Assert<string extends FetchBlockedDomain ? false : true>;
+
 export type TelemetryEventName = TelemetryEvent['name'];
 
 /**
