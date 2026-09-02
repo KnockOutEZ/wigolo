@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mintHostToken } from './auth.js';
+import { mintHostToken } from '../companion/auth.js';
 import { ControlToken, type ControlParty } from './control-token.js';
 
 /**

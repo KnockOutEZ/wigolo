@@ -53,16 +53,19 @@ const rerankMock = vi.fn(async (query: string, results: MergedSearchResult[]): P
 vi.mock('../../../src/search/rerank.js', () => ({ rerankResults: rerankMock }));
 
 // Count studio FTS calls (PIN-4: at most once per run) while DELEGATING to the real read —
-// the seeded db is queried for real. Spreads ...actual so getStudioArtifactByEmbedKey,
-// studioEmbedKey, and captureFromPage stay real; only searchStudioArtifactKeys is wrapped.
+// the seeded db is queried for real. The read seam is the companion artifact provider (EXTRACT A5);
+// only its searchKeys is wrapped, so hydrate, owns and the capture write path all stay real.
 const { searchKeysSpy } = vi.hoisted(() => ({ searchKeysSpy: vi.fn() }));
-vi.mock('../../../src/studio/capture/artifacts.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/studio/capture/artifacts.js')>();
+vi.mock('../../../src/companion/artifact-provider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/companion/artifact-provider.js')>();
   return {
     ...actual,
-    searchStudioArtifactKeys: (query: string, limit: number): string[] => {
-      searchKeysSpy(query, limit);
-      return actual.searchStudioArtifactKeys(query, limit);
+    studioArtifactProvider: {
+      ...actual.studioArtifactProvider,
+      searchKeys: (query: string, limit: number): string[] => {
+        searchKeysSpy(query, limit);
+        return actual.studioArtifactProvider.searchKeys(query, limit);
+      },
     },
   };
 });
@@ -183,7 +186,7 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
   it('PIN-D: a throwing studio read does NOT abort research — web sources stand, no error', async () => {
     seedClip();
     seedQa();
-    getDatabase().exec('DROP TABLE studio_artifacts_fts'); // force searchStudioArtifactKeys to throw
+    getDatabase().exec('DROP TABLE studio_artifacts_fts'); // force the provider's FTS read to throw
     const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
     // mutation: remove the try/catch in collectStudioSources → throw → outer catch → error+empty → RED.
     expect(out.error).toBeUndefined();

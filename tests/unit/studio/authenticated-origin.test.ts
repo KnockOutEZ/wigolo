@@ -18,7 +18,7 @@ import {
   AgentWriteRefusedError,
   AUTHENTICATED_ORIGINS_KEY,
   ANONYMOUS_ORIGINS_KEY,
-} from '../../../src/studio/auth-origin-store.js';
+} from '../../../src/companion/auth-origin-store.js';
 
 /**
  * S9 §3.5 — the eight F5 test obligations, plus the store's trust bright-line.

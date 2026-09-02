@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConfig } from '../../../src/cli/config.js';
 import { buildAuthenticatedOriginLine } from '../../../src/cli/doctor.js';
-import { AUTHENTICATED_ORIGINS_KEY, ANONYMOUS_ORIGINS_KEY } from '../../../src/studio/auth-origin-store.js';
+import { AUTHENTICATED_ORIGINS_KEY, ANONYMOUS_ORIGINS_KEY } from '../../../src/companion/auth-origin-store.js';
 
 /**
  * S9 / F5 — the HUMAN-ONLY override surface.

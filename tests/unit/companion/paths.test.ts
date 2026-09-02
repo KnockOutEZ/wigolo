@@ -10,8 +10,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
-import { studioStateDir } from '../../../src/studio/paths.js';
-import { studioHandlePath } from '../../../src/studio/handle.js';
+import { studioStateDir } from '../../../src/companion/paths.js';
+import { studioHandlePath } from '../../../src/companion/handle.js';
 
 const DATA = '/tmp/wigolo-paths-test';
 

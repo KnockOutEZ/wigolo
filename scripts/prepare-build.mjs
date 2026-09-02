@@ -45,7 +45,7 @@ const require = createRequire(import.meta.url);
  * ⚠ THIS WAS BARE TRUTHINESS, AND BARE TRUTHINESS READS THE FLAG BACKWARDS. `if (process.env.X)`
  * makes `=0`, `=false` and `=off` all mean SKIP — the inverse of what the operator wrote — while
  * this repo established the opposite rule one file over in the same phase: `autoLaunchDisabled`
- * (`src/studio/auto-launch.ts`) trims, lowercases and compares against exactly these three values.
+ * (`src/companion/auto-launch.ts`) trims, lowercases and compares against exactly these three values.
  * Two flags shipped together cannot disagree about what `0` means.
  *
  * The fail direction is quiet rather than loud, which is why it is worth a set instead of a cast:
@@ -59,7 +59,7 @@ const SKIP_OFF_VALUES = new Set(['0', 'false', 'off']);
  *
  * Any non-empty value counts EXCEPT the off spellings above — so `=1`, the only value CI and the
  * Dockerfile actually set, still skips. Trimmed before the comparison for the same reason
- * `isLoopbackHost` (`src/studio/bind.ts`) trims: a value that arrived with the shell's whitespace
+ * `isLoopbackHost` (`src/companion/bind.ts`) trims: a value that arrived with the shell's whitespace
  * still attached is the same stated intent. A value that is whitespace ONLY states no intent at
  * all, so it falls back to the unset default, which is to build.
  */

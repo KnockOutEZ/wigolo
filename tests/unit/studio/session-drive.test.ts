@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createSessionDrive, type DriveControlToken, type SessionDriveDeps } from '../../../src/studio/session-drive.js';
-import { OriginBudget } from '../../../src/studio/origin-budget.js';
+import { OriginBudget } from '../../../src/companion/origin-budget.js';
 import type { NavigableBrowser } from '../../../src/studio/nav.js';
 import type { ControlParty } from '../../../src/studio/control-token.js';
 

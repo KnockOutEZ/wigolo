@@ -20,7 +20,7 @@ import type { FlowStep, FlowTargetSeed } from '../../src/studio/flow/store.js';
 import type { HealCandidate } from '../../src/studio/mark/heal.js';
 import { SessionAuditLog } from '../../src/studio/audit.js';
 import { PreGrantStore } from '../../src/studio/pre-grant.js';
-import { OriginBudget } from '../../src/studio/origin-budget.js';
+import { OriginBudget } from '../../src/companion/origin-budget.js';
 import { computeFingerprint } from '../../src/studio/perception/id.js';
 import type { NavGrant } from '../../src/studio/nav-policy.js';
 import type { FieldSemantics } from '../../src/studio/credential.js';

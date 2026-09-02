@@ -1,9 +1,9 @@
 import type { RawFetchResult } from '../types.js';
-import { readHandle } from '../studio/handle.js';
+import { readHandle } from '../companion/handle.js';
 import { STUDIO_FETCH_CAPABILITY } from '../studio/studio-fetch.js';
 import { proxyToStudioHost } from '../daemon/studio-dispatch.js';
-import { bumpEscalationCounter } from '../studio/escalation-counters.js';
-import { ensureStudioRunning } from '../studio/auto-launch.js';
+import { bumpEscalationCounter } from '../companion/escalation-counters.js';
+import { ensureStudioRunning } from '../companion/auto-launch.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');

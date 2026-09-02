@@ -39,6 +39,7 @@ import {
 import { subscribeRunEvents } from '../../studio/run-bus.js';
 import { sqliteRunsStore, type RunsStore } from './runs-store.js';
 import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
+import { MAX_CLIENT_FIELD_CHARS } from '../capability-handshake.js';
 
 const log = createLogger('rest');
 
@@ -57,7 +58,11 @@ const DRIVER_KINDS = new Set<string>(DRIVER_KIND_VALUES);
 
 /** Persisted into the log AND onto disk, so both need a bound the 1 MiB body cap does not give. */
 export const MAX_SPACE_ID_CHARS = 200;
-export const MAX_CLIENT_FIELD_CHARS = 200;
+/**
+ * Re-exported, not redeclared: the handshake caps the same badge on the MCP side, and two numbers
+ * for one bound is the kind of drift that shows up as a REST refusal for a value the log kept.
+ */
+export { MAX_CLIENT_FIELD_CHARS };
 
 /** SSE frames are long-lived sockets, so they are capped separately from the request slot pool. */
 const DEFAULT_MAX_SSE_CONNECTIONS = 32;

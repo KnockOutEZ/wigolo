@@ -20,7 +20,7 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse, type
 import { request as httpsRequest } from 'node:https';
 import { statSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { readHandle, getMyInstanceId, studioHandlePath, type SessionHandle } from '../../studio/handle.js';
+import { readHandle, getMyInstanceId, studioHandlePath, type SessionHandle } from '../../companion/handle.js';
 import { createLogger } from '../../logger.js';
 import { errorEnvelope, type HttpError } from './errors.js';
 import { isLoopbackBind } from './auth.js';

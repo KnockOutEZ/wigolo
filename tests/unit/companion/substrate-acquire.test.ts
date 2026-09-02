@@ -16,7 +16,7 @@ import {
   SUBSTRATE_RECORD,
   type SubstrateManifest,
   type SubstrateSource,
-} from '../../../src/studio/substrate-acquire.js';
+} from '../../../src/companion/substrate-acquire.js';
 
 /**
  * Real filesystem, real copies, real cleanup. These assertions are about what ends up ON DISK

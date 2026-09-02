@@ -6,7 +6,7 @@ import {
   bumpEscalationCounter,
   readEscalationCounters,
   formatEscalationCounterLines,
-} from '../../../src/studio/escalation-counters.js';
+} from '../../../src/companion/escalation-counters.js';
 
 /**
  * S9 / D10(a) — the local escalation-rate counters.
@@ -98,7 +98,7 @@ describe('escalation counters', () => {
   });
 
   it('the module contains no network code at all — local only, no phone-home', () => {
-    const src = readFileSync(new URL('../../../src/studio/escalation-counters.ts', import.meta.url), 'utf-8');
+    const src = readFileSync(new URL('../../../src/companion/escalation-counters.ts', import.meta.url), 'utf-8');
     expect(src).not.toMatch(/\bfetch\(|https?:\/\/|node:http|undici|axios/);
   });
 });

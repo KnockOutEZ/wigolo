@@ -11,7 +11,7 @@ import { isStageError } from './error-describe.js';
  *
  * WHY A SECOND SET OF COUNTERS EXISTS. D10(b) asks whether a companion path is worth building
  * for hosts that cannot reach the desktop rung. The shipped D10(a) instrument
- * (`studio/escalation-counters.ts`) cannot answer that: every one of its increments lives in
+ * (`companion/escalation-counters.ts`) cannot answer that: every one of its increments lives in
  * `studio-bridge.ts` or the Studio host, and on a server, CI runner or devcontainer the bridge
  * is exactly what is absent. Those counters read zero forever there, and zero is
  * indistinguishable from "no demand". The population the decision is about is the one the

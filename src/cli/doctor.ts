@@ -23,8 +23,8 @@ import {
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { telemetryStatus } from '../telemetry/index.js';
 import { readPersistedConfig } from '../persisted-config.js';
-import { authenticatedOriginCount } from '../studio/auth-origin-store.js';
-import { readEscalationCounters, formatEscalationCounterLines } from '../studio/escalation-counters.js';
+import { authenticatedOriginCount } from '../companion/auth-origin-store.js';
+import { readEscalationCounters, formatEscalationCounterLines } from '../companion/escalation-counters.js';
 import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
@@ -43,8 +43,12 @@ import { getVersion } from './help.js';
 // tests partially mock node:fs.
 import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser-tier.js';
-import { readSubstrateRecord, type SubstrateRecord } from '../studio/substrate-acquire.js';
+import { readSubstrateRecord, type SubstrateRecord } from '../companion/substrate-acquire.js';
 import { readTierOccupancy, formatTierOccupancyLines, type TierOccupancy } from '../fetch/tier-occupancy.js';
+import { buildAccountDoctorLines } from './account.js';
+import { AccountStateStore } from '../account/state.js';
+import { resolvePinnedKeys } from '../account/pinned-keys.js';
+import { AccountsClient } from '../account/client.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -1083,6 +1087,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   checkBackgroundQueue(dataDir);
   checkRssFeeds(dataDir);
   checkAuthenticatedOrigins(dataDir);
+  await checkAccount(dataDir);
   checkTelemetryStatus();
   checkTuiEnv();
 
@@ -1304,6 +1309,34 @@ function checkRssFeeds(dataDir: string): void {
     } finally {
       try { closeDatabase(); } catch { /* ignore */ }
     }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    out(`  (check failed: ${msg.slice(0, 80)})`);
+  }
+}
+
+/**
+ * The account section (PX2 mini-spec §5).
+ *
+ * The service's published key list is fetched ONLY for an install that is
+ * signed in. On a fresh machine there is no cached token whose `kid` the list
+ * could explain, so the request would buy nothing and cost a round trip on a
+ * command people run precisely when the network is suspect. The list is
+ * diagnosis either way — pinning stays the trust root and nothing fetched here
+ * is ever promoted to a verification key.
+ */
+async function checkAccount(dataDir: string): Promise<void> {
+  out('');
+  out('[wigolo doctor] Account:');
+  try {
+    const state = new AccountStateStore(dataDir).read();
+    const keys = resolvePinnedKeys();
+    let serviceKids: string[] | null = null;
+    if (state.account_id !== null) {
+      const res = await new AccountsClient({ baseUrl: getConfig().accountsUrl }).entitlementsKeys();
+      if (res.ok) serviceKids = res.data.keys.map((k) => k.kid);
+    }
+    for (const line of buildAccountDoctorLines({ state, keys, nowMs: Date.now(), serviceKids })) out(line);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out(`  (check failed: ${msg.slice(0, 80)})`);

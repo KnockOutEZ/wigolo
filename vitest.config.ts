@@ -31,6 +31,9 @@ const DIST_SPAWNING_UNIT_TESTS = [
   // Spawns `tests/unit/studio/fixtures/run-store-exit-drain-child.mjs`, which imports
   // `dist/cache/migrations/runner.js` and `dist/studio/run-store.js` in the child.
   'tests/unit/studio/run-store-disk-projection.test.ts',
+  // Probes every `wigolo/*` subpath export in a child Node process, so every one of them
+  // resolves into `dist/` — the reader half of the same race.
+  'tests/unit/package-exports.test.ts',
 ];
 
 const shared = {
@@ -130,7 +133,7 @@ export default defineConfig({
             'tests/e2e/**/*.test.ts',
             'tests/e2e/**/*.test.tsx',
             // Readers, not rebuilders — see DIST_SPAWNING_UNIT_TESTS above. The lane guarded
-            // rebuilders only, so these three raced it from the parallel side.
+            // rebuilders only, so these raced it from the parallel side.
             ...DIST_SPAWNING_UNIT_TESTS,
           ],
           pool: 'forks',

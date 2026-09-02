@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeHandle, readHandle, removeHandle, studioHandlePath } from '../../../src/studio/handle.js';
+import { writeHandle, readHandle, removeHandle, studioHandlePath } from '../../../src/companion/handle.js';
 
 describe('studio/handle', () => {
   let dataDir: string;

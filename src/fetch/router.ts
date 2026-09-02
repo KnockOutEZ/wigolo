@@ -45,8 +45,8 @@ import { ChallengeBlockedError } from './browser-pool.js';
 import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
-import { readHandle } from '../studio/handle.js';
-import { studioLaunchable } from '../studio/auto-launch.js';
+import { readHandle } from '../companion/handle.js';
+import { studioLaunchable } from '../companion/auto-launch.js';
 import { guardNavigation, type NavSource } from '../security/ssrf.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import {

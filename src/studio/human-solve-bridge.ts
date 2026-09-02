@@ -1,7 +1,7 @@
 import type { ChallengeClass } from '../types.js';
 import type { ApprovalDecision } from './approvals.js';
 import type { ClearanceCookie } from './../fetch/challenge-completion.js';
-import type { EscalationCounterKey } from './escalation-counters.js';
+import type { EscalationCounterKey } from '../companion/escalation-counters.js';
 
 /**
  * S9B slice 2 — the human-solve request.

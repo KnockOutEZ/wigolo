@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, renameSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { studioStateDir } from './paths.js';
-import { normalizeOrigin, type AuthenticatedOriginOverrides } from './authenticated-origin.js';
+import { normalizeOrigin, type AuthenticatedOriginOverrides } from './origin.js';
 
 /**
  * S9 / F5 — persistence for the authenticated-origin predicate.

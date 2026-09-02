@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseBrowserTypes } from './fetch/browser-types.js';
 import { PRODUCTION_ACCOUNTS_URL } from './account/constants.js';
 import { TELEMETRY_ENV, TELEMETRY_SETTINGS_KEY, resolveTelemetryEnabled } from './telemetry/off-switch.js';
-import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET } from './studio/origin-budget.js';
+import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET } from './companion/origin-budget.js';
 import type { BrowserType } from './types.js';
 import {
   readPersistedConfig,

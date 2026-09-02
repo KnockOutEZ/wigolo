@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createActHandler } from '../../../src/studio/act.js';
-import { OriginBudget, budgetRefusal } from '../../../src/studio/origin-budget.js';
+import { OriginBudget, budgetRefusal } from '../../../src/companion/origin-budget.js';
 import { PreGrantStore } from '../../../src/studio/pre-grant.js';
 import { checkAgentDrive, type AgentDriveGate } from '../../../src/studio/agent-drive-gate.js';
 import { runStudioFetch, type StudioFetchDeps } from '../../../src/studio/studio-fetch.js';

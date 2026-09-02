@@ -159,7 +159,7 @@ describe('scripts/prepare-build.mjs — the git-dependency build hook', () => {
    *
    * `if (process.env.WIGOLO_SKIP_PREPARE)` made `=0`, `=false` and `=off` all mean SKIP — the
    * inverse of what the operator wrote — and this repo had already established the opposite rule
-   * one file over: `autoLaunchDisabled` (src/studio/auto-launch.ts) trims, lowercases and compares
+   * one file over: `autoLaunchDisabled` (src/companion/auto-launch.ts) trims, lowercases and compares
    * against `{'0','false','off'}` for exactly this class. Two flags shipped by one phase cannot
    * disagree about what `0` means.
    *

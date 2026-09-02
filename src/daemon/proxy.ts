@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createLogger } from '../logger.js';
-import { readHandle } from '../studio/handle.js';
+import { readHandle } from '../companion/handle.js';
 import type { HealthReport } from './health-check.js';
 
 const log = createLogger('server');

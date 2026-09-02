@@ -28,7 +28,8 @@ import {
   type Run,
   type RunEvent,
 } from '../../studio/run-store.js';
-import { createRunWithTail } from '../../studio/run-bus.js';
+import { appendRunEventWithTail, createRunWithTail } from '../../studio/run-bus.js';
+import { clientAttachedEvent, profileClient } from '../capability-handshake.js';
 
 /**
  * Every method the REST surface needs and nothing else. There is deliberately no `append` and no
@@ -49,10 +50,30 @@ export interface RunsStore {
   eventsSince(runId: string, since: number, limit: number): Promise<RunEvent[]>;
 }
 
+/**
+ * Creating a run IS attaching to it, so the birth event is followed by the SD2 §2 record of what
+ * the creating client could do at the time (its capability set, plus the phrasing key its name
+ * bought — the only thing a name ever buys). Written here rather than in the REST handler because
+ * the store binding is what owns the handle and the bus; the port itself gains no `append`, and the
+ * log stays the single source of truth for the answer.
+ *
+ * An anonymous creator gets no second event: `run.created` already carries everything known about
+ * it, and an append-only log is the wrong place to record the absence of information.
+ */
+function createWithAttach(db: Database.Database, input: CreateRunInput): Run {
+  const run = createRunWithTail(db, input);
+  const profile = profileClient(input.driver?.client);
+  if (!profile.client) return run;
+  const event = appendRunEventWithTail(db, run.id, clientAttachedEvent(profile));
+  // `lastSeq` is what a caller resumes an SSE tail from, so it has to name the log's real head.
+  // `client.attached` is not a projection event, so no other field on the run moves with it.
+  return { ...run, lastSeq: event.seq, updatedAt: event.ts };
+}
+
 /** The daemon's binding: a native handle it opened itself. `createRun` goes through the bus. */
 export function sqliteRunsStore(db: Database.Database): RunsStore {
   return {
-    create: async (input) => createRunWithTail(db, input),
+    create: async (input) => createWithAttach(db, input),
     list: async (opts) => listRuns(db, opts),
     get: async (runId) => getRun(db, runId),
     exists: async (runId) => runExists(db, runId),

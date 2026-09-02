@@ -238,7 +238,8 @@ Subcommands:
   serve [--port N]        Start HTTP daemon (protocol stream; no --json)
   health [--json]         Health check (exit code = status)
   verify [--json]         End-to-end capability smoke check
-  auth [--json]           Manage site auth
+  auth [--json]           Manage site sign-ins for the browser engine
+                          (your wigolo account lives under \`wigolo account\`)
   plugin [--json]         Manage plugins
   tune [--json]           Inspect/reset per-domain self-tuning (routing, backoff)
   dashboard               Open the settings dashboard (alias of config)
@@ -249,6 +250,18 @@ Subcommands:
                           Write the cached corpus out as dated Markdown + a manifest
   flow <list|show> [FLOW_ID] [--json]
                           Inspect flows recorded during a supervised browser session
+
+Your wigolo account (\`wigolo auth\` is a different thing — site sign-ins for
+the browser engine):
+  register [--email E] [--json]
+                          Create your wigolo account and activate this install
+  login [--email E] [--json]
+                          Sign in to your wigolo account on this machine
+  logout [--json]         Sign out on this machine (local credential only)
+  whoami [--json]         Show the signed-in account and its activation state
+  account [--json]        Account summary, grants and telemetry state
+                          account export <file>   Write your data out as JSON
+                          account delete          Delete the account (confirmed)
 
 Tools (one-shot; add --json for machine-readable output, --help for flags):
   search <query>          Search the web

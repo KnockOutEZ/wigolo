@@ -335,7 +335,7 @@ export async function runConfig(args: string[]): Promise<number> {
       return 1;
     }
     const { getDatabase } = await import('../cache/db.js');
-    const { pruneStudioAudit } = await import('../studio/audit-retention.js');
+    const { pruneStudioAudit } = await import('../companion/audit-retention.js');
     let db: ReturnType<typeof getDatabase>;
     try {
       db = getDatabase();
@@ -355,7 +355,7 @@ export async function runConfig(args: string[]): Promise<number> {
 
   if (flags.originOverride !== null) {
     const { readPersistedConfig, writePersistedConfig } = await import('../persisted-config.js');
-    const { overridePatch } = await import('../studio/auth-origin-store.js');
+    const { overridePatch } = await import('../companion/auth-origin-store.js');
     const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
     const { origin, kind } = flags.originOverride;
     let patch: Record<string, unknown>;
