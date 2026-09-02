@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { sqliteRunsStore } from '../../../src/daemon/rest/runs-store.js';
-import { createRunWithTail } from '../../../src/studio/run-bus.js';
+import { createRunWithTail, subscribeRunEvents } from '../../../src/studio/run-bus.js';
 import { eventsSince, getRun, type Driver, type Run } from '../../../src/studio/run-store.js';
 import {
   denyWheel,
@@ -303,5 +303,70 @@ describe('observers (§7 row 12) — the read half', () => {
     // one. A gate that refused when it could not tell WHO was calling would be pretending to.
     expect(notDriving(run({ kind: 'cli' }), { name: 'claude-code', version: '2.1.0' })).toBeUndefined();
     expect(notDriving(run(A), undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * The fourth parameter (#334). Every gesture appends through `appendRunEventWithTail`, whose bus is
+ * in-process — and the process that owns the handle is not always the process the run's watchers
+ * live in. The studio DB broker moves the baton inside a plain-Node child of the app's main
+ * process, so without a hook the committed `driver.changed` row is published to a bus with no
+ * subscribers in that child and the host's live tail never learns the wheel moved.
+ *
+ * These rows assert the ENVELOPES, not the count: the hook has to carry what was committed —
+ * `seq`, `type`, the payload — because a hook that fired with a truncated envelope would satisfy a
+ * count and still leave the host unable to render the transition it just heard about.
+ */
+describe('gestures publish their committed envelopes to an out-of-process hook', () => {
+  it('carries every event a grant commits, in log order, with the same seqs the log holds', () => {
+    const target = newRun();
+    const requested = requestWheel(db, target.id, { by: B });
+    expect(requested.ok).toBe(true);
+
+    const seen: Array<{ runId: string; seq: number; type: string }> = [];
+    const granted = grantWheel(db, target.id, { by: A, requestId: (requested as { requestId: string }).requestId }, {
+      onEvent: (runId, event) => { seen.push({ runId, seq: event.seq, type: event.type }); },
+    });
+
+    expect(granted.ok).toBe(true);
+    const committed = (granted as { events: Array<{ seq: number; type: string }> }).events;
+    expect(seen).toEqual(committed.map((e) => ({ runId: target.id, seq: e.seq, type: e.type })));
+    expect(seen.map((e) => e.type)).toEqual(['driver.changed']);
+  });
+
+  it('carries the A-51-10 pause too — a release into an empty queue is TWO events, and the tail owes both', () => {
+    const target = newRun();
+    const seen: string[] = [];
+    const released = releaseWheel(db, target.id, { by: A }, { onEvent: (_id, event) => { seen.push(event.type); } });
+    expect(released.ok).toBe(true);
+    expect(seen).toEqual(['driver.changed', 'run.paused']);
+  });
+
+  it('publishes NOTHING when the gesture commits nothing — a refusal and a no-op transition are both silent', () => {
+    const target = newRun();
+    const seen: string[] = [];
+    const hook = { onEvent: (_id: string, event: { type: string }) => { seen.push(event.type); } };
+
+    // Refused: an observer cannot hand the wheel on.
+    expect(releaseWheel(db, target.id, { by: C }, hook).ok).toBe(false);
+    // A transition to the CURRENT driver emits nothing at all (§1.3.4).
+    expect(takeWheel(db, target.id, { by: C }, hook).ok).toBe(false);
+    expect(grantWheel(db, target.id, { by: A, to: A }, hook).ok).toBe(true);
+    // A run that does not exist.
+    expect(requestWheel(db, 'zzzz', { by: B }, hook).ok).toBe(false);
+
+    expect(seen).toEqual([]);
+  });
+
+  it('still feeds the in-process bus when no hook is given — the daemon path is unchanged', () => {
+    const target = newRun();
+    const tailed: string[] = [];
+    const stop = subscribeRunEvents(target.id, (event) => { tailed.push(event.type); });
+    try {
+      expect(takeWheel(db, target.id, { by: HUMAN }).ok).toBe(true);
+    } finally {
+      stop();
+    }
+    expect(tailed).toEqual(['driver.changed']);
   });
 });

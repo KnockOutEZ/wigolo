@@ -313,10 +313,15 @@ export function executeBrokerOp(
 
     const params: Array<string | number | null> = [];
     const clauses = equalityClause(op.where, params);
-    let order = '';
-    if (op.since !== undefined || op.before !== undefined) {
-      const cursor = cursorColumn(db, table);
-      if (!cursor) throw new BrokerOpError(`table ${table} has no cursor column`);
+    // Ordered whenever the table CAN be ordered, not only when a cursor was named. A `LIMIT` without an
+    // `ORDER BY` takes whichever rows the query plan reached first, so an unordered page would make
+    // "the first ten events" mean something different after an index change — and a caller that paged by
+    // the last row it saw would skip rows it never received.
+    const cursor = cursorColumn(db, table);
+    if ((op.since !== undefined || op.before !== undefined) && !cursor) {
+      throw new BrokerOpError(`table ${table} has no cursor column`);
+    }
+    if (cursor) {
       if (op.since !== undefined) {
         clauses.push(`"${cursor}" > ?`);
         params.push(op.since);
@@ -325,8 +330,8 @@ export function executeBrokerOp(
         clauses.push(`"${cursor}" < ?`);
         params.push(op.before);
       }
-      order = ` ORDER BY "${cursor}" ASC`;
     }
+    const order = cursor ? ` ORDER BY "${cursor}" ASC` : '';
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     const rows = db
       .prepare(`SELECT * FROM ${table}${where}${order} LIMIT ?`)
