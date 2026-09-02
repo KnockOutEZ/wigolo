@@ -19,7 +19,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /** The opt-in switch. Off values are not interpreted: presence of `1` is the gate. */
@@ -48,10 +48,16 @@ export const CORE_REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
  * (A-212-11), so the checkout is a hard prerequisite rather than something the
  * suite can synthesise. `RC_ACCOUNTS_REPO` overrides the runner's default path
  * so the arms are runnable on a machine that clones it elsewhere.
+ *
+ * WHY `userInfo()` AND NOT `homedir()`. `tests/setup.ts` repoints `HOME` at a
+ * throwaway tree so no test can write into the developer's real one, and
+ * `os.homedir()` reads `HOME` on POSIX — so it answers with the throwaway and the
+ * checkout is never found. `userInfo().homedir` comes from the password database
+ * instead, which is the account's real home whatever the environment says.
  */
 export function accountsRepoPath(): string {
   const fromEnv = process.env.RC_ACCOUNTS_REPO;
-  const candidate = fromEnv ?? join(homedir(), '.sd-runner', 'repos', 'wigolo-accounts');
+  const candidate = fromEnv ?? join(userInfo().homedir, '.sd-runner', 'repos', 'wigolo-accounts');
 
   if (!existsSync(join(candidate, 'package.json'))) {
     throw new Error(

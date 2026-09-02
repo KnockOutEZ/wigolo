@@ -24,7 +24,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { stopChild } from './rc-accounts-service.js';
-import type { FreshInstall } from './rc-install.js';
+import { installEnv, type FreshInstall } from './rc-install.js';
 
 /** The ten tools the gate has to run. Ordered so `cache` reports on the rest. */
 export const TEN_TOOLS = [
@@ -81,9 +81,9 @@ export async function startMcpSession(
     cwd: install.root,
     env: {
       ...process.env,
-      HOME: install.home,
       WIGOLO_ACCOUNTS_URL: undefined,
       WIGOLO_ACCOUNTS_PUBKEY: undefined,
+      ...installEnv(install),
       ...env,
     } as NodeJS.ProcessEnv,
     stdio: ['pipe', 'pipe', 'pipe'],

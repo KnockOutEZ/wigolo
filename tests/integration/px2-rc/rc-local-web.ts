@@ -51,6 +51,13 @@ export interface FixtureSite extends LocalServer {
 /**
  * The site the fetch family reads.
  *
+ * WHY THE HOME PAGE'S LINKS SIT IN A PARAGRAPH. They were a `<ul>` first, and
+ * the crawl arm reported `total_found: 1` — the content extractor reads a bare
+ * list of short links as navigation boilerplate and drops it, so there was
+ * nothing left for the crawler to follow and a "crawl" of one page passed for a
+ * crawl. In prose they survive extraction, which is the shape a real article
+ * links in anyway.
+ *
  * WHAT EACH PAGE IS FOR. `crawl` needs links to follow and a `robots.txt` that
  * permits it; `extract` needs a table, a definition list and a JSON-LD block, or
  * structured extraction has nothing to find and a green assertion would only
@@ -76,11 +83,10 @@ export async function startFixtureSite(): Promise<FixtureSite> {
 tokens to score, and a diff has lines to compare. The subject is the activation gate: a fresh install
 demands registration, registration is completed against a locally-run accounts service, and every one
 of the ten tools then runs without a single request leaving this machine.</p>
-<ul>
-<li><a href="/pricing">Pricing table</a></li>
-<li><a href="/glossary">Glossary</a></li>
-<li><a href="/changelog">Changelog</a></li>
-</ul>
+<p>The rest of this site is reachable from here: the <a href="/pricing">pricing table</a> carries three
+plans with prices and seat counts, the <a href="/glossary">glossary</a> defines the activation gate and
+its grace window, and the <a href="/changelog">changelog</a> is the page whose body changes between two
+reads so a diff has something to report.</p>
 </main>
 </body></html>`);
 

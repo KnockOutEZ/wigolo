@@ -16,7 +16,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -57,9 +57,63 @@ export interface FreshInstall {
   bin: string;
   /** A HOME of its own, so the install starts with no account and no cache. */
   home: string;
+  /**
+   * A data dir of its own — this is what makes the install FRESH.
+   *
+   * `tests/setup.ts` seeds a real signed entitlement token carrying a perpetual
+   * `core` grant into ONE shared `WIGOLO_DATA_DIR` and pins its own keypair, so
+   * every suite starts activated. Inheriting that would destroy this whole file:
+   * the refusal arms could not refuse, and — because the seeded token is signed
+   * by the suite's key rather than the local service's — the gate answered
+   * "update wigolo" instead, which is how the first run of this suite failed.
+   * That setup file names this exact remedy: an un-activated install is one whose
+   * data dir is empty.
+   */
+  dataDir: string;
   /** Absolute path into the installed package, for importing its own modules. */
   packageDir: string;
+  /** Where the egress fence appends every non-loopback destination it blocked. */
+  egressRecord: string;
   omitOptional: boolean;
+}
+
+/** The child-process egress fence — see `egress-fence.cjs` for why it is required. */
+const EGRESS_FENCE = join(import.meta.dirname, 'egress-fence.cjs');
+
+/** Every non-loopback destination the install attempted, as `kind\thost` lines. */
+export async function blockedEgress(install: FreshInstall): Promise<string[]> {
+  try {
+    const raw = await readFile(install.egressRecord, 'utf8');
+    return raw.split('\n').filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The environment every arm hands the installed binary.
+ *
+ * Merged over the caller's env so an arm cannot forget the isolation, and set
+ * explicitly rather than inherited so the arm does not depend on what the
+ * ambient test bootstrap happens to export.
+ */
+export function installEnv(install: FreshInstall): Record<string, string> {
+  return {
+    HOME: install.home,
+    USERPROFILE: install.home,
+    WIGOLO_DATA_DIR: install.dataDir,
+    // Keep the cross-encoder off: it would be a model download on first use,
+    // which is neither local nor deterministic.
+    WIGOLO_RERANKER: 'none',
+    // The fixture site, the stub engine and the accounts service all bind
+    // 127.0.0.1, and the SSRF guard refuses loopback by default — measured: the
+    // `watch` tool answered "url resolves to a loopback / private IPv4" and did
+    // no work at all. This is the product's own opt-in for exactly this case.
+    WIGOLO_FETCH_ALLOW_PRIVATE: '1',
+    RC_EGRESS_RECORD: install.egressRecord,
+    // Preloaded into every spawn: the suite's own fence cannot see a child.
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ${EGRESS_FENCE}`.trim(),
+  };
 }
 
 /**
@@ -77,6 +131,7 @@ export async function installTarball(
   const omitOptional = options.omitOptional ?? false;
   const root = await mkdtemp(join(tmpdir(), omitOptional ? 'wigolo-rc-omit-' : 'wigolo-rc-full-'));
   const home = await mkdtemp(join(tmpdir(), 'wigolo-rc-home-'));
+  const dataDir = await mkdtemp(join(tmpdir(), 'wigolo-rc-data-'));
 
   await writeFile(
     join(root, 'package.json'),
@@ -96,8 +151,10 @@ export async function installTarball(
   return {
     root,
     home,
+    dataDir,
     bin: join(root, 'node_modules', '.bin', 'wigolo'),
     packageDir: join(root, 'node_modules', 'wigolo'),
+    egressRecord: join(root, 'rc-egress.log'),
     omitOptional,
   };
 }
@@ -136,10 +193,11 @@ export async function runCli(
     cwd: install.root,
     env: {
       ...process.env,
-      HOME: install.home,
-      // A one-shot must not inherit a developer's backend choice.
+      // A one-shot must not inherit a developer's — or the test bootstrap's —
+      // account wiring. Both are cleared before the arm's own values land.
       WIGOLO_ACCOUNTS_URL: undefined,
       WIGOLO_ACCOUNTS_PUBKEY: undefined,
+      ...installEnv(install),
       ...options.env,
     } as NodeJS.ProcessEnv,
     stdio: ['pipe', 'pipe', 'pipe'],

@@ -29,8 +29,24 @@ import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { accountsRepoPath } from './rc-gate-env.js';
+
+/**
+ * Import a module by absolute filesystem path.
+ *
+ * The URL is built by `pathToFileURL` and held in a variable before `import`
+ * sees it. An inline `import(\`file://${path}\`)` is rewritten by the test
+ * bundler's resolver, which reads the `${` as a hostname and warns
+ * "Invalid file URL: must not contain hostname" — measured on the first run of
+ * this suite. Keeping the specifier opaque leaves the resolution to Node at
+ * runtime, which is the only thing that can know where the accounts checkout is.
+ */
+async function importFromPath(absolutePath: string): Promise<Record<string, unknown>> {
+  const specifier = pathToFileURL(absolutePath).href;
+  return (await import(/* @vite-ignore */ specifier)) as Record<string, unknown>;
+}
 
 /** Bind port 0, read what the OS handed out, release it. */
 export function freePort(): Promise<number> {
@@ -83,9 +99,7 @@ export async function startPostgresCluster(): Promise<PostgresCluster> {
   // Resolved through the accounts checkout: the library and its platform binary
   // are that repo's dependency, not core's.
   const requireFromAccounts = createRequire(join(accountsRepo, 'package.json'));
-  const loaded = (await import(
-    `file://${requireFromAccounts.resolve('embedded-postgres')}`
-  )) as { default?: unknown };
+  const loaded = await importFromPath(requireFromAccounts.resolve('embedded-postgres'));
   const EmbeddedPostgres = resolveClusterConstructor(loaded);
 
   const installedBeforeExit = process
@@ -393,7 +407,7 @@ export async function withServiceDatabase<T>(
 ): Promise<T> {
   const accountsRepo = accountsRepoPath();
   const requireFromAccounts = createRequire(join(accountsRepo, 'package.json'));
-  const loaded = (await import(`file://${requireFromAccounts.resolve('pg')}`)) as {
+  const loaded = (await importFromPath(requireFromAccounts.resolve('pg'))) as {
     default?: { Client?: unknown };
     Client?: unknown;
   };
