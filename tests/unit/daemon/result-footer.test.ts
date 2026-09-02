@@ -50,7 +50,7 @@ async function begin(run: Run, tool = 'studio_observe'): Promise<FooterContext> 
 }
 
 async function footerFor(run: Run, tool = 'studio_observe'): Promise<string> {
-  return renderFooter((await begin(run, tool)).fields(), 'generic');
+  return renderFooter(await (await begin(run, tool)).fields(), 'generic');
 }
 
 describe('the always-present fields come off the Run projection', () => {
@@ -100,7 +100,7 @@ describe('cost so far â€” the log\'s own aggregate, never a tally kept beside it
     const run = newRun();
     const ctx = await begin(run);
     appendRunEventWithTail(db, run.id, { actor: { kind: 'agent' }, type: 'cost.recorded', payload: { kind: 'browser_action', amount: 1 } });
-    expect(renderFooter(ctx.fields(), 'generic')).toContain('1 browser actions');
+    expect(renderFooter(await ctx.fields(), 'generic')).toContain('1 browser actions');
   });
 });
 
@@ -115,7 +115,7 @@ describe('human msgs â€” what THIS result delivers, not what the run has ever ca
     const ctx = await begin(run);
     queueMessage(db, run.id, { text: 'actually, the other one' });
     deliverMessages(db, run.id, { via: 'piggyback' });
-    expect(renderFooter(ctx.fields(), 'generic')).toContain('human msgs: 1');
+    expect(renderFooter(await ctx.fields(), 'generic')).toContain('human msgs: 1');
   });
 
   it('the line is absent when the call delivered nothing', async () => {
@@ -139,8 +139,8 @@ describe('page changed â€” an invalidation NEWER than the driver\'s last read (Â
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'input' } });
 
     const ctx = await begin(run, 'studio_observe');
-    expect(renderFooter(ctx.fields(), 'generic')).toContain('page changed: yes');
-    ctx.settle?.(ok);
+    expect(renderFooter(await ctx.fields(), 'generic')).toContain('page changed: yes');
+    await ctx.settle?.(ok);
 
     expect(eventsSince(db, run.id, 0, 100).map((e) => e.type)).toContain(SNAPSHOT_READ);
     expect(await footerFor(run)).not.toContain('page changed');
@@ -150,7 +150,7 @@ describe('page changed â€” an invalidation NEWER than the driver\'s last read (Â
     const run = newRun();
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'input' } });
 
-    for (let i = 0; i < 4; i++) (await begin(run, 'studio_observe')).settle?.(ok);
+    for (let i = 0; i < 4; i++) await (await begin(run, 'studio_observe')).settle?.(ok);
 
     const reads = eventsSince(db, run.id, 0, 100).filter((e) => e.type === SNAPSHOT_READ);
     expect(reads).toHaveLength(1);
@@ -160,7 +160,7 @@ describe('page changed â€” an invalidation NEWER than the driver\'s last read (Â
     const run = newRun();
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'input' } });
 
-    (await begin(run, 'studio_act')).settle?.(ok);
+    await (await begin(run, 'studio_act')).settle?.(ok);
     expect(eventsSince(db, run.id, 0, 100).map((e) => e.type)).not.toContain(SNAPSHOT_READ);
     expect(await footerFor(run, 'studio_act')).toContain('page changed: yes');
   });
@@ -169,14 +169,14 @@ describe('page changed â€” an invalidation NEWER than the driver\'s last read (Â
     const run = newRun();
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'input' } });
 
-    (await begin(run, 'studio_observe')).settle?.({ content: [{ type: 'text', text: '{}' }], isError: true });
+    await (await begin(run, 'studio_observe')).settle?.({ content: [{ type: 'text', text: '{}' }], isError: true });
     expect(await footerFor(run)).toContain('page changed: yes');
   });
 
   it('a SECOND human edit after a re-read announces again', async () => {
     const run = newRun();
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'input' } });
-    (await begin(run)).settle?.(ok);
+    await (await begin(run)).settle?.(ok);
     expect(await footerFor(run)).not.toContain('page changed');
 
     appendRunEventWithTail(db, run.id, { actor: { kind: 'human' }, type: SNAPSHOT_INVALIDATED, payload: { by: 'human', cause: 'navigation' } });

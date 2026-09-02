@@ -36,11 +36,15 @@ import {
   type DriverKind,
   type ProjectableEvent,
   type Run,
+  type RunEventInput,
+  type TypedEventQuery,
 } from '../studio/run-store.js';
 import { createLogger } from '../logger.js';
 import { currentClientProfile } from './capability-handshake.js';
 import { DRIVER_CHANGED, actorFor, formatDriver, type DriverChangeCause } from './driver-baton.js';
 import { watchLink } from './studio-footer.js';
+import { resolveDispatchStore, type DispatchStoreOptions } from './dispatch-store.js';
+import type { RunsStore } from './rest/runs-store.js';
 import type { McpToolResult, ReceiptDelivery } from './studio-dispatch.js';
 
 const log = createLogger('studio');
@@ -153,9 +157,13 @@ function receiptKey(seq: number, caller: ClientInfo | undefined): string {
   return `${seq}|${caller ? `${caller.name}@${caller.version}` : '-'}`;
 }
 
-function deliveredKeys(db: Database.Database, runId: string): Set<string> {
+/** The two windows this file reads, named once so the handle path and the port path share them. */
+const DELIVERED_QUERY: TypedEventQuery = { types: [RECEIPT_DELIVERED], limit: MAX_TYPED_EVENT_ROWS, newestFirst: true };
+const HISTORY_QUERY: TypedEventQuery = { types: [DRIVER_CHANGED], limit: MAX_RECEIPT_SCAN, newestFirst: true };
+
+function deliveredKeysOf(rows: readonly ProjectableEvent[]): Set<string> {
   const keys = new Set<string>();
-  for (const row of eventsOfTypes(db, runId, { types: [RECEIPT_DELIVERED], limit: MAX_TYPED_EVENT_ROWS, newestFirst: true })) {
+  for (const row of rows) {
     const at = row.payload.at_seq;
     if (typeof at !== 'number') continue;
     keys.add(receiptKey(at, driverFrom(row.payload.to)?.client));
@@ -178,7 +186,35 @@ export function pendingReleaseReceipt(
   run: Run,
   caller: ClientInfo | undefined,
 ): PendingReceipt | undefined {
-  const history = eventsOfTypes(db, run.id, { types: [DRIVER_CHANGED], limit: MAX_RECEIPT_SCAN, newestFirst: true });
+  const candidate = receiptCandidate(run.id, caller, eventsOfTypes(db, run.id, HISTORY_QUERY));
+  if (!candidate) return undefined;
+  return deliveredKeysOf(eventsOfTypes(db, run.id, DELIVERED_QUERY)).has(receiptKey(candidate.triggerSeq, caller))
+    ? undefined
+    : candidate;
+}
+
+/**
+ * The same question over the store PORT (#331). A binding with no typed read is owed no receipt it
+ * can prove, so it offers none — the trigger stays un-audited and the anti-join offers it again the
+ * moment a binding that can read the log asks.
+ */
+async function pendingReceiptOn(store: RunsStore, run: Run, caller: ClientInfo | undefined): Promise<PendingReceipt | undefined> {
+  const candidate = receiptCandidate(run.id, caller, (await store.typedEvents?.(run.id, HISTORY_QUERY)) ?? []);
+  if (!candidate) return undefined;
+  const delivered = deliveredKeysOf((await store.typedEvents?.(run.id, DELIVERED_QUERY)) ?? []);
+  return delivered.has(receiptKey(candidate.triggerSeq, caller)) ? undefined : candidate;
+}
+
+/**
+ * Everything the decision turns on EXCEPT the once-ness anti-join, which each path runs itself so
+ * the second read is never paid when there is no receipt to suppress. Pure: one definition of who
+ * is owed what, read by both bindings.
+ */
+function receiptCandidate(
+  runId: string,
+  caller: ClientInfo | undefined,
+  history: readonly ProjectableEvent[],
+): PendingReceipt | undefined {
   const latest = history[0];
   if (!latest) return undefined; // the wheel has never moved
 
@@ -200,8 +236,7 @@ export function pendingReleaseReceipt(
   // Disjointness from §7 row 2 is enforced in ONE place — `RECEIPTED_CAUSES`, read by `receiptFor`
   // below — and deliberately not also guarded here. A second check keyed on the same predicate
   // would be unfalsifiable, and an unfalsifiable guard reads as protection that nothing is testing.
-  if (deliveredKeys(db, run.id).has(receiptKey(latest.seq, caller))) return undefined;
-  const receipt = receiptFor(run.id, latest);
+  const receipt = receiptFor(runId, latest);
   return receipt ? { triggerSeq: latest.seq, target, receipt } : undefined;
 }
 
@@ -223,11 +258,16 @@ export function consumeReleaseReceipt(
   caller: ClientInfo | undefined,
   pending: PendingReceipt,
 ): void {
-  appendRunEventWithTail(db, run.id, {
+  appendRunEventWithTail(db, run.id, receiptDeliveredEvent(pending, caller));
+}
+
+/** WHAT RECORDING A RECEIPT IS, defined once for both paths. */
+function receiptDeliveredEvent(pending: PendingReceipt, caller: ClientInfo | undefined): RunEventInput {
+  return {
     actor: recipientActor(pending.target, caller),
     type: RECEIPT_DELIVERED,
     payload: { to: pending.target, at_seq: pending.triggerSeq },
-  });
+  };
 }
 
 /**
@@ -249,8 +289,7 @@ export function withReleaseReceipt(result: McpToolResult, receipt: ReleaseReceip
   return { ...result, content: [{ type: 'text', text: JSON.stringify(merged, null, 2) }, ...result.content.slice(1)] };
 }
 
-export interface ReceiptDeliveryOptions {
-  openDb?: () => Promise<Database.Database | undefined>;
+export interface ReceiptDeliveryOptions extends DispatchStoreOptions {
   runIdFor?: (name: string, args: Record<string, unknown>) => string | undefined;
   caller?: () => ClientInfo | undefined;
 }
@@ -258,15 +297,6 @@ export interface ReceiptDeliveryOptions {
 function runIdFromArgs(_name: string, args: Record<string, unknown>): string | undefined {
   const raw = args.run_id ?? args.runId;
   return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
-}
-
-async function defaultDb(): Promise<Database.Database | undefined> {
-  try {
-    const { getDatabase } = await import('../cache/db.js');
-    return getDatabase();
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -277,23 +307,26 @@ async function defaultDb(): Promise<Database.Database | undefined> {
  * leaving the trigger un-audited means, since the anti-join will offer it again next time.
  */
 export function createReceiptDelivery(options: ReceiptDeliveryOptions = {}): ReceiptDelivery {
-  const openDb = options.openDb ?? defaultDb;
+  const openStore = resolveDispatchStore(options);
   const runIdFor = options.runIdFor ?? runIdFromArgs;
   const caller = options.caller ?? (() => currentClientProfile().client);
   return async (name, args, result) => {
     try {
       const runId = runIdFor(name, args);
       if (!runId) return result;
-      const db = await openDb();
-      if (!db) return result;
-      const run = getRun(db, runId);
+      const store = await openStore();
+      if (!store) return result;
+      const run = await store.get(runId);
       if (!run) return result;
       const who = caller();
-      const pending = pendingReleaseReceipt(db, run, who);
+      const pending = await pendingReceiptOn(store, run, who);
       if (!pending) return result;
       const merged = withReleaseReceipt(result, pending.receipt);
       if (!merged) return result; // still owed; a later result will carry it
-      consumeReleaseReceipt(db, run, who, pending);
+      // Recorded only if the binding can record it. A receipt merged onto a result but never
+      // audited would be delivered twice; one that cannot be audited is not delivered at all.
+      if (!store.appendEvent) return result;
+      await store.appendEvent(run.id, receiptDeliveredEvent(pending, who));
       return merged;
     } catch (err) {
       log.warn('release receipt not delivered on this call; it stays owed', { tool: name, error: String(err) });

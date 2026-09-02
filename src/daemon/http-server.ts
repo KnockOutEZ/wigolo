@@ -10,6 +10,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // only) so that a studio-only gateway (mcpServerFactory set) — which runs in the Electron main where
 // better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
+import type { DispatchStoreOptions } from './dispatch-store.js';
 import { setBatonGate, setDeliveryHooks, setFooterSource, setReceiptDelivery, type StudioHostHandlers } from './studio-dispatch.js';
 import { createBatonGate } from './driver-baton.js';
 import { createReceiptDelivery } from './driver-receipt.js';
@@ -129,6 +130,18 @@ export interface DaemonOptions {
   restBindHost?: string;
 }
 
+/**
+ * What a studio host hands the daemon alongside its handlers (#331).
+ *
+ * A host holding a native handle passes nothing and keeps today's behaviour exactly. A host whose
+ * store is reachable only over an async port — the desktop app's, whose main process never loads a
+ * native module — passes the port it already binds for REST, and the footer, the baton, the
+ * delivery queue and the release receipt begin working there for the first time.
+ */
+export interface StudioHostStoreOptions {
+  store?: RunsStore;
+}
+
 export class DaemonHttpServer {
   private httpServer: HttpServer | null = null;
   private subsystems: Subsystems | null = null;
@@ -190,25 +203,33 @@ export class DaemonHttpServer {
    * per-session createMcpServer reads subsystems.studioHost, so a late-set value is
    * picked up by every subsequent agent connection.
    */
-  setStudioHost(handlers: StudioHostHandlers): void {
+  setStudioHost(handlers: StudioHostHandlers, options: StudioHostStoreOptions = {}): void {
     this.studioHost = handlers;
     if (this.subsystems) this.subsystems.studioHost = handlers;
+    // THE SEAM (#331). A host that reaches its run store some other way passes it here, and all
+    // four mechanisms below are built on it. Omitted, they fall back to a native handle exactly as
+    // they did — which keeps the daemon's own path unchanged while the desktop app, whose main
+    // process deliberately never loads a native store, stops being served by four inert mechanisms
+    // that rendered `— no run —` on every result it ever produced.
+    const store: DispatchStoreOptions = options.store
+      ? { openStore: async (): Promise<RunsStore | undefined> => options.store }
+      : {};
     // SD2 §7 row 12. Becoming the live host is the one moment a process both owns the handlers and
     // can reach the run log, so it is where the baton gate is installed: from here an act-class call
     // naming a run someone else drives is refused with `not_the_driver` before it touches the page.
     // Idempotent — a re-set replaces the closure rather than stacking a second gate.
-    setBatonGate(createBatonGate());
+    setBatonGate(createBatonGate(store));
     // SD2 §3.2 mechanism 1, installed at the same moment and for the same reason: the delivery
     // queue is a fold over the run log, so it can only be drained by the process that can read it.
-    setDeliveryHooks(createDeliveryHooks());
+    setDeliveryHooks(createDeliveryHooks(store));
     // SD2 §4.4, installed here for the third time for the third instance of one reason: every field
     // the footer renders is a projection of the run log, and this process is the only one that can
     // read it. Elsewhere the footer still lands, saying `— no run —`.
-    setFooterSource(createFooterSource());
+    setFooterSource(createFooterSource(store));
     // SD2 §1.4 / §7 row 3, and the fourth instance of the same reason: the release receipt is a
     // projection of `driver.changed`, so the process that can read the run log is the process that
     // can tell a stranded driver where its wheel went.
-    setReceiptDelivery(createReceiptDelivery());
+    setReceiptDelivery(createReceiptDelivery(store));
   }
 
   /**

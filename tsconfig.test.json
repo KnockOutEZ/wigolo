@@ -114,7 +114,8 @@
     "tests/unit/daemon/studio-footer-coverage.test.ts",
     "tests/unit/daemon/result-footer.test.ts",
     "tests/unit/daemon/browser-closed.test.ts",
-    "tests/integration/studio-footer-surfaces.test.ts"
+    "tests/integration/studio-footer-surfaces.test.ts",
+    "tests/integration/studio-dispatch-store-port.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
