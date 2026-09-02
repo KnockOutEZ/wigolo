@@ -22,6 +22,7 @@ import { handleAgent } from '../../tools/agent.js';
 import { handleDiff, type DiffInput } from '../../tools/diff.js';
 import { handleWatch } from '../../tools/watch.js';
 import { scheduleOverdueCheck } from '../../watch/scheduler.js';
+import { recordToolTelemetry } from '../../telemetry/instrumentation.js';
 import { guardServeTarget } from './target-guard.js';
 import { guardResolvedServeTarget, type SsrfResult, type SsrfRejection } from '../../watch/ssrf.js';
 import { getConfig } from '../../config.js';
@@ -403,9 +404,30 @@ function shapeUntrusted(tool: string, input: unknown, body: unknown, mode: Untru
  * fenced inline by default, or byte-clean with an `untrusted_content` envelope on opt-in.
  */
 export async function dispatchTool(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {
+  const startedAt = Date.now();
   const result = await dispatchToolInner(tool, input, ctx);
+  // Reported here rather than in `routeRequest`, for the same reason the MCP seam reports
+  // from the audit block: this is the wrapper every REST tool call passes through, and it
+  // sits BELOW the activation gate (`routeRequest`), so a refused request returns without
+  // ever reaching this function and emits nothing at all.
+  const ok = result.status >= 200 && result.status < 300;
+  recordToolTelemetry(tool, 'rest', ok, Date.now() - startedAt, ok ? undefined : restFailure(result));
   if (result.status !== 200) return result;
   return { ...result, body: shapeUntrusted(tool, input, result.body, ctx.untrustedMode) };
+}
+
+/**
+ * The classifiable part of a failed REST response: its status, plus the envelope's machine
+ * code — which lives in `error_reason` on the PUBLISHED shape (see `stageFailure`). The
+ * human prose in `error` is deliberately never read: a code is a closed vocabulary the
+ * classifier can key on, prose is where page-derived bytes end up.
+ */
+function restFailure(result: DispatchResult): unknown {
+  const body = result.body;
+  const code = body !== null && typeof body === 'object'
+    ? (body as { error_reason?: unknown }).error_reason
+    : undefined;
+  return Object.assign(new Error(typeof code === 'string' ? code : ''), { status: result.status });
 }
 
 async function dispatchToolInner(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {

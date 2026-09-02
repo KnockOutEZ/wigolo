@@ -8,6 +8,7 @@ import { BingEngine } from '../search/engines/bing.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { BackendStatus } from '../server/backend-status.js';
 import { checkActivation } from '../server/activation.js';
+import { recordToolTelemetry } from '../telemetry/instrumentation.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { parseArgs, type ParsedArgs } from '../repl/parser.js';
@@ -216,9 +217,14 @@ export async function runTool(command: string, rawArgs: string[]): Promise<numbe
     backendStatus,
   };
 
+  // Below the gate, so a refused one-shot returned above and reported nothing. A one-shot
+  // only ever APPENDS to the queue — the flush timer is armed by `initSubsystems`, which
+  // this path never calls, so telemetry can never delay the exit of a `wigolo fetch`.
+  const startedAt = Date.now();
   try {
     const result = await dispatch(command, parsed, deps);
     const failed = typeof result.error === 'string' && result.error.length > 0;
+    recordToolTelemetry(command, 'cli', !failed, Date.now() - startedAt, failed ? result.error : undefined);
 
     if (useJson && failed) {
       // Emit a JSON error object on stdout — the whole result already carries
@@ -229,6 +235,7 @@ export async function runTool(command: string, rawArgs: string[]): Promise<numbe
     }
     return failed ? 1 : 0;
   } catch (err) {
+    recordToolTelemetry(command, 'cli', false, Date.now() - startedAt, err);
     const msg = err instanceof Error ? err.message : String(err);
     log.error('one-shot tool failed', { command, error: msg });
     if (useJson) {

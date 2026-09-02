@@ -32,6 +32,9 @@ import {
 } from './politeness.js';
 import { resolveStealthUA } from './stealth.js';
 import { recordFetchOutcome, markSubstrateServed } from './tier-occupancy.js';
+import { emit as emitTelemetry } from '../telemetry/index.js';
+import { registrableDomain } from '../telemetry/domain.js';
+import { FETCH_TIERS, type BlockSignal, type FetchTier } from '../telemetry/events.js';
 import { resolveBrowserTier } from './browser-tier.js';
 import {
   CLEARANCE_COOKIE_NAME,
@@ -530,6 +533,59 @@ function stampAuthApplied(
   // A failed stage has no body to mark, and marking one would put an authenticated label on a row that
   // was never written.
   return isStageError(result) ? result : { ...result, authApplied: true };
+}
+
+/**
+ * Which of the three closed block signals, if any, this terminal outcome represents.
+ *
+ * Precedence is `challenge` → `tier_ceiling` → `http_403`, and it is deliberate: a
+ * challenge is routinely SERVED as a 403, so reading the status first would relabel most
+ * anti-bot walls as ordinary forbidden responses and erase the distinction the metric
+ * exists to make.
+ *
+ * `tier_ceiling` is the ladder running out of rungs — the browser tier was the escalation
+ * target and could not be acquired — not a remote's refusal.
+ */
+function blockSignalFor(result: RawFetchResult | StageError): BlockSignal | null {
+  if (isStageError(result)) {
+    if (result.error === 'blocked_by_challenge') return 'challenge';
+    if (result.error === 'browser_engine_unavailable') return 'tier_ceiling';
+    if (result.http_status === 403) return 'http_403';
+    return null;
+  }
+  return result.statusCode === 403 ? 'http_403' : null;
+}
+
+/**
+ * D-S10-4's seam, reused. `SmartRouter.fetch` is the one exit every terminal rung returns
+ * through, and the same argument the tier-occupancy counter makes applies verbatim here:
+ * the ladder has roughly twenty terminal returns, so per-branch emits would silently miss
+ * the twenty-first the day someone adds it. Emitting once at the exit makes "reported" a
+ * property of returning from `fetch`.
+ *
+ * `fetch.tier_escalated` therefore reports the tier actually REACHED, not each rung
+ * crossed: `method !== 'http'` is exactly "this did not come from the base tier", which is
+ * the escalation count the brief asks for and is the only reading that cannot drift out of
+ * step with the ladder. A throw is not reported, for the same reason the occupancy counter
+ * skips it — an exception escaping the router is not a rung outcome.
+ *
+ * Nothing derived from the URL beyond its registrable domain, and nothing derived from the
+ * page at all, can leave here: the two props are a branded eTLD+1 and a member of a
+ * four-value enum.
+ */
+function recordFetchTelemetry(url: string, result: RawFetchResult | StageError): void {
+  const signal = blockSignalFor(result);
+  if (signal !== null) {
+    // A host with no registrable domain (an IP literal, `localhost`, a bare public suffix)
+    // drops the event rather than reporting a placeholder — see registrableDomain.
+    const domain = registrableDomain(url);
+    if (domain !== null) emitTelemetry({ name: 'fetch.blocked', props: { domain, signal } });
+  }
+
+  if (isStageError(result)) return;
+  const method = result.method;
+  if (method === 'http' || !(FETCH_TIERS as readonly string[]).includes(method)) return;
+  emitTelemetry({ name: 'fetch.tier_escalated', props: { to_tier: method as FetchTier } });
 }
 
 export class SmartRouter {
@@ -1125,6 +1181,7 @@ export class SmartRouter {
   ): Promise<RawFetchResult | StageError> {
     const result = await this.routeFetch(url, options);
     recordFetchOutcome(result);
+    recordFetchTelemetry(url, result);
     return result;
   }
 
