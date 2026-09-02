@@ -26,7 +26,6 @@ import type Database from 'better-sqlite3';
 import { appendRunEventWithTail, subscribeRunEvents } from '../studio/run-bus.js';
 import {
   eventsOfTypes,
-  eventsSince,
   getRun,
   runExists,
   unansweredEvents,
@@ -285,6 +284,8 @@ export interface DeliverOptions {
   /** The agent the result is being minted for. Defaults to the daemon, which is what moves it. */
   actor?: Actor;
   limit?: number;
+  /** A mechanism-selected subset; urgent interrupt uses this to carry the urgent row itself. */
+  messages?: readonly RunMessage[];
 }
 
 /**
@@ -296,7 +297,9 @@ export interface DeliverOptions {
 export function deliverMessages(db: Database.Database, runId: string, opts: DeliverOptions = {}): RunMessage[] {
   const via = opts.via ?? 'piggyback';
   const actor = opts.actor ?? DAEMON;
-  const pending = undeliveredMessages(db, runId, opts.limit ?? MAX_MESSAGES_PER_RESULT);
+  const pending = opts.messages
+    ? [...opts.messages].slice(0, opts.limit ?? MAX_MESSAGES_PER_RESULT)
+    : undeliveredMessages(db, runId, opts.limit ?? MAX_MESSAGES_PER_RESULT);
   const delivered: RunMessage[] = [];
   for (const message of pending) {
     // No `step` in the payload: the row's own `seq` IS step N (A-51-3, A-54-1), and a copy of it in
@@ -526,6 +529,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
   const runIdFor = options.runIdFor ?? runIdFromArgs;
   const profile = options.profile ?? currentClientProfile;
   const caller = options.caller ?? (() => profile().client);
+  const activeWaits = new Set<string>();
   const outOfBandProbe = options.outOfBandProbe ?? ((runId: string, messages: readonly RunMessage[]) => {
     log.debug('out-of-band delivery is eligible but not implemented; falling through', {
       run: runId,
@@ -570,21 +574,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
           pending = pendingInterrupt(db, run, who);
         }
         if (!pending) return undefined;
-
-        const base = interruptResult(pending);
-        const waiting = undeliveredMessages(db, run.id);
-        // Rehearse the merge before recording delivery. A fixed JSON object is expected here, but
-        // preserving the queue's no-delivery-into-nowhere invariant costs almost nothing.
-        if (waiting.length > 0 && !withHumanMessages(base, waiting)) return undefined;
-        const delivered = waiting.length > 0
-          ? deliverMessages(db, run.id, { via: 'interrupt', actor: callerActor(who, run) })
-          : [];
-        appendRunEventWithTail(db, run.id, {
-          actor: callerActor(who, run),
-          type: DELIVERY_INTERRUPT_CONSUMED,
-          payload: { triggerSeq: pending.event.seq, target: pending.target },
-        });
-        return delivered.length > 0 ? (withHumanMessages(base, delivered) ?? base) : base;
+        return consumeInterrupt(db, run, who, pending);
       } catch (err) {
         log.warn('delivery interrupt check failed; continuing normal dispatch', { error: String(err) });
         return undefined;
@@ -602,7 +592,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
     async deliver(name, args, result) {
       try {
         if (isWaitForHumanResult(name, args, result)) {
-          return await resolveHumanWait(openDb, runIdFor, caller, name, args, result);
+          return await resolveHumanWait(openDb, runIdFor, caller, activeWaits, name, args, result);
         }
         const resolved = await resolve(name, args);
         if (!resolved) return result;
@@ -638,14 +628,8 @@ interface PendingInterrupt {
   target: Driver;
   reason: string;
   detail?: string;
+  messageId?: string;
 }
-
-const INTERRUPT_EVENT_TYPES = new Set([
-  MESSAGE_QUEUED,
-  'driver.changed',
-  'run.paused',
-  'run.cancelled',
-]);
 
 function driverFrom(raw: unknown): Driver | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
@@ -670,16 +654,7 @@ function callerActor(caller: ClientInfo | undefined, run: Run): Actor {
 }
 
 function pendingInterrupt(db: Database.Database, run: Run, caller: ClientInfo | undefined): PendingInterrupt | undefined {
-  const since = Math.max(0, run.lastSeq - MAX_TYPED_EVENT_ROWS);
-  const rows = eventsSince(db, run.id, since, MAX_TYPED_EVENT_ROWS);
-  const consumed = new Set<number>();
-  for (const row of rows) {
-    if (row.type !== DELIVERY_INTERRUPT_CONSUMED) continue;
-    const seq = row.payload.triggerSeq;
-    if (typeof seq === 'number' && Number.isInteger(seq)) consumed.add(seq);
-  }
-  for (const event of rows) {
-    if (consumed.has(event.seq) || !INTERRUPT_EVENT_TYPES.has(event.type)) continue;
+  for (const event of unconsumedInterruptEvents(db, run.id)) {
     if (event.type === 'driver.changed') {
       if (event.payload.cause !== 'takeover') continue;
       const target = driverFrom(event.payload.from);
@@ -693,7 +668,7 @@ function pendingInterrupt(db: Database.Database, run: Run, caller: ClientInfo | 
       // A wait or an earlier result may already have carried this urgent message. In that case the
       // interrupt mechanism lost the race, exactly as the selection rule says it should.
       if (!messageId || getMessage(db, run.id, messageId)?.state !== 'queued') continue;
-      return { event, target: run.driver, reason: 'urgent human message', detail: str(event.payload.text) };
+      return { event, target: run.driver, reason: 'urgent human message', detail: str(event.payload.text), messageId };
     }
     if (event.actor.kind !== 'human' || notDriving(run, caller)) continue;
     if (event.type === 'run.paused') {
@@ -702,6 +677,43 @@ function pendingInterrupt(db: Database.Database, run: Run, caller: ClientInfo | 
     return { event, target: run.driver, reason: 'human cancelled the run', detail: str(event.payload.reason) };
   }
   return undefined;
+}
+
+interface InterruptEventRow { seq: number; ts: string; actor: string; type: string; payload: string }
+
+/**
+ * Read ONLY eligible, still-unconsumed trigger rows. The anti-join is what makes an interrupt a
+ * durable flag rather than "something among the last N events": unrelated run traffic can never
+ * push a pending human interruption out of the next-call window.
+ */
+function unconsumedInterruptEvents(db: Database.Database, runId: string): RunEvent[] {
+  const rows = db.prepare(`
+    SELECT candidate.seq, candidate.ts, candidate.actor, candidate.type, candidate.payload
+      FROM studio_run_events candidate
+     WHERE candidate.run_id = ?
+       AND (
+         (candidate.type = 'driver.changed' AND json_extract(candidate.payload, '$.cause') = 'takeover')
+         OR (candidate.type = 'message.queued' AND json_extract(candidate.payload, '$.urgent') = 1
+             AND json_extract(candidate.actor, '$.kind') = 'human')
+         OR (candidate.type IN ('run.paused', 'run.cancelled')
+             AND json_extract(candidate.actor, '$.kind') = 'human')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM studio_run_events consumed
+          WHERE consumed.run_id = candidate.run_id
+            AND consumed.type = ?
+            AND json_extract(consumed.payload, '$.triggerSeq') = candidate.seq
+       )
+     ORDER BY candidate.seq ASC
+     LIMIT ?
+  `).all(runId, DELIVERY_INTERRUPT_CONSUMED, MAX_TYPED_EVENT_ROWS) as InterruptEventRow[];
+  return rows.map((row) => ({
+    seq: row.seq,
+    ts: row.ts,
+    actor: actorOf(JSON.parse(row.actor) as unknown),
+    type: row.type,
+    payload: JSON.parse(row.payload) as Record<string, unknown>,
+  }));
 }
 
 function priorInterruptWasFor(db: Database.Database, run: Run, caller: ClientInfo | undefined): boolean {
@@ -727,6 +739,30 @@ function interruptResult(pending: PendingInterrupt): McpToolResult {
     }],
     isError: false,
   };
+}
+
+function consumeInterrupt(
+  db: Database.Database,
+  run: Run,
+  caller: ClientInfo | undefined,
+  pending: PendingInterrupt,
+): McpToolResult | undefined {
+  const base = interruptResult(pending);
+  const waiting = pending.messageId
+    ? [getMessage(db, run.id, pending.messageId)].filter((message): message is RunMessage => message?.state === 'queued')
+    : undeliveredMessages(db, run.id);
+  // Rehearse the merge before recording delivery. A fixed JSON object is expected here, but
+  // preserving the queue's no-delivery-into-nowhere invariant costs almost nothing.
+  if (waiting.length > 0 && !withHumanMessages(base, waiting)) return undefined;
+  const delivered = waiting.length > 0
+    ? deliverMessages(db, run.id, { via: 'interrupt', actor: callerActor(caller, run), messages: waiting })
+    : [];
+  appendRunEventWithTail(db, run.id, {
+    actor: callerActor(caller, run),
+    type: DELIVERY_INTERRUPT_CONSUMED,
+    payload: { triggerSeq: pending.event.seq, target: pending.target },
+  });
+  return delivered.length > 0 ? (withHumanMessages(base, delivered) ?? base) : base;
 }
 
 function isWaitForHumanResult(
@@ -761,6 +797,7 @@ async function resolveHumanWait(
   openDb: () => Promise<Database.Database | undefined>,
   runIdFor: (name: string, args: Record<string, unknown>) => string | undefined,
   caller: () => ClientInfo | undefined,
+  activeWaits: Set<string>,
   name: string,
   args: Record<string, unknown>,
   result: McpToolResult,
@@ -776,57 +813,92 @@ async function resolveHumanWait(
   if (!db) return waitError('run_store_unavailable', 'The run store is unavailable; the wait was not started.');
   const run = drivingRun(db, runId, caller());
   if (!run) return waitError('run_not_found', `No driven run ${runId} is available for this wait.`);
+  if (activeWaits.has(run.id)) {
+    return waitError('wait_already_pending', 'This run is already waiting for a human answer.');
+  }
+  activeWaits.add(run.id);
   const waitId = mintWaitId();
-  appendRunEventWithTail(db, run.id, {
-    actor: actorForRun(run),
-    type: DELIVERY_WAIT_REQUESTED,
-    payload: { waitId, reason },
-  });
+  try {
+    appendRunEventWithTail(db, run.id, {
+      actor: actorForRun(run),
+      type: DELIVERY_WAIT_REQUESTED,
+      payload: { waitId, reason },
+    });
 
-  const answerId = await new Promise<string>((resolve, reject) => {
-    let settled = false;
-    let unsubscribe = () => {};
-    const finish = (messageId: string): void => {
-      if (settled) return;
-      settled = true;
-      unsubscribe();
-      resolve(messageId);
-    };
-    const check = (): void => {
-      try {
-        const first = undeliveredMessages(db, run.id, MAX_MESSAGES_PER_RESULT)
-          .find((message) => message.from.kind === 'human');
-        if (first) finish(first.messageId);
-      } catch (err) {
+    const outcome = await new Promise<{ kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt }>((resolve, reject) => {
+      let settled = false;
+      let unsubscribe = () => {};
+      const finish = (value: { kind: 'answer'; messageId: string } | { kind: 'interrupt'; pending: PendingInterrupt }): void => {
         if (settled) return;
         settled = true;
         unsubscribe();
-        reject(err);
-      }
-    };
-    // Subscribe first, then re-read the durable queue. An append between those operations is seen by
-    // the listener and by the read; `settled` turns the duplicate observation into a no-op.
-    unsubscribe = subscribeRunEvents(run.id, (event) => {
-      if (event.type === MESSAGE_QUEUED && event.actor.kind === 'human') check();
+        resolve(value);
+      };
+      const check = (): void => {
+        try {
+          const first = undeliveredMessages(db, run.id, MAX_MESSAGES_PER_RESULT)
+            .find((message) => message.from.kind === 'human');
+          if (first) finish({ kind: 'answer', messageId: first.messageId });
+        } catch (err) {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          reject(err);
+        }
+      };
+      // Subscribe first, then re-read the durable queue. An append between those operations is seen by
+      // the listener and by the read; `settled` turns the duplicate observation into a no-op.
+      unsubscribe = subscribeRunEvents(run.id, (event) => {
+        if (event.type === MESSAGE_QUEUED && event.actor.kind === 'human') {
+          check();
+          return;
+        }
+        if (event.type !== 'driver.changed' && event.type !== 'run.paused' && event.type !== 'run.cancelled') return;
+        const latest = getRun(db, run.id);
+        if (!latest) return;
+        const pending = pendingInterrupt(db, latest, caller());
+        if (pending) finish({ kind: 'interrupt', pending });
+      });
+      check();
     });
-    check();
-  });
 
-  const delivered = deliverMessages(db, run.id, { via: 'wait', actor: actorForRun(run) });
-  const answer = delivered.find((message) => message.messageId === answerId);
-  if (!answer) return waitError('wait_resolution_lost', 'The answer was claimed by another result; call wait_for_human again.');
-  appendRunEventWithTail(db, run.id, {
-    actor: actorForRun(run),
-    type: DELIVERY_WAIT_RESOLVED,
-    payload: { waitId, messageId: answer.messageId },
-  });
-  const carried = withHumanMessages(result, delivered);
-  if (!carried) return waitError('wait_result_invalid', 'The host wait result could not carry the human answer.');
-  const block = carried.content[0];
-  if (!block || block.type !== 'text') return carried;
-  const body = JSON.parse(block.text) as Record<string, unknown>;
-  body.answer = messageView(answer);
-  return { ...carried, content: [{ type: 'text', text: JSON.stringify(body, null, 2) }, ...carried.content.slice(1)] };
+    if (outcome.kind === 'interrupt') {
+      const latest = getRun(db, run.id) ?? run;
+      const interrupted = consumeInterrupt(db, latest, caller(), outcome.pending);
+      if (!interrupted) return waitError('wait_interrupted', 'The run was interrupted while waiting; call again to inspect it.');
+      appendRunEventWithTail(db, run.id, {
+        actor: actorForRun(run),
+        type: DELIVERY_WAIT_RESOLVED,
+        payload: { waitId, triggerSeq: outcome.pending.event.seq, outcome: 'interrupted' },
+      });
+      return interrupted;
+    }
+
+    const delivered = deliverMessages(db, run.id, { via: 'wait', actor: actorForRun(run) });
+    const answer = delivered.find((message) => message.messageId === outcome.messageId);
+    if (!answer) return waitError('wait_resolution_lost', 'The answer was claimed by another result; call wait_for_human again.');
+    appendRunEventWithTail(db, run.id, {
+      actor: actorForRun(run),
+      type: DELIVERY_WAIT_RESOLVED,
+      payload: { waitId, messageId: answer.messageId },
+    });
+    if (answer.urgent) {
+      appendRunEventWithTail(db, run.id, {
+        actor: actorForRun(run),
+        type: DELIVERY_INTERRUPT_CONSUMED,
+        payload: { triggerSeq: answer.queuedAtStep, target: run.driver },
+      });
+    }
+    const carried = withHumanMessages(result, delivered);
+    if (!carried) return waitError('wait_result_invalid', 'The host wait result could not carry the human answer.');
+    const block = carried.content[0];
+    if (!block || block.type !== 'text') return carried;
+    const body = JSON.parse(block.text) as Record<string, unknown>;
+    body.answer = messageView(answer);
+    return { ...carried, content: [{ type: 'text', text: JSON.stringify(body, null, 2) }, ...carried.content.slice(1)] };
+  } finally {
+    activeWaits.delete(run.id);
+  }
 }
 
 /** The run's driver, wearing the actor shape — the same mapping the baton's `actorFor` makes. */
