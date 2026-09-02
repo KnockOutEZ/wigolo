@@ -78,9 +78,11 @@ export interface RunsStore {
    * caller names a GESTURE and the baton decides which events (if any) that gesture is worth, which
    * is what keeps "transitions happen only via the explicit gesture" true of every surface at once.
    *
-   * OPTIONAL because a binding that cannot reach the log directly — the Electron main's
-   * broker-backed store — has no baton to move; the route answers `store_unavailable` there rather
-   * than pretending. Additive on purpose: an existing binding stays valid without changing.
+   * OPTIONAL so that a binding without one degrades honestly — the route answers
+   * `store_unavailable` rather than pretending — and so an existing binding stays valid without
+   * changing. It is NOT a statement about what a broker-backed store can do: since #334 the broker
+   * child serves this gesture itself (`runDriver`), through the same `applyDriverGesture` below, so
+   * a store behind the async port can bind this member as completely as the native one.
    */
   driver?(runId: string, input: DriverGesture): Promise<BatonResult>;
   /**
@@ -90,7 +92,11 @@ export interface RunsStore {
    * what comes back is a `queued` message whose own state line says when it will reach the agent.
    */
   sendMessage?(runId: string, input: QueueMessageInput): Promise<QueueMessageResult>;
-  /** The run's messages, newest first, each folded to the state its rows put it in. */
+  /**
+   * The run's messages, newest first, each folded to the state its rows put it in. Optional on the
+   * same terms as `driver` and `sendMessage` — and, like them, answerable over the broker's wire
+   * since #334 (`runMessages`) rather than only over a native handle.
+   */
   messages?(runId: string, limit: number): Promise<RunMessage[]>;
 
   // -------------------------------------------------------------------------
