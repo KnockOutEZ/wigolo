@@ -32,6 +32,7 @@ import {
   runExists,
   listRuns,
   eventsSince,
+  eventsSinceBounded,
   resolveRunId,
   type CreateRunInput,
   type ListRunsOptions,
@@ -112,29 +113,14 @@ export const MAX_BOOT_FRAME_CHARS = 4_000_000;
 export const MAX_BOOT_PENDING_CARDS = 20;
 
 /**
- * The ceiling on ONE `runEventsSince` frame, whatever the caller asks for.
+ * The per-page ceilings, re-exported from the store that owns them (`studio/run-store.ts`).
  *
- * `limit` is now required — an omitted one used to mean "the whole log", which is how the view-model
- * replayed every gap — but a required parameter only moves the decision to the caller. A frame the
- * host cannot survive must not be reachable FROM a caller at all, so the ceiling is enforced here as
- * well. A client that asks for more gets a short page, which is why the paged reader upstream stops
- * on an EMPTY page rather than on a short one.
+ * They used to be defined here, and only here, which is exactly why the daemon's own binding of the
+ * same read shipped without them (SD1 exit-19): the numbers and the reasoning lived inside one of the
+ * two processes that can own the store. One definition, both bindings — see `eventsSinceBounded`.
+ * Re-exported rather than moved outright because these names are this module's published surface.
  */
-export const MAX_EVENTS_PAGE = 2_000;
-
-/**
- * The same ceiling in the unit the frame actually grows in.
- *
- * A count alone bounds the wrong thing — `MAX_BOOT_*` says so above, and `DEFAULT_MAX_HELD_BYTES` in
- * `rest/runs.ts` says it again for the SSE hold buffer — and this read was the one place that had the
- * count and nothing else. One payload may be `MAX_EVENT_PAYLOAD_CHARS` (64k), so a page of 2,000 rows
- * is up to 128M characters: TWICE the host's own `DEFAULT_MAX_FRAME_CHARS` backstop. A legitimate
- * page could therefore be killed as an oversized frame and take the broker down with it, and a replay
- * paging through such a log would restart the child on every page and never finish.
- *
- * Four million, matching `MAX_BOOT_FRAME_CHARS`: the same host, the same thread, the same reason.
- */
-export const MAX_EVENTS_PAGE_CHARS = 4_000_000;
+export { MAX_EVENTS_PAGE, MAX_EVENTS_PAGE_CHARS } from '../studio/run-store.js';
 
 /**
  * Prepared-statement cache, keyed by connection.
@@ -165,48 +151,6 @@ function stmt(db: Database.Database, sql: string): Database.Statement {
   return prepared;
 }
 
-/**
- * `{"seq":`, `,"ts":"…"`, `,"actor":`, `,"type":"…"`, `,"payload":`, `}` — the keys, quotes, commas
- * and braces `JSON.stringify` puts around one envelope's four stored columns. Fixed by the shape of
- * `RunEvent`, so the only per-row variable left is the seq's digit count.
- */
-const EVENT_ENVELOPE_CHARS = 46;
-
-const PAGE_MEASURE_SQL =
-  'SELECT seq, LENGTH(ts) + LENGTH(actor) + LENGTH(type) + LENGTH(payload) AS chars' +
-  '  FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?';
-
-/**
- * How many of the next `limit` rows fit the character budget — asked of SQLite, not of the page.
- *
- * ALWAYS at least one when there is one: an empty page is how every paged reader here recognises
- * end-of-log, so a budget that could answer "nothing" would end a replay in the middle of a run
- * rather than bound it. One event cannot approach the frame cap on its own —
- * `MAX_EVENT_PAYLOAD_CHARS` is 64k — so the worst page this admits is the budget plus one event,
- * which is what `tests/integration/studio-broker-frame-budget.test.ts` pins against the host's
- * ceiling.
- *
- * The measure used to be `JSON.stringify` per event over the materialized page, and then `send`
- * serialized the whole frame again — two full serializations of the same characters, 3.29 ms +
- * 1.66 ms on a 733 KB page, on the child's only thread, and a hundred-thousand-event gap replay
- * pays it once per page. `LENGTH()` reads the stored bytes without copying them into a JS string,
- * so the frame is now serialized exactly once, by the transport.
- *
- * Sound in the same direction as `storedPayloadChars`: SQLite's `length()` counts code points where
- * JS `.length` counts UTF-16 units, so an astral character makes this smaller than the truth and
- * never larger, and the payload each row stores is the same JSON text `JSON.stringify` reproduces.
- * A bound that can only UNDER-state admits at most a little more than the old measure did — never
- * a page the old one would have cut short of the budget.
- */
-function pageRowsWithinChars(db: Database.Database, runId: string, since: number, limit: number): number {
-  const rows = stmt(db, PAGE_MEASURE_SQL).all(runId, since, limit) as Array<{ seq: number; chars: number | null }>;
-  let chars = 0;
-  for (let i = 0; i < rows.length; i++) {
-    chars += (rows[i].chars ?? 0) + EVENT_ENVELOPE_CHARS + String(rows[i].seq).length;
-    if (chars > MAX_EVENTS_PAGE_CHARS) return i + 1;
-  }
-  return rows.length;
-}
 
 /** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
 export interface BrokerRunLogEntry {
@@ -568,22 +512,16 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
     // and the view-model's gap replay called it exactly that way.
     //
-    // CONTRACT: the returned page is clamped to `MAX_EVENTS_PAGE` rows AND `MAX_EVENTS_PAGE_CHARS`
-    // characters whatever `limit` says, so a SHORT page never means end-of-log. Callers must page
-    // until an EMPTY one — a caller that stops on a short page silently truncates every log longer
-    // than either clamp. Both clamps are here because neither bounds a frame alone: rows say nothing
-    // about size, and the size is what the host has to accumulate and parse on the thread that paints.
+    // CONTRACT (`eventsSinceBounded`, which owns it for BOTH bindings of this read): the page is
+    // clamped to `MAX_EVENTS_PAGE` rows AND `MAX_EVENTS_PAGE_CHARS` characters whatever `limit` says,
+    // so a SHORT page never means end-of-log. Callers must page until an EMPTY one — a caller that
+    // stops on a short page silently truncates every log longer than either clamp. Both clamps are
+    // needed because neither bounds a frame alone: rows say nothing about size, and the size is what
+    // the host has to accumulate and parse on the thread that paints.
     runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
       const limit = Math.floor(Number(p.limit));
       if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
-      const id = resolveRunId(p.runId);
-      if (id === undefined) return [];
-      const since = p.since ?? 0;
-      // Measure, then read exactly what fits. The clamp used to read the whole row page and
-      // `JSON.stringify` its way down it, which is the second of two serializations of the same
-      // characters — see `pageRowsWithinChars`.
-      const rows = pageRowsWithinChars(deps.db, id, since, Math.min(limit, MAX_EVENTS_PAGE));
-      return rows === 0 ? [] : eventsSince(deps.db, id, since, rows);
+      return eventsSinceBounded(deps.db, p.runId, p.since ?? 0, limit);
     },
   };
 }

@@ -191,6 +191,53 @@ export const MAX_TASK_CHARS = 4000;
  * two places, so "no bound" means "a disk-fill primitive".
  */
 export const MAX_EVENT_PAYLOAD_CHARS = 64_000;
+
+/**
+ * The ceiling on ONE page of `eventsSince`, whatever the caller asks for.
+ *
+ * UNIT: rows. VALUE: 2,000 events.
+ *
+ * `limit` is required of every bounded reader — an omitted one used to mean "the whole log", which is
+ * how the view-model replayed every gap — but a required parameter only moves the decision to the
+ * caller. A page no reader can survive must not be reachable FROM a caller at all, so the ceiling is
+ * enforced at the read. A client that asks for more gets a SHORT page, which is why every paged
+ * reader on this store stops on an EMPTY page rather than on a short one.
+ *
+ * Defined here rather than in either binding because both bindings of this read — the broker child
+ * (`daemon/studio-db-broker.ts`) and the daemon's own SQLite handle (`daemon/rest/runs-store.ts`) —
+ * must clamp identically or the same REST contract means two different things depending on which
+ * process happens to own the store (law 1: one event stream, not one per implementation).
+ */
+export const MAX_EVENTS_PAGE = 2_000;
+
+/**
+ * The same ceiling in the unit the page actually grows in.
+ *
+ * UNIT: payload+envelope characters. VALUE: 4,000,000 characters (~4 MB of JSON text).
+ *
+ * A count alone bounds the wrong thing — `DEFAULT_MAX_HELD_BYTES` in `daemon/rest/runs.ts` says it
+ * for the SSE hold buffer, and this read had the count and nothing else on the daemon binding until
+ * SD1 exit-19. One payload may be `MAX_EVENT_PAYLOAD_CHARS` (64k), so a page of rows alone is worth
+ * 64k times the row count: 2,000 rows is up to 128M characters, and the daemon's own default replay
+ * page of 500 rows is ~32 MB read, parsed twice and held, in ONE uninterruptible synchronous block
+ * on the loop every other request shares. In the broker the same page is also TWICE the host's
+ * `DEFAULT_MAX_FRAME_CHARS` backstop, so a legitimate page could be killed as an oversized frame and
+ * take the child down with it.
+ *
+ * Four million, matching the boot path's `MAX_BOOT_FRAME_CHARS`: the same thread, the same reason.
+ */
+export const MAX_EVENTS_PAGE_CHARS = 4_000_000;
+
+/**
+ * `{"seq":`, `,"ts":"…"`, `,"actor":`, `,"type":"…"`, `,"payload":`, `}` — the keys, quotes, commas
+ * and braces `JSON.stringify` puts around one envelope's four stored columns. Fixed by the shape of
+ * `RunEvent`, so the only per-row variable left is the seq's digit count.
+ */
+const EVENT_ENVELOPE_CHARS = 46;
+
+const PAGE_MEASURE_SQL =
+  'SELECT seq, LENGTH(ts) + LENGTH(actor) + LENGTH(type) + LENGTH(payload) AS chars' +
+  '  FROM studio_run_events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?';
 export const DEFAULT_SPACE_ID = 'default';
 /** Pin 3 — a pending decision auto-denies after two minutes. */
 export const AUTO_DENY_MS = 120_000;
@@ -1276,6 +1323,61 @@ export function runExists(db: Database.Database, runId: string): boolean {
 export function eventsSince(db: Database.Database, runId: string, since = 0, limit?: number): RunEvent[] {
   const id = resolveRunId(runId);
   return id === undefined ? [] : readEvents(db, id, since, limit);
+}
+
+/**
+ * How many of the next `limit` rows fit the character budget — asked of SQLite, not of the page.
+ *
+ * ALWAYS at least one when there is one: an empty page is how every paged reader here recognises
+ * end-of-log, so a budget that could answer "nothing" would end a replay in the middle of a run
+ * rather than bound it. One event cannot approach the budget on its own — `MAX_EVENT_PAYLOAD_CHARS`
+ * is 64k — so the worst page this admits is the budget plus one event, which is what
+ * `tests/integration/studio-broker-frame-budget.test.ts` pins against the broker host's ceiling.
+ *
+ * The measure used to be `JSON.stringify` per event over the materialized page, and then the frame
+ * was serialized again — two full serializations of the same characters, 3.29 ms + 1.66 ms on a
+ * 733 KB page, on one thread, once per page of a hundred-thousand-event gap replay. `LENGTH()` reads
+ * the stored bytes without copying them into a JS string, so the page is SIZED BEFORE IT IS
+ * MATERIALIZED and the rows that would not have fit are never read or parsed at all.
+ *
+ * Sound in the same direction as `storedPayloadChars`: SQLite's `length()` counts code points where
+ * JS `.length` counts UTF-16 units, so an astral character makes this smaller than the truth and
+ * never larger, and the payload each row stores is the same JSON text `JSON.stringify` reproduces.
+ * A bound that can only UNDER-state admits at most a little more than the old measure did — never
+ * a page the old one would have cut short of the budget.
+ */
+export function pageRowsWithinChars(db: Database.Database, runId: string, since: number, limit: number): number {
+  const id = resolveRunId(runId);
+  if (id === undefined) return 0;
+  const rows = stmt(db, PAGE_MEASURE_SQL).all(id, since, limit) as Array<{ seq: number; chars: number | null }>;
+  let chars = 0;
+  for (let i = 0; i < rows.length; i++) {
+    chars += (rows[i].chars ?? 0) + EVENT_ENVELOPE_CHARS + String(rows[i].seq).length;
+    if (chars > MAX_EVENTS_PAGE_CHARS) return i + 1;
+  }
+  return rows.length;
+}
+
+/**
+ * `eventsSince`, bounded in BOTH units — the read every binding of the REST `events` port goes
+ * through.
+ *
+ * CONTRACT: the returned page is clamped to `MAX_EVENTS_PAGE` rows AND `MAX_EVENTS_PAGE_CHARS`
+ * characters whatever `limit` says, so a SHORT page never means end-of-log. Callers must page until
+ * an EMPTY one — a caller that stops on a short page silently truncates every log longer than either
+ * clamp (`daemon/rest/runs.ts`'s `pumpDurable` and `run-view-model.ts`'s `readLog` both restate this).
+ * Both clamps are here because neither bounds a page alone: rows say nothing about size, and the size
+ * is what the caller has to read, parse and hold on the thread it is blocking while it does.
+ *
+ * Two reads rather than one because the character bound has to be measured BEFORE the page is
+ * materialized; measuring the materialized page would already have paid the cost the bound exists to
+ * refuse. The measure is an indexed range scan over four `LENGTH()`s, which is the cheap half.
+ */
+export function eventsSinceBounded(db: Database.Database, runId: string, since: number, limit: number): RunEvent[] {
+  const asked = Math.floor(Number(limit));
+  if (!Number.isFinite(asked) || asked < 1) return [];
+  const rows = pageRowsWithinChars(db, runId, since, Math.min(asked, MAX_EVENTS_PAGE));
+  return rows === 0 ? [] : eventsSince(db, runId, since, rows);
 }
 
 /**

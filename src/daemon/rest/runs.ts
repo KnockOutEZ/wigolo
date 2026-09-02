@@ -32,6 +32,7 @@ import {
   MAX_TASK_CHARS,
   MAX_LIST_LIMIT,
   DEFAULT_LIST_LIMIT,
+  MAX_EVENTS_PAGE,
   type Driver,
   type DriverKind,
   type Run,
@@ -167,10 +168,21 @@ const DEFAULT_SSE_MAX_STALLED_BYTES = 4 * 1024 * 1024;
  */
 const SSE_DRAIN_HEARTBEATS = 4;
 
+/**
+ * How many events one replay page ASKS for — clamped to the store's own per-page row ceiling.
+ *
+ * The knob had no ceiling, so `WIGOLO_STUDIO_RUN_REPLAY_PAGE=100000000` asked for the whole log in
+ * one page. The store now refuses that in both units (`eventsSinceBounded`), so the clamp here buys
+ * no safety the store does not already provide — it buys HONESTY: an ask the store will always cut
+ * is an ask that makes every page short, and a short page is the shape this route most has to keep
+ * from being read as end-of-log. Clamping at the source keeps the number this process logs and paces
+ * against the number it can actually be handed.
+ */
 function replayPageSize(): number {
   const raw = process.env.WIGOLO_STUDIO_RUN_REPLAY_PAGE;
   const parsed = raw === undefined ? NaN : Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_REPLAY_PAGE;
+  const asked = Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_REPLAY_PAGE;
+  return Math.min(asked, MAX_EVENTS_PAGE);
 }
 
 function maxHeldEvents(): number {
