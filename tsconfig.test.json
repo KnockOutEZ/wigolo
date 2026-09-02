@@ -56,6 +56,8 @@
     "tests/unit/daemon/rest-runs-proxy.test.ts",
     "tests/integration/studio-session-target.test.ts",
     "tests/integration/studio-observe-seam.test.ts",
+    "tests/integration/studio-pin8-act-post-actions.test.ts",
+    "tests/integration/studio-pin8-observe-find.test.ts",
     "tests/security-regression.test.ts",
     "tests/helpers/untrusted-fence.ts",
     "tests/helpers/envelope-fence.ts",
