@@ -394,6 +394,30 @@ export function setBatonGate(gate: BatonGate | undefined): void {
   batonGate = gate;
 }
 
+/**
+ * The delivery queue at the result seam (SD2 mini-spec §3.2 mechanism 1). A process seam for the
+ * same reason `BatonGate` is one: draining a run's queue needs the run log, which only the live host
+ * process can reach, and the run is a property of the connection rather than of any one call.
+ *
+ * Two halves of one rule, and the order between them is the rule. `acknowledge` runs BEFORE the
+ * handler: this call existing is the proof that the harness consumed the previous result and kept
+ * going, which is what an implicit acknowledgement is (A-51-4). `deliver` runs AFTER, on the minted
+ * result, because piggyback means the messages ride a result that was going to be sent anyway.
+ *
+ * Neither may throw and neither may refuse a call: this is a mailbox, not a gate.
+ */
+export interface DeliveryHooks {
+  acknowledge(name: string, args: Record<string, unknown>): Promise<void>;
+  deliver(name: string, args: Record<string, unknown>, result: McpToolResult): Promise<McpToolResult>;
+}
+
+let deliveryHooks: DeliveryHooks | undefined;
+
+/** Install, or (with `undefined`) remove — tests MUST remove theirs, leaked hooks outlive the suite. */
+export function setDeliveryHooks(hooks: DeliveryHooks | undefined): void {
+  deliveryHooks = hooks;
+}
+
 /** Injectable for tests; production builds a real DaemonProxy. */
 export interface DispatchDeps {
   proxyFactory?: (endpoint: string, token: string) => { callTool(name: string, args: Record<string, unknown>): Promise<unknown> };
@@ -475,7 +499,13 @@ export async function dispatchStudioTool(
       // the bare `refusal()` shape would drop — the same reason studio_act uses it.
       const refused = await batonGate?.(name, args);
       if (refused) return verbatim(refused);
-      return route(studioHost, args);
+      // Law 7 at the one seam that can honour it. The acknowledgement is appended before the
+      // handler runs — the call itself is the evidence the last result was consumed — and the
+      // delivery rides the result the call was going to produce regardless. A refused caller gets
+      // neither: it is not the run's driver, so the driver's mail is not its to read or to answer.
+      await deliveryHooks?.acknowledge(name, args);
+      const result = await route(studioHost, args);
+      return deliveryHooks ? deliveryHooks.deliver(name, args, result) : result;
     }
     // A name that looks like a control/approval primitive has no route BY DESIGN — PIN-SPLIT(b):
     // there is no agent path to obtain control or self-approve.

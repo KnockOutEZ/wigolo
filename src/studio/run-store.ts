@@ -1596,3 +1596,96 @@ export function projectRun(
     updatedAt: newest?.ts ?? facts.createdAt,
   };
 }
+
+/**
+ * The most rows either generic typed read will hand back in one call. Both are bounded by an
+ * explicit `limit`, and this is the ceiling on what a caller may ask for: the log is append-only and
+ * unbounded, so a typed read with no cap is a memory primitive rather than a query.
+ */
+export const MAX_TYPED_EVENT_ROWS = 500;
+
+/**
+ * A correlation key is interpolated into a `json_extract` path, which is the one place in this file
+ * where a caller's string reaches SQL text rather than a parameter. SQLite has no placeholder for a
+ * JSON path, so the key is constrained to an identifier instead — a shape that cannot close the
+ * quote it sits inside.
+ */
+const CORRELATION_KEY_GRAMMAR = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export interface TypedEventQuery {
+  types: readonly string[];
+  /** Required, and capped at `MAX_TYPED_EVENT_ROWS` — see the constant. */
+  limit: number;
+  /** Newest rows first. The default is the log's own order, which is what a FIFO drain wants. */
+  newestFirst?: boolean;
+}
+
+/**
+ * Every row of a named set of types, in `seq` order. Served by `idx_studio_run_events_type_seq`, so
+ * the cost is the rows returned rather than the log behind them.
+ *
+ * Deliberately generic: the store polices envelope mechanics and owns the table, and a reader named
+ * after one feature's event vocabulary would put that feature's grammar in the store. What earns a
+ * typed read is the same standard `PROJECTION_EVENT_TYPES` documents — a type whose ROWS are
+ * bounded — with the `limit` here as the enforcement rather than the argument.
+ */
+export function eventsOfTypes(db: Database.Database, runId: string, query: TypedEventQuery): ProjectableEvent[] {
+  const id = resolveRunId(runId);
+  if (id === undefined || query.types.length === 0) return [];
+  const n = Math.max(0, Math.min(query.limit, MAX_TYPED_EVENT_ROWS));
+  if (n === 0) return [];
+  const order = query.newestFirst ? 'DESC' : 'ASC';
+  const sql =
+    `SELECT seq, ts, type, payload FROM studio_run_events` +
+    ` WHERE run_id = ? AND type IN (${placeholders(query.types)}) ORDER BY seq ${order} LIMIT ?`;
+  const rows = db.prepare(sql).all(id, ...query.types, n) as TypedEventRow[];
+  return rows.map(parseTypedRow);
+}
+
+export interface UnansweredEventQuery {
+  /** The rows to select — `message.queued`, `decision.requested`. */
+  askType: string;
+  /** The rows that answer them — `message.delivered`, `decision.resolved`. */
+  answerType: string;
+  /** The payload field both types carry, which pairs an answer to its ask. */
+  correlationKey: string;
+  /** Required, and capped at `MAX_TYPED_EVENT_ROWS`. */
+  limit: number;
+}
+
+/**
+ * The rows of `askType` that no LATER row of `answerType` has answered, oldest first.
+ *
+ * `PENDING_DECISION_SQL`'s anti-join with the vocabulary lifted out. That one keeps its own copy
+ * because it carries a `ts` bound the auto-deny window gives it and this shape has no equivalent;
+ * what this one has instead is a mandatory `limit`, so an unanswered set that grows without bound is
+ * read a page at a time rather than whole. Oldest-first is not a preference: a caller draining this
+ * set answers in the order the log recorded, and a newest-first page would starve the oldest ask.
+ */
+export function unansweredEvents(db: Database.Database, runId: string, query: UnansweredEventQuery): ProjectableEvent[] {
+  const id = resolveRunId(runId);
+  if (id === undefined) return [];
+  if (!CORRELATION_KEY_GRAMMAR.test(query.correlationKey)) {
+    throw new Error(`invalid correlation key: ${String(query.correlationKey)}`);
+  }
+  const n = Math.max(0, Math.min(query.limit, MAX_TYPED_EVENT_ROWS));
+  if (n === 0) return [];
+  const path = `'$.${query.correlationKey}'`;
+  const sql = `
+    SELECT ask.seq AS seq, ask.ts AS ts, ask.type AS type, ask.payload AS payload
+      FROM studio_run_events ask
+     WHERE ask.run_id = ? AND ask.type = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM studio_run_events ans
+          WHERE ans.run_id = ask.run_id AND ans.type = ? AND ans.seq > ask.seq
+            AND json_extract(ans.payload, ${path}) = json_extract(ask.payload, ${path}))
+     ORDER BY ask.seq ASC LIMIT ?`;
+  const rows = stmt(db, sql).all(id, query.askType, query.answerType, n) as TypedEventRow[];
+  return rows.map(parseTypedRow);
+}
+
+interface TypedEventRow { seq: number; ts: string; type: string; payload: string }
+
+function parseTypedRow(row: TypedEventRow): ProjectableEvent {
+  return { seq: row.seq, ts: row.ts, type: row.type, payload: JSON.parse(row.payload) as Record<string, unknown> };
+}
