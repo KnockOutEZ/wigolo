@@ -23,10 +23,12 @@
 
 export {
   AccountsClient,
+  CLIENT_INSECURE_TRANSPORT,
   CLIENT_MALFORMED,
   CLIENT_NETWORK,
   CLIENT_TIMEOUT,
 } from './client.js';
+export { ACCOUNTS_ALLOW_HTTP_ENV } from './accounts-url-policy.js';
 export type {
   AccountResponse,
   AccountsClientOpts,

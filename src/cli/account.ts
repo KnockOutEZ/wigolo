@@ -45,6 +45,7 @@ import { refreshEntitlementsNow } from '../account/refresh.js';
 import { evaluateActivation, ACTIVATION_GRACE_MS, type ActivationDecision } from '../account/gate.js';
 import { verifyEntitlementToken, type EntitlementGrant } from '../account/entitlements.js';
 import { resolvePinnedKeys, type PinnedKeySet } from '../account/pinned-keys.js';
+import { accountsUrlOverride, type AccountsUrlOverride } from './accounts-url-notice.js';
 
 const log = createLogger('cli');
 
@@ -54,6 +55,8 @@ export type AccountVerb = 'register' | 'login' | 'logout' | 'whoami' | 'account'
 export interface AccountCliDeps {
   /** Defaults to `getConfig().dataDir`. */
   dataDir?: string;
+  /** Effective account service address. Defaults to `getConfig().accountsUrl`. */
+  accountsUrl?: string;
   /** Injected in tests so no verb needs a live socket. */
   client?: AccountsClient;
   input?: NodeJS.ReadableStream;
@@ -405,9 +408,16 @@ async function runLogout(
  *  machine with no connection — which is the machine most likely to be asking. */
 function runWhoami(
   args: readonly string[],
-  deps: { dataDir: string; env: NodeJS.ProcessEnv; nowMs: () => number; stderr: NodeJS.WritableStream; stdout: NodeJS.WritableStream },
+  deps: {
+    dataDir: string;
+    accountsUrl: string;
+    env: NodeJS.ProcessEnv;
+    nowMs: () => number;
+    stderr: NodeJS.WritableStream;
+    stdout: NodeJS.WritableStream;
+  },
 ): number {
-  const { dataDir, env, nowMs, stderr, stdout } = deps;
+  const { dataDir, accountsUrl, env, nowMs, stderr, stdout } = deps;
   const json = args.includes('--json');
   const state = new AccountStateStore(dataDir).read();
   const keys = resolvePinnedKeys(env);
@@ -428,6 +438,13 @@ function runWhoami(
       })}\n`,
     );
   }
+
+  // BEFORE the not-signed-in early return, deliberately. A machine that has
+  // never signed in is the one about to POST an email address to this host and
+  // read a sign-in code back off it, so that arm is the one that can least
+  // afford to omit where the address points.
+  const urlOverride = accountsUrlOverride(accountsUrl, env);
+  if (urlOverride !== null) stderr.write(`${urlOverride.notice}\n`);
 
   if (state.account_id === null && neverActivated) {
     stderr.write('Not signed in — run `wigolo register` to create an account.\n');
@@ -614,6 +631,10 @@ export interface AccountDoctorInput {
    *  fetched or the service could not be reached. DIAGNOSIS ONLY — pinning
    *  stays the trust root and nothing here is ever promoted to a key. */
   readonly serviceKids: readonly string[] | null;
+  /** The account service address override in force, or `null` on the default.
+   *  REQUIRED rather than optional: a surface that forgets it is a surface that
+   *  reports a healthy account while the credentials go somewhere else. */
+  readonly accountsUrl: AccountsUrlOverride | null;
 }
 
 /**
@@ -626,7 +647,7 @@ export interface AccountDoctorInput {
  * the three lines supports on its own.
  */
 export function buildAccountDoctorLines(input: AccountDoctorInput): string[] {
-  const { state, keys, nowMs, serviceKids } = input;
+  const { state, keys, nowMs, serviceKids, accountsUrl } = input;
   const lines: string[] = [];
 
   if (state.account_id === null) {
@@ -658,6 +679,7 @@ export function buildAccountDoctorLines(input: AccountDoctorInput): string[] {
     `  Service keys: ${serviceKids === null ? 'not checked' : serviceKids.length > 0 ? serviceKids.join(', ') : 'none published'}`,
   );
   if (keys.notice !== null) lines.push(`  ${keys.notice}`);
+  if (accountsUrl !== null) lines.push(`  ${accountsUrl.notice}`);
   return lines;
 }
 
@@ -675,10 +697,13 @@ export async function runAccountCommand(
   const nowMs = deps.nowMs ?? Date.now;
   const stderr = deps.stderr ?? process.stderr;
   const stdout = deps.stdout ?? process.stdout;
-  const client = deps.client ?? new AccountsClient({ baseUrl: getConfig().accountsUrl });
+  // Resolved ONCE and shared: the address the notice names and the address the
+  // client posts to must be the same string, or the notice is worse than absent.
+  const accountsUrl = deps.accountsUrl ?? getConfig().accountsUrl;
+  const client = deps.client ?? new AccountsClient({ baseUrl: accountsUrl });
 
   if (verb === 'whoami') {
-    return runWhoami(args, { dataDir, env, nowMs, stderr, stdout });
+    return runWhoami(args, { dataDir, accountsUrl, env, nowMs, stderr, stdout });
   }
   if (verb === 'logout') {
     return runLogout(args, { dataDir, stderr, stdout });

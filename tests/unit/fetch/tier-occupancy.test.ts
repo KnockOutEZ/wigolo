@@ -63,7 +63,7 @@ describe('classifyFetchOutcome — the rungs', () => {
   });
 
   it('counts a page served by the attended session at the substrate rung, NOT the browser rung', () => {
-    // WHY this is the sharpest case in the file: studio-bridge.ts deliberately reports
+    // WHY this is the sharpest case in the file: companion-bridge.ts deliberately reports
     // `method: 'browser'` because for every downstream consumer that is what the bytes are. If
     // the recorder trusted `method` alone, every substrate serve would be logged as ordinary
     // browser occupancy — and D10(b)'s whole question is the difference between those two.

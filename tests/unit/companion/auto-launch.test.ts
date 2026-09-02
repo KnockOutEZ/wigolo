@@ -607,7 +607,7 @@ describe('a spawn that died must not be polled for the full budget', () => {
  *
  * `inFlight` is single-flight, not a cache: it clears in the `finally`, so it only collapses
  * launches that OVERLAP. A crawl does not overlap — `src/fetch/router.ts` reaches the bridge rung
- * once per page, sequentially, and `src/fetch/studio-bridge.ts` awaits `ensureStudioRunning` each
+ * once per page, sequentially, and `src/fetch/companion-bridge.ts` awaits `ensureStudioRunning` each
  * time. Against a substrate that cannot start, 20 challenged pages therefore paid 20 separate
  * budgets: ~10 minutes of sleeping and 20 dead spawn attempts for one broken install.
  *
@@ -911,7 +911,7 @@ describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
    * normalization and is called by the poll, and the poll's first `failed()` sits OUTSIDE the
    * try/catch that guards the launcher call. The TypeError therefore rejects the shared promise,
    * whose `.then` memo mapper has no rejection branch, and `await inFlight` rethrows it into
-   * `studioBridgeFetch` — which awaits with no catch. So a bad fake at the seam becomes the
+   * `companionBridgeFetch` — which awaits with no catch. So a bad fake at the seam becomes the
    * user's fetch error, breaking the "never throws" contract in the one place the seam exists to
    * be exercised.
    */
@@ -948,7 +948,7 @@ describe('normalizeLaunch rejects a shape it cannot honestly read', () => {
  * the LAUNCHER CALL. Everything the poll loop invokes each tick — `failed()`, `readHandleFn()`,
  * `sleep()` — ran a tick past it, the `.then` memo mapper had no rejection branch, and the body is
  * `try { return await inFlight } finally` with no catch. So a probe that throws propagated all the
- * way into `studioBridgeFetch`, which awaits with no catch: a launch problem became the caller's
+ * way into `companionBridgeFetch`, which awaits with no catch: a launch problem became the caller's
  * fetch error.
  *
  * The rejection also SKIPPED THE MEMO WRITE, so the fan-out re-paid the poll budget per URL — the

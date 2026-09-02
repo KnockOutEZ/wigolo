@@ -16,6 +16,7 @@ export type {
 } from './handshake.js';
 export {
   ESCALATION_DECLINE_REASONS,
+  ESCALATION_ROUTE,
   STUDIO_FETCH_CAPABILITY,
   isEscalationDecline,
   isEscalationServed,

@@ -26,6 +26,7 @@
  */
 
 import { createLogger } from '../logger.js';
+import { accountsTransportRefusal } from './accounts-url-policy.js';
 import { AUTH_TIMEOUT_MS, EXPORT_TIMEOUT_MS } from './constants.js';
 
 const log = createLogger('account');
@@ -38,6 +39,8 @@ export interface AccountsClientOpts {
   baseUrl: string;
   /** Defaults to global `fetch`. Injected in tests and by the daemon's pooled agent. */
   fetchImpl?: FetchLike;
+  /** Environment-only account transport overrides. Injected in tests. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -47,7 +50,7 @@ export interface AccountsClientOpts {
  * `code` is ITS code. Everything else means the code is ours, and a caller
  * MUST NOT treat it as a statement about the credential.
  */
-export type AccountsFailureKind = 'http' | 'network' | 'timeout' | 'malformed';
+export type AccountsFailureKind = 'http' | 'network' | 'timeout' | 'malformed' | 'policy';
 
 export interface AccountsFailure {
   ok: false;
@@ -73,6 +76,7 @@ export type AccountsResult<T> = AccountsSuccess<T> | AccountsFailure;
 export const CLIENT_TIMEOUT = 'client_timeout';
 export const CLIENT_NETWORK = 'client_network';
 export const CLIENT_MALFORMED = 'client_malformed';
+export const CLIENT_INSECURE_TRANSPORT = 'client_insecure_transport';
 
 // --- Response shapes actually consumed by core (PX1 §2) --------------------
 
@@ -197,16 +201,20 @@ interface RequestSpec {
   timeoutMs: number;
   body?: unknown;
   accessToken?: string;
+  /** Credentials carried in the body rather than the Authorization header. */
+  credentialBody?: true;
 }
 
 export class AccountsClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
+  private readonly env: NodeJS.ProcessEnv;
 
   constructor(opts: AccountsClientOpts) {
     // A trailing slash would produce `//auth/verify`, which some proxies 404.
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.env = opts.env ?? process.env;
   }
 
   /**
@@ -218,6 +226,18 @@ export class AccountsClient {
    * cannot act on", which is a `malformed` failure, not a success.
    */
   private async request<T>(spec: RequestSpec, parse: (body: unknown) => T | null): Promise<AccountsResult<T>> {
+    const credentialBearing = spec.credentialBody === true || spec.accessToken !== undefined;
+    const transportRefusal = credentialBearing ? accountsTransportRefusal(this.baseUrl, this.env) : null;
+    if (transportRefusal !== null) {
+      return {
+        ok: false,
+        status: null,
+        kind: 'policy',
+        code: CLIENT_INSECURE_TRANSPORT,
+        message: transportRefusal,
+      };
+    }
+
     const url = `${this.baseUrl}${spec.path}`;
     const headers: Record<string, string> = { accept: 'application/json' };
     if (spec.body !== undefined) headers['content-type'] = 'application/json';
@@ -294,7 +314,13 @@ export class AccountsClient {
   }): Promise<AccountsResult<VerifyResponse>> {
     const body: Record<string, unknown> = { email: input.email, code: input.code };
     if (input.marketingConsent !== undefined) body['marketing_consent'] = input.marketingConsent;
-    return this.request({ method: 'POST', path: '/auth/verify', timeoutMs: AUTH_TIMEOUT_MS, body }, (b) => {
+    return this.request({
+      method: 'POST',
+      path: '/auth/verify',
+      timeoutMs: AUTH_TIMEOUT_MS,
+      body,
+      credentialBody: true,
+    }, (b) => {
       if (!isObj(b)) return null;
       if (!hasStrings(b, ['access_token', 'refresh_token', 'refresh_expires_at'])) return null;
       if (typeof b['access_expires_in_s'] !== 'number') return null;
@@ -310,7 +336,13 @@ export class AccountsClient {
    *  presented one, and failing to persist it strands the install. */
   async refresh(refreshToken: string): Promise<AccountsResult<RefreshResponse>> {
     return this.request(
-      { method: 'POST', path: '/auth/refresh', timeoutMs: AUTH_TIMEOUT_MS, body: { refresh_token: refreshToken } },
+      {
+        method: 'POST',
+        path: '/auth/refresh',
+        timeoutMs: AUTH_TIMEOUT_MS,
+        body: { refresh_token: refreshToken },
+        credentialBody: true,
+      },
       (b) => {
         if (!hasStrings(b, ['access_token', 'refresh_token', 'refresh_expires_at'])) return null;
         if (!isObj(b) || typeof b['access_expires_in_s'] !== 'number') return null;

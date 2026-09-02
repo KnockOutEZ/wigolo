@@ -12,7 +12,7 @@ import { isStageError } from './error-describe.js';
  * WHY A SECOND SET OF COUNTERS EXISTS. D10(b) asks whether a companion path is worth building
  * for hosts that cannot reach the desktop rung. The shipped D10(a) instrument
  * (`companion/escalation-counters.ts`) cannot answer that: every one of its increments lives in
- * `studio-bridge.ts` or the Studio host, and on a server, CI runner or devcontainer the bridge
+ * `companion-bridge.ts` or the companion host, and on a server, CI runner or devcontainer the bridge
  * is exactly what is absent. Those counters read zero forever there, and zero is
  * indistinguishable from "no demand". The population the decision is about is the one the
  * shipped instrument cannot see, so choosing the companion shape on its data would be choosing
@@ -143,7 +143,7 @@ export function bumpTierOccupancy(tier: BrowserTierId, key: TierOccupancyKey, da
 /**
  * Results served by the substrate/bridge rung, by object identity.
  *
- * `studio-bridge.ts` deliberately reports `method: 'browser'`, and its comment says why: for
+ * `companion-bridge.ts` deliberately reports `method: 'browser'`, and its comment says why: for
  * every downstream consumer (cache staleness, research source filtering, completeness) a page
  * off a real browser IS a browser page. For OCCUPANCY they are different rungs — that is the
  * whole distinction D10(b) turns on — so the router marks the bridge's result as it passes and

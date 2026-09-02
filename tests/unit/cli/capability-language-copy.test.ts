@@ -167,6 +167,29 @@ describe('capability language — the copy PX2 added', () => {
     assertCapabilityLanguage(`wigolo ${verb} ${args.join(' ')}`, text);
   });
 
+  it('the account service address notice names no implementation, escalated or not', async () => {
+    // Copy that only exists when an override is in force, so every arm above
+    // walks straight past it — which is how the corpus loses a string.
+    for (const url of ['https://accounts.example.test', 'http://accounts.example.test']) {
+      for (const env of [{}, { WIGOLO_ACCOUNTS_URL: url }]) {
+        const err = collector();
+        await runAccountCommand('whoami', [], {
+          dataDir: mkdtempSync(join(tmpdir(), 'wigolo-caplang-url-')),
+          accountsUrl: url,
+          client: unreachableClient(),
+          env,
+          nowMs: () => Date.parse('2026-09-02T00:00:00Z'),
+          input: Readable.from(['']),
+          stderr: err.stream,
+          stdout: collector().stream,
+        });
+        const text = err.text();
+        expect(text, `no notice for ${url}`).toContain('account service address');
+        assertCapabilityLanguage(`address notice ${url}`, text);
+      }
+    }
+  });
+
   it('the two account/telemetry settings fields name no implementation', () => {
     const fields = advancedCategory.fields.filter(
       (f) => f.key === 'WIGOLO_ACCOUNTS_URL' || f.key === 'WIGOLO_TELEMETRY',

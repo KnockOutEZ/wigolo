@@ -434,6 +434,46 @@ export interface DeliveryHooks {
 }
 
 /**
+ * The §7 row 3 release receipt at the result seam (SD2 mini-spec §1.4). A process seam for the same
+ * reason `BatonGate` and `DeliveryHooks` are: the receipt is a projection of the run log.
+ *
+ * It runs on the FINISHED result rather than instead of the call, and outside `executeOnHost`
+ * rather than inside it, because "the old driver's next call, any call" includes the calls that
+ * never reach a route — the observer refusal it is now going to get, and the unknown-tool answer.
+ * A hook placed at any one arm would miss the arms a stranded driver is most likely to hit.
+ *
+ * Returns the result to send. It must never throw and never withhold: a decoration that could fail
+ * a call would be worse than the silence it exists to prevent.
+ */
+export type ReceiptDelivery = (
+  name: string,
+  args: Record<string, unknown>,
+  result: McpToolResult,
+) => Promise<McpToolResult>;
+
+let receiptDelivery: ReceiptDelivery | undefined;
+
+/** Install, or (with `undefined`) remove — tests MUST remove theirs, a leaked hook outlives the suite. */
+export function setReceiptDelivery(delivery: ReceiptDelivery | undefined): void {
+  receiptDelivery = delivery;
+}
+
+/** Never blocks the call: a receipt that cannot be minted stays owed and rides the next result. */
+async function attachReceipt(
+  name: string,
+  args: Record<string, unknown>,
+  result: McpToolResult,
+): Promise<McpToolResult> {
+  if (!receiptDelivery) return result;
+  try {
+    return await receiptDelivery(name, args, result);
+  } catch (err) {
+    log.warn('release receipt hook threw; sending the result undecorated', { tool: name, error: String(err) });
+    return result;
+  }
+}
+
+/**
  * The §4.4 footer's data seam (#56). A process seam for the same reason `BatonGate` and
  * `DeliveryHooks` are: every footer field is a projection of the run log, and only the live host
  * process can read it. Absent — the stdio side, the Electron main, a unit test that installs none —
@@ -613,7 +653,10 @@ export async function dispatchStudioTool(
     // Opened BEFORE any work so the footer can name the run even when the call is refused before
     // it reaches the page: a refused observer needs the run id and the watch link more, not less.
     const footer = await beginFooter(name, args);
-    return finishStudioResult(footer, await executeOnHost(name, args, studioHost, footer, deps));
+    // The receipt is attached BETWEEN the ladder and the exit, so it decorates every arm the ladder
+    // can produce while the footer still lands last on all of them — this is not a second exit.
+    const executed = await executeOnHost(name, args, studioHost, footer, deps);
+    return finishStudioResult(footer, await attachReceipt(name, args, executed));
   }
 
   return proxyToStudioHost(name, args, dataDir, deps);
