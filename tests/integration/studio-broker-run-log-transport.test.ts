@@ -16,12 +16,17 @@ import { fileURLToPath } from 'node:url';
  * where its documented answer is 404, 409 or 400. In-process that difference is invisible, because
  * a rejected promise and a resolved refusal are both just what the function did.
  *
+ * It lives in `tests/integration/` because that is the SERIAL lane. A test that spawns a `dist/`
+ * path cannot run in the parallel one: `dist/` is absent for the whole of a clean rebuild, and a
+ * spawn landing in that window dies with a module-not-found that reads as a broken wire — the race
+ * `dist-rebuild-serialization.test.ts` exists to keep shut.
+ *
  * So every row below reads the frame, not the value: `ok` is the TRANSPORT's verdict and must stay
  * `true` on a refusal, `error` must be absent, and the `error_reason` has to be inside `result`.
  * The live-tail rows read the `run-event` notify the child pushes, which is the only way a
  * `driver.changed` or `message.queued` row committed in this process reaches the host's surfaces.
  */
-const BROKER = fileURLToPath(new URL('../../../dist/daemon/studio-db-broker.js', import.meta.url));
+const BROKER = fileURLToPath(new URL('../../dist/daemon/studio-db-broker.js', import.meta.url));
 
 interface Frame { id?: number; ok?: boolean; result?: unknown; error?: { message: string }; notify?: string; runId?: string; envelope?: { seq: number; type: string } }
 
