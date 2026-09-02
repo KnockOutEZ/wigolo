@@ -21,6 +21,18 @@ import { createLogger } from '../logger.js';
 import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
+import { checkActivation } from '../server/activation.js';
+
+/**
+ * REST routes that describe the surface instead of executing it, and are
+ * therefore ungated (PX2 mini-spec §3's `initialize` + `tools/list` carve-out,
+ * A-222-3). Every other `/v1` or `/compat/firecrawl` path reaches a tool.
+ */
+const REST_DISCOVERY_ROUTES: ReadonlySet<string> = new Set([
+  '/openapi.json',
+  '/v1/openapi.json',
+  '/v1/tools',
+]);
 import type { RestRouter } from './rest/router.js';
 import type { RunsStore } from './rest/runs-store.js';
 
@@ -365,6 +377,24 @@ export class DaemonHttpServer {
       pathname === '/compat/firecrawl' ||
       pathname.startsWith('/compat/firecrawl/')
     ) {
+      // THE ACTIVATION GATE for the REST families (PX2 mini-spec §3, A-212-2).
+      // Route-level IS tool-level here, and this is the one seam that sits above
+      // BOTH dispatchers: `/v1` goes through `rest/dispatch.ts`, but the
+      // firecrawl-compat handlers call `handleFetch`/`handleSearch`/`handleCrawl`
+      // directly and would walk straight past a check placed inside dispatch.
+      //
+      // The three DISCOVERY routes are excluded on purpose. `/openapi.json`,
+      // `/v1/openapi.json` and `/v1/tools` are this surface's `initialize` and
+      // `tools/list`: they describe what the server offers and execute nothing.
+      // Mini-spec §3 keeps those open on MCP, and a REST client must be able to
+      // learn the same thing an MCP client can before it has an account.
+      // `/health`, `/sse` and every non-tool route never reach here at all.
+      if (!REST_DISCOVERY_ROUTES.has(pathname)) {
+        const activation = checkActivation();
+        if (!activation.ok) {
+          return this.writeRequestError(res, 403, 'not_activated', activation.message);
+        }
+      }
       const router = await this.getRestRouter();
       return router.handle(req, res);
     }
