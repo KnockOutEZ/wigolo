@@ -177,11 +177,13 @@ wigolo needs an account — run `wigolo register` to create one (already have on
 wigolo register [--email E] [--json]
 ```
 
-Creates your account and activates this install. Shows what usage and reliability
-telemetry covers before anything is created, asks whether you want occasional
-product-update emails, then mails a sign-in code and waits for it. No password. If the
-account service is unreachable while the disclosure is being loaded, registration stops
-and nothing is created.
+Creates your account and activates this install. It asks for your email address, mails a
+sign-in code and waits for you to type it back; then — still before the account exists —
+shows what usage and reliability telemetry covers and asks whether you want occasional
+product-update emails. No password at any point. If the account service is unreachable
+when the disclosure is fetched, registration stops and nothing is created: the wording
+being agreed to is served, never bundled into the client, so there is no offline
+substitute to show you.
 
 ### login
 

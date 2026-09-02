@@ -41,9 +41,10 @@ no password:
 npx wigolo register
 ```
 
-`register` shows what usage and reliability telemetry covers, asks whether you want
-occasional product-update emails, mails you a sign-in code, and activates this machine.
-Already have an account? `npx wigolo login` signs this machine in instead.
+`register` asks for your email, mails a sign-in code, and waits for you to type it back.
+Before the account is actually created it shows what usage and reliability telemetry
+covers and asks whether you want occasional product-update emails — then activates this
+machine. Already have an account? `npx wigolo login` signs this machine in instead.
 
 Until then every tool refuses with the same line, whichever surface it was called from:
 

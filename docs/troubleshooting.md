@@ -112,7 +112,7 @@ wigolo writes **all** logs to stderr (structured JSON by default; `LOG_FORMAT=te
 - CLI runs: logs appear in your terminal's stderr; redirect with `2>wigolo.log`.
 - MCP hosts: the host captures server stderr into its own MCP log location.
 - `wigolo serve` under systemd/Docker: journal / container logs.
-- The only file wigolo itself writes events to is the telemetry queue (`~/.wigolo/telemetry/queue.ndjson`) — events waiting to be sent to your account service. It is on by default as of 0.3.0; `WIGOLO_TELEMETRY=off` means nothing is queued and the file is never created. What can be in it is a closed list — see [privacy & security](./privacy-security.md#usage-and-reliability-telemetry).
+- The only place wigolo itself writes events to is the telemetry queue under `~/.wigolo/telemetry/` (`queue.ndjson`, plus short-lived batch files while a send is in flight) — events waiting to go to your account service. It is on by default as of 0.3.0; `WIGOLO_TELEMETRY=off` means nothing is queued and nothing is written there. What can be in it is a closed list — see [privacy & security](./privacy-security.md#usage-and-reliability-telemetry).
 
 ## FAQ
 

@@ -24,7 +24,7 @@ The whole state of a wigolo install lives in the data dir (`~/.wigolo` by defaul
 | `skills/receipts.json` | The [skills](./skills.md) install ledger. |
 | `shell-history` | Interactive shell history. |
 | `account/state.json` | Your account id and email, the entitlement token, and refresh metadata. Owner-only permissions (`0600`). No account secret is stored here. |
-| `telemetry/queue.ndjson` | Events waiting to be sent, capped. Absent while telemetry is off. |
+| `telemetry/` | Events waiting to be sent — a capped `queue.ndjson` plus short-lived batch files while a send is in flight. Absent while telemetry is off. |
 | `searxng/` | The optional legacy aggregator sidecar, only if you opted into that backend. |
 | `daemon-admin.token` | Per-process admin-route token (owner-only file permissions, rotated each daemon start). |
 | `tier-occupancy.json` | What the fetch router learned per domain — which tier works, and backoff state. Inspect it with [`wigolo tune`](./cli.md#tune). |

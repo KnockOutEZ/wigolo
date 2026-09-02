@@ -319,13 +319,14 @@ the service and a network outage cannot de-activate you. Diagnostics are never g
 `doctor`, `verify` and `warmup` run on a machine that has never registered.
 
 **Usage and reliability telemetry is on by default**, which is a change in 0.3.0 — earlier
-releases sent nothing. It is six kinds of counter: which tool ran, on which surface,
-whether it worked, how long it took as a coarse bucket, the error *class* when it failed,
-the registrable domain of a *blocked* fetch, and daemon uptime. Every field is a fixed
-choice from a fixed list, a true/false, or a bare domain. Your page content, queries, full
-URLs, credentials and file paths are not sent — and, because the event dictionary has no
-free-text field anywhere, they are not representable. Error classes travel with no message
-at all, sanitized or otherwise.
+releases sent nothing. It is six counters and no seventh: a tool ran (which one, which
+surface, whether it worked, how long as a coarse bucket), a tool failed (its error
+*class*), a fetch was blocked (the registrable domain and why), a fetch escalated a tier,
+a search engine failed (its error *class*), and a daemon's uptime as a bucket. Every field
+is a fixed choice from a fixed list, a true/false, or a bare domain. Your page content,
+queries, full URLs, credentials and file paths are not sent — and, because the event
+dictionary has no free-text field anywhere, they are not representable. Error classes
+travel with no message at all, sanitized or otherwise.
 
 One switch, and off means nothing is queued and nothing is written:
 
