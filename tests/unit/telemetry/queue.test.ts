@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -153,6 +153,29 @@ describe('TelemetryQueue', () => {
 
     unlinkSync(lock);
     expect(q.readAll()).toEqual([event(1)]);
+  });
+
+  it('keeps contention fragments within the same physical 5 MiB cap', () => {
+    const q = new TelemetryQueue(dataDir);
+    const dir = telemetryDir(dataDir);
+    mkdirSync(dir, { recursive: true });
+
+    const filler = `${JSON.stringify(marked('crawl', '2026-01-01T00:00:00.000Z'))}\n`;
+    const repetitions = Math.floor((QUEUE_CAP_BYTES - 256) / Buffer.byteLength(filler));
+    writeFileSync(q.path, filler.repeat(repetitions));
+
+    const lock = join(dir, '.queue-write.lock');
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'live-owner', createdAtMs: Date.now() }));
+    const started = performance.now();
+    for (let i = 0; i < 32; i += 1) expect(q.append(event(i))).toBe(true);
+
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(q.sizeBytes()).toBeLessThanOrEqual(QUEUE_CAP_BYTES);
+    expect(readdirSync(dir).filter((name) => name.startsWith('queue.pending-')).length).toBeGreaterThan(0);
+
+    unlinkSync(lock);
+    expect(q.readAll().at(-1)?.name).toBe('tool.run');
+    expect(q.sizeBytes()).toBeLessThanOrEqual(QUEUE_CAP_BYTES);
   });
 
   it('treats an incompletely published live lock as owned instead of unlinking it', () => {

@@ -283,6 +283,7 @@ export class TelemetryQueue {
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const name = `queue.pending-${String(Date.now()).padStart(13, '0')}-${process.pid}-${randomBytes(6).toString('hex')}.ndjson`;
       writeFileSync(join(this.dir, name), `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      this.capPendingPhysicalBytes();
       return true;
     } catch (err) {
       log.debug('telemetry pending append failed', { error: String(err) });
@@ -301,6 +302,31 @@ export class TelemetryQueue {
 
   private readPending(): QueuedEvent[] {
     return this.pendingPaths().flatMap((path) => this.readPath(path));
+  }
+
+  /**
+   * Keep lock-contention fragments inside the queue's one physical budget.
+   *
+   * A fragment is only an atomic append fallback while another process owns the rewrite
+   * lock; it is not a second queue. Normally the lock owner absorbs it immediately. If that
+   * owner stalls, however, repeated one-shot processes must not be able to grow an uncapped
+   * directory beside the capped live file. Cap eviction is the one permitted silent-drop
+   * boundary, so discard the oldest transient fragments until live + fragments fits.
+   * Reconciliation still orders every surviving fragment after the live queue.
+   */
+  private capPendingPhysicalBytes(): void {
+    const paths = this.pendingPaths();
+    let bytes = existsSync(this.path) ? statSync(this.path).size : 0;
+    const sized = paths.map((path) => ({ path, bytes: statSync(path).size }));
+    bytes += sized.reduce((sum, entry) => sum + entry.bytes, 0);
+    let dropped = 0;
+    for (const entry of sized) {
+      if (bytes <= QUEUE_CAP_BYTES) break;
+      rmSync(entry.path, { force: true });
+      bytes -= entry.bytes;
+      dropped += 1;
+    }
+    if (dropped > 0) log.debug('telemetry pending fragments compacted at physical cap', { dropped });
   }
 
   private reconcilePendingUnlocked(): void {
