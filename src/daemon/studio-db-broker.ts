@@ -1,587 +1,374 @@
 /**
- * Studio DB broker — a plain-Node child process that owns the cache DB (better-sqlite3, Node ABI) so
- * the Electron main never loads a native module (spec §13.7 / §13.9). Serves studio persistence +
- * local find_similar over newline-delimited JSON-RPC on stdin/stdout. stderr = logs. It reuses the
- * salvaged capture pipeline + find_similar VERBATIM; the Electron host computes the security-gate inputs
- * (session id, nav-epoch, credential signal) from live session state and passes them per call, so the
- * salvaged handler stays the single source of truth for the gate.
+ * The companion broker — grant-scoped, TABLE-scoped access to the shared cache, and nothing else.
+ *
+ * It is DUMB on purpose (spec D8). It knows six table names, four op kinds and a grant; it does not know
+ * what a run is, what a mark is, or what an artifact means. Every projection, DTO and domain rule that
+ * used to live here now lives in the companion, which re-implements them ON TOP of these ops. That is the
+ * whole trade: the two sides can be at different schema heads and still speak, because a table-scoped op
+ * against a table that must exist per the app's declared minimum survives a migration either side ships
+ * alone, where a domain method bakes today's column set into the wire and breaks on the first one.
+ *
+ * Three properties this module owes its callers, each pinned by a test:
+ *
+ *  1. **Nothing without a live grant.** No grant, an unknown token, a revoked one or an expired one is
+ *     refused before a statement is prepared. Read grants cannot write.
+ *  2. **Refusals never leave residue.** Every refusal is decided BEFORE the storage is touched, and every
+ *     write runs inside one transaction, so an op either completes or leaves the table byte-identical.
+ *  3. **Identifiers are never interpolated from the wire.** Table names come from the CLOSED contract set;
+ *     column names are checked against the table's real columns read from the database itself. Values are
+ *     always bound. A wire that names a column the table does not have is a malformed op, not a refusal —
+ *     the refusal enum is closed and shared, and a protocol error is not an access decision.
  */
-import { createInterface } from 'node:readline';
 import type Database from 'better-sqlite3';
-import { initSubsystems } from '../server.js';
-import { getDatabase } from '../cache/db.js';
+import {
+  BROKER_TABLES,
+  MAX_BROKER_ROWS,
+  grantCovers,
+} from '../companion-contract/broker.js';
+import type {
+  BrokerAccess,
+  BrokerCell,
+  BrokerGrant,
+  BrokerMode,
+  BrokerOp,
+  BrokerRefusal,
+  BrokerResult,
+  BrokerRevocation,
+  BrokerRevocationReason,
+  BrokerRow,
+  BrokerTable,
+} from '../companion-contract/broker.js';
+import { MIGRATIONS } from '../cache/migrations/runner.js';
 import { createLogger } from '../logger.js';
-import { createCaptureHandler } from '../studio/capture/handler.js';
-import {
-  captureFromPage,
-  captureHumanNote,
-  insertScreenshotArtifact,
-  listSessionArtifacts,
-  listSessionComments,
-  type ArtifactDelta,
-  type MarkSelectors,
-  type CaptureResult,
-} from '../studio/capture/artifacts.js';
-import { findSimilar } from '../search/find-similar.js';
-import { SessionAuditLog, listSessionAudit, type AuditRecordInput, type AuditDto } from '../studio/audit.js';
-import { insertFlowStep, type FlowProjection, type FlowStep } from '../studio/flow/store.js';
-import {
-  createRun,
-  appendEvent,
-  getRun,
-  runExists,
-  listRuns,
-  eventsSince,
-  eventsSinceBounded,
-  resolveRunId,
-  type CreateRunInput,
-  type ListRunsOptions,
-  type ListRunsResult,
-  type Run,
-  type RunEvent,
-  type RunEventInput,
-  type StoredRunFacts,
-} from '../studio/run-store.js';
-import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
-import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
-import { buildResearchBrief } from '../research/brief.js';
-import type { IndexJobInput } from '../embedding/background-queue.js';
-import type { FieldSemantics } from '../studio/credential.js';
-import type { StudioCaptureInput } from './studio-dispatch.js';
-import type { FindSimilarInput } from '../types.js';
 
-const log = createLogger('studio');
-type CredSignal = { pageUrl?: string; fields?: FieldSemantics[] };
+const log = createLogger('companion-broker');
+
+const TABLE_SET: ReadonlySet<string> = new Set(BROKER_TABLES);
+
+/** True for a name in the contract's CLOSED table set — the only source of a table identifier. */
+export function isBrokerTable(name: unknown): name is BrokerTable {
+  return typeof name === 'string' && TABLE_SET.has(name);
+}
 
 /**
- * The boot page's event budget — per run, and across the whole page.
+ * A malformed op — a protocol error, distinct from a typed refusal.
  *
- * `runListLogs` answers as ONE newline-delimited stdio frame. The host accumulates that frame as a
- * single JS string and `JSON.parse`s it synchronously on the Electron main thread, which is also the
- * thread that paints — so an unbounded answer is an unbounded stall, and at fifty long-lived runs of
- * tens of thousands of envelopes each it is hundreds of megabytes of stall before the app has drawn
- * anything. There was no cap of any kind and no fallback.
- *
- * The bound is stated in events AND in characters because neither alone bounds a frame: one payload
- * may be up to `MAX_EVENT_PAYLOAD_CHARS` (64k), so a row count is not a size, and a size says nothing
- * about how many rows the page had to move to reach it.
- *
- * Neither is learned by materializing the log. The row count is the listing row's `lastSeq`, and the
- * size is a `SUM(LENGTH(payload))` that under-states the serialized frame by construction — see
- * `storedPayloadChars`. Every read is charged the moment it is made — the estimate itself, and the
- * materialization of a run the estimate cannot rule out — whether or not any envelope ships, so one
- * overrun cannot be repeated by every run behind it.
- *
- * A run past either bound is answered with its PROJECTION instead of its envelopes. That is not a
- * degraded answer: `listRuns` has already computed it by the bounded path, and it is field-for-field
- * the answer REST gives for the same run. The host keeps it exactly the way it keeps a finished
- * run's projection — every read stays correct — and replays the log in bounded pages when the run
- * next speaks.
- *
- * It is NOT "a few hundred bytes", which is what this note used to claim and what let the condensed
- * branch ship uncharged. Two of a projection's fields grow without a count bound of their own — the
- * held-tab list grows with an ordinary run's lifetime, and `pendingDecisions` is windowed by time
- * and never by count with each prompt up to `MAX_EVENT_PAYLOAD_CHARS` — so the condensed answer is
- * charged against the same character budget as a log. Only one of the two may be cut to fit it, and
- * `condenseProjection` says which and why.
+ * The refusal enum is closed and mirrored on the app side, so a wire that names a column the table does
+ * not have cannot be reported through it without either inventing a reason both sides must learn, or
+ * flattening a protocol bug into an access decision the operator would then go looking for a grant to fix.
+ * It throws instead, and the route answers 400.
  */
-export const MAX_BOOT_EVENTS_PER_RUN = 2_000;
-export const MAX_BOOT_EVENTS_TOTAL = 20_000;
-export const MAX_BOOT_FRAME_CHARS = 4_000_000;
-
-/**
- * How many unresolved decision cards ONE condensed projection may relay.
- *
- * The projection was the budget's unmetered door. `pendingDecisions` is windowed by TIME and never
- * by count — `PENDING_DECISION_SQL` asks for every in-window `decision.requested` a run has not
- * resolved — and each prompt may be `MAX_EVENT_PAYLOAD_CHARS`. So "how many cards can be in the
- * window" is a question about the writer, not about this read, and a run that raises a thousand of
- * them in two minutes produces a projection larger than the host's whole frame bound. Charging the
- * projection bounds the PAGE; a count cap is what bounds a SINGLE run's, which is the case charging
- * alone cannot reach.
- *
- * Twenty because the cards are a boot-screen surface — the panel shows the ones that need you, and
- * a human answers them one at a time. Dropped cards are REPORTED (`projectionOmitted`) and the host
- * ACTS on the report: `run-view-model.ts`'s `retain` answers a non-zero count with the same store
- * re-read it issues for a condensed run whose status it had to infer, so the short list is repaired
- * rather than installed as the run's state. That second half is the whole reason the count travels —
- * "reported" was true of the wire and false of the app until SD1 exit-18, and a run that raised more
- * than the cap and then went quiet held the remainder invisibly for the app's lifetime. Reverse this
- * if a surface is ever built that must enumerate every pending card at boot, from the projection,
- * without reading the log.
- */
-export const MAX_BOOT_PENDING_CARDS = 20;
-
-/**
- * The per-page ceilings, re-exported from the store that owns them (`studio/run-store.ts`).
- *
- * They used to be defined here, and only here, which is exactly why the daemon's own binding of the
- * same read shipped without them (SD1 exit-19): the numbers and the reasoning lived inside one of the
- * two processes that can own the store. One definition, both bindings — see `eventsSinceBounded`.
- * Re-exported rather than moved outright because these names are this module's published surface.
- */
-export { MAX_EVENTS_PAGE, MAX_EVENTS_PAGE_CHARS } from '../studio/run-store.js';
-
-/**
- * Prepared-statement cache, keyed by connection.
- *
- * The append path has had one since F1 — see the sibling note in `run-store.ts`, which owns the
- * same map for its own statements and does not export it. Compiling constant SQL per call is a
- * parse, a name resolution and a plan for a statement that never changes, and the reads below are
- * on the hot boot page and the hot gap replay.
- *
- * Keyed by handle because a `Statement` belongs to the connection that compiled it — the broker
- * child, the daemon and every test database must never be handed each other's. A `WeakMap` so a
- * closed connection's statements go with it. Only CONSTANT sql goes through this, and nothing may
- * call `pluck`/`expand`/`safeIntegers` on what it returns: those are sticky modes on a shared
- * object.
- */
-const preparedByDb = new WeakMap<Database.Database, Map<string, Database.Statement>>();
-
-function stmt(db: Database.Database, sql: string): Database.Statement {
-  let statements = preparedByDb.get(db);
-  if (statements === undefined) {
-    statements = new Map<string, Database.Statement>();
-    preparedByDb.set(db, statements);
+export class BrokerOpError extends Error {
+  constructor(readonly detail: string) {
+    super(detail);
+    this.name = 'BrokerOpError';
   }
-  const hit = statements.get(sql);
-  if (hit) return hit;
-  const prepared = db.prepare(sql);
-  statements.set(sql, prepared);
-  return prepared;
-}
-
-
-/** One run's stored facts and the envelopes that project it — what a replay needs, and nothing else. */
-export interface BrokerRunLogEntry {
-  facts: StoredRunFacts;
-  events: RunEvent[];
-  /**
-   * The run's true tail seq — ALWAYS, never `events.at(-1).seq`.
-   *
-   * The host rejects a stale envelope, and detects a gap, by comparing `seq` against the highest one
-   * it holds. Deriving that from a capped or condensed read would put it below the store's real tail,
-   * so the very next live envelope would look like a hole and replay a run that missed nothing —
-   * turning a read bound into a replay storm.
-   */
-  lastSeq: number;
-  /** The bounded projection, sent IN PLACE of a log too large for one frame. */
-  projection?: Run;
-  /**
-   * What `projection` had to leave out to stay inside the page's character budget, per field.
-   *
-   * Present ONLY when something was dropped, so an ordinary condensed entry is byte-for-byte what
-   * it was. A truncation the host cannot see is one it cannot replay: the run's log still holds
-   * every card, and this is how the host knows to go and get them rather than treat a shortened
-   * list as the run's actual state.
-   *
-   * `pendingDecisions` is the only field that can appear here, and `condenseProjection` says why:
-   * `tabIds` is law 4's ownership index and is never cut.
-   */
-  projectionOmitted?: { pendingDecisions: number };
-  /**
-   * The daemon studio session this run was born from. Normally the host replays it from the
-   * `run.created` envelope; a condensed entry carries no envelopes, and losing it would cost the
-   * host `runForSession` — how a studio session finds the run it is driving.
-   */
-  sessionId?: string;
-}
-
-export interface BrokerRunLogPage {
-  entries: BrokerRunLogEntry[];
-  /** The listing's own cursor, so the host can hydrate PAST the first page. */
-  nextCursor?: string;
-  /**
-   * What this page's READS cost, accumulated over every run it materialized — including the ones it
-   * then condensed and shipped as projections.
-   *
-   * The page's allowance is a LOCAL of the call, so a host that pages is handed a fresh one per page
-   * and the only bound it can carry across the hydration is one it computes from what came BACK. What
-   * came back is `events`, and a condensed entry's `events` is empty — so a page of condensed runs
-   * looked free from up there while costing the child a full `eventsSince` + `JSON.stringify` per run
-   * here. The host charged zero, kept asking for envelopes, and multiplied this call's budget by its
-   * page cap.
-   *
-   * Reporting the READ rather than the answer is the same rule as the charge at the read site, for the
-   * same reason: the cost is paid at materialization, and a caller that can only see the acceptance
-   * cannot bound the work. Both dimensions travel, because neither alone bounds a frame — see
-   * `MAX_BOOT_*`.
-   *
-   * `charsSpent` also carries what a condensed entry SHIPS. A projection is not a read, but it is
-   * characters in the same frame, and it was the one door in this call that nothing metered.
-   */
-  eventsSpent: number;
-  charsSpent: number;
 }
 
 /**
- * A run's stored payload characters, summed in SQL — a strict LOWER bound on what its log serializes
- * to, so `storedPayloadChars(run) > charsLeft` PROVES the log cannot fit without materializing it.
+ * The schema head this database is actually at: how many of the migrations this build knows have been
+ * applied to THIS file.
  *
- * Sound because every stored payload string appears verbatim inside `JSON.stringify(events)`, which
- * additionally carries `seq`, `ts`, `actor`, `type`, the keys, the braces and the commas. SQLite's
- * `length()` counts code points where JS `.length` counts UTF-16 units, so an astral character makes
- * this estimate smaller still — never larger. A bound that can only UNDER-state means no run that
- * would have fit is ever condensed by it: the accepted path is decided by exactly the check it was
- * decided by before, on exactly the same characters.
+ * A count, not the highest numeric filename prefix, for two reasons. Prefixes collide — two different
+ * `008-` migrations exist — so a maximum over them is not a position in the sequence. And a count
+ * under-reports honestly when a migration was skipped (a vec-dependent one on a build without the
+ * extension), where a maximum would claim a head the file has not reached and let a pairing through that
+ * the app's minimum should have refused.
  *
- * The point is what it does NOT do. The materializing check reads up to two thousand rows, parses
- * every payload into an object and re-serializes the array; this reads one aggregate and allocates
- * one number. Cheaper is not free: it scans every payload byte the run has, so the caller charges
- * this answer to the page's character budget BEFORE deciding on it. Both paths out of the probe are
- * then bounded by `MAX_BOOT_FRAME_CHARS` — the run it rejects as much as the one it lets through.
+ * Reversal condition: if migrations ever stop being applied in list order, a count stops being a
+ * position and this becomes the index of the last applied entry instead.
  */
-function storedPayloadChars(db: Database.Database, runId: string): number {
-  const row = stmt(db, 'SELECT SUM(LENGTH(payload)) AS chars FROM studio_run_events WHERE run_id = ?')
-    .get(runId) as { chars: number | null } | undefined;
-  return row?.chars ?? 0;
-}
-
-/** A condensed entry's projection, already cut to what the page can afford, and what that cost. */
-interface CondensedProjection {
-  projection: Run;
-  chars: number;
-  omitted?: { pendingDecisions: number };
-}
-
-/**
- * The projection a condensed entry may ship, given what the page has left.
- *
- * Two cuts, in order, and BOTH of them only ever touch `pendingDecisions`. The count cap is
- * unconditional — it bounds ONE run's projection, which is the case the page-wide charge cannot
- * reach, because the first run of a page is offered the whole budget and a single hostile card list
- * exceeds the host's own frame bound on its own. Dropping the cards entirely is the fallback for a
- * run that still does not fit what the page has left.
- *
- * `tabIds` is NEVER cut, however large it grows. The host rebuilds law 4's tab→run index by seeding
- * `tab.attached` from exactly this array (`run-view-model.ts`'s `keptSeed`), so a projection that
- * under-reports a run's held tabs does not shrink an answer — it tells the app those tabs belong to
- * nobody, and the next run to ask for one is not refused. A read bound may not manufacture a chance
- * for two runs to hold the same tab. What bounds it instead is the charge: a large tab list spends
- * the page's budget and the runs behind it condense harder, and past that the host's own
- * `DEFAULT_MAX_FRAME_CHARS` stays the last line of defence, which is where `#132` left it.
- *
- * Cards can go because nothing downstream infers ownership from them: the run's `status` carries
- * `needs_you` on its own, the cards are re-read from the log the moment the run speaks, and the
- * count of what was dropped travels with the entry — empty plus a stated number, never a short list
- * presented as the whole one.
- */
-function condenseProjection(run: Run, charsLeft: number): CondensedProjection {
-  const dropped = Math.max(0, run.pendingDecisions.length - MAX_BOOT_PENDING_CARDS);
-  const capped = dropped === 0 ? run : { ...run, pendingDecisions: run.pendingDecisions.slice(0, MAX_BOOT_PENDING_CARDS) };
-  const chars = JSON.stringify(capped).length;
-  if (chars <= charsLeft) {
-    return { projection: capped, chars, ...(dropped ? { omitted: { pendingDecisions: dropped } } : {}) };
+export function schemaHead(db: Database.Database): number {
+  let applied: Set<string>;
+  try {
+    const rows = db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>;
+    applied = new Set(rows.map((r) => r.name));
+  } catch {
+    // No migration ledger at all — an empty or foreign file. Head zero refuses every app minimum.
+    return 0;
   }
-  const cardless: Run = { ...run, pendingDecisions: [] };
-  return {
-    projection: cardless,
-    chars: JSON.stringify(cardless).length,
-    omitted: { pendingDecisions: run.pendingDecisions.length },
-  };
+  return MIGRATIONS.filter((m) => applied.has(m.name)).length;
 }
 
-/** The session link, as one row. Only read when the entry has no envelopes to replay it from. */
-function sessionLinkOf(db: Database.Database, runId: string): { sessionId?: string } {
-  const [created] = eventsSince(db, runId, 0, 1);
-  const sessionId = created?.type === 'run.created' ? created.payload.sessionId : undefined;
-  return typeof sessionId === 'string' ? { sessionId } : {};
+/**
+ * Columns the table really has, read from the database rather than from any list in this repo.
+ *
+ * Reading them from the file is what makes the broker schema-tolerant: a column an older core has never
+ * heard of is still a real column of the table it is looking at, so an app one migration ahead can write
+ * it, which is the entire point of a table-scoped wire.
+ */
+function columnsOf(db: Database.Database, table: BrokerTable): ReadonlySet<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (rows.length === 0) {
+    throw new BrokerOpError(`table ${table} does not exist in this database`);
+  }
+  return new Set(rows.map((r) => r.name));
 }
 
-export interface BrokerCaptureParams {
-  input: StudioCaptureInput;
-  sessionId: string;
-  currentNavEpoch: number;
-  lastObserveEpoch: number;
-  credentialSignal: CredSignal;
-}
-export interface BrokerHandlerDeps {
-  db: Database.Database;
-  engines: Parameters<typeof findSimilar>[1];
-  router: Parameters<typeof findSimilar>[2];
-  backendStatus?: Parameters<typeof findSimilar>[3];
-  /** Embed-job sink. Injected in tests; production leaves it undefined → the shared background queue. */
-  enqueue?: (job: IndexJobInput) => unknown;
-  onArtifact: (delta: ArtifactDelta) => void;
-  /** Live tail for the run log. Fires after the append commits, never inside the transaction. */
-  onRunEvent?: (runId: string, event: RunEvent) => void;
+function assertColumns(db: Database.Database, table: BrokerTable, row: BrokerRow | undefined): void {
+  if (!row) return;
+  const known = columnsOf(db, table);
+  for (const column of Object.keys(row)) {
+    if (!known.has(column)) {
+      throw new BrokerOpError(`table ${table} has no column ${column}`);
+    }
+  }
 }
 
-/** Pure dispatch map — unit-testable without a process. */
-export function createBrokerHandlers(deps: BrokerHandlerDeps) {
-  return {
-    ping: async (): Promise<'pong'> => 'pong',
-    capture: async (p: BrokerCaptureParams) => {
-      const handler = createCaptureHandler({
-        sessionId: p.sessionId,
-        db: deps.db,
-        enqueue: deps.enqueue,
-        credentialContext: async () => p.credentialSignal,
-        currentNavEpoch: () => p.currentNavEpoch,
-        lastObserveEpoch: () => p.lastObserveEpoch,
-        onArtifact: deps.onArtifact,
-      });
-      return handler(p.input);
-    },
-    persistSessionFetch: async (p: { sessionId: string; url: string; title: string; markdown: string; credentialSignal: CredSignal }): Promise<CaptureResult> =>
-      captureFromPage(
-        { type: 'clip', sessionId: p.sessionId, url: p.url, title: p.title, markdown: p.markdown },
-        { db: deps.db, enqueue: deps.enqueue, credentialContext: p.credentialSignal, onArtifact: deps.onArtifact },
-      ),
-    persistMark: async (p: { sessionId: string; url: string; target: MarkSelectors; credentialSignal: CredSignal }): Promise<CaptureResult> =>
-      captureFromPage(
-        { type: 'mark', sessionId: p.sessionId, url: p.url, target: p.target },
-        { db: deps.db, enqueue: deps.enqueue, credentialContext: p.credentialSignal, onArtifact: deps.onArtifact },
-      ),
-    // P6 F1 grab-all — persist generalized structured rows as a type=extraction artifact. Same credential
-    // choke as every other persist path (belt-and-suspenders: host refuses at entry, broker refuses again).
-    persistExtraction: async (p: { sessionId: string; url: string; columns: string[]; rows: Record<string, string>[]; credentialSignal: CredSignal }): Promise<CaptureResult> =>
-      captureFromPage(
-        { type: 'extraction', sessionId: p.sessionId, url: p.url, columns: p.columns, rows: p.rows },
-        { db: deps.db, enqueue: deps.enqueue, credentialContext: p.credentialSignal, onArtifact: deps.onArtifact },
-      ),
-    persistComment: async (p: { sessionId: string; text: string }): Promise<CaptureResult> =>
-      captureHumanNote({ sessionId: p.sessionId, text: p.text }, { db: deps.db, enqueue: deps.enqueue }),
-    persistScreenshot: async (p: { sessionId: string; url: string; title: string; mediaPath: string; contentHash: string; credentialSignal: CredSignal }): Promise<CaptureResult> =>
-      insertScreenshotArtifact(
-        { sessionId: p.sessionId, url: p.url, title: p.title, mediaPath: p.mediaPath, contentHash: p.contentHash },
-        { db: deps.db, enqueue: deps.enqueue, credentialContext: p.credentialSignal, onArtifact: deps.onArtifact },
-      ),
-    listArtifacts: async (p: { sessionId: string; limit: number }): Promise<ArtifactDelta[]> =>
-      listSessionArtifacts(deps.db, p.sessionId, p.limit),
-    listComments: async (p: { sessionId: string; limit: number }) =>
-      listSessionComments(deps.db, p.sessionId, p.limit),
-    findSimilar: async (p: { input: FindSimilarInput }) =>
-      findSimilar({ ...p.input, include_web: false }, deps.engines, deps.router, deps.backendStatus),
-    // P6 F4 timeline — persist one agent action to the per-session append-only audit log. Reuse the
-    // salvaged SessionAuditLog (sole writer, INSERT-only, hydrates the seq from the db) so the
-    // (session_id, seq) monotonic invariant holds across broker calls.
-    persistAudit: async (p: { sessionId: string; entry: AuditRecordInput }): Promise<{ seq: number }> => {
-      const log = new SessionAuditLog({ db: deps.db, sessionId: p.sessionId });
-      return { seq: log.record(p.entry).seq };
-    },
-    // K34 — the flow sidecar's writer for the Electron surface. The host cannot insert: it holds no DB
-    // handle and this child owns the native module. The projection/allow-list runs HERE, where the row is
-    // actually written, so a rejected step is refused by the same code the CLI path is refused by.
-    //
-    // The host owns `seq` (it is the sole writer for its own flow and allocates from `flowMaxSeq` below),
-    // and `audit_seq` arrives already resolved to a DURABLE seq — this method does not translate it,
-    // because only the host knows which in-memory record a step came from.
-    recordFlowStep: async (p: { step: FlowStep }): Promise<FlowProjection> => insertFlowStep(deps.db, p.step),
-    // The flow's highest stored seq, so a restarted host resumes numbering instead of colliding on 1
-    // (the unique (flow_id, seq) index would otherwise silently drop the collision).
-    flowMaxSeq: async (p: { flowId: string }): Promise<{ seq: number }> => {
-      const rows = stmt(deps.db, 'SELECT MAX(seq) AS m FROM studio_flow_steps WHERE flow_id = ?')
-        .all(p.flowId) as Array<{ m: number | null }>;
-      return { seq: rows[0]?.m ?? 0 };
-    },
-    // Reverse-chronological read for the timeline (backfill + paging). Metadata columns only.
-    listAudit: async (p: { sessionId: string; limit: number; before?: number }): Promise<AuditDto[]> =>
-      listSessionAudit(deps.db, p.sessionId, p.limit, p.before),
-    // M2 (sealed): studio_audit is append-only. NO prune/delete broker method — the ONLY sanctioned
-    // deletion is the operator-CLI pruneStudioAudit (audit-retention.ts), unreachable from here + the agent.
-    // P6 F3 cross-tab synthesis — shape the session's captured bodies into a research brief over the LOCAL
-    // corpus. Invokes the brief-shaping stage ONLY (buildResearchBrief) — never decomposition→search→fetch,
-    // so there is NO network. Persists the result as a qa artifact (save-as-research, findable via
-    // find_similar). Zero captures → an honest empty DTO, never a fabricated brief.
-    synthesizeSession: async (p: { sessionId: string }): Promise<ResearchBriefDto> => {
-      const rows = listSessionArtifactsFull(deps.db, p.sessionId);
-      if (rows.length === 0) return { empty: true };
-      const { sources, provenance } = artifactsToSources(rows);
-      // Caps mirror the research pipeline (PER_SOURCE=3000, TOTAL=40000); 'general' shaping, no comparison.
-      const brief = await buildResearchBrief('Session summary', sources, [], 3000, 40000, 'general', []);
-      captureFromPage(
-        { type: 'qa', sessionId: p.sessionId, question: 'Session synthesis', answer: JSON.stringify(brief) },
-        { db: deps.db, enqueue: deps.enqueue, credentialContext: { fields: [] }, onArtifact: deps.onArtifact },
-      );
-      return { brief, provenance };
-    },
-    // SD1 spine 1 — the run store behind the broker. A run outlives every UI, so the child that owns
-    // the DB owns the log; the host never mints run identity and never writes an event itself.
-    //
-    // There is deliberately NO runUpdate and NO runDelete: the log is append-only, and the store
-    // exports no path that could rewrite it. Retention, if it ever exists, goes the sanctioned-pruner
-    // route (the audit-retention.ts precedent), never a broker method.
-    runCreate: async (p: { input: CreateRunInput }): Promise<Run> =>
-      createRun(deps.db, p.input, { onEvent: deps.onRunEvent }),
-    runAppend: async (p: { runId: string; event: RunEventInput }): Promise<RunEvent> =>
-      appendEvent(deps.db, p.runId, p.event, { onEvent: deps.onRunEvent }),
-    runGet: async (p: { runId: string }): Promise<Run | undefined> => getRun(deps.db, p.runId),
-    runList: async (p: ListRunsOptions = {}): Promise<ListRunsResult> => listRuns(deps.db, p),
-    // Existence without a projection. `runGet(...) !== undefined` replays a run's whole log to answer,
-    // and the host charges this once per SSE connect — every 3s for a client in a reconnect loop, against
-    // a log that only grows. The daemon's own binding answers it with an index hit; this closes that
-    // asymmetry rather than making the host pay for the pipe it sits behind.
-    runExists: async (p: { runId: string }): Promise<boolean> => runExists(deps.db, p.runId),
-    /**
-     * A run's four stored facts, with no projection and no log read at all.
-     *
-     * The host's gap replay used to open with `runGet`, whose answer is a projected `Run` — the child
-     * reads the run's projection rows, folds its cost in SQL and seeks its tail — and then threw
-     * every field but these four away, because the projection it wants is the one it computes itself
-     * from the log it is about to read next. So the same log was read twice per gap. This asks the
-     * `studio_runs` row and stops.
-     */
-    runFacts: async (p: { runId: string }): Promise<StoredRunFacts | undefined> => {
-      const id = resolveRunId(p.runId);
-      if (id === undefined) return undefined;
-      const row = stmt(deps.db, 'SELECT id, task, space_id, created_at FROM studio_runs WHERE id = ?').get(id) as
-        { id: string; task: string; space_id: string; created_at: string } | undefined;
-      return row ? { id: row.id, task: row.task, spaceId: row.space_id, createdAt: row.created_at } : undefined;
-    },
-    // The host's boot page in ONE round-trip. The host projects runs itself (it holds the same pure
-    // `projectRun`), so it needs facts+events and not the `Run`s `runList` serializes — asking for both
-    // sent every projection event across the pipe twice, once inside a projection the host recomputes.
-    // Same page `runList` would return, so paging/filters keep one definition.
-    //
-    // Bounded per run and across the page — see MAX_BOOT_*. A run whose log does not fit is answered
-    // with the projection `listRuns` already computed for it, which costs no extra read and is the
-    // same answer REST gives.
-    runListLogs: async (p: ListRunsOptions = {}): Promise<BrokerRunLogPage> => {
-      const { runs, nextCursor } = listRuns(deps.db, p);
-      let eventsLeft = MAX_BOOT_EVENTS_TOTAL;
-      let charsLeft = MAX_BOOT_FRAME_CHARS;
-      // Accumulated at the read, not derived as `MAX - left` afterwards. The spend is a fact about
-      // the reads this call made; deriving it ties the number to whatever the allowance happened to
-      // start at, and a stand-in store that forces an unbounded allowance — which the host's own
-      // fixtures do — would report `NaN` and compare false against every bound the host applies.
-      let eventsSpent = 0;
-      let charsSpent = 0;
-      const entries = runs.map((run): BrokerRunLogEntry => {
-        const facts: StoredRunFacts = { id: run.id, task: run.task, spaceId: run.spaceId, createdAt: run.createdAt };
-        // `seq` is gap-free and starts at 1, so the tail seq IS the event count: how big a log is, is
-        // known from the listing row before a single event row is read.
-        //
-        // The char bound is decided the same way wherever it can be. `storedPayloadChars` under-states
-        // the serialized size, so a run it rules out could not have fitted — and is ruled out for the
-        // price of one SUM instead of a full parse-and-re-serialize.
-        const budget = Math.min(MAX_BOOT_EVENTS_PER_RUN, eventsLeft);
-        if (run.lastSeq <= budget && charsLeft > 0) {
-          // The probe is a READ — a SUM over every payload byte this run has — so it is charged
-          // before its answer is used, exactly like the materialization below. Charging it inside
-          // the branch it guards made a run the probe ITSELF rejected cost the page nothing: the
-          // scan happened, the page reported zero, and zero is what the hydration's allowance moves
-          // by, so every page took the log branch and re-ran the same scan against a budget the
-          // caller had just been handed fresh.
-          const charsAtEntry = charsLeft;
-          const storedChars = storedPayloadChars(deps.db, run.id);
-          charsLeft -= storedChars;
-          charsSpent += storedChars;
-          if (storedChars <= charsAtEntry) {
-            const events = eventsSince(deps.db, run.id, 0, budget);
-            const chars = JSON.stringify(events).length;
-            const fits = chars <= charsAtEntry;
-            // Charged for the READ, never for the acceptance. A run that got this far cost the page
-            // the same materialization whether or not its envelopes ship, and leaving the budget
-            // untouched on rejection made the NEXT run start from the full four million and pay it
-            // again — so a page of oversized runs read every one of them in full, and the next
-            // hydration page did it again. Charging here is what makes the overrun terminate:
-            // `charsLeft` goes non-positive and the guard above stops the reads for the rest of the
-            // page. Only what the materialization added BEYOND the probe is charged here, because
-            // the probe's characters are already on the books and they are the same characters —
-            // the accepted path's total is `JSON.stringify(events).length`, unchanged.
-            eventsLeft -= events.length;
-            charsLeft -= chars - storedChars;
-            eventsSpent += events.length;
-            charsSpent += chars - storedChars;
-            if (fits) return { facts, events, lastSeq: run.lastSeq };
-          }
-        }
-        // The condensed answer is still an ANSWER, and it ships characters. It used to ship them
-        // free: the event budget was decided first, so every run past `MAX_BOOT_EVENTS_PER_RUN`
-        // took this branch without one comparison against `MAX_BOOT_FRAME_CHARS`, and the two
-        // fields that grow — the held-tab list, and a pending-card list windowed by time and never
-        // by count — were relayed in full at `charsSpent: 0`. Fifty such runs is a frame the host
-        // kills, on a boot that produces the same frame every time it retries: a restart loop, not
-        // a slow start. Charged here, on the same rule as the reads above — the page's own bound is
-        // what makes the overrun terminate.
-        const condensed = condenseProjection(run, charsLeft);
-        charsLeft -= condensed.chars;
-        charsSpent += condensed.chars;
-        return {
-          facts,
-          events: [],
-          lastSeq: run.lastSeq,
-          projection: condensed.projection,
-          ...(condensed.omitted ? { projectionOmitted: condensed.omitted } : {}),
-          ...sessionLinkOf(deps.db, run.id),
-        };
-      });
-      return { entries, eventsSpent, charsSpent, ...(nextCursor ? { nextCursor } : {}) };
-    },
-    // `limit` is REQUIRED. Omitting it used to mean "every event this run has ever had", in one frame,
-    // and the view-model's gap replay called it exactly that way.
-    //
-    // CONTRACT (`eventsSinceBounded`, which owns it for BOTH bindings of this read): the page is
-    // clamped to `MAX_EVENTS_PAGE` rows AND `MAX_EVENTS_PAGE_CHARS` characters whatever `limit` says,
-    // so a SHORT page never means end-of-log. Callers must page until an EMPTY one — a caller that
-    // stops on a short page silently truncates every log longer than either clamp. Both clamps are
-    // needed because neither bounds a frame alone: rows say nothing about size, and the size is what
-    // the host has to accumulate and parse on the thread that paints.
-    runEventsSince: async (p: { runId: string; since?: number; limit: number }): Promise<RunEvent[]> => {
-      const limit = Math.floor(Number(p.limit));
-      if (!Number.isFinite(limit) || limit < 1) throw new Error('runEventsSince requires a positive limit');
-      return eventsSinceBounded(deps.db, p.runId, p.since ?? 0, limit);
-    },
-  };
-}
-export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;
-
-interface RpcRequest { id: number; method: keyof BrokerHandlers; params?: unknown }
-
-function send(msg: unknown): void {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+/** Stored cells only. A nested object or array on the wire is a protocol error, not a row. */
+function assertCells(row: BrokerRow | undefined, where: string): void {
+  if (!row) return;
+  for (const [column, value] of Object.entries(row)) {
+    const t = typeof value;
+    if (value === null || t === 'string' || t === 'number' || t === 'boolean') continue;
+    throw new BrokerOpError(`${where}.${column} is not a stored cell`);
+  }
 }
 
-async function main(): Promise<void> {
-  // No-orphan (spec §11): die IMMEDIATELY when the parent closes our stdin pipe — the app's own stop
-  // (`stopBrokerChild`) and an app crash both arrive that way — or when someone else signals us. A
-  // graceful shutdown can hang on the onnxruntime-node teardown mutex race (see the init-exit-crash
-  // history), so we hard-exit — the process is being reaped, exit-code niceties don't matter, and a
-  // zombie broker (holding the DB + a model) is far worse.
-  //
-  // `process.exit(0)` is load-bearing beyond the exit code: it is what fires the `exit` hook that
-  // drains the queued `events.jsonl` tail (law 11). The signal handlers below reach it only on POSIX
-  // — a Windows `TerminateProcess` runs no JavaScript at all — which is why the stdin door, not a
-  // signal, is the stop the app sends.
-  const bail = (): never => process.exit(0);
-  process.on('SIGTERM', bail);
-  process.on('SIGINT', bail);
-  const subsystems = await initSubsystems();
-  const handlers = createBrokerHandlers({
-    db: getDatabase(),
-    engines: subsystems.searchEngines,
-    router: subsystems.router,
-    backendStatus: subsystems.backendStatus,
-    onArtifact: (delta) => send({ notify: 'artifact', delta }),
-    onRunEvent: (runId, envelope) => send({ notify: 'run-event', runId, envelope }),
-  });
-  const rl = createInterface({ input: process.stdin });
-  rl.on('close', bail); // parent closed the stdin pipe (app exited/crashed) → don't linger
-  rl.on('line', (line) => {
-    void (async () => {
-      let req: RpcRequest | undefined;
-      try {
-        req = JSON.parse(line) as RpcRequest;
-        // Own-property only — never resolve a prototype method (e.g. `constructor`) as an RPC handler.
-        const fn = Object.hasOwn(handlers, req.method) ? (handlers[req.method] as (p: unknown) => Promise<unknown>) : undefined;
-        if (!fn) throw new Error(`unknown broker method: ${String(req.method)}`);
-        send({ id: req.id, ok: true, result: await fn(req.params) });
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        if (req) send({ id: req.id, ok: false, error: { message } });
-        else log.error('broker parse error', { message });
+/** better-sqlite3 binds booleans as 0/1 only when told to; normalise here so one path binds every cell. */
+function bind(value: BrokerCell): string | number | null {
+  return typeof value === 'boolean' ? (value ? 1 : 0) : value;
+}
+
+function equalityClause(where: BrokerRow | undefined, params: Array<string | number | null>): string[] {
+  if (!where) return [];
+  const clauses: string[] = [];
+  for (const [column, value] of Object.entries(where)) {
+    if (value === null) {
+      clauses.push(`"${column}" IS NULL`);
+      continue;
+    }
+    clauses.push(`"${column}" = ?`);
+    params.push(bind(value));
+  }
+  return clauses;
+}
+
+/**
+ * The cursor column for a table, or undefined when it has none.
+ *
+ * `since`/`before` are the wire's only ordering, and the column they range over is a property of the
+ * STORAGE, so it is read off the table rather than declared: `seq` where the table has one, else the
+ * integer `id`. A table with neither takes no cursor, and naming one against it is a protocol error
+ * rather than a silently ignored bound — a caller paging through a table that cannot page would
+ * otherwise re-read page one forever.
+ */
+function cursorColumn(db: Database.Database, table: BrokerTable): string | undefined {
+  const known = columnsOf(db, table);
+  if (known.has('seq')) return 'seq';
+  if (known.has('id')) return 'id';
+  return undefined;
+}
+
+export interface GrantStoreOptions {
+  /** Injected clock — the two sides of a pairing do not share one, so this module never reads it globally. */
+  now?: () => number;
+  /** Lifetime of an issued grant in ms. Omitted (or 0) means the grant lives until it is revoked. */
+  ttlMs?: number;
+  /** Token minting, injected so a test can pin a token without reaching into crypto. */
+  mintToken?: () => string;
+}
+
+export interface IssueGrantInput {
+  mode: BrokerMode;
+  tables: readonly BrokerTable[];
+  schemaHead: number;
+}
+
+/**
+ * The daemon's live grants.
+ *
+ * In memory, deliberately: a grant is the lifetime of one pairing with one running companion, and a grant
+ * that outlived the daemon would be a credential on disk that nothing revokes when the app goes away.
+ * Restarting the daemon un-pairs, and the companion re-pairs — which is the same shape as the handle file
+ * it already re-reads.
+ */
+export class BrokerGrantStore {
+  private readonly grants = new Map<string, BrokerGrant>();
+  private readonly revocations = new Map<string, BrokerRevocation>();
+  private readonly now: () => number;
+  private readonly ttlMs: number;
+  private readonly mintToken: () => string;
+
+  constructor(options: GrantStoreOptions = {}) {
+    this.now = options.now ?? (() => Date.now());
+    this.ttlMs = options.ttlMs ?? 0;
+    this.mintToken = options.mintToken ?? (() => globalThis.crypto.randomUUID());
+  }
+
+  issue(input: IssueGrantInput): BrokerGrant {
+    const issuedAt = this.now();
+    const grant: BrokerGrant = {
+      token: this.mintToken(),
+      issuedAt,
+      ...(this.ttlMs > 0 ? { expiresAt: issuedAt + this.ttlMs } : {}),
+      mode: input.mode,
+      tables: [...input.tables],
+      schemaHead: input.schemaHead,
+    };
+    this.grants.set(grant.token, grant);
+    log.debug('broker grant issued', { mode: grant.mode, tables: grant.tables.length, schemaHead: grant.schemaHead });
+    return grant;
+  }
+
+  get(token: string): BrokerGrant | undefined {
+    return this.grants.get(token);
+  }
+
+  /** Why a token is dead, or undefined if it was never issued here. */
+  revocationOf(token: string): BrokerRevocation | undefined {
+    return this.revocations.get(token);
+  }
+
+  /** Withdraw one grant. Idempotent: revoking a token that is already dead keeps the FIRST reason. */
+  revoke(token: string, reason: BrokerRevocationReason): BrokerRevocation | null {
+    const existing = this.revocations.get(token);
+    if (existing) return existing;
+    if (!this.grants.delete(token)) return null;
+    const revocation: BrokerRevocation = { token, revokedAt: this.now(), reason };
+    this.revocations.set(token, revocation);
+    log.info('broker grant revoked', { reason });
+    return revocation;
+  }
+
+  /** Withdraw every live grant — unpairing, or a daemon that is going away. */
+  revokeAll(reason: BrokerRevocationReason): readonly BrokerRevocation[] {
+    return [...this.grants.keys()]
+      .map((token) => this.revoke(token, reason))
+      .filter((r): r is BrokerRevocation => r !== null);
+  }
+
+  /** Every live grant, expiry not considered — `authorize` is what decides liveness at op time. */
+  list(): readonly BrokerGrant[] {
+    return [...this.grants.values()];
+  }
+
+  /**
+   * Decide a token's access to a table, with no storage involved.
+   *
+   * Ordering is load-bearing and pinned: token identity first (a revoked token is `grant_revoked` even
+   * when it also names an ungranted table, because "your pairing ended" is the actionable answer and
+   * "that table is not yours" would send the operator to re-scope a grant that no longer exists), then
+   * expiry, then table scope, then write access.
+   */
+  authorize(token: string | undefined, table: BrokerTable, access: BrokerAccess): BrokerGrant | BrokerRefusal {
+    if (typeof token !== 'string' || token.length === 0) return { ok: false, reason: 'no_grant', table };
+    if (this.revocations.has(token)) return { ok: false, reason: 'grant_revoked', table };
+    const grant = this.grants.get(token);
+    if (!grant) return { ok: false, reason: 'no_grant', table };
+    const now = this.now();
+    if (grant.expiresAt !== undefined && now >= grant.expiresAt) {
+      // An expired grant is dead the first time anyone notices, not merely refused each time: leaving it
+      // in the live map would let it answer `list()` as live forever and re-decide expiry on every op.
+      this.revoke(token, 'expired');
+      return { ok: false, reason: 'grant_expired', table };
+    }
+    if (!grant.tables.includes(table)) return { ok: false, reason: 'table_not_granted', table };
+    if (!grantCovers(grant, table, access, now)) {
+      return { ok: false, reason: access === 'write' ? 'write_not_granted' : 'table_not_granted', table };
+    }
+    return grant;
+  }
+}
+
+function isRefusal(value: BrokerGrant | BrokerRefusal): value is BrokerRefusal {
+  return (value as BrokerRefusal).ok === false;
+}
+
+/**
+ * Execute one op against the shared cache.
+ *
+ * Every decision that can refuse happens above the first prepared statement, and every write runs inside
+ * one transaction, so a refused op and a failed op both leave the table exactly as they found it.
+ * Reads answer rows; writes answer the rows they wrote — `insert` echoes what landed (so a caller learns
+ * the rowid it did not supply), `update` and `delete` answer the affected count as one row, because the
+ * count is the only thing SQLite will tell us without a second read the caller did not ask for.
+ */
+export function executeBrokerOp(
+  db: Database.Database,
+  grants: BrokerGrantStore,
+  op: BrokerOp,
+): BrokerResult<BrokerRow> {
+  if (!isBrokerTable(op.table)) {
+    return { ok: false, reason: 'unknown_table' };
+  }
+  const table = op.table;
+  const access: BrokerAccess = op.kind === 'read' ? 'read' : 'write';
+
+  const authorized = grants.authorize(op.grant, table, access);
+  if (isRefusal(authorized)) return authorized;
+
+  if (op.kind === 'read') {
+    if (!Number.isInteger(op.limit) || op.limit <= 0) {
+      throw new BrokerOpError('read.limit must be a positive integer');
+    }
+    if (op.limit > MAX_BROKER_ROWS) {
+      return { ok: false, reason: 'row_limit_exceeded', table };
+    }
+    assertCells(op.where, 'where');
+    assertColumns(db, table, op.where);
+
+    const params: Array<string | number | null> = [];
+    const clauses = equalityClause(op.where, params);
+    let order = '';
+    if (op.since !== undefined || op.before !== undefined) {
+      const cursor = cursorColumn(db, table);
+      if (!cursor) throw new BrokerOpError(`table ${table} has no cursor column`);
+      if (op.since !== undefined) {
+        clauses.push(`"${cursor}" > ?`);
+        params.push(op.since);
       }
-    })();
-  });
-  send({ notify: 'ready' });
-  log.info('studio db broker ready');
-}
+      if (op.before !== undefined) {
+        clauses.push(`"${cursor}" < ?`);
+        params.push(op.before);
+      }
+      order = ` ORDER BY "${cursor}" ASC`;
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const rows = db
+      .prepare(`SELECT * FROM ${table}${where}${order} LIMIT ?`)
+      .all(...params, op.limit) as BrokerRow[];
+    return { ok: true, rows };
+  }
 
-// Gate solely on the env the client always sets — deterministic, no import-time surprise in tests.
-if (process.env.WIGOLO_STUDIO_BROKER_MAIN === '1') {
-  main().catch((e) => {
-    log.error('broker fatal', { error: e instanceof Error ? e.message : String(e) });
-    process.exit(1);
-  });
+  assertCells(op.row, 'row');
+  assertCells(op.where, 'where');
+  assertColumns(db, table, op.row);
+  assertColumns(db, table, op.where);
+
+  if (op.kind === 'insert') {
+    const columns = Object.keys(op.row ?? {});
+    if (columns.length === 0) throw new BrokerOpError('insert.row must name at least one column');
+    const placeholders = columns.map(() => '?').join(', ');
+    const names = columns.map((c) => `"${c}"`).join(', ');
+    const values = columns.map((c) => bind((op.row as BrokerRow)[c]!));
+    const inserted = db.transaction(() =>
+      db.prepare(`INSERT INTO ${table} (${names}) VALUES (${placeholders})`).run(...values),
+    )();
+    return { ok: true, rows: [{ changes: inserted.changes, lastInsertRowid: Number(inserted.lastInsertRowid) }] };
+  }
+
+  if (op.kind === 'update') {
+    const columns = Object.keys(op.row ?? {});
+    if (columns.length === 0) throw new BrokerOpError('update.row must name at least one column');
+    const params: Array<string | number | null> = columns.map((c) => bind((op.row as BrokerRow)[c]!));
+    const assignments = columns.map((c) => `"${c}" = ?`).join(', ');
+    const clauses = equalityClause(op.where, params);
+    // An unfiltered UPDATE rewrites the table. That is a whole-table mutation asked for by omission,
+    // which is exactly the shape a bug takes, so it must be asked for explicitly.
+    if (clauses.length === 0) throw new BrokerOpError('update requires a where filter');
+    const changed = db.transaction(() =>
+      db.prepare(`UPDATE ${table} SET ${assignments} WHERE ${clauses.join(' AND ')}`).run(...params),
+    )();
+    return { ok: true, rows: [{ changes: changed.changes }] };
+  }
+
+  const params: Array<string | number | null> = [];
+  const clauses = equalityClause(op.where, params);
+  // Same reason as update, one step worse: an unfiltered DELETE empties the table.
+  if (clauses.length === 0) throw new BrokerOpError('delete requires a where filter');
+  const deleted = db.transaction(() =>
+    db.prepare(`DELETE FROM ${table} WHERE ${clauses.join(' AND ')}`).run(...params),
+  )();
+  return { ok: true, rows: [{ changes: deleted.changes }] };
 }
