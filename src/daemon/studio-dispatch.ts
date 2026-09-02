@@ -107,13 +107,15 @@ export interface StudioObserveOutput {
 
 export interface StudioActInput {
   /** Phase 2I implements `navigate` only; click/type/scroll arrive in a later slice. */
-  action: 'navigate' | 'click' | 'type' | 'scroll';
+  action: 'navigate' | 'click' | 'type' | 'scroll' | 'wait_for_human';
   /** For navigate: the URL to open in the shared session. */
   url?: string;
   ref?: string;
   text?: string;
   direction?: 'down' | 'up';
   amount?: number;
+  /** For wait_for_human: why this run needs a human answer before it can continue. */
+  reason?: string;
   /**
    * S2: optional agent-authored narration surfaced to the attended human (broadcast only, NOT a new
    * MCP verb). Always trusted=0 on the human surface (agent can never author trusted=1); rendered inert
@@ -404,9 +406,17 @@ export function setBatonGate(gate: BatonGate | undefined): void {
  * going, which is what an implicit acknowledgement is (A-51-4). `deliver` runs AFTER, on the minted
  * result, because piggyback means the messages ride a result that was going to be sent anyway.
  *
- * Neither may throw and neither may refuse a call: this is a mailbox, not a gate.
+ * Interrupt/delivery hooks never throw through dispatch. The wait verb may return a typed refusal
+ * when it cannot identify or read the run it was asked to park; ordinary mailbox failures remain
+ * non-blocking and leave messages queued.
  */
 export interface DeliveryHooks {
+  /**
+   * Return a one-shot, run-scoped interrupt before any baton refusal or host work. Undefined means
+   * normal dispatch continues. This has to precede the baton: after a human takeover the old driver
+   * is already an observer, but is still owed exactly one interrupted receipt.
+   */
+  interrupt(name: string, args: Record<string, unknown>): Promise<McpToolResult | undefined>;
   acknowledge(name: string, args: Record<string, unknown>): Promise<void>;
   deliver(name: string, args: Record<string, unknown>, result: McpToolResult): Promise<McpToolResult>;
 }
@@ -493,6 +503,12 @@ export async function dispatchStudioTool(
   if (studioHost) {
     const route = HOST_ROUTE_TABLE.get(name);
     if (route) {
+      // Interrupts are receipts addressed to the driver that was active when the trigger landed.
+      // In the takeover case that client is no longer the current driver, so this check MUST run
+      // before the baton gate. The consumed event makes this path fire once; the following call
+      // reaches the ordinary observer refusal below.
+      const interrupted = await deliveryHooks?.interrupt(name, args);
+      if (interrupted) return interrupted;
       // The baton is checked AFTER the route resolves, so an unknown tool still reads as unknown,
       // and BEFORE the handler runs, so an observer's act never reaches the page at all. Serialized
       // with `verbatim` because a `not_the_driver` refusal carries `driver` + `driver_name`, which

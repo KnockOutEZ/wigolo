@@ -77,8 +77,8 @@ const STUDIO_ACT: StudioToolSchema = {
   properties: {
     action: {
       type: 'string',
-      enum: ['navigate', 'click', 'type', 'scroll'],
-      description: 'What to do in the shared browser session: navigate to a URL, click an element, type text into an element, or scroll the page.',
+      enum: ['navigate', 'click', 'type', 'scroll', 'wait_for_human'],
+      description: 'What to do in the shared browser session: navigate to a URL, click an element, type text into an element, scroll the page, or wait for a human answer on this run.',
     },
     url: {
       type: 'string',
@@ -100,6 +100,10 @@ const STUDIO_ACT: StudioToolSchema = {
     amount: {
       type: 'number',
       description: 'For scroll: distance in page pixels (default 600).',
+    },
+    reason: {
+      type: 'string',
+      description: 'For wait_for_human: why this run needs a human answer before it can continue.',
     },
     narration: {
       type: 'string',
