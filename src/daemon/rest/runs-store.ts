@@ -21,7 +21,7 @@ import {
   getRun,
   runExists,
   listRuns,
-  eventsSince,
+  eventsSinceBounded,
   type CreateRunInput,
   type Driver,
   type ListRunsOptions,
@@ -147,7 +147,21 @@ export function sqliteRunsStore(db: Database.Database): RunsStore {
     list: async (opts) => listRuns(db, opts),
     get: async (runId) => getRun(db, runId),
     exists: async (runId) => runExists(db, runId),
-    eventsSince: async (runId, since, limit) => eventsSince(db, runId, since, limit),
+    // Bounded in rows AND characters, by the same `eventsSinceBounded` the broker binding uses.
+    //
+    // This used to be a bare `eventsSince`, i.e. a plain `LIMIT ?` — the count and nothing else, on
+    // the one binding that runs on the daemon's own event loop. The broker's sibling had both clamps
+    // and said why ("a count alone bounds the wrong thing"); the daemon's did not, so a standalone
+    // replay of 500 rows (`WIGOLO_STUDIO_RUN_REPLAY_PAGE`'s default) against payloads near
+    // `MAX_EVENT_PAYLOAD_CHARS` read and parsed ~32 MB in one uninterruptible synchronous block, with
+    // the loop closed to every other request for its duration, and the env knob had no ceiling so it
+    // could ask for the whole log. The route computed that very figure to bound the socket WRITE
+    // (`DEFAULT_SSE_FLUSH_BYTES`) while the read that produced the bytes was bounded by nothing.
+    //
+    // The page is therefore SHORT whenever either clamp trips, and short is not end-of-log: every
+    // paged reader on this port stops on an EMPTY page (`rest/runs.ts`'s `pumpDurable`,
+    // `run-view-model.ts`'s `readLog`), which is what makes adding the clamp here compatible.
+    eventsSince: async (runId, since, limit) => eventsSinceBounded(db, runId, since, limit),
     driver: async (runId, input) => applyGesture(db, runId, input),
     sendMessage: async (runId, input) => queueMessage(db, runId, input),
     messages: async (runId, limit) => listMessages(db, runId, limit),
