@@ -15,6 +15,10 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | Browser engine won't launch on Linux | `wigolo warmup --browser` installs the OS system libraries the browser engine needs (escalating with sudo where required); when it can't, the error prints the exact install command to run yourself, then re-run `wigolo warmup`. |
 | `wigolo serve` exits: port in use | The daemon deliberately does not auto-rebind. The error names a free port to retry with, e.g. `wigolo serve --port 3334`. |
 | `wigolo serve` refuses to start on a non-loopback host | Working as designed (fail-closed). Set `WIGOLO_API_TOKEN` / `WIGOLO_API_TOKEN_FILE`, or explicitly pass `--allow-unauthenticated`. See [self-hosting](./self-hosting.md#binding-beyond-loopback). |
+| Every tool refuses: "wigolo needs an account" | This install is not activated. `wigolo register` creates a free account and activates it; `wigolo login` signs in an existing one. Diagnostics (`doctor`, `verify`, `warmup`) keep working while unactivated. See [below](#every-tool-says-wigolo-needs-an-account). |
+| A tool refuses: "your wigolo sign-in has expired" | `wigolo login` reconnects this machine. Do **not** run `register` — that creates a second account. |
+| A tool refuses: "wigolo needs an update to verify your sign-in" | Update wigolo, then `wigolo login`. The account service signs activation with a key this build does not hold, and re-registering cannot change that. |
+| `wigolo serve` exits immediately with an account message | `serve` refuses at start rather than starting and failing every request. Activate the install first. |
 | Fetch result says `blocked_by_challenge` | See [below](#blocked_by_challenge). |
 | Search results feel thin / an engine seems dead | Degraded engines are *reported*, not hidden — check `engine_warnings`, `engine_telemetry`, and `engine_pool` in the response, and `wigolo doctor`'s per-engine table (it names the env var when an engine just wants a key, e.g. `WIGOLO_GITHUB_TOKEN`, `BRAVE_API_KEY`). |
 | Results are stale | Pass `force_refresh: true` (news, prices, changelogs), or clear scoped entries: `wigolo cache clear --url-pattern="*example.com*"`. Lifetimes are tunable: `CACHE_TTL_SEARCH`, `CACHE_TTL_CONTENT`. |
@@ -40,6 +44,32 @@ No. `init` exits 0 even when a download fails, and the **core** (search, HTTP fe
 | No LLM key | `research` / `agent` / `search --format answer` return structured evidence instead of written prose | every keyless tool, which is the default |
 
 Re-run `wigolo warmup --all` any time to retry the downloads, or just let each component lazy-load on first use.
+
+## Every tool says "wigolo needs an account"
+
+```text
+wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).
+```
+
+Not an error — the install has not been activated. Since 0.3.0 the ten tools need a free
+account, and the refusal is identical on every surface: the MCP server, the REST daemon,
+the interactive shell, and one-shot tool commands.
+
+```bash
+wigolo register        # new account: email + a mailed sign-in code, no password
+wigolo login           # existing account, new machine
+wigolo whoami          # what this machine currently thinks (fully offline)
+```
+
+Diagnostics are deliberately not gated. `wigolo doctor`, `wigolo verify` and `wigolo
+warmup` run on a machine that has never registered, so a broken install can always be
+diagnosed — `doctor` prints an Account section with the activation state.
+
+Activation is checked offline against a signed token on disk, so a network outage does not
+de-activate you. Three things do, and each has its own line: never having registered
+(`register`), a sign-in that expired (`login`), and a build too old to verify the service's
+current signing key (update, then `login`). Read which line you got before acting — running
+`register` on an expired sign-in creates a second account against the same email.
 
 ## blocked_by_challenge
 
@@ -82,12 +112,22 @@ wigolo writes **all** logs to stderr (structured JSON by default; `LOG_FORMAT=te
 - CLI runs: logs appear in your terminal's stderr; redirect with `2>wigolo.log`.
 - MCP hosts: the host captures server stderr into its own MCP log location.
 - `wigolo serve` under systemd/Docker: journal / container logs.
-- The only file wigolo itself writes events to is the opt-in telemetry NDJSON (`~/.wigolo/telemetry/`), and only when `WIGOLO_TELEMETRY=1`.
+- The only file wigolo itself writes events to is the telemetry queue (`~/.wigolo/telemetry/queue.ndjson`) — events waiting to be sent to your account service. It is on by default as of 0.3.0; `WIGOLO_TELEMETRY=off` means nothing is queued and the file is never created. What can be in it is a closed list — see [privacy & security](./privacy-security.md#usage-and-reliability-telemetry).
 
 ## FAQ
 
 **What's the business model? Will this start charging me?**
-wigolo is free, open-source software under AGPL-3.0. There's no hosted tier, no metered API, no key to buy — it's local software; your machine does the work. That's the point of it.
+wigolo is free, open-source software under AGPL-3.0, and the work still happens on your
+machine — no metered API, no per-call cost, no key to buy. Since 0.3.0 it does ask you to
+create a free account before the tools run: an email address and a mailed sign-in code. The
+account is what makes usage and reliability telemetry attributable, and the source stays
+AGPL, so nothing here stops you.
+
+**Do I have to send telemetry?**
+No. It is on by default as of 0.3.0 — a change from earlier releases, which sent nothing —
+and `WIGOLO_TELEMETRY=off` turns it off with nothing queued and nothing written. What it
+can ever contain is a closed list of counters; page content, queries and full URLs are not
+representable in it. See [privacy & security](./privacy-security.md#usage-and-reliability-telemetry).
 
 **What does AGPL mean for me, plainly?**
 Using wigolo as a tool — personally, in your company, wired into every agent you run — carries zero obligation. The license's share-alike clause applies only if you *modify wigolo itself and run the modified version as a network service for others*: then you share those modifications. Building products that merely call wigolo is not that.
