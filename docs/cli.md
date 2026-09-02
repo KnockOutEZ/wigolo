@@ -1,6 +1,6 @@
 # CLI reference
 
-The `wigolo` binary is three things: an MCP server (the default, when run with no arguments), a set of management commands, and a one-shot runner for all ten tools.
+The `wigolo` binary is four things: an MCP server (the default, when run with no arguments), a set of management commands, five account verbs, and a one-shot runner for all ten tools.
 
 ```text
 wigolo                  Start MCP server on stdio (default)
@@ -8,7 +8,7 @@ wigolo <command>        Run a subcommand
 wigolo <tool> <args>    Run a tool once (headless)
 ```
 
-`wigolo --help` prints the full map. Every tool and most subcommands accept `--help` too — the exceptions are `doctor`, `status`, `health`, and `warmup`, which ignore the flag and just run.
+`wigolo --help` prints the full map. Every tool and most subcommands accept `--help` too — the exceptions are `doctor`, `status`, `health`, `warmup` and the five [account verbs](#your-wigolo-account), which ignore the flag and just run. On `wigolo logout` that means `--help` signs you out, so read this page rather than asking those five for help.
 
 ## The --json contract
 
@@ -36,7 +36,7 @@ Unattended by default: wires the agents you name, persists settings, downloads t
 wigolo doctor [--fix] [--json]
 ```
 
-Diagnoses the installation: data dir writability, browser engine, fetch tiers, on-device models, LLM provider status, search backend, per-engine health (with the exact env var that enables each keyed engine), cache stats, and telemetry state. `--fix` repairs known failures.
+Diagnoses the installation: data dir writability, browser engine, fetch tiers, on-device models, LLM provider status, search backend, per-engine health (with the exact env var that enables each keyed engine), cache stats, your [account and activation state](#your-wigolo-account), and whether telemetry is on. `--fix` repairs known failures. Runs on an install that has never registered.
 
 ### verify
 
@@ -44,7 +44,7 @@ Diagnoses the installation: data dir writability, browser engine, fetch tiers, o
 wigolo verify [--plain] [--json]
 ```
 
-End-to-end capability smoke check with real network calls. Exit 0 when all capabilities pass or skip; exit 1 when any fails.
+End-to-end capability smoke check with real network calls. Exit 0 when all capabilities pass or skip; exit 1 when any fails. Like `doctor` and `warmup`, it runs on an install that has never registered — its probes are fixed, not user-chosen.
 
 ### status / health
 
@@ -109,6 +109,10 @@ wigolo auth status      # current auth configuration
 
 Pairs with the session env vars in [configuration](./configuration.md#fetch-and-browser-engine) and `use_auth: true` on fetch/crawl.
 
+> `wigolo auth` is about **sites you sign in to through the browser engine** — it has
+> nothing to do with your wigolo account. Your account lives under
+> [`wigolo account`](#your-wigolo-account) and its four sibling verbs.
+
 ### backfill
 
 ```text
@@ -141,6 +145,9 @@ wigolo serve [--port N] [--host H] [--allow-unauthenticated]
 
 Starts the HTTP daemon (REST + remote MCP). It streams protocol output, so there is no `--json` here. Full reference: [REST API](./rest-api.md).
 
+`serve` refuses at start on an install that is not activated, rather than starting and
+failing every request — see [Your wigolo account](#your-wigolo-account).
+
 ### uninstall
 
 ```text
@@ -148,6 +155,78 @@ wigolo uninstall [--yes] [--json]
 ```
 
 Removes agent integrations (MCP config, instructions, skills, slash command). Keeps `~/.wigolo` data; the command prints the full-cleanup path for your install method.
+
+## Your wigolo account
+
+Five verbs, separate from the management commands above because they concern your account
+rather than this machine's setup. Not to be confused with [`wigolo auth`](#auth), which
+manages site sign-ins for the browser engine.
+
+All ten tools are gated on an activated install. Diagnostics are not: `doctor`, `verify`
+and `warmup` run on a machine that has never registered, so a broken install can always be
+diagnosed. Everything that reaches a tool — the MCP server, the REST daemon, the
+interactive shell, a one-shot tool command — refuses with the same line until you activate:
+
+```text
+wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).
+```
+
+### register
+
+```text
+wigolo register [--email E] [--json]
+```
+
+Creates your account and activates this install. Shows what usage and reliability
+telemetry covers before anything is created, asks whether you want occasional
+product-update emails, then mails a sign-in code and waits for it. No password. If the
+account service is unreachable while the disclosure is being loaded, registration stops
+and nothing is created.
+
+### login
+
+```text
+wigolo login [--email E] [--json]
+```
+
+Signs an existing account in on this machine, by the same emailed code. Use it on a second
+machine, or after `logout`, or when a sign-in expires.
+
+### logout
+
+```text
+wigolo logout [--json]
+```
+
+Signs out on this machine. Clears the local credential only — other machines stay signed
+in and the account itself is untouched.
+
+### whoami
+
+```text
+wigolo whoami [--json]
+```
+
+Fully offline: answers from cached state, which is what makes it useful on the machine most
+likely to be asking. Prints the email, the account id, the activation state, and when the
+sign-in expires. Exit 1 when this machine was never activated.
+
+### account
+
+```text
+wigolo account [--json]
+wigolo account export <file>
+wigolo account delete
+```
+
+`account` on its own reaches the service for a summary: email, account id, creation date,
+product-update-email consent, which telemetry disclosure version you were shown, and
+whether telemetry is on. `export` writes everything the service holds for you to a JSON
+file. `delete` permanently deletes the account and signs this machine out — it asks you to
+type `DELETE` first, and anything else cancels.
+
+Telemetry state is reported here and by `wigolo doctor`; the switch itself is
+[`WIGOLO_TELEMETRY`](./configuration.md#account-and-telemetry).
 
 ## One-shot tools
 

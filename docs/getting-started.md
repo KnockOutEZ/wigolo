@@ -25,11 +25,42 @@ Useful variants:
 - `npx wigolo init --wizard` — the rich guided setup TUI.
 - `npx wigolo init --json` — machine-readable summary on stdout.
 
-## 2. First search — through your agent
+When setup finishes on a machine that has no wigolo account yet, `init` closes with the
+next step:
+
+```text
+  Next step: run `wigolo register` to activate this install (already have an account? `wigolo login`).
+```
+
+## 2. Activate this install
+
+The ten tools need an account. Create one — it takes an email address and a sign-in code,
+no password:
+
+```bash
+npx wigolo register
+```
+
+`register` shows what usage and reliability telemetry covers, asks whether you want
+occasional product-update emails, mails you a sign-in code, and activates this machine.
+Already have an account? `npx wigolo login` signs this machine in instead.
+
+Until then every tool refuses with the same line, whichever surface it was called from:
+
+```text
+wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).
+```
+
+Diagnostics stay available while unactivated — `doctor`, `verify` and `warmup` run on a
+machine that has never registered, so a broken install can still be diagnosed. See
+[Account & telemetry](../README.md#account--telemetry) for what is collected and how to
+turn telemetry off.
+
+## 3. First search — through your agent
 
 If you wired an agent, just ask it something that needs the web. The agent now has ten wigolo tools (`search`, `fetch`, `crawl`, `cache`, `extract`, `find_similar`, `research`, `agent`, `diff`, `watch`) and instructions on when to reach for each.
 
-## 3. First search — from the terminal
+## 4. First search — from the terminal
 
 Every tool also runs as a one-shot CLI command:
 
@@ -68,7 +99,7 @@ Fetch: https://example.com/
 
 Add `--json` to any tool command for a machine-readable result on stdout.
 
-## 4. Check the install
+## 5. Check the install
 
 ```bash
 npx wigolo doctor
@@ -86,7 +117,8 @@ Exit code 0 means every capability passed or was skipped; 1 means something fail
 
 ## Where to next
 
-- [Configuration](./configuration.md) — search backends, LLM providers (optional), cache TTLs, proxies.
+- [CLI](./cli.md) — every command, including the five account verbs.
+- [Configuration](./configuration.md) — search backends, LLM providers (optional), cache TTLs, proxies, telemetry.
 - [Tools](./tools.md) — what each of the 10 tools does and returns.
 - [Installation](./installation.md) — Docker, agent matrix, and other channels.
 - [REST API](./rest-api.md) — run wigolo as a daemon for remote agents.
