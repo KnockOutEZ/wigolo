@@ -150,17 +150,32 @@ describe('TelemetryQueue', () => {
     expect(q.readAll()).toEqual([]);
   });
 
-  it('merges appends from another instance made while a drain snapshot is in flight', () => {
+  it('merges appends from another instance made while a drain snapshot is in flight', async () => {
     const drainer = new TelemetryQueue(dataDir);
     const appender = new TelemetryQueue(dataDir);
     drainer.append(marked('search', '2026-01-01T00:00:00.000Z'));
 
-    const snapshot = drainer.beginDrain();
+    const snapshot = await drainer.beginDrain();
     expect(snapshot).toMatchObject([{ props: { tool: 'search' } }]);
     appender.append(marked('fetch', '2026-01-02T00:00:00.000Z'));
-    expect(drainer.finishDrain(snapshot ?? [], [])).toBe(true);
+    expect(await drainer.finishDrain(snapshot ?? [], [])).toBe(true);
 
     expect(drainer.readAll()).toMatchObject([{ props: { tool: 'fetch' } }]);
+  });
+
+  it('yields the event loop while an asynchronous drain waits for the write lock', async () => {
+    const q = new TelemetryQueue(dataDir);
+    q.append(event(1));
+    const lock = join(telemetryDir(dataDir), '.queue-write.lock');
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'live-owner', createdAtMs: Date.now() }));
+    const atomicsWait = vi.spyOn(Atomics, 'wait');
+    const release = setTimeout(() => unlinkSync(lock), 5);
+
+    const snapshot = await q.beginDrain();
+
+    clearTimeout(release);
+    expect(atomicsWait).not.toHaveBeenCalled();
+    expect(snapshot).toEqual([event(1)]);
   });
 
   it('does not block or drop an append while another process owns the write lock', () => {
@@ -215,14 +230,14 @@ describe('TelemetryQueue', () => {
     expect(q.readAll()).toEqual([event(1)]);
   });
 
-  it('keeps one global oldest-first cap while a network snapshot is in flight', () => {
+  it('keeps one global oldest-first cap while a network snapshot is in flight', async () => {
     const q = new TelemetryQueue(dataDir);
     mkdirSync(telemetryDir(dataDir), { recursive: true });
     const oldest = marked('crawl', '2026-01-01T00:00:00.000Z');
     const oldestLine = `${JSON.stringify(oldest)}\n`;
     writeFileSync(q.path, oldestLine.repeat(Math.ceil(QUEUE_CAP_BYTES / Buffer.byteLength(oldestLine))));
     q.evictIfOverCap();
-    const snapshot = q.beginDrain();
+    const snapshot = await q.beginDrain();
     expect(snapshot).not.toBeNull();
 
     const newest = marked('watch', '2026-12-31T23:59:59.000Z');
@@ -231,20 +246,20 @@ describe('TelemetryQueue', () => {
     q.evictIfOverCap();
     const beforeFinish = q.readAll();
 
-    expect(q.finishDrain(snapshot ?? [], snapshot ?? [])).toBe(true);
+    expect(await q.finishDrain(snapshot ?? [], snapshot ?? [])).toBe(true);
     expect(q.sizeBytes()).toBeLessThanOrEqual(QUEUE_EVICT_TARGET_BYTES);
     expect(q.readAll()).toEqual(beforeFinish);
     expect(q.readAll().at(-1)).toEqual(newest);
     expect(existsSync(join(telemetryDir(dataDir), 'queue.inflight.ndjson'))).toBe(false);
   });
 
-  it('recovers a snapshot left behind by a crashed drainer before the next drain', () => {
+  it('recovers a snapshot left behind by a crashed drainer before the next drain', async () => {
     const first = new TelemetryQueue(dataDir);
     first.append(marked('search', '2026-01-01T00:00:00.000Z'));
-    expect(first.beginDrain()).toHaveLength(1);
+    expect(await first.beginDrain()).toHaveLength(1);
     new TelemetryQueue(dataDir).append(marked('fetch', '2026-01-02T00:00:00.000Z'));
 
-    const recovered = new TelemetryQueue(dataDir).beginDrain();
+    const recovered = await new TelemetryQueue(dataDir).beginDrain();
     expect(recovered).toMatchObject([
       { props: { tool: 'search' } },
       { props: { tool: 'fetch' } },

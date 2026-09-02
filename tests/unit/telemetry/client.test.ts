@@ -525,6 +525,49 @@ describe('TelemetryClient', () => {
       }
     });
 
+    it('does not parse the queue on threshold emits during cached flush spacing', async () => {
+      const telemetry = makeTelemetry({ responder: () => err(503, 'unavailable') });
+      telemetry.start();
+      try {
+        for (let i = 0; i < FLUSH_EVENT_THRESHOLD; i += 1) telemetry.emit(toolRun());
+        await telemetry.flush();
+        const queueParses = vi.spyOn(TelemetryQueue.prototype, 'readAll');
+        queueParses.mockClear();
+
+        for (let i = 0; i < 3; i += 1) {
+          telemetry.emit(toolRun('fetch'));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        expect(queueParses).toHaveBeenCalledTimes(0);
+        expect(sentBatches).toHaveLength(1);
+      } finally {
+        telemetry.stop();
+      }
+    });
+
+    it('does not parse the queue on threshold emits during cached server backoff', async () => {
+      const telemetry = makeTelemetry({ responder: () => err(429, 'rate_limited', { retry_after_s: 600 }) });
+      telemetry.start();
+      try {
+        for (let i = 0; i < FLUSH_EVENT_THRESHOLD; i += 1) telemetry.emit(toolRun());
+        await telemetry.flush();
+        clock += MIN_FLUSH_SPACING_MS;
+        const queueParses = vi.spyOn(TelemetryQueue.prototype, 'readAll');
+        queueParses.mockClear();
+
+        for (let i = 0; i < 3; i += 1) {
+          telemetry.emit(toolRun('fetch'));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        expect(queueParses).toHaveBeenCalledTimes(0);
+        expect(sentBatches).toHaveLength(1);
+      } finally {
+        telemetry.stop();
+      }
+    });
+
     it('really flushes on the 15-minute timer and emits daemon uptime', async () => {
       vi.useFakeTimers();
       const telemetry = makeTelemetry({ responder: (e) => ok(e.events.length) });
