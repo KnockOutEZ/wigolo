@@ -22,6 +22,38 @@ import { createLogger } from '../logger.js';
 import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
+import { checkActivation } from '../server/activation.js';
+
+/**
+ * REST paths inside the `/v1` family that the activation gate does NOT cover,
+ * because the gate's predicate is "can this reach one of the ten tool handlers"
+ * (A-212-1) and these cannot (A-222-3).
+ *
+ * Two groups, for two different reasons:
+ *
+ *   DISCOVERY — `/openapi.json`, `/v1/openapi.json`, `/v1/tools` describe the
+ *   surface and execute nothing. They are this transport's `initialize` and
+ *   `tools/list`, which mini-spec §3 keeps open on MCP; a REST client must be
+ *   able to learn what a server offers before it has an account.
+ *
+ *   RUNS — `/v1/runs*` is the run store. Verified against the tree: neither
+ *   `rest/runs.ts` nor `rest/runs-store.ts` imports anything from `src/tools/`,
+ *   so creating, listing or reading a run reaches no tool handler. The tools a
+ *   run's driver eventually calls arrive at `/v1/{tool}` or at the MCP dispatch
+ *   closure, and both are gated — so nothing escapes by being wrapped in a run.
+ *   REVERSAL: if the runs surface ever executes a tool itself, it moves to the
+ *   gated column, exactly as A-212-1 pins for any command that grows one.
+ */
+const REST_UNGATED_EXACT: ReadonlySet<string> = new Set([
+  '/openapi.json',
+  '/v1/openapi.json',
+  '/v1/tools',
+  '/v1/runs',
+]);
+
+function restPathIsUngated(pathname: string): boolean {
+  return REST_UNGATED_EXACT.has(pathname) || pathname.startsWith('/v1/runs/');
+}
 import type { RestRouter } from './rest/router.js';
 import type { RunsStore } from './rest/runs-store.js';
 
@@ -369,6 +401,20 @@ export class DaemonHttpServer {
       pathname === '/compat/firecrawl' ||
       pathname.startsWith('/compat/firecrawl/')
     ) {
+      // THE ACTIVATION GATE for the REST families (PX2 mini-spec §3, A-212-2).
+      // Route-level IS tool-level here, and this is the one seam that sits above
+      // BOTH dispatchers: `/v1` goes through `rest/dispatch.ts`, but the
+      // firecrawl-compat handlers call `handleFetch`/`handleSearch`/`handleCrawl`
+      // directly and would walk straight past a check placed inside dispatch.
+      //
+      // See `REST_UNGATED_EXACT` for which paths inside this family are exempt
+      // and why. `/health`, `/sse` and every non-tool route never reach here.
+      if (!restPathIsUngated(pathname)) {
+        const activation = checkActivation();
+        if (!activation.ok) {
+          return this.writeRequestError(res, 403, 'not_activated', activation.message);
+        }
+      }
       const router = await this.getRestRouter();
       return router.handle(req, res);
     }

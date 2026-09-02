@@ -25,6 +25,28 @@ const fsMock = vi.hoisted(() => ({
 
 vi.mock('node:fs', () => fsMock);
 
+// This file replaces node:fs WHOLESALE, so the activation gate at the top of
+// `startShell` cannot read the account state the suite seeds on the real disk
+// (tests/setup.ts): it would refuse before readline ever attaches and take every
+// history-mode assertion below with it. The gate is not what this file is about,
+// and its own arms — driven against a real un-activated data dir with a real
+// signed token — live in tests/unit/server/activation-gate.test.ts and
+// tests/integration/activation-cli.test.ts.
+vi.mock('../../../src/server/activation.js', () => ({
+  checkActivation: () => ({
+    ok: true as const,
+    step: 'perpetual' as const,
+    payload: {
+      account_id: 'acct_history_mode',
+      issued_at: '2026-01-01T00:00:00.000Z',
+      valid_until: '2099-01-01T00:00:00.000Z',
+      grants: [
+        { product: 'core', type: 'perpetual', features: null, expires: null, version_ceiling: null },
+      ],
+    },
+  }),
+}));
+
 vi.mock('../../../src/repl/commands/fetch.js', () => ({ executeFetch: vi.fn() }));
 vi.mock('../../../src/repl/commands/search.js', () => ({ executeSearch: vi.fn() }));
 vi.mock('../../../src/repl/commands/cache.js', () => ({

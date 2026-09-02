@@ -20,6 +20,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { resetConfig } from '../../../src/config.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { installActivated } from './activation-fixture.js';
 
 // The `watch` handler hits the real DB (via the cache/db.js
 // `getDatabase()` helper), so the schema-registration suite needs a real
@@ -139,15 +140,23 @@ async function connectClient(mutate?: (subs: import('../../../src/server.js').Su
 
 describe('diff + watch tool registration', () => {
   let tmpDataDir: string;
+  let restoreActivation: () => void;
 
   beforeEach(() => {
     tmpDataDir = mkdtempSync(join(tmpdir(), 'wigolo-schema-reg-'));
     process.env.WIGOLO_DATA_DIR = tmpDataDir;
     resetConfig();
+    // This file repoints the data dir at an empty directory, which is exactly
+    // what an un-activated install looks like — so without this, every
+    // `tools/call` below would return the activation refusal instead of the
+    // envelope it is here to assert. The gate's own arms live in
+    // `activation-gate.test.ts` and run against a real un-activated dir.
+    restoreActivation = installActivated();
     _resetMigrationGuard();
     vi.clearAllMocks();
   });
   afterEach(() => {
+    restoreActivation();
     delete process.env.WIGOLO_DATA_DIR;
     resetConfig();
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }

@@ -1,9 +1,10 @@
 import { beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installNetworkFence } from './net-fence.js';
 import { RUN_DIR_ENV, TEST_HOME_ROOT } from './global-setup.js';
+import { generateMintKeyPair, mintToken, grant, payload } from './unit/account/mint-entitlement.js';
 
 // A test's result must not depend on whether the runner can reach the internet. See
 // `net-fence.ts` for the defect this closes and for what it deliberately does not cover.
@@ -181,6 +182,67 @@ function ensureTestDataDir(): void {
   }
 }
 ensureTestDataDir();
+
+// ── The suite runs as an ACTIVATED install (PX2 #222) ────────────────────────
+//
+// 0.3.0 refuses every tool call until `wigolo register` has run: the gate sits
+// atop MCP `tools/call`, the daemon's `/v1` + compat routes, `serve` start, the
+// one-shot CLI and the REPL. The throwaway HOME above has no account state, so
+// without this every one of those surfaces would refuse — and roughly a thousand
+// tests that are about fetching, ranking, fencing or routing would go red for a
+// reason that has nothing to do with what they assert.
+//
+// So the suite's default install is activated, exactly the way a user's is:
+// a real Ed25519 keypair, a real signed entitlement token carrying a perpetual
+// `core` grant, written to the real `state.json` path, with the public half
+// pinned through the same `WIGOLO_ACCOUNTS_PUBKEY` override that dev and RC runs
+// use. NOTHING IS BYPASSED — no test-mode branch exists in `src/`, and the gate
+// evaluates all six of its steps here just as it does in production. A test that
+// wants an UN-activated install gets one by pointing `WIGOLO_DATA_DIR` at an
+// empty directory; the gate's own arms do precisely that, which is what keeps
+// them a real signal rather than a restatement of this seeding.
+//
+// The mint helper is imported statically and safely: like `net-fence.ts` it
+// pulls in `node:crypto` and NOTHING from `src/`, so it cannot hoist above the
+// env assignments in this file the way a `src/` import would.
+//
+// A test that has already pinned its own key is left alone — that is the signal
+// "this file is running its own account fixture".
+function activateTestInstall(): void {
+  if (process.env.WIGOLO_ACCOUNTS_PUBKEY) return;
+  const keys = generateMintKeyPair();
+  const { token } = mintToken(
+    keys,
+    payload({
+      account_id: 'acct_test_suite',
+      valid_until: '2099-01-01T00:00:00.000Z',
+      grants: [grant({ product: 'core', type: 'perpetual' })],
+    }),
+  );
+  const dir = join(TEST_DATA_DIR, 'account');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(dir, 'state.json'),
+    JSON.stringify(
+      {
+        account_id: 'acct_test_suite',
+        email: 'suite@example.invalid',
+        entitlement_token: token,
+        last_refresh_at: new Date().toISOString(),
+        last_refresh_attempt_at: new Date().toISOString(),
+        refresh_expires_at: '2099-01-01T00:00:00.000Z',
+        needs_relogin: false,
+        disclosure_version: 'test',
+        marketing_consent: false,
+      },
+      null,
+      2,
+    ),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  process.env.WIGOLO_ACCOUNTS_PUBKEY = keys.publicKeyB64Url;
+}
+activateTestInstall();
 
 // Default reranker to 'none' in tests so the cross-encoder model isn't lazily
 // downloaded. Tests that exercise the reranker explicitly set

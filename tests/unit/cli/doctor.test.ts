@@ -71,8 +71,38 @@ vi.mock('../../../src/security/key-store.js', async () => {
   return { ...actual, readKey: vi.fn().mockResolvedValue(null) };
 });
 
+// Activated-install fixtures make doctor check the accounts service's published
+// entitlement keys. Keep that diagnosis real while routing its transport through
+// AccountsClient's existing fetchImpl seam, so the test never reaches the sentinel
+// production URL (accounts.invalid).
+const accountsFetch = vi.hoisted(() => vi.fn(async (url: string): Promise<Response> => {
+  if (new URL(url).pathname !== '/entitlements/keys') {
+    throw new Error(`unscripted accounts request: ${url}`);
+  }
+  return new Response(JSON.stringify({ keys: [] }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}));
+
+vi.mock('../../../src/account/client.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/account/client.js')>(
+    '../../../src/account/client.js',
+  );
+  return {
+    ...actual,
+    AccountsClient: class extends actual.AccountsClient {
+      constructor(opts: import('../../../src/account/client.js').AccountsClientOpts) {
+        super({ ...opts, fetchImpl: accountsFetch });
+      }
+    },
+  };
+});
+
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { _resetTelemetryForTest as resetTelemetryForTest } from '../../../src/telemetry/index.js';
 import { runDoctor } from '../../../src/cli/doctor.js';
 import { initDatabase } from '../../../src/cache/db.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
@@ -473,20 +503,63 @@ describe('runDoctor', () => {
       expect(outBuffer).toMatch(/https:\/\/empty\.example\/feed\s+0 items \[never polled\]/);
     });
 
-    it('reports telemetry disabled by default', async () => {
+    // 0.3.0 flips telemetry from opt-IN to opt-OUT, and the line has to distinguish the two
+    // ways it can still be off: the switch, and an install with no account to report against.
+    // Telling a user who opted out to go and register would be a lie about their own setting.
+
+    /** Make `AccountStateStore.read()` see an activated install through the fs mock. */
+    function activateAccount(): void {
+      vi.mocked(existsSync).mockImplementation((p) => String(p).endsWith(join('account', 'state.json')));
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith(join('account', 'state.json'))) {
+          return JSON.stringify({ account_id: 'acc_doctor', email: 'x@example.com' });
+        }
+        return '';
+      });
+    }
+
+    it('reports telemetry inactive on an install that has never registered', async () => {
       delete process.env.WIGOLO_TELEMETRY;
+      resetTelemetryForTest();
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/Telemetry: opt-in disabled \(WIGOLO_TELEMETRY=1/);
+      expect(outBuffer).toMatch(/Telemetry: opt-out inactive \(no account yet/);
+      expect(outBuffer).toContain('wigolo register');
     });
 
-    it('reports telemetry enabled when WIGOLO_TELEMETRY=1', async () => {
-      process.env.WIGOLO_TELEMETRY = '1';
+    it('reports telemetry enabled on an activated install with the switch untouched', async () => {
+      delete process.env.WIGOLO_TELEMETRY;
+      activateAccount();
+      resetTelemetryForTest();
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/Telemetry: opt-out enabled \(WIGOLO_TELEMETRY=off to opt out\)/);
+    });
+
+    it('reports telemetry disabled when WIGOLO_TELEMETRY=off, even when activated', async () => {
+      activateAccount();
+      process.env.WIGOLO_TELEMETRY = 'off';
       try {
+        resetConfig();
+        resetTelemetryForTest();
         await runDoctor('/tmp/.wigolo');
       } finally {
         delete process.env.WIGOLO_TELEMETRY;
       }
-      expect(outBuffer).toMatch(/Telemetry: opt-in enabled/);
+      expect(outBuffer).toMatch(/Telemetry: opt-out disabled/);
+      expect(outBuffer).toContain('nothing is queued and nothing is sent');
+      expect(outBuffer).not.toMatch(/wigolo register/);
+    });
+
+    it('still reports disabled for the legacy WIGOLO_TELEMETRY=0 spelling', async () => {
+      activateAccount();
+      process.env.WIGOLO_TELEMETRY = '0';
+      try {
+        resetConfig();
+        resetTelemetryForTest();
+        await runDoctor('/tmp/.wigolo');
+      } finally {
+        delete process.env.WIGOLO_TELEMETRY;
+      }
+      expect(outBuffer).toMatch(/Telemetry: opt-out disabled/);
     });
   });
 });

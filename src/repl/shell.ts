@@ -6,6 +6,7 @@ import { getConfig } from '../config.js';
 import { parseArgs, tokenize, type ParsedArgs } from './parser.js';
 import { booleanFlagsFor } from '../cli/flag-bridge.js';
 import { complete } from './completer.js';
+import { checkActivation } from '../server/activation.js';
 import {
   formatSearchResults,
   formatFetchResult,
@@ -119,6 +120,16 @@ function appendHistory(historyPath: string, line: string): void {
 }
 
 export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Promise<ShellResult> {
+  // THE ACTIVATION GATE for the REPL (PX2 mini-spec §3). Checked once at entry,
+  // before the readline interface exists: a shell whose every command is refused
+  // is worse than no shell, and the single line names the command that fixes it.
+  // `failures: 1` so a piped `wigolo shell` exits non-zero like any failed run.
+  const activation = checkActivation();
+  if (!activation.ok) {
+    (options.errorOutput ?? process.stderr).write(`${activation.message}\n`);
+    return { failures: 1 };
+  }
+
   const config = getConfig();
   const historyPath = config.shellHistoryPath;
   let jsonMode = options.jsonMode ?? false;

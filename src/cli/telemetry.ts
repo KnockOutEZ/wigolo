@@ -1,76 +1,20 @@
 /**
- * Opt-in telemetry.
+ * DEPRECATED — this module has been absorbed into `src/telemetry/` (A-212-7).
  *
- * Off by default. Enabled when `WIGOLO_TELEMETRY=1`. Writes one NDJSON line
- * per event to `${dataDir}/telemetry/events-YYYYMMDD.ndjson`. Optionally
- * fire-and-forget POSTs to a remote endpoint when configured.
+ * What used to live here was an opt-in local logger: `WIGOLO_TELEMETRY=1` wrote
+ * `events-YYYYMMDD.ndjson` day-files under the data directory and, if
+ * `WIGOLO_TELEMETRY_ENDPOINT` was set, fire-and-forget POSTed each event to an arbitrary
+ * URL. None of that survives 0.3.0. Telemetry is opt-OUT, batched through a single capped
+ * queue, and goes to the account service or nowhere.
  *
- * Telemetry must NEVER throw or block the host — all errors are swallowed.
+ * The implementation is gone rather than duplicated: this file re-exports the one
+ * definition so a deep importer gets one release of grace instead of a broken build, and
+ * it will be removed in the release after. `emit` and `configureRemote` had no production
+ * consumer and are not re-exported — the new `emit` takes a closed dictionary event, so
+ * silently re-pointing the old free-form signature at it would be a lie about its type.
+ *
+ * New code imports from `../telemetry/index.js` directly.
+ *
+ * @deprecated Import `isTelemetryEnabled` from `../telemetry/index.js`.
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { getConfig } from '../config.js';
-
-export interface TelemetryEvent {
-  ts: string;
-  event: string;
-  props?: Record<string, unknown>;
-}
-
-let _endpoint: string | undefined;
-
-export function isTelemetryEnabled(): boolean {
-  return process.env.WIGOLO_TELEMETRY === '1';
-}
-
-export function configureRemote(endpoint: string | undefined): void {
-  _endpoint = endpoint;
-}
-
-function utcDateStamp(d: Date): string {
-  const y = d.getUTCFullYear().toString().padStart(4, '0');
-  const m = (d.getUTCMonth() + 1).toString().padStart(2, '0');
-  const day = d.getUTCDate().toString().padStart(2, '0');
-  return `${y}${m}${day}`;
-}
-
-function writeLocal(event: TelemetryEvent): void {
-  try {
-    const dir = join(getConfig().dataDir, 'telemetry');
-    mkdirSync(dir, { recursive: true });
-    const file = join(dir, `events-${utcDateStamp(new Date(event.ts))}.ndjson`);
-    appendFileSync(file, JSON.stringify(event) + '\n');
-  } catch {
-    // Telemetry must never throw.
-  }
-}
-
-function postRemote(endpoint: string, event: TelemetryEvent): void {
-  try {
-    const result = fetch(endpoint, {
-      method: 'POST',
-      body: JSON.stringify(event),
-      headers: { 'Content-Type': 'application/json' },
-    });
-    // Fire-and-forget: swallow rejections so callers never see them.
-    if (result && typeof (result as Promise<unknown>).catch === 'function') {
-      (result as Promise<unknown>).catch(() => { /* ignore */ });
-    }
-  } catch {
-    // Sync throw from fetch — also swallowed.
-  }
-}
-
-export function emit(event: string, props?: Record<string, unknown>): void {
-  if (!isTelemetryEnabled()) return;
-  const evt: TelemetryEvent = props !== undefined
-    ? { ts: new Date().toISOString(), event, props }
-    : { ts: new Date().toISOString(), event };
-  writeLocal(evt);
-  const endpoint = _endpoint ?? process.env.WIGOLO_TELEMETRY_ENDPOINT;
-  if (endpoint) postRemote(endpoint, evt);
-}
-
-export function _resetTelemetryForTest(): void {
-  _endpoint = undefined;
-}
+export { isTelemetryEnabled, telemetryStatus, type TelemetryStatus } from '../telemetry/index.js';

@@ -5,6 +5,7 @@ import { DaemonHttpServer } from '../daemon/http-server.js';
 import { checkBindHost } from '../companion/bind.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { resolveApiToken, evaluateBindGate } from '../daemon/rest/auth.js';
+import { checkActivation } from '../server/activation.js';
 
 const logger = createLogger('cli');
 
@@ -121,6 +122,23 @@ export function checkServeBindGate(args: DaemonArgs): ServeBindGateResult {
 
 export function runDaemon(args: string[]): void {
   const parsed = parseDaemonArgs(args);
+
+  // THE ACTIVATION GATE for `serve` (PX2 mini-spec §3, A-212-2). This surface is
+  // human-invoked at a terminal, so unlike MCP it refuses to START rather than
+  // starting and refusing each call: the operator is standing right there and the
+  // single line names the command that fixes it. A daemon that came up and 403'd
+  // everything would be strictly worse — the same outcome, discovered later, from
+  // a different machine.
+  //
+  // It refuses on ANY refusal, not only "never activated" (A-222-2): an expired
+  // sign-in cannot execute a tool either, and the gate's own line already says
+  // which of the three situations this is.
+  const activation = checkActivation();
+  if (!activation.ok) {
+    log(activation.message);
+    process.exit(1);
+    return;
+  }
 
   // Two fail-closed checks before the server starts, in order:
   //   1. INTENT — a non-loopback bind requires an explicit `--allow-remote`.

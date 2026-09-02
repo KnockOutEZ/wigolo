@@ -70,6 +70,14 @@ export const advancedCategory: CategoryDef = {
       help: 'Base URL of the account service used for sign-in, entitlements and telemetry. Leave unset to use the shipped default.',
     },
     {
+      key: 'WIGOLO_TELEMETRY',
+      settingsPath: 'telemetryEnabled',
+      label: 'Usage and reliability telemetry',
+      kind: 'toggle',
+      default: true,
+      help: 'Send anonymous usage and reliability counters to your account: which tools ran, how long they took as coarse buckets, error classes, and the registrable domain of a blocked site. Never page content, queries, full URLs, credentials or file paths. Turn it off here, or set WIGOLO_TELEMETRY=off for a single run — off means nothing is queued and nothing leaves the machine.',
+    },
+    {
       key: 'WIGOLO_DAEMON_HOST',
       settingsPath: 'daemonHost',
       label: 'Daemon host',
