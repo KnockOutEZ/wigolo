@@ -58,6 +58,11 @@ if (RC_GATE_DISABLED) console.warn(RC_GATE_SKIP_NOTICE);
 const NEVER_ACTIVATED_LINE =
   'wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).';
 
+/** The changelog fixture's two bodies. `diff` is handed both, so the change is real. */
+const CHANGELOG_V1 = 'Version one of this page.';
+const CHANGELOG_V2 =
+  'Version two of this page, with a new line that the first version did not carry at all.';
+
 /** The refusal step 6 must give, verbatim (`src/account/gate.ts` `ACTIVATION_REFUSALS`). */
 const EXPIRED_LINE = 'Your wigolo sign-in has expired — run `wigolo login` to reconnect.';
 
@@ -252,19 +257,33 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     try {
       for (const tool of TEN_TOOLS) {
         if (tool === 'diff') {
-          // A diff compares the CACHED copy against the live page, so the old
-          // side has to be in the cache before the page changes. Relying on the
-          // crawl to have happened to cache this URL is what produced
-          // `error_reason: cache_miss`; the arm establishes the precondition
-          // itself instead.
+          // BOTH SIDES OF `diff` READ THE CACHE. `resolveSide` calls
+          // `getCachedContent(side.url)` for the url form and never fetches
+          // (`src/tools/diff.ts:75`), so `old: {url}` and `new: {url}` on one
+          // address are the same bytes by construction and the tool answered
+          // `changed: false` however much the page had moved underneath it. The
+          // arm passed anyway, because "changed" appears in the JSON whether it
+          // is true or false — a predicate that cannot fail.
+          //
+          // So the two versions are put in front of it explicitly: the literal
+          // first body as `old.markdown`, and the second body in the cache under
+          // the url, re-read with `force_refresh` so the cache actually moves.
           const seeded = await session.call('fetch', { url: `${site.url}/changelog` });
           expect(seeded.isError, 'seeding the diff baseline failed').toBe(false);
 
           site.setPage(
             '/changelog',
             '<!doctype html><html><head><title>RC Fixture Changelog</title></head><body>' +
-              '<main><h1>Changelog</h1><p>Version two of this page, with a new line that the ' +
-              'first version did not carry at all.</p></main></body></html>',
+              `<main><h1>Changelog</h1><p>${CHANGELOG_V2}</p></main></body></html>`,
+          );
+
+          const refreshed = await session.call('fetch', {
+            url: `${site.url}/changelog`,
+            force_refresh: true,
+          });
+          expect(refreshed.isError, 're-reading the changed page failed').toBe(false);
+          expect(refreshed.text, 'force_refresh did not move the cache to version two').toContain(
+            CHANGELOG_V2,
           );
         }
 
@@ -760,8 +779,13 @@ function expectToolDidItsWork(tool: string, text: string, siteUrl: string): void
       expect(text, 'extract did not find the pricing table').toContain('Scale');
       break;
     case 'diff':
-      // The page changed between the two reads, so a summary must report it.
-      expect(text, 'diff reported no comparison').toMatch(/chang|added|removed|hunk|identical/i);
+      // The two sides ARE different, so the only correct answer is that they
+      // changed. `/chang/i` was the old predicate and matched `"changed": false`
+      // just as happily — this one cannot.
+      expect(text, 'diff did not report the change between the two bodies').toContain('"changed": true');
+      expect(text, 'diff reported a change of zero lines').not.toMatch(
+        /"added_lines":\s*0,\s*"removed_lines":\s*0,\s*"modified_lines":\s*0/,
+      );
       break;
     case 'watch':
       // The `list` shape: a jobs collection, empty or not. No host assertion —
@@ -830,10 +854,13 @@ function minimalArgs(tool: string, siteUrl: string): Record<string, unknown> {
     case 'diff':
       // `old`/`new` are objects, not strings: the tool answered
       // "old.markdown, old.url or old.content_hash is required" to a bare string,
-      // and the arm passed anyway because it only checked that SOMETHING came
-      // back. The cached copy is the `old` side, the live page the `new` one.
+      // and an earlier version of this arm passed anyway because it only checked
+      // that SOMETHING came back. `old` is the first body as literal markdown and
+      // `new` is the cache, which the seeding step above has moved to the second
+      // body — two genuinely different inputs, so a diff that reports no change
+      // is a broken diff.
       return {
-        old: { url: `${siteUrl}/changelog` },
+        old: { markdown: CHANGELOG_V1 },
         new: { url: `${siteUrl}/changelog` },
         output: 'summary',
       };
