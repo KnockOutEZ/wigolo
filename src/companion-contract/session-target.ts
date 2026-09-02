@@ -21,8 +21,8 @@
 /**
  * The HTTP route the session-target exchange rides, appended to the endpoint the companion publishes in
  * its handle file. The ADDRESS belongs to the wire for the same reason the op set does: two sides that
- * disagree about it produce a 404, not a typed refusal, and a 404 is indistinguishable from "no companion"
- * at the client. Everything else about the transport — client, timeouts, retries — stays out of this
+ * disagree about it produce a 404, not a typed refusal, and at the client a 404 looks exactly like an
+ * absent companion. Everything else about the transport — client, timeouts, retries — stays out of this
  * package, which still performs no I/O.
  */
 export const SESSION_TARGET_ROUTE = '/companion/session';
