@@ -33,6 +33,37 @@ export interface SessionPage {
   on(event: 'crash', cb: () => void): void;
   /** The live main-frame URL (Playwright Page.url()) — the host-observed hard signal the 6c risk gate reads. */
   url(): string;
+  /**
+   * #318 — the three page methods the ONE shared quiescence wait (`fetch/settle.ts`) needs. OPTIONAL
+   * because this is a narrow structural view of a real browser-engine page: every fake launcher in the
+   * unit harness omits them, and a host that cannot settle must degrade to "snapshot immediately"
+   * (a delta, not a SETTLED delta — a smaller claim, never a wrong one) rather than throw.
+   * `settlablePage()` below is the ONE place the presence check lives.
+   */
+  waitForLoadState?(state: 'networkidle', opts: { timeout: number }): Promise<unknown>;
+  waitForFunction?(src: string, arg: undefined, opts: { timeout: number }): Promise<unknown>;
+  evaluate?(src: string): Promise<unknown>;
+}
+
+/** The all-three-present shape `settlePage()` accepts. Structural — settle.ts keeps its handle type private. */
+export interface SettlablePage {
+  waitForLoadState(state: 'networkidle', opts: { timeout: number }): Promise<unknown>;
+  waitForFunction(src: string, arg: undefined, opts: { timeout: number }): Promise<unknown>;
+  evaluate(src: string): Promise<unknown>;
+}
+
+/**
+ * Narrow a session page to the settle handle, or null when the page cannot be settled (a fake, or a
+ * future engine that lacks one of the three). Callers branch on null; they never feature-test inline.
+ */
+export function settlablePage(page: SessionPage): SettlablePage | null {
+  const { waitForLoadState, waitForFunction, evaluate } = page;
+  if (!waitForLoadState || !waitForFunction || !evaluate) return null;
+  return {
+    waitForLoadState: (state, opts) => waitForLoadState.call(page, state, opts),
+    waitForFunction: (src, arg, opts) => waitForFunction.call(page, src, arg, opts),
+    evaluate: (src) => evaluate.call(page, src),
+  };
 }
 
 export interface SessionCdp {
@@ -274,5 +305,121 @@ export class SessionBrowser {
       restarts: this.restartCount,
     });
     for (const cb of this.failedHandlers) cb();
+  }
+}
+
+/**
+ * #318 — the session's bounded console collector: the "what did the browser engine say" half of pin 8's
+ * post-actions (`ActPostActionDeps.consoleSince`).
+ *
+ * WHY THE `Log` DOMAIN AND NOT `Runtime` (decision, DECISIONS-AUTO.md 2026-09-02):
+ * `Runtime.enable` is the dominant automation tell, and three separate fetch-side modules pin
+ * "the connect + eval sequence issues ZERO `Runtime.enable`" as an invariant. A studio session is
+ * attended and already enables `DOM`/`Overlay`, so it is arguably exempt — but "arguably exempt" is
+ * how an invariant erodes. The `Log` domain carries what the summary actually counts (uncaught
+ * exceptions, network failures, CSP/deprecation violations — the `errors`/`warnings` an agent needs
+ * after a click) WITHOUT the tell, so we take it and pay the known price: page-authored
+ * `console.log(...)` calls are NOT collected. That is the whole cost, stated rather than discovered.
+ *
+ * THE BUFFER IS BOUNDED AND DRAIN-ON-READ. A page can log without limit, so the ring keeps at most
+ * `max` lines and each line at most `maxLineChars`; when it overflows, the OLDEST lines are dropped
+ * (the most recent state of a spamming page is the useful half). `drain()` empties it, so one act
+ * reports its own window instead of the session's whole history.
+ *
+ * The text is PAGE-AUTHORED and stays raw here — neutralization, truncation-to-sample and the
+ * credential-context exclusion all live in `act.ts`'s summarizer, which is the one place that
+ * decision is made. This class only collects.
+ */
+export const CONSOLE_BUFFER_MAX_LINES = 200;
+export const CONSOLE_BUFFER_MAX_LINE_CHARS = 2000;
+
+/** Structurally the `ConsoleMessage` pin 8's summarizer consumes; re-declared so this module imports no act types. */
+export interface CollectedConsoleLine {
+  level: 'error' | 'warning' | 'info' | 'log' | 'debug';
+  text: string;
+}
+
+/** CDP `Log.LogEntry.level` → the summary's level vocabulary. `verbose` is the engine's word for debug. */
+function toConsoleLevel(level: unknown): CollectedConsoleLine['level'] {
+  switch (level) {
+    case 'error':
+      return 'error';
+    case 'warning':
+      return 'warning';
+    case 'verbose':
+      return 'debug';
+    default:
+      return 'info';
+  }
+}
+
+export class SessionConsoleBuffer {
+  private lines: CollectedConsoleLine[] = [];
+  private readonly max: number;
+  private readonly maxLineChars: number;
+  private readonly onEntry: (payload: never) => void;
+  private bound: SessionCdp | null = null;
+
+  constructor(opts: { max?: number; maxLineChars?: number } = {}) {
+    this.max = opts.max ?? CONSOLE_BUFFER_MAX_LINES;
+    this.maxLineChars = opts.maxLineChars ?? CONSOLE_BUFFER_MAX_LINE_CHARS;
+    // One stable listener identity, so `off` on the dead cdp actually detaches.
+    this.onEntry = ((payload: { entry?: { level?: unknown; text?: unknown } }) => {
+      const entry = payload?.entry;
+      if (!entry || typeof entry.text !== 'string') return;
+      this.push({ level: toConsoleLevel(entry.level), text: entry.text.slice(0, this.maxLineChars) });
+    }) as (payload: never) => void;
+  }
+
+  private push(line: CollectedConsoleLine): void {
+    this.lines.push(line);
+    // Drop from the FRONT so the bound holds no matter how long the session runs.
+    if (this.lines.length > this.max) this.lines.splice(0, this.lines.length - this.max);
+  }
+
+  /**
+   * Subscribe to the live session and re-subscribe after a crash recovery. Best-effort by
+   * construction: `Log.enable` failing must never take a session down — a session with no console
+   * collection is a working session, and the summary then honestly reports zero lines.
+   *
+   * The rebind rides `onRecovered` (post-nav, best-effort) and NOT `onBeforeReNav`, whose hooks fail
+   * recovery CLOSED — a console collector is not worth a terminated session. The cost is that lines
+   * emitted during the recovery re-navigation itself are not collected.
+   */
+  attach(browser: SessionBrowser): void {
+    this.bind(browser);
+    browser.onRecovered(() => this.bind(browser));
+  }
+
+  private bind(browser: SessionBrowser): void {
+    let cdp: SessionCdp;
+    try {
+      cdp = browser.cdp;
+    } catch {
+      return; // not started / mid-recovery — the next bind gets the live handle
+    }
+    if (this.bound === cdp) return;
+    if (this.bound) {
+      try {
+        this.bound.off('Log.entryAdded', this.onEntry);
+      } catch {
+        /* the old cdp is dead; detaching from it is a formality */
+      }
+    }
+    this.bound = cdp;
+    cdp.on('Log.entryAdded', this.onEntry);
+    void Promise.resolve(cdp.send('Log.enable')).catch((err) =>
+      log.warn('console collection unavailable for this session', {
+        sessionId: browser.sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+
+  /** Hand out everything collected since the last drain and empty the buffer. */
+  drain(): readonly CollectedConsoleLine[] {
+    const out = this.lines;
+    this.lines = [];
+    return out;
   }
 }
