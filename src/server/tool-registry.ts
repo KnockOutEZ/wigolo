@@ -33,8 +33,8 @@ export interface ProvidedTool {
  * and `SearchEngine` in `types.ts` — a name, a predicate, and the work.
  *
  * `handles` is separate from `tools` on purpose: a provider may dispatch a name it never
- * advertises (Studio's `studio_fetch` is callable over its authenticated transport but is not a
- * tool). Advertising it would turn a one-seam capability back into a multi-seam register.
+ * advertises (the companion's escalation fetch is callable over its authenticated transport but is
+ * not a tool). Advertising it would turn a one-seam capability back into a multi-seam register.
  */
 export interface ToolProvider {
   /** Provider id, e.g. 'studio'. Used for dedup and doctor/status output. */

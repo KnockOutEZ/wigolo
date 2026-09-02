@@ -210,10 +210,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_audit_session_seq
   ON studio_audit(session_id, seq);
 `;
 
-// D10: non-studio tool-invocation audit log. An append-only forensic record of every NON-studio_*
-// MCP tool call (tool, privacy-projected args_meta, outcome, duration). A STANDALONE table — NOT
-// studio_audit (010), whose session_id NOT-NULL FK + studio-shaped columns don't fit a session-less
-// stdio tool call. INSERT-only: the sole writer (src/server/tool-audit.ts) never UPDATEs/DELETEs.
+// D10: tool-invocation audit log. An append-only forensic record of every MCP tool call (tool,
+// privacy-projected args_meta, outcome, duration). A STANDALONE table — NOT studio_audit (010),
+// whose session_id NOT-NULL FK + session-shaped columns don't fit a session-less stdio tool call.
+// INSERT-only: the sole writer (src/server/tool-audit.ts) never UPDATEs/DELETEs.
 // Mirrored in 011-tool-audit.sql.
 //
 // KNOWN, ACCEPTED LEAK — product-named tables in the shared DB, and the cost it has already charged.

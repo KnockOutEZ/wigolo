@@ -587,7 +587,8 @@ function fenceChangeReports(reports: ChangeReport[]): ChangeReport[] {
 }
 
 /**
- * `cache` returns stored page bodies and titles from `url_cache` unioned with `studio_artifacts`.
+ * `cache` returns stored page bodies and titles from `url_cache` unioned with the companion
+ * artifacts table.
  * It was UNFENCED, which also made it the open path for artifact rows (see decision A2b). `url` and
  * `trusted` stay raw — the agent dereferences one and must see the other.
  *

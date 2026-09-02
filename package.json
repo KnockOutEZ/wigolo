@@ -14,30 +14,14 @@
       "import": "./dist/types.js",
       "types": "./dist/types.d.ts"
     },
-    "./studio": {
-      "import": "./dist/studio/index.js",
-      "types": "./dist/studio/index.d.ts"
-    },
-    "./studio-db-broker": "./dist/daemon/studio-db-broker.js",
+    "./companion-broker": "./dist/daemon/studio-db-broker.js",
     "./cache/db": {
       "import": "./dist/cache/db.js",
       "types": "./dist/cache/db.d.ts"
     },
-    "./studio/run-bus": {
-      "import": "./dist/studio/run-bus.js",
-      "types": "./dist/studio/run-bus.d.ts"
-    },
-    "./studio/run-store": {
-      "import": "./dist/studio/run-store.js",
-      "types": "./dist/studio/run-store.d.ts"
-    },
     "./config": {
       "import": "./dist/config.js",
       "types": "./dist/config.d.ts"
-    },
-    "./studio-mcp-contract": {
-      "import": "./dist/contracts/studio-mcp/index.js",
-      "types": "./dist/contracts/studio-mcp/index.d.ts"
     },
     "./account": {
       "import": "./dist/account/index.js",
@@ -110,8 +94,7 @@
     "agent-tools"
   ],
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json && npm run build:contract",
-    "build:contract": "tsc -p contracts/studio-mcp/tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json",
     "postinstall": "node scripts/prune/run.mjs",
     "prepare": "node scripts/prepare-build.mjs",
     "build:binary": "npm run build && node packaging/binary/bundle.mjs && bash packaging/binary/pack.sh",
@@ -133,8 +116,7 @@
     "verify:llm-bundle": "npm run build && node scripts/verify-llm-bundle-resolution.mjs",
     "check:no-electron": "node scripts/check-src-no-electron.mjs",
     "typecheck:debt": "node scripts/typecheck-debt-ratchet.mjs",
-    "typecheck:contract": "tsc -p contracts/studio-mcp/tsconfig.json",
-    "gate:studio": "npm run check:no-electron && npm run lint && npm run typecheck:studio && npm run check:typecheck-gate && npm run typecheck:debt && npm run typecheck:contract",
+    "gate:studio": "npm run check:no-electron && npm run lint && npm run typecheck:studio && npm run check:typecheck-gate && npm run typecheck:debt",
     "bench:extraction": "tsx benchmarks/extraction/runner.ts",
     "bench:search": "tsx benchmarks/search/runner.ts",
     "bench:agent": "tsx benchmarks/agent/runner.ts",
