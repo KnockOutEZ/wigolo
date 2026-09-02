@@ -189,13 +189,30 @@ describe('OpenAPI run surface', () => {
     return (buildOpenApi() as { paths: Record<string, Record<string, never>> }).paths;
   }
 
-  it('serves all three run routes with their operation ids', () => {
+  it('serves all four run routes with their operation ids', () => {
     // MUT: drop any runPaths() entry → RED. A generated SDK silently loses the whole resource family.
     const paths = runPaths();
     expect(paths['/v1/runs']?.post?.operationId).toBe('createRun');
     expect(paths['/v1/runs']?.get?.operationId).toBe('listRuns');
     expect(paths['/v1/runs/{id}']?.get?.operationId).toBe('getRun');
     expect(paths['/v1/runs/{id}/events']?.get?.operationId).toBe('streamRunEvents');
+    expect(paths['/v1/runs/{id}/driver']?.post?.operationId).toBe('driverGesture');
+  });
+
+  it('documents the baton: the five gestures, and the one driver name a client should render', () => {
+    // A generated SDK is the whole audience for this: a client that composed its own driver string
+    // from kind + client would be the second formatter law 3 forbids.
+    const post = runPaths()['/v1/runs/{id}/driver'].post as unknown as {
+      requestBody: { content: { 'application/json': { schema: { properties: { gesture: { enum: string[] } }; required: string[] } } } };
+    };
+    const schema = post.requestBody.content['application/json'].schema;
+    expect(schema.properties.gesture.enum).toEqual(['request', 'grant', 'release', 'takeover', 'deny']);
+    expect(schema.required).toEqual(['gesture', 'by']);
+
+    const doc = buildOpenApi() as { paths: Record<string, { get: { responses: Record<string, { content: { 'application/json': { schema: { properties: { run: { properties: Record<string, unknown> } } } } } }> } }> };
+    const run = doc.paths['/v1/runs/{id}'].get.responses['200'].content['application/json'].schema.properties.run;
+    expect(run.properties.driverName).toBeDefined();
+    expect(run.properties.wheelRequests).toBeDefined();
   });
 
   it('documents exactly the store\'s run status vocabulary (drift gate)', () => {
