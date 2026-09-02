@@ -153,7 +153,7 @@ describe('tool description ↔ input schema param policy', () => {
  */
 const STUDIO_NAMED_PARAMS: Record<string, string[]> = {
   studio_observe: ['since', 'base_id', 'snapshot_ref', 'find', 'find_regex'],
-  studio_act: ['action', 'ref', 'text', 'direction', 'amount', 'post_actions'],
+  studio_act: ['action', 'ref', 'text', 'direction', 'amount', 'reason', 'post_actions'],
 };
 
 describe('studio description ↔ input schema param policy (pin 8)', () => {

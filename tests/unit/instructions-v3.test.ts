@@ -452,6 +452,13 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(desc).toMatch(/settle|what the page became/i);
   });
 
+  it('studio_act advertises the run-scoped wait verb and its reason', () => {
+    const desc = TOOL_DESCRIPTIONS.studio_act;
+    expect(desc).toContain('wait_for_human');
+    expect(desc).toContain('reason');
+    expect(desc).toMatch(/current run|only the current run/i);
+  });
+
   it('the reshaped descriptions cross-reference the cheaper sibling for the job (pin 8)', () => {
     // A tool description is the only place an agent learns that a cheaper tool exists for what it
     // is about to do. Driving a session to read a page, or clicking around to find an element, are
