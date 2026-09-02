@@ -246,21 +246,30 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     expect(result.combined).toContain('custom sign-in verification key in use');
 
     const custody = await custodyTier(full);
-    // Asserted rather than assumed: an optional-dep prebuild that failed silently would
-    // otherwise leave this arm testing the file tier while claiming the keychain one. The
-    // two signals must agree — the code's own predicate and the file on disk.
+    // A registered install HAS a credential; `null` would mean the arms above passed
+    // without one being stored anywhere.
+    expect(custody.location, 'the installed package holds no refresh credential').not.toBeNull();
+    // The two independent signals. Asserted rather than assumed: an optional-dep prebuild
+    // that failed silently, or a keychain write that threw, would otherwise leave this arm
+    // testing one tier while claiming the other.
     expect(
-      custody.keychainAvailable,
-      `custody signals disagree: the installed package reports keychainAvailable()=` +
-        `${custody.keychainAvailable}, but the encrypted fallback file ` +
+      custody.location === 'file',
+      `custody signals disagree: the installed package reads the credential from ` +
+        `${String(custody.location)}, but the encrypted fallback file ` +
         `${custody.encryptedFileExists ? 'EXISTS' : 'does not exist'}`,
-    ).toBe(!custody.encryptedFileExists);
+    ).toBe(custody.encryptedFileExists);
     expect(['keychain', 'encrypted-file']).toContain(custody.tier);
     record(
       'arm 1a — full install custody tier',
-      `${custody.tier}\n  installed package keychainAvailable(): ${custody.keychainAvailable}\n` +
-        `  encrypted fallback file present: ${custody.encryptedFileExists}\n\n` +
-        `$ wigolo whoami\n${result.combined}`,
+      `${custody.tier}\n` +
+        `  readRefreshToken().location: ${String(custody.location)}\n` +
+        `  encrypted fallback file present: ${custody.encryptedFileExists}\n` +
+        `  keychainAvailable(): ${custody.keychainAvailable}` +
+        (custody.keychainAvailable && custody.tier === 'encrypted-file'
+          ? '  <- available but NOT used: the keychain write threw after the probe ' +
+            '(src/account/token-store.ts:66), which is the documented fallback'
+          : '') +
+        `\n\n$ wigolo whoami\n${result.combined}`,
     );
   }, 300_000);
 
@@ -398,12 +407,15 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
 
     const custody = await custodyTier(omitOptional);
     // The point of this arm: with the optional dependency omitted there is no keychain
-    // binding to find, so the fallback tier is forced rather than hoped for.
+    // binding to find at all, so the fallback tier is FORCED rather than hoped for — which
+    // is the one way this suite can name the tier it exercised with certainty.
     expect(custody.keychainAvailable, 'an --omit=optional install still found a keychain binding').toBe(false);
+    expect(custody.location).toBe('file');
     expect(custody.tier).toBe('encrypted-file');
     record(
       'arm 1b — --omit=optional install',
-      `custody tier: ${custody.tier} (keychainAvailable()=${custody.keychainAvailable})\n\n` +
+      `custody tier: ${custody.tier} (keychainAvailable()=${custody.keychainAvailable}, ` +
+        `readRefreshToken().location=${String(custody.location)})\n\n` +
         `$ wigolo cache --stats (unregistered)\n${refused.combined}\n` +
         `\n$ wigolo register --email ${email}\n${registered.combined}` +
         `\n$ wigolo cache --stats (registered) → exit ${ran.code}`,
@@ -636,22 +648,31 @@ async function readState(install: FreshInstall): Promise<AccountState> {
 }
 
 /**
- * Ask the INSTALLED package which custody tier it is on.
+ * Ask the INSTALLED package two questions: is a keychain available, and where is the
+ * credential actually being read from.
  *
- * `wigolo/security` re-exports `keychainAvailable()` (`src/security/index.ts:10`), the same
- * predicate `key-store.ts:108` branches on, so this is the product's own answer read out of
- * the tarball rather than a guess about it.
+ * `wigolo/security` re-exports `keychainAvailable()` and `wigolo/account` re-exports
+ * `readRefreshToken()`, whose `location` is the tier the product itself resolves — so both
+ * answers come out of the tarball rather than from a guess about it.
  */
-const KEYCHAIN_PROBE =
-  "import('wigolo/security')" +
-  ".then((m) => { process.stdout.write(m.keychainAvailable() ? 'keychain' : 'file'); })" +
+const CUSTODY_PROBE =
+  "Promise.all([import('wigolo/security'), import('wigolo/account')])" +
+  '.then(async ([sec, acc]) => {' +
+  "  const stored = await acc.readRefreshToken({ dataDir: process.env.WIGOLO_DATA_DIR });" +
+  '  process.stdout.write(JSON.stringify({' +
+  '    keychainAvailable: sec.keychainAvailable(),' +
+  '    location: stored === null ? null : stored.location,' +
+  '  }));' +
+  '})' +
   ".catch((e) => { process.stdout.write('probe-failed: ' + e.message); process.exitCode = 1; });";
 
 interface Custody {
-  /** What the two signals agree the credential is stored in. */
+  /** Where the credential actually is, cross-checked against the filesystem. */
   tier: 'keychain' | 'encrypted-file';
-  /** The installed package's own `keychainAvailable()`. */
+  /** The installed package's own `keychainAvailable()` — a CAPABILITY, not the tier. */
   keychainAvailable: boolean;
+  /** The tier `readRefreshToken()` resolves the credential from. */
+  location: 'keychain' | 'file' | null;
   /** Whether the encrypted fallback file is on disk. */
   encryptedFileExists: boolean;
 }
@@ -661,11 +682,19 @@ interface Custody {
  *
  * A-212-11 asks for the tier to be asserted and recorded because optional-dependency
  * prebuilds fail silently, and an unasserted tier is an unmeasured gate. One signal cannot
- * do that: `keychainAvailable()` asked alone can only agree with itself, and the file's
- * presence alone says nothing about what the code BELIEVED. So the predicate the product
- * branches on is read out of the installed package, the filesystem is observed
- * independently, and the two are required to agree — a disagreement means the credential
- * went somewhere other than where the code thinks it did, which no single reading catches.
+ * do that: the product's own reading can only agree with itself, and the file's presence
+ * alone says nothing about which tier the code resolves. So `readRefreshToken().location`
+ * is read out of the installed package, the filesystem is observed independently, and the
+ * two are required to agree.
+ *
+ * WHY `keychainAvailable()` IS RECORDED BUT IS NOT THE TIER — MEASURED, and it is what the
+ * first version of this check got wrong. `storeRefreshToken` (`src/account/token-store.ts:66`)
+ * probes availability, TRIES the keychain write, and falls through to the encrypted file
+ * when that write throws; its own comment says the probe merely constructs an `Entry`, so a
+ * sandboxed or locked keychain reports available and then fails. On this machine that is
+ * exactly what happens unattended: `keychainAvailable()` is true and the credential is on
+ * the file tier anyway. Asserting `available ⇔ no file` therefore fails on a HEALTHY
+ * install. The capability and the tier are two different facts and the arm reports both.
  */
 async function custodyTier(install: FreshInstall): Promise<Custody> {
   let encryptedFileExists = true;
@@ -675,19 +704,27 @@ async function custodyTier(install: FreshInstall): Promise<Custody> {
     encryptedFileExists = false;
   }
 
-  const probe = await run('node', ['-e', KEYCHAIN_PROBE], {
+  const probe = await run('node', ['-e', CUSTODY_PROBE], {
     cwd: install.root,
     env: installEnv(install),
     timeoutMs: 120_000,
   });
-  const reported = probe.stdout.trim();
-  if (reported !== 'keychain' && reported !== 'file') {
-    throw new Error(`the installed package's keychainAvailable() probe answered ${JSON.stringify(reported)}`);
+
+  let reported: { keychainAvailable?: unknown; location?: unknown };
+  try {
+    reported = JSON.parse(probe.stdout.trim()) as typeof reported;
+  } catch {
+    throw new Error(`the installed package's custody probe answered ${JSON.stringify(probe.stdout.trim())}`);
+  }
+  const location = reported.location;
+  if (location !== 'keychain' && location !== 'file' && location !== null) {
+    throw new Error(`the custody probe reported an unknown location ${JSON.stringify(location)}`);
   }
 
   return {
-    tier: encryptedFileExists ? 'encrypted-file' : 'keychain',
-    keychainAvailable: reported === 'keychain',
+    tier: location === 'keychain' ? 'keychain' : 'encrypted-file',
+    keychainAvailable: reported.keychainAvailable === true,
+    location,
     encryptedFileExists,
   };
 }
