@@ -24,15 +24,35 @@ import { resolveApiToken } from './rest/auth.js';
 import { checkActivation } from '../server/activation.js';
 
 /**
- * REST routes that describe the surface instead of executing it, and are
- * therefore ungated (PX2 mini-spec §3's `initialize` + `tools/list` carve-out,
- * A-222-3). Every other `/v1` or `/compat/firecrawl` path reaches a tool.
+ * REST paths inside the `/v1` family that the activation gate does NOT cover,
+ * because the gate's predicate is "can this reach one of the ten tool handlers"
+ * (A-212-1) and these cannot (A-222-3).
+ *
+ * Two groups, for two different reasons:
+ *
+ *   DISCOVERY — `/openapi.json`, `/v1/openapi.json`, `/v1/tools` describe the
+ *   surface and execute nothing. They are this transport's `initialize` and
+ *   `tools/list`, which mini-spec §3 keeps open on MCP; a REST client must be
+ *   able to learn what a server offers before it has an account.
+ *
+ *   RUNS — `/v1/runs*` is the run store. Verified against the tree: neither
+ *   `rest/runs.ts` nor `rest/runs-store.ts` imports anything from `src/tools/`,
+ *   so creating, listing or reading a run reaches no tool handler. The tools a
+ *   run's driver eventually calls arrive at `/v1/{tool}` or at the MCP dispatch
+ *   closure, and both are gated — so nothing escapes by being wrapped in a run.
+ *   REVERSAL: if the runs surface ever executes a tool itself, it moves to the
+ *   gated column, exactly as A-212-1 pins for any command that grows one.
  */
-const REST_DISCOVERY_ROUTES: ReadonlySet<string> = new Set([
+const REST_UNGATED_EXACT: ReadonlySet<string> = new Set([
   '/openapi.json',
   '/v1/openapi.json',
   '/v1/tools',
+  '/v1/runs',
 ]);
+
+function restPathIsUngated(pathname: string): boolean {
+  return REST_UNGATED_EXACT.has(pathname) || pathname.startsWith('/v1/runs/');
+}
 import type { RestRouter } from './rest/router.js';
 import type { RunsStore } from './rest/runs-store.js';
 
@@ -383,13 +403,9 @@ export class DaemonHttpServer {
       // firecrawl-compat handlers call `handleFetch`/`handleSearch`/`handleCrawl`
       // directly and would walk straight past a check placed inside dispatch.
       //
-      // The three DISCOVERY routes are excluded on purpose. `/openapi.json`,
-      // `/v1/openapi.json` and `/v1/tools` are this surface's `initialize` and
-      // `tools/list`: they describe what the server offers and execute nothing.
-      // Mini-spec §3 keeps those open on MCP, and a REST client must be able to
-      // learn the same thing an MCP client can before it has an account.
-      // `/health`, `/sse` and every non-tool route never reach here at all.
-      if (!REST_DISCOVERY_ROUTES.has(pathname)) {
+      // See `REST_UNGATED_EXACT` for which paths inside this family are exempt
+      // and why. `/health`, `/sse` and every non-tool route never reach here.
+      if (!restPathIsUngated(pathname)) {
         const activation = checkActivation();
         if (!activation.ok) {
           return this.writeRequestError(res, 403, 'not_activated', activation.message);
