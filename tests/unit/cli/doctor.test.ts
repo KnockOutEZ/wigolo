@@ -71,6 +71,34 @@ vi.mock('../../../src/security/key-store.js', async () => {
   return { ...actual, readKey: vi.fn().mockResolvedValue(null) };
 });
 
+// Activated-install fixtures make doctor check the accounts service's published
+// entitlement keys. Keep that diagnosis real while routing its transport through
+// AccountsClient's existing fetchImpl seam, so the test never reaches the sentinel
+// production URL (accounts.invalid).
+const accountsFetch = vi.hoisted(() => vi.fn(async (url: string): Promise<Response> => {
+  if (new URL(url).pathname !== '/entitlements/keys') {
+    throw new Error(`unscripted accounts request: ${url}`);
+  }
+  return new Response(JSON.stringify({ keys: [] }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}));
+
+vi.mock('../../../src/account/client.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/account/client.js')>(
+    '../../../src/account/client.js',
+  );
+  return {
+    ...actual,
+    AccountsClient: class extends actual.AccountsClient {
+      constructor(opts: import('../../../src/account/client.js').AccountsClientOpts) {
+        super({ ...opts, fetchImpl: accountsFetch });
+      }
+    },
+  };
+});
+
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
