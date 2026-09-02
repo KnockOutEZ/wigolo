@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SmartRouter } from '../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, TlsFetcher, ClearanceStore } from '../../src/fetch/router.js';
 import type { RawFetchResult } from '../../src/types.js';
 import { ChallengeBlockedError } from '../../src/fetch/browser-pool.js';
 import { readEscalationCounters } from '../../src/companion/escalation-counters.js';
@@ -114,15 +114,22 @@ async function runFixture(url: string, dataDir: string): Promise<LadderRecord> {
     },
   };
 
+  const clearanceStore: ClearanceStore = {
+    get: () => null,
+    clear: () => {},
+    getBackoff: () => null,
+    recordBackoff: () => {},
+  };
+
   const router = new SmartRouter({
     httpClient,
     browserPool,
     tlsFetcher,
     pdfProbe: async () => false,
-    clearanceStore: { get: () => null, set: () => {}, clear: () => {} },
+    clearanceStore,
   });
 
-  const result = (await router.fetch(url, { renderJs: 'auto' })) as Record<string, unknown>;
+  const result = (await router.fetch(url, { renderJs: 'auto' })) as unknown as Record<string, unknown>;
   const counters = readEscalationCounters(dataDir);
   const base = {
     url,
