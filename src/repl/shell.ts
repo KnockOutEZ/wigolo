@@ -7,6 +7,7 @@ import { parseArgs, tokenize, type ParsedArgs } from './parser.js';
 import { booleanFlagsFor } from '../cli/flag-bridge.js';
 import { complete } from './completer.js';
 import { checkActivation } from '../server/activation.js';
+import { recordToolTelemetry } from '../telemetry/instrumentation.js';
 import {
   formatSearchResults,
   formatFetchResult,
@@ -158,13 +159,22 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
     errOut.write(text + '\n');
   };
 
+  // The in-band failure of the command currently running, captured for its telemetry
+  // class. A REPL command can fail two ways — a throw, or an `.error` on an otherwise
+  // returned result — and only the second one is visible from inside `emitResult`.
+  let inBandError: unknown;
+
   const emitResult = (formatted: string, result: unknown, useJson: boolean): void => {
     if (useJson) {
       emit(formatJsonLine(result));
     } else {
       emit(formatted);
     }
-    if (typeof (result as { error?: unknown })?.error === 'string') failures++;
+    const err = (result as { error?: unknown })?.error;
+    if (typeof err === 'string') {
+      inBandError = err;
+      failures++;
+    }
   };
 
   log.info('shell started', { jsonMode, historyPath, isTty });
@@ -230,6 +240,15 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
     }
 
     const useJson = jsonMode || parsed.flags.json === 'true';
+
+    // One report per command, wrapping the whole dispatch switch rather than each of its
+    // ten arms: an arm added later is reported without anyone remembering to. The gate ran
+    // once at shell entry, so nothing here is reachable on an unactivated install; the
+    // `default` arm (an unknown word) reports nothing because it is not a tool name.
+    const startedAt = Date.now();
+    const failuresBefore = failures;
+    inBandError = undefined;
+    let thrownError: unknown;
 
     try {
       switch (parsed.command) {
@@ -299,10 +318,14 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
       }
     } catch (err) {
       failures++;
+      thrownError = err;
       const msg = err instanceof Error ? err.message : String(err);
       log.error('command execution failed', { command: parsed.command, error: msg });
       say(`Error: ${msg}`);
     }
+
+    const ok = failures === failuresBefore;
+    recordToolTelemetry(parsed.command, 'repl', ok, Date.now() - startedAt, thrownError ?? inBandError);
 
     rl.prompt();
   }

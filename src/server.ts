@@ -59,6 +59,8 @@ import {
   serverInstructions,
 } from './instructions.js';
 import { checkActivation, activationToolError } from './server/activation.js';
+import { startTelemetry } from './telemetry/index.js';
+import { recordToolTelemetry } from './telemetry/instrumentation.js';
 import {
   FETCH_TOOL_SCHEMA,
   SEARCH_TOOL_SCHEMA,
@@ -178,6 +180,15 @@ export async function initSubsystems(): Promise<Subsystems> {
   const config = getConfig();
 
   mkdirSync(config.dataDir, { recursive: true });
+
+  // `daemon.uptime` is emitted by the client at flush time, but ONLY once the flush timer
+  // is armed — that is how the client tells a long-lived process from a one-shot. This is
+  // the right place to arm it because it is the bootstrap every long-lived surface shares
+  // and no short-lived one uses: the stdio MCP server, the daemon (which calls this through
+  // `../server.js`) and the studio DB broker all reach it, while the CLI's one-shots and
+  // the REPL never call it. The timer is unref'd, so arming it can never be the reason a
+  // process stays alive, and it is a no-op when telemetry is off.
+  startTelemetry();
   initDatabase(join(config.dataDir, 'wigolo.db'));
 
   // Initialize embedding service: provisions the vector store, runs the
@@ -752,16 +763,22 @@ export function createMcpServer(subsystems: Subsystems): Server {
     // studio_* calls are EXCLUDED — they carry the richer per-session studio_audit.
     const auditStartedAt = Date.now();
     const result = await withClientProfile(clientProfile(), dispatch);
+    const errorReason = result.isError ? extractErrorReason(result) : undefined;
     if (!name.startsWith('studio_')) {
       recordToolCall(subsystems.toolAuditDb, {
         tool: name,
         argsMeta: projectToolArgs(name, (args ?? {}) as Record<string, unknown>),
         outcomeOk: !result.isError,
-        errorReason: result.isError ? extractErrorReason(result) : undefined,
+        errorReason,
         ts: Date.now(),
         durationMs: Date.now() - auditStartedAt,
       });
     }
+    // Telemetry rides the same seam as the audit, and deliberately BELOW the gate: a
+    // refused call returned above and never reaches here, so an unactivated install
+    // produces no account, no queue write and no event — the absence is structural,
+    // not a condition anyone has to remember to write.
+    recordToolTelemetry(name, 'mcp', !result.isError, Date.now() - auditStartedAt, errorReason);
     return result;
   });
 

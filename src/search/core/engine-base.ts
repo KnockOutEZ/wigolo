@@ -4,6 +4,8 @@ import type {
   RawSearchResult,
 } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { emit as emitTelemetry } from '../../telemetry/index.js';
+import { classifyErrorClass, reportableEngine } from '../../telemetry/instrumentation.js';
 
 const log = createLogger('search');
 
@@ -581,6 +583,16 @@ export function wrapWithRetryAndBreaker(
       } else {
         recordFailure(engine.name, threshold, cooldownMs, classifyFailure(lastErr));
       }
+      // Reported here, below BOTH breaker branches and above the throw: this line is
+      // reached exactly once per call that exhausted its retries, which is what "engine
+      // failure count" means. The two skip paths above — `ThrottledError` and
+      // `BreakerOpenError` — return before the retry loop and are deliberately silent: a
+      // call the breaker declined to make is not a failure the engine had, and counting it
+      // would make an open breaker look like an engine getting worse.
+      emitTelemetry({
+        name: 'search.engine_failure',
+        props: { engine: reportableEngine(engine.name), error_class: classifyErrorClass(lastErr) },
+      });
       throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
     },
   };
