@@ -171,7 +171,23 @@ describe('createActHandler — navigate', () => {
     expect(asErr(await act({ action: 'navigate', url: 'https://nope.example/' })).error_reason).toBe('navigation_failed');
   });
 
-  it('refuses an action that is not navigate|click|type|scroll', async () => {
+  it('wait_for_human is run coordination and does no browser work, even while the human holds page control', async () => {
+    const b = makeFakeBrowser();
+    const act = createActHandler({ ...base, browser: b.browser, controlToken: makeFakeToken('human', [7]), grant: denyGrant });
+    const result = await act({ action: 'wait_for_human', reason: 'Which account should I use?' });
+    expect(result).toEqual({ ok: true, action: 'wait_for_human' });
+    expect(b.gotos).toEqual([]);
+  });
+
+  it('refuses wait_for_human without a bounded, non-empty reason', async () => {
+    const b = makeFakeBrowser();
+    const act = createActHandler({ ...base, browser: b.browser, controlToken: makeFakeToken('agent', [1]), grant: allowGrant });
+    expect(asErr(await act({ action: 'wait_for_human' })).error_reason).toBe('invalid_wait_reason');
+    expect(asErr(await act({ action: 'wait_for_human', reason: 'x'.repeat(4001) })).error_reason).toBe('invalid_wait_reason');
+    expect(b.gotos).toEqual([]);
+  });
+
+  it('refuses an action that is not navigate|click|type|scroll|wait_for_human', async () => {
     const b = makeFakeBrowser();
     const act = createActHandler({ ...base, browser: b.browser, controlToken: makeFakeToken('agent', [1]), grant: allowGrant });
     expect(asErr(await act({ action: 'frobnicate' } as unknown as { action: 'navigate' })).error_reason).toBe('action_not_supported');

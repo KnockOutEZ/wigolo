@@ -77,7 +77,7 @@ import { ToolRegistry } from './server/tool-registry.js';
 // The studio_* seam: routes execute-on-host / proxy / refuse. Reaches the session ONLY
 // through the proxy + the (host-injected) studioHost closure — no session-module import,
 // so the stdio path stays untouched (grep invariant).
-import { proxyToStudioHost, type StudioHostHandlers } from './daemon/studio-dispatch.js';
+import { proxyToStudioHost, withStudioDispatchSignal, type StudioHostHandlers } from './daemon/studio-dispatch.js';
 import { attachCapabilityHandshake, withClientProfile } from './daemon/capability-handshake.js';
 // Core hosts the studio surface but does not enumerate it: this is the ONE reference, an injection
 // point rather than a list. When Studio moves to its own repo, this line moves with it.
@@ -736,7 +736,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
     // otherwise proxy/refuse on stdio) and studio_act's control-token gate stays host-authoritative.
     const provider = toolRegistry.find(name);
     if (provider) {
-      const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);
+      const result = await withStudioDispatchSignal(extra.signal, () =>
+        provider.dispatch(name, (args ?? {}) as Record<string, unknown>));
       return { content: result.content, isError: result.isError };
     }
 

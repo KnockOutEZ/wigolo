@@ -103,7 +103,8 @@
     "tests/unit/daemon/message-queue-dispatch.test.ts",
     "tests/unit/daemon/driver-baton.test.ts",
     "tests/unit/daemon/driver-baton-gate.test.ts",
-    "tests/integration/driver-baton-surfaces.test.ts"
+    "tests/integration/driver-baton-surfaces.test.ts",
+    "tests/integration/studio-wait-for-human-rest.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

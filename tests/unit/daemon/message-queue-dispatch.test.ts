@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { createRunWithTail } from '../../../src/studio/run-bus.js';
+import { appendRunEventWithTail, createRunWithTail, runEventListenerCount } from '../../../src/studio/run-bus.js';
 import { eventsOfTypes, type Driver } from '../../../src/studio/run-store.js';
 import {
   dispatchStudioTool,
@@ -12,9 +12,13 @@ import {
   setDeliveryHooks,
   type StudioHostHandlers,
 } from '../../../src/daemon/studio-dispatch.js';
-import { createBatonGate } from '../../../src/daemon/driver-baton.js';
+import { createBatonGate, takeWheel } from '../../../src/daemon/driver-baton.js';
+import type { ClientProfile } from '../../../src/daemon/capability-handshake.js';
 import {
   createDeliveryHooks,
+  DELIVERY_INTERRUPT_CONSUMED,
+  DELIVERY_WAIT_REQUESTED,
+  DELIVERY_WAIT_RESOLVED,
   listMessages,
   queueMessage,
   MESSAGE_ACKNOWLEDGED,
@@ -203,5 +207,261 @@ describe('the queue is the driver\'s mail, and a mailbox is never a gate', () =>
     const result = await dispatchStudioTool('studio_act', { action: 'navigate', url: 'https://example.com' }, host(), dir);
     expect((JSON.parse(result.content[0].text) as Called).human_messages).toBeUndefined();
     expect(listMessages(db, runId)[0].state).toBe('queued');
+  });
+});
+
+describe('mechanisms 2-4 — wait, interrupt and the push-gated stub', () => {
+  it('parks only the waiting run, then a REST-shaped queued message resolves it with via=wait', async () => {
+    const otherRun = createRunWithTail(db, { task: 'independent work', driver: DRIVER }).id;
+    const waiting = dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Which account?', run_id: runId },
+      host(),
+      dir,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runEventListenerCount(runId)).toBe(1);
+
+    // A different run is not serialized behind the parked call.
+    const other = await dispatchStudioTool(
+      'studio_act',
+      { action: 'navigate', url: 'https://example.com', run_id: otherRun },
+      host(),
+      dir,
+    );
+    expect(JSON.parse(other.content[0]!.text)).toMatchObject({ ok: true, action: 'navigate' });
+
+    // This is the same append the POST /v1/runs/:id/messages store binding performs. Queue two in
+    // one turn: the first is the answer, and everything pending rides the resolution result.
+    queueMessage(db, runId, { text: 'Use the work account' });
+    queueMessage(db, runId, { text: 'The tenant is north' });
+    const resolved = JSON.parse((await waiting).content[0]!.text) as Called & { answer: Record<string, unknown> };
+    expect(resolved.answer).toMatchObject({ text: 'Use the work account', state: 'delivered', delivered_via: 'wait' });
+    expect(texts(resolved)).toEqual(['Use the work account', 'The tenant is north']);
+    expect(resolved.human_messages!.every((m) => m.delivered_via === 'wait')).toBe(true);
+    expect(runEventListenerCount(runId)).toBe(0);
+
+    const deliveryEvents = eventsOfTypes(db, runId, {
+      types: [DELIVERY_WAIT_REQUESTED, DELIVERY_WAIT_RESOLVED, MESSAGE_DELIVERED],
+      limit: 20,
+    });
+    expect(deliveryEvents.map((event) => event.type)).toEqual([
+      DELIVERY_WAIT_REQUESTED,
+      MESSAGE_DELIVERED,
+      MESSAGE_DELIVERED,
+      DELIVERY_WAIT_RESOLVED,
+    ]);
+    expect(deliveryEvents[3]!.payload.waitId).toBe(deliveryEvents[0]!.payload.waitId);
+    expect(deliveryEvents[3]!.payload.messageId).toBe(resolved.answer.message_id);
+    expect(listMessages(db, runId).map((message) => message.deliveredVia)).toEqual(['wait', 'wait']);
+
+    await call();
+    expect(listMessages(db, runId).every((message) => message.state === 'acknowledged')).toBe(true);
+  });
+
+  it('returns a typed refusal instead of treating a wait with no run id as success', async () => {
+    const result = await dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Need a choice' },
+      host(),
+      dir,
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error_reason: 'run_required' });
+  });
+
+  it('refuses a second concurrent wait on the same run without stranding a wait event', async () => {
+    const first = dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'First question', run_id: runId },
+      host(),
+      dir,
+    );
+    await expect.poll(() => runEventListenerCount(runId)).toBe(1);
+    const second = await dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Second question', run_id: runId },
+      host(),
+      dir,
+    );
+    expect(second.isError).toBe(true);
+    expect(JSON.parse(second.content[0]!.text)).toMatchObject({ error_reason: 'wait_already_pending' });
+    expect(eventsOfTypes(db, runId, { types: [DELIVERY_WAIT_REQUESTED], limit: 20 })).toHaveLength(1);
+
+    queueMessage(db, runId, { text: 'Answer the first question' });
+    await first;
+    expect(runEventListenerCount(runId)).toBe(0);
+  });
+
+  it('releases a parked wait as an interrupt when the human takes the wheel', async () => {
+    const waiting = dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Choose a route', run_id: runId },
+      host(),
+      dir,
+    );
+    await expect.poll(() => runEventListenerCount(runId)).toBe(1);
+    expect(takeWheel(db, runId, { by: { kind: 'human' }, reason: 'I will handle it' }).ok).toBe(true);
+
+    expect(JSON.parse((await waiting).content[0]!.text)).toMatchObject({
+      interrupted: true,
+      reason: 'human took control',
+      detail: 'I will handle it',
+    });
+    expect(runEventListenerCount(runId)).toBe(0);
+    expect(eventsOfTypes(db, runId, { types: [DELIVERY_WAIT_RESOLVED], limit: 20 })[0]!.payload)
+      .toMatchObject({ outcome: 'interrupted' });
+  });
+
+  it('cleans up an abandoned wait without delivering a later human message', async () => {
+    const controller = new AbortController();
+    const waiting = dispatchStudioTool(
+      'studio_act',
+      { action: 'wait_for_human', reason: 'Choose a route', run_id: runId },
+      host(),
+      dir,
+      { signal: controller.signal },
+    );
+    await expect.poll(() => runEventListenerCount(runId)).toBe(1);
+    controller.abort();
+
+    const result = await waiting;
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error_reason: 'wait_aborted' });
+    expect(runEventListenerCount(runId)).toBe(0);
+    queueMessage(db, runId, { text: 'Too late for the abandoned call' });
+    expect(listMessages(db, runId)[0]!.state).toBe('queued');
+  });
+
+  it('interrupts an urgent message exactly once, skips host work, then acknowledges and continues', async () => {
+    let hostCalls = 0;
+    const handlers = host();
+    handlers.act = async (input) => {
+      hostCalls++;
+      return { ok: true, action: input.action };
+    };
+    queueMessage(db, runId, { text: 'Stop before paying', urgent: true });
+
+    const first = await dispatchStudioTool(
+      'studio_act',
+      { action: 'navigate', url: 'https://example.com', run_id: runId },
+      handlers,
+      dir,
+    );
+    const interrupted = JSON.parse(first.content[0]!.text) as Called;
+    expect(interrupted).toMatchObject({ interrupted: true, reason: 'urgent human message', detail: 'Stop before paying' });
+    expect(interrupted.human_messages![0]).toMatchObject({ text: 'Stop before paying', delivered_via: 'interrupt' });
+    expect(hostCalls).toBe(0);
+
+    const second = await dispatchStudioTool(
+      'studio_act',
+      { action: 'navigate', url: 'https://example.com', run_id: runId },
+      handlers,
+      dir,
+    );
+    expect(JSON.parse(second.content[0]!.text)).toMatchObject({ ok: true, action: 'navigate' });
+    expect(hostCalls).toBe(1);
+    expect(listMessages(db, runId)[0]!.state).toBe('acknowledged');
+    expect(eventsOfTypes(db, runId, { types: [DELIVERY_INTERRUPT_CONSUMED], limit: 20 })).toHaveLength(1);
+  });
+
+  it('returns takeover interruption before baton refusal, then acks its messages before the refusal', async () => {
+    let hostCalls = 0;
+    const handlers = host();
+    handlers.act = async (input) => {
+      hostCalls++;
+      return { ok: true, action: input.action };
+    };
+    queueMessage(db, runId, { text: 'Use the work account' });
+    setBatonGate(createBatonGate({ openDb: async () => db, caller: () => DRIVER.client }));
+    expect(takeWheel(db, runId, { by: { kind: 'human' }, reason: 'sign-in needs you' }).ok).toBe(true);
+
+    const first = await dispatchStudioTool(
+      'studio_act',
+      { action: 'navigate', url: 'https://example.com', run_id: runId },
+      handlers,
+      dir,
+    );
+    expect(JSON.parse(first.content[0]!.text)).toMatchObject({
+      interrupted: true,
+      reason: 'human took control',
+      detail: 'sign-in needs you',
+      human_messages: [{ text: 'Use the work account', delivered_via: 'interrupt' }],
+    });
+    expect(hostCalls).toBe(0);
+
+    const second = await dispatchStudioTool(
+      'studio_act',
+      { action: 'navigate', url: 'https://example.com', run_id: runId },
+      handlers,
+      dir,
+    );
+    expect(JSON.parse(second.content[0]!.text)).toMatchObject({ error_reason: 'not_the_driver' });
+    expect(listMessages(db, runId)[0]!.state).toBe('acknowledged');
+    expect(hostCalls).toBe(0);
+  });
+
+  it('does not lose an unconsumed takeover behind unrelated run traffic', async () => {
+    setBatonGate(createBatonGate({ openDb: async () => db, caller: () => DRIVER.client }));
+    expect(takeWheel(db, runId, { by: { kind: 'human' }, reason: 'manual control' }).ok).toBe(true);
+    for (let i = 0; i < 501; i++) {
+      appendRunEventWithTail(db, runId, { actor: { kind: 'daemon' }, type: 'delivery.noise', payload: { i } });
+    }
+    expect(await call()).toMatchObject({ interrupted: true, reason: 'human took control' });
+  });
+
+  it('delivers the urgent message itself when older queued messages fill the normal batch', async () => {
+    for (let i = 0; i < 20; i++) queueMessage(db, runId, { text: `ordinary ${i}` });
+    queueMessage(db, runId, { text: 'urgent answer', urgent: true });
+
+    const interrupted = await call();
+    expect(interrupted).toMatchObject({ interrupted: true, reason: 'urgent human message' });
+    expect(interrupted.human_messages).toEqual([
+      expect.objectContaining({ text: 'urgent answer', delivered_via: 'interrupt' }),
+    ]);
+    expect(listMessages(db, runId).find((message) => message.text === 'urgent answer')?.state).toBe('delivered');
+    expect(listMessages(db, runId).filter((message) => message.text.startsWith('ordinary')).every((message) => message.state === 'queued')).toBe(true);
+  });
+
+  it('never selects the out-of-band stub without push, and push still falls through to piggyback', async () => {
+    const probe = vi.fn();
+    queueMessage(db, runId, { text: 'ordinary update' });
+    setDeliveryHooks(createDeliveryHooks({
+      openDb: async () => db,
+      caller: () => DRIVER.client,
+      profile: () => ({ tier: 'detected', phrasing: 'mcp-tools', capabilities: [] }),
+      outOfBandProbe: probe,
+    }));
+    expect(texts(await call())).toEqual(['ordinary update']);
+    expect(probe).not.toHaveBeenCalled();
+
+    queueMessage(db, runId, { text: 'push-eligible update' });
+    const pushProfile: ClientProfile = {
+      tier: 'detected',
+      client: DRIVER.client,
+      phrasing: 'mcp-tools',
+      capabilities: ['push'],
+    };
+    setDeliveryHooks(createDeliveryHooks({
+      openDb: async () => db,
+      caller: () => DRIVER.client,
+      profile: () => pushProfile,
+      outOfBandProbe: probe,
+    }));
+    const carried = await call();
+    expect(probe).toHaveBeenCalledOnce();
+    expect(texts(carried)).toEqual(['push-eligible update']);
+    expect(carried.human_messages![0]!.delivered_via).toBe('piggyback');
+  });
+
+  it.each([
+    ['run.paused', 'human paused the run'],
+    ['run.cancelled', 'human cancelled the run'],
+  ])('derives a one-shot interrupt from human-authored %s', async (type, reason) => {
+    appendRunEventWithTail(db, runId, { actor: { kind: 'human' }, type, payload: { reason: 'stop now' } });
+    const first = await call();
+    expect(first).toMatchObject({ interrupted: true, reason });
+    const second = await call();
+    expect(second.interrupted).toBeUndefined();
   });
 });

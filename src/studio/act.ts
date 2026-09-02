@@ -588,12 +588,32 @@ export function createActHandler(
         return typeAct(input);
       case 'scroll':
         return { result: await scrollAct(input) };
+      case 'wait_for_human': {
+        const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+        if (reason === '') {
+          return {
+            result: {
+              error_reason: 'invalid_wait_reason',
+              hint: 'wait_for_human requires a non-empty reason so the human knows what to answer.',
+            },
+          };
+        }
+        if (reason.length > 4000) {
+          return {
+            result: {
+              error_reason: 'invalid_wait_reason',
+              hint: 'Keep the wait_for_human reason at or below 4000 characters.',
+            },
+          };
+        }
+        return { result: { ok: true, action: 'wait_for_human' } };
+      }
       default:
         // Fail loud — don't pretend an unknown verb succeeded.
         return {
           result: {
             error_reason: 'action_not_supported',
-            hint: `studio_act supports navigate|click|type|scroll; '${String((input as { action?: unknown }).action)}' is not a known action.`,
+            hint: `studio_act supports navigate|click|type|scroll|wait_for_human; '${String((input as { action?: unknown }).action)}' is not a known action.`,
           },
         };
     }
@@ -691,7 +711,7 @@ export function createActHandler(
     });
     // S13-0: the flow sidecar records only what LANDED, and only what the audit already recorded —
     // it is a derived artefact, never a second forensic record. Notify-only: it cannot fail the act.
-    if (flow && !('error_reason' in result)) {
+    if (flow && action !== 'wait_for_human' && !('error_reason' in result)) {
       flow.record({
         action,
         ...(entry && typeof entry.seq === 'number' ? { auditSeq: entry.seq } : {}),
@@ -709,6 +729,9 @@ export function createActHandler(
     // against it would report the page's own drift as if the agent had caused it, and the agent's
     // next decision is "why was I refused", not "what did the page become".
     if ('error_reason' in result) return result;
+    // Waiting is run coordination, not a page mutation. Its delivery result is completed by the
+    // daemon after a human replies, so there is no page settle or console drain to attach here.
+    if (action === 'wait_for_human') return result;
     if (input.post_actions === false) return result;
     const post_actions = await collectPostActions();
     if (!post_actions) return result;
