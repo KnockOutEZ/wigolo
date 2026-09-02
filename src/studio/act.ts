@@ -29,11 +29,15 @@ import type { ControlParty } from './control-token.js';
 import type { AgentInputEvent } from './input-events.js';
 import { isResolveError, type ResolveResult, type ResolveErrorReason } from './perception/resolve.js';
 import { PAGE_CHANGED_BY_HUMAN, type HeldSnapshotRead } from './perception/held-snapshot.js';
+import { diffSnapshots } from './perception/diff.js';
+import type { PageSnapshot, SnapshotElement } from './perception/snapshot.js';
+import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
+import { writeLargeOutput, excerptToFile } from '../server/large-output.js';
 import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
 import { deriveDomain, type PreGrantStore } from './pre-grant.js';
-import { refuseAgentType, type FieldSemantics } from './credential.js';
+import { refuseAgentType, isCredentialContext, type FieldSemantics } from './credential.js';
 import { isCredentialRecordingContext, type FlowRecorderHook } from './flow/record.js';
 import type { StructuredTarget } from './mark/target.js';
 
@@ -55,6 +59,98 @@ export interface ParkedAction {
   risk: RiskTier;
   domain?: string;
   ref?: string;
+}
+
+/**
+ * PIN 8 — DECLARATIVE POST-ACTIONS. A BrowserOS lesson adopted by the brief: an agent that clicks
+ * something almost always needs two more facts before it can decide anything, and today it has to
+ * spend two more tool calls to get them — what the page became, and whether the page complained.
+ * So `studio_act` attaches both to the result it was already returning. Result-text enrichment is
+ * the cheapest tier of the pin-8 ladder (enrichment → act verb → dispatcher tool): no new tool, no
+ * new seam register, and an agent that ignores the block is exactly as correct as before.
+ *
+ * THE PAYLOAD IS PAGE-DERIVED, so it carries the same fence `studio_observe` carries and is built
+ * the same way: element `role`/`name` and console text are UNTRUSTED DATA, marker-neutralized so a
+ * hostile string cannot forge the boundary, and tagged `trusted: false` beside an explicit notice.
+ * A credential context (a login wall, a 2FA screen) EXCLUDES the text entirely — an element name or
+ * a console line can be a displayed secret — mirroring the observe and capture exclusions.
+ */
+export interface ActPostActions {
+  /** Page-derived payload, host-set. The page cannot forge it: it is a sibling field, never inside a page string. */
+  trusted: false;
+  /** The instruction-channel statement that everything below is data, never instructions. */
+  untrusted_notice: string;
+  settled: ActSettleDiff;
+  console: ActConsoleSummary;
+}
+
+/**
+ * What the page became after the act landed, as a delta against the snapshot the agent last read.
+ *
+ * `base: 'none'` means there was no held snapshot to diff against (the agent acted without observing,
+ * or the host wires no holder), so the counts describe the whole page rather than a change — said
+ * plainly rather than reported as if everything had just appeared.
+ *
+ * This NEVER writes the held snapshot. Clearing a pending human-edit invalidation is what a re-read
+ * earns (§7 row 1), and an act is not a re-read; if the settle-diff held the snapshot, an agent could
+ * satisfy "re-read the page" by clicking, which is the one thing that trigger exists to prevent.
+ */
+export interface ActSettleDiff {
+  base: 'held' | 'none';
+  added: number;
+  removed: number;
+  changed: number;
+  /** Identical-sibling positional drift — never presented as a confident change. */
+  churn: number;
+  /** Neutralized excerpt of what appeared or changed. Absent in a credential context. */
+  sample?: SnapshotElement[];
+  /** Descriptors that are only in `file`. Absent when the excerpt is the whole set. */
+  spilled?: number;
+  /** Absolute path to the full delta on disk (law 11: local and inspectable). Absent when nothing spilled. */
+  file?: string;
+  /** Set when the page is a credential context and the descriptors were withheld. */
+  excluded?: 'credential_context';
+}
+
+/** What the browser engine's console said while the act ran. Page-authored text ⇒ neutralized, truncated, capped. */
+export interface ActConsoleSummary {
+  errors: number;
+  warnings: number;
+  /** Neutralized excerpt of the messages. Absent in a credential context. */
+  sample?: string[];
+  spilled?: number;
+  /** Absolute path to the full message list on disk. Absent when nothing spilled. */
+  file?: string;
+  excluded?: 'credential_context';
+}
+
+/** One console line as the host collected it. The host owns collection; this module only summarizes. */
+export interface ConsoleMessage {
+  level: 'error' | 'warning' | 'info' | 'log' | 'debug';
+  text: string;
+}
+
+/**
+ * The host-supplied capability the post-actions are built from. ABSENT ⇒ no post-actions are
+ * attached and every act result is byte-identical to what it was, which is what keeps every
+ * pre-pin-8 host and unit test correct rather than merely passing.
+ */
+export interface ActPostActionDeps {
+  /** A fresh page snapshot, taken AFTER the act landed — the "after" half of the delta. */
+  snapshot: () => Promise<PageSnapshot>;
+  /**
+   * Wait for the page to quiesce before the snapshot. Host-owned because quiescence needs the page
+   * handle and this module deliberately holds none; absent ⇒ the snapshot is taken immediately, which
+   * is a smaller claim (a delta, not a SETTLED delta) rather than a wrong one.
+   */
+  settle?: () => Promise<void>;
+  /** Drain the console lines collected since the last drain. Host-owned; absent ⇒ zero counts, no sample. */
+  consoleSince?: () => readonly ConsoleMessage[];
+  /** Run attribution for any file this writes (law 1). Pull-at-eval, matching the other deps here. */
+  runId?: () => string | undefined;
+  dataDir?: string;
+  /** How many descriptors / messages stay inline before the rest goes to a file. */
+  sampleLimit?: number;
 }
 
 /** The narrow view of the control token the act handler needs (the real ControlToken satisfies it). */
@@ -143,6 +239,12 @@ export interface ActHandlerDeps {
    * hosts wire it, and the host-level tests assert that they do.
    */
   driveGate?: AgentDriveGate;
+  /**
+   * Pin 8: the post-action capability. Wired ⇒ every act that LANDS carries a settle-diff and a
+   * console summary; unwired ⇒ nothing is attached. The agent can suppress it per call with
+   * `post_actions: false` when it already knows what it did and wants the cheaper result.
+   */
+  postActions?: ActPostActionDeps;
 }
 
 /**
@@ -168,6 +270,10 @@ interface ActResolution {
 const SHIFT = 8;
 /** Default scroll distance (page CSS px) when `amount` is unset. */
 const DEFAULT_SCROLL_PX = 600;
+/** Pin 8: descriptors / console lines kept inline before the remainder goes to a file. */
+const POST_ACTION_SAMPLE_LIMIT = 5;
+/** Pin 8: per-console-line inline cap. A page can log a megabyte; the file keeps the rest. */
+const CONSOLE_LINE_CHARS = 200;
 const HOLD_HINT = 'The human holds control of the shared browser — wait and re-observe before acting.';
 const STANDDOWN_HINT = 'The human took control — do not retry; observe and wait your turn.';
 
@@ -253,6 +359,18 @@ function auditOutcome(result: StudioActOutput | StudioToolError): AuditOutcome {
     return { ok: false, error_reason: result.error_reason, ...(result.charsLanded !== undefined ? { charsLanded: result.charsLanded } : {}) };
   }
   return { ok: true, ...(result.charsLanded !== undefined ? { charsLanded: result.charsLanded } : {}) };
+}
+
+/** Neutralize + truncate one console line: page-authored text, treated exactly like an element name. */
+function inertConsoleLine(m: ConsoleMessage): string {
+  const text = neutralizeMarkers(m.text ?? '');
+  const clipped = text.length > CONSOLE_LINE_CHARS ? `${text.slice(0, CONSOLE_LINE_CHARS)}…` : text;
+  return `${m.level}: ${clipped}`;
+}
+
+/** D8b: neutralize a page-derived element descriptor's DISPLAY TEXT; `ref` passes through raw (the agent targets by it). */
+function inertElement(e: SnapshotElement): SnapshotElement {
+  return { ...e, role: neutralizeMarkers(e.role), name: neutralizeMarkers(e.name) };
 }
 
 export function createActHandler(
@@ -485,7 +603,73 @@ export function createActHandler(
   // approval) on a gated action, recorded through this SAME single choke point so every gate
   // decision is logged from commit one. The optional-chain leaves the args unevaluated when no
   // log is wired (the unit tests that omit it).
-  return async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+  /**
+   * Pin 8: build the post-action block. Notify-only, exactly like `audit` and `flow` — a snapshot that
+   * throws, a console drain that throws, or a disk that is full must never turn an action that LANDED
+   * into an error the agent would retry, so every failure here degrades to "no post-actions".
+   */
+  const collectPostActions = async (): Promise<ActPostActions | undefined> => {
+    const pa = deps.postActions;
+    if (!pa) return undefined;
+    try {
+      await pa.settle?.();
+      const snap = await pa.snapshot();
+      const messages = pa.consoleSince?.() ?? [];
+      const errors = messages.filter((m) => m.level === 'error').length;
+      const warnings = messages.filter((m) => m.level === 'warning').length;
+      const notice = { trusted: false as const, untrusted_notice: UNTRUSTED_STUDIO_NOTICE };
+      // A login wall / 2FA screen: an element name or a console line can BE the secret on display, so
+      // the text is withheld and only the shape is reported. Same predicate, same fields, as the
+      // observe and capture exclusions — one credential-context decision, not a third opinion.
+      if (isCredentialContext({ pageUrl: currentUrl?.(), fields: snap.domByRef?.values() })) {
+        return {
+          ...notice,
+          settled: { base: 'none', added: 0, removed: 0, changed: 0, churn: 0, excluded: 'credential_context' },
+          console: { errors, warnings, excluded: 'credential_context' },
+        };
+      }
+      const limit = pa.sampleLimit ?? POST_ACTION_SAMPLE_LIMIT;
+      const fileOpts = { dataDir: pa.dataDir, runId: pa.runId?.() };
+      const heldRead = held?.read();
+      const prev = heldRead?.state === 'live' ? heldRead.snapshot : null;
+      const delta = prev ? diffSnapshots(prev, snap) : null;
+      const added = (delta ? delta.added : snap.elements).map(inertElement);
+      const removed = (delta ? delta.removed : []).map(inertElement);
+      const changed = (delta ? delta.changed : []).map(inertElement);
+      const churn = delta ? delta.lowConfidenceChurn.added.length + delta.lowConfidenceChurn.removed.length : 0;
+      const sample = [...added, ...changed].slice(0, limit);
+      const total = added.length + removed.length + changed.length;
+      // The FILE holds the whole delta with its attribution intact (added vs removed vs changed), not
+      // the tail of a flattened list — a reader should never have to reassemble an excerpt.
+      const spill =
+        total > limit ? writeLargeOutput({ added, removed, changed }, { ...fileOpts, kind: 'settle-diff' }) : null;
+      const consoleFit = excerptToFile(messages.map(inertConsoleLine), limit, { ...fileOpts, kind: 'console' });
+      return {
+        ...notice,
+        settled: {
+          base: prev ? 'held' : 'none',
+          added: added.length,
+          removed: removed.length,
+          changed: changed.length,
+          churn,
+          sample,
+          ...(spill ? { spilled: total - sample.length, file: spill.file } : {}),
+        },
+        console: {
+          errors,
+          warnings,
+          sample: consoleFit.inline,
+          ...(consoleFit.file ? { spilled: consoleFit.spilled, file: consoleFit.file } : {}),
+        },
+      };
+    } catch {
+      return undefined;
+    }
+  };
+
+  return async (
+    input: StudioActInput & { post_actions?: boolean },
+  ): Promise<(StudioActOutput & { post_actions?: ActPostActions }) | StudioToolError> => {
     // P4: narrate the agent's intent to the human UNCONDITIONALLY, before the act runs — matching the
     // salvaged narration contract (broadcast regardless of the verdict, so a refused/preempted act still
     // names its step in the drive banner). Agent-authored text only; never page-derived.
@@ -519,6 +703,14 @@ export function createActHandler(
         ...(pageHasCredentialField !== undefined ? { pageHasCredentialField } : {}),
       });
     }
-    return result;
+    // Pin 8: post-actions ride ONLY a landed act. A refusal changed nothing on the page, so a delta
+    // against it would report the page's own drift as if the agent had caused it, and the agent's
+    // next decision is "why was I refused", not "what did the page become".
+    if ('error_reason' in result) return result;
+    if (input.post_actions === false) return result;
+    const post_actions = await collectPostActions();
+    if (!post_actions) return result;
+    const enriched: StudioActOutput & { post_actions: ActPostActions } = { ...result, post_actions };
+    return enriched;
   };
 }
