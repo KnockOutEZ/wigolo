@@ -253,6 +253,7 @@ describe('no parallel-lane test can spawn a dist/ path', () => {
       'tests/unit/studio/broker-transport.test.ts', // spawns dist/daemon/studio-db-broker.js
       'tests/unit/studio/run-store-restart.test.ts', // spawns dist/daemon/studio-db-broker.js
       'tests/unit/studio/run-store-disk-projection.test.ts', // its fixture imports dist/ in a child
+      'tests/unit/package-exports.test.ts', // imports every dist/ subpath export in a child
       'tests/integration/studio-runs-proxy.test.ts', // imports dist/ in a child process
       'tests/e2e/mcp-startup.test.ts', // spawns dist/index.js
     ];
