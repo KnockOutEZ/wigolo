@@ -39,7 +39,9 @@ describe('writeLargeOutput', () => {
     expect(c.file).not.toBe(a.file);
   });
 
-  it('writes owner-only, like every other studio artefact on disk', () => {
+  // POSIX mode bits only: Windows reports 0o666 for every file, so the assertion below measures the
+  // platform rather than the code. `chmod` is still called there; it is a documented no-op.
+  it.skipIf(process.platform === 'win32')('writes owner-only, like every other studio artefact on disk', () => {
     const r = writeLargeOutput({ secret: 'ish' }, { dataDir: dir, runId: 'r7fq2', kind: 'find' });
     expect(statSync(r.file).mode & 0o777).toBe(0o600);
   });

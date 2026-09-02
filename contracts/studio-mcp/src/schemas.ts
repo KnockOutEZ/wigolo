@@ -62,7 +62,7 @@ const STUDIO_OBSERVE: StudioToolSchema = {
     },
     find: {
       type: 'string',
-      description: 'Grep the live page: return the elements whose role or name matches, as `found`. Case-insensitive substring by default. Cheaper than reading a whole snapshot when you know what you are looking for.',
+      description: 'Grep the live page: the elements whose role or name matches are named in `found`, with their refs. Case-insensitive substring by default. Additive — it points you at the match instead of making you scan the snapshot yourself.',
     },
     find_regex: {
       type: 'boolean',
