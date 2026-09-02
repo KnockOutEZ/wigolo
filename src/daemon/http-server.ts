@@ -10,7 +10,8 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // only) so that a studio-only gateway (mcpServerFactory set) — which runs in the Electron main where
 // better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
-import type { StudioHostHandlers } from './studio-dispatch.js';
+import { setBatonGate, type StudioHostHandlers } from './studio-dispatch.js';
+import { createBatonGate } from './driver-baton.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../companion/auth.js';
@@ -157,6 +158,11 @@ export class DaemonHttpServer {
   setStudioHost(handlers: StudioHostHandlers): void {
     this.studioHost = handlers;
     if (this.subsystems) this.subsystems.studioHost = handlers;
+    // SD2 §7 row 12. Becoming the live host is the one moment a process both owns the handlers and
+    // can reach the run log, so it is where the baton gate is installed: from here an act-class call
+    // naming a run someone else drives is refused with `not_the_driver` before it touches the page.
+    // Idempotent — a re-set replaces the closure rather than stacking a second gate.
+    setBatonGate(createBatonGate());
   }
 
   /**
