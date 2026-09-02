@@ -26,7 +26,7 @@ vi.mock('../../../src/logger.js', () => ({
 
 // A provider module that loads but blows up when its export is read — the realistic "module is
 // there, the provider is broken" case, and one whose error text names nothing about the module.
-vi.mock('../../../src/studio/artifact-provider.js', () => ({
+vi.mock('../../../src/companion/artifact-provider.js', () => ({
   get studioArtifactProvider(): never {
     throw new Error('exploded while evaluating the export');
   },

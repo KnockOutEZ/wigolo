@@ -13,8 +13,8 @@ import { captureFromPage, captureHumanNote } from '../../../src/studio/capture/a
  * derived → false).
  *
  * Real db + real cache/store so the note enters via the REAL path — captureHumanNote →
- * real insert + FTS trigger → searchStudioArtifactKeys → getStudioArtifactByEmbedKey. NO
- * stubbed studio read (the read seam is artifacts.ts only — keeps the check-gate at 23).
+ * real insert + FTS trigger → the companion artifact provider's searchKeys → its hydrate. NO
+ * stubbed studio read (the read seam is that provider only).
  * Tool layer (handleResearch) so the EvidenceItem path (attachEvidence → research.ts:98)
  * is exercised alongside sources + citations. isLlm OFF → keyless brief + the
  * synthesizeReport citation constructor (synthesize.ts:45); the local-LLM synthesis

@@ -77,11 +77,13 @@ describe('core shared-store read paths name no product', () => {
         const t = l.trim();
         return t !== '' && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
       });
-    const hits = code.filter((l) => /studio/i.test(l));
+    // Both spellings: the provider module moved to `src/companion/` (EXTRACT A5), and a `studio`
+    // literal creeping back in as a scheme or a `source` value must still move this count.
+    const hits = code.filter((l) => /studio|companion/i.test(l));
     // Exactly one executable reference: the lazy in-tree bootstrap loader. If a scheme, a `source`
     // value or a type allowlist ever creeps back into the code, this count moves.
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toContain("import('../studio/artifact-provider.js')");
+    expect(hits[0]).toContain("import('../companion/artifact-provider.js')");
     // The persisted URI prefix is the provider's business — core must never match on it, in code or
     // in a comment that someone might later turn into code.
     expect(src).not.toContain('studio://');
