@@ -44,7 +44,7 @@ export interface StudioFetchInput {
  * published one: `error_reason` a stable machine code, `error` the human message, `hint` the fix
  * (docs/rest-api.md "Error shape").
  *
- * `src/tools/session-target.ts` is the near-identical session-fetch composition and carries the OPPOSITE
+ * `src/studio/session-target-host.ts` is the near-identical session-fetch composition and carries the OPPOSITE
  * orientation, correctly: it DOES reach `stageErrorEnvelope` (src/server.ts:533-535), so it is a producer
  * and its prose `error_reason` values are not this defect. The two files deliberately differ; do not
  * "align" either one without first asking which assembly point its output reaches.

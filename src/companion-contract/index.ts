@@ -31,6 +31,7 @@ export type {
 export {
   SESSION_TARGET_OPS,
   SESSION_TARGET_REFUSAL_REASONS,
+  SESSION_TARGET_ROUTE,
   isSessionTargetRefusal,
   isSessionTargeted,
 } from './session-target.js';

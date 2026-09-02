@@ -4,7 +4,7 @@ import { createActHandler } from '../../../src/studio/act.js';
 import { OriginBudget } from '../../../src/companion/origin-budget.js';
 import { PreGrantStore } from '../../../src/studio/pre-grant.js';
 import type { AgentDriveGate } from '../../../src/studio/agent-drive-gate.js';
-import { runSessionFetch } from '../../../src/tools/session-target.js';
+import { runSessionFetch } from '../../../src/studio/session-target-host.js';
 import type { StudioSessionsAccessor } from '../../../src/studio/session-drive.js';
 import type { FetchInput } from '../../../src/types.js';
 import type { ResolveResult } from '../../../src/studio/perception/resolve.js';

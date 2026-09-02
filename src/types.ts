@@ -61,10 +61,10 @@ export interface FetchInput {
   citation_format?: CitationFormat;
   mode?: Mode;
   /**
-   * D19: optional live Studio session id (from studio_spawn / studio_list). When set, the fetch runs
-   * against that session's authenticated co-browse browser — navigate-class: control-token gated + SSRF
-   * -fenced — instead of an ephemeral fetch. An unknown/closed id is an explicit error, never a silent
-   * ephemeral fallback. Absent ⇒ the ephemeral fetch path is unchanged.
+   * D19: optional live companion browser session id. When set, the fetch runs against that session's
+   * authenticated co-browse browser — navigate-class: control-token gated + SSRF-fenced — instead of an
+   * ephemeral fetch. With no companion paired, or an unknown/closed id, the call is an explicit error,
+   * never a silent ephemeral fallback. Absent ⇒ the ephemeral fetch path is unchanged.
    */
   session_id?: string;
 }

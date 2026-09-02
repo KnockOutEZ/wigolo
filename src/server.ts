@@ -88,7 +88,7 @@ import type { StudioSessionsAccessor } from './studio/session-drive.js';
 import { isSessionTargeted, runSessionFetch, runSessionExtract, runSessionCrawl } from './tools/session-target.js';
 import { projectToolArgs, recordToolCall, type ToolAuditDb } from './server/tool-audit.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CrawlOutput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -561,19 +561,16 @@ export function createMcpServer(subsystems: Subsystems): Server {
     const dispatch = async (): Promise<{ content: { type: 'text'; text: string }[]; isError: boolean }> => {
     if (name === 'fetch') {
       const input = (args ?? {}) as unknown as FetchInput;
-      // D19: a session_id routes to the live Studio session (navigate-class: gated + SSRF-fenced + trusted-0
-      // insert). On the host the accessor is set ⇒ drive locally; on stdio it is undefined ⇒ forward to the host
-      // VERBATIM (mirror the studio_* proxy). An absent/closed session is an explicit error, never an ephemeral fetch.
+      // EXTRACT seam 5: a session_id addresses a LIVE companion session, so the call is FORWARDED over the
+      // companion wire (the companion owns the browser: navigate-class, gated + SSRF-fenced + trusted-0
+      // insert). No companion paired, or an absent/closed session, is an explicit error — never an
+      // ephemeral fetch wearing a session's clothes.
       if (isSessionTargeted(input)) {
-        if (subsystems.studioSessions) {
-          const sr = await runSessionFetch(subsystems.studioSessions, input);
-          if (!sr.ok) {
-            return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
-          }
-          return { content: [{ type: 'text', text: JSON.stringify(fenceFetchData(sr.data), null, 2) }], isError: false };
+        const sr = await runSessionFetch(input, { dataDir: getConfig().dataDir });
+        if (!sr.ok) {
+          return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
         }
-        const proxied = await proxyToStudioHost('fetch', (args ?? {}) as Record<string, unknown>, getConfig().dataDir);
-        return { content: proxied.content, isError: proxied.isError };
+        return { content: [{ type: 'text', text: JSON.stringify(fenceFetchData(sr.data), null, 2) }], isError: false };
       }
       const r = await handleFetch(input, router);
       if (!r.ok) {
@@ -608,14 +605,13 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'crawl') {
       const input = (args ?? {}) as unknown as CrawlInput;
-      // D19: a session_id routes the crawl to the live Studio session (navigation gated + SSRF-fenced).
+      // EXTRACT seam 5: a session_id forwards the crawl to the companion's live session (always gated).
+      // A refusal becomes the crawl shape's own `error` field, which is how every other crawl failure
+      // reaches the caller — the envelope must not change shape just because the refusal came off a wire.
       if (isSessionTargeted(input)) {
-        if (subsystems.studioSessions) {
-          const sessionResult = await runSessionCrawl(subsystems.studioSessions, input);
-          return { content: [{ type: 'text', text: JSON.stringify(fenceCrawlData(sessionResult), null, 2) }], isError: !!sessionResult.error };
-        }
-        const proxied = await proxyToStudioHost('crawl', (args ?? {}) as Record<string, unknown>, getConfig().dataDir);
-        return { content: proxied.content, isError: proxied.isError };
+        const sr = await runSessionCrawl(input, { dataDir: getConfig().dataDir });
+        const sessionResult: CrawlOutput = sr.ok ? sr.data : { pages: [], total_found: 0, crawled: 0, error: `${sr.error}: ${sr.error_reason}` };
+        return { content: [{ type: 'text', text: JSON.stringify(fenceCrawlData(sessionResult), null, 2) }], isError: !!sessionResult.error };
       }
       const result = await handleCrawl(input, router);
       // D7/A: fence each agent-facing per-page markdown body at the MCP envelope.
@@ -638,17 +634,14 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'extract') {
       const input = (args ?? {}) as unknown as ExtractInput;
-      // D19: a session_id reads the live Studio session's CURRENT page (the sole token-free read — no navigation).
+      // EXTRACT seam 5: a session_id reads the companion session's CURRENT page (the sole token-free read
+      // — no navigation), so it too is forwarded rather than run here.
       if (isSessionTargeted(input)) {
-        if (subsystems.studioSessions) {
-          const sr = await runSessionExtract(subsystems.studioSessions, input, router);
-          if (!sr.ok) {
-            return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
-          }
-          return { content: [{ type: 'text', text: JSON.stringify(fenceExtractData(sr.data), null, 2) }], isError: false };
+        const sr = await runSessionExtract(input, { dataDir: getConfig().dataDir });
+        if (!sr.ok) {
+          return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
         }
-        const proxied = await proxyToStudioHost('extract', (args ?? {}) as Record<string, unknown>, getConfig().dataDir);
-        return { content: proxied.content, isError: proxied.isError };
+        return { content: [{ type: 'text', text: JSON.stringify(fenceExtractData(sr.data), null, 2) }], isError: false };
       }
       const r = await handleExtract(input, router);
       if (!r.ok) {

@@ -1,183 +1,137 @@
-import type {
-  FetchInput,
-  FetchOutput,
-  ExtractInput,
-  ExtractOutput,
-  CrawlInput,
-  CrawlOutput,
-  StageResult,
-  StageError,
-} from '../types.js';
-import type { StudioSessionsAccessor, GatedNavResult } from '../studio/session-drive.js';
-import { getExtractProvider } from '../providers/extract-provider.js';
-import { handleExtract } from './extract.js';
-import { CaptureRefusedError } from '../studio/capture/artifacts.js';
-import { truncateSmartly } from '../search/truncate.js';
-import type { SmartRouter } from '../fetch/router.js';
+import type { CrawlInput, CrawlOutput, ExtractInput, ExtractOutput, FetchInput, FetchOutput } from '../types.js';
+import { readHandle, type SessionHandle } from '../companion/handle.js';
+import { postCompanion } from '../companion/transport.js';
+import {
+  SESSION_TARGET_ROUTE,
+  isSessionTargetRefusal,
+  isSessionTargeted,
+  type SessionTargetOp,
+  type SessionTargetRefusal,
+  type SessionTargetRequest,
+  type SessionTargetResult,
+} from '../companion-contract/session-target.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('tools');
 
 /**
- * D19 — the SESSION-TARGETED composition for fetch / extract / crawl. These run ON THE HOST against a live
- * Studio session's drive seam (resolved from the host-injected `studioSessions` accessor). The stdio side
- * never calls these: there `studioSessions` is undefined and server.ts forwards the call to the host VERBATIM
- * (mirroring the studio_* proxy) — an absent host is an explicit error, never a silent ephemeral fallback.
+ * EXTRACT seam 5 — the core side of session-targeted fetch / extract / crawl.
  *
- * NAV-CLASS contract (HANDOFF / D19):
- *  - fetch  ALWAYS navigates (gated + SSRF-fenced) → reads the resulting page → inserts content_trusted=0.
- *  - extract reads the session's CURRENT page (the SOLE token-free read — it does NOT navigate, no gate).
- *  - crawl  ALWAYS navigates → always gated.
- * None of the three click/type, so the S7 pre-grant gate is never involved.
+ * A `session_id` on `fetch`, `extract` or `crawl` addresses a LIVE browser session, and the side that owns
+ * that browser is the companion, not core. So core's half is a forwarding client: it decides whether a
+ * companion is reachable, sends the §4 session-target wire, and returns whatever the companion answered.
+ * The composition that drives the session — the control-token gate, the SSRF-fenced navigate, the trusted-0
+ * capture — lives with the browser it drives and never ran here after the extraction.
+ *
+ * Two arms, and the boundary between them is the whole contract:
+ *  - PAIRED   → forward verbatim; the companion's success data and its typed refusals both pass through
+ *               unchanged, so a refusal reaches the agent in the companion's own words (a pacing-budget or
+ *               authenticated-use refusal carries live counters in its sentence; flattening it here would
+ *               make a deliberately VISIBLE budget invisible).
+ *  - UNPAIRED → an explicit `companion_unavailable` refusal. NEVER a silent downgrade to the ephemeral
+ *               path: a caller who asked for their authenticated session and quietly got an anonymous
+ *               fetch would believe a page came from a session it never touched.
+ *
+ * There is deliberately NO auto-launch here, unlike the escalation rung. Escalation asks for "this page,
+ * through a real browser" and any fresh browser can answer it. This asks for ONE named session, which a
+ * freshly launched companion cannot have — so launching an app would spend a process to arrive at
+ * `no_such_session`. A fast typed refusal is the honest answer.
  */
 
-/** True when the input carries a non-empty session_id ⇒ route to the session path, not the ephemeral one. */
-export function isSessionTargeted(input: { session_id?: unknown }): boolean {
-  return typeof input.session_id === 'string' && input.session_id.trim() !== '';
+/** The session-target transport: one POST, typed answer or null. Injectable so tests reach no socket. */
+export type SessionTargetTransport = (
+  handle: SessionHandle,
+  request: SessionTargetRequest<unknown>,
+) => Promise<SessionTargetResult<unknown> | null>;
+
+export interface SessionTargetDeps {
+  dataDir?: string;
+  /** Injectable for tests; production uses {@link postSessionTarget}. */
+  call?: SessionTargetTransport;
 }
 
-/** Explicit "no live session" error — NEVER a silent downgrade to the ephemeral path (the D19 contract). */
-function sessionNotFound(stage: string, id: string | undefined): { ok: false } & StageError {
-  return {
-    ok: false,
-    error: 'no_such_session',
-    error_reason: `No live studio session with id ${id ?? '(missing)'}.`,
-    stage,
-    hint: 'The session may be closed or never existed. Call studio_list for live ids, or omit session_id for an ephemeral request. This is never silently downgraded to an ephemeral fetch.',
-  };
-}
-
-/** Map a gated-navigation refusal to a tool error the agent can act on. */
-function navError(stage: string, nav: Extract<GatedNavResult, { ok: false }>): { ok: false } & StageError {
-  if (nav.reason === 'not_holder') {
-    return {
-      ok: false,
-      error: 'not_holder',
-      error_reason: 'The human holds control of this studio session — the agent cannot drive it.',
-      stage,
-      hint: 'Observe and wait for a grant; do not retry into the human.',
-    };
-  }
-  if (nav.reason === 'navigation_blocked') {
-    return {
-      ok: false,
-      error: 'navigation_blocked',
-      error_reason: 'That address is blocked for the agent (cloud-internal is never allowed; localhost/private needs a human grant).',
-      stage,
-    };
-  }
-  if (nav.reason === 'aborted_reclaimed') {
-    return {
-      ok: false,
-      error: 'aborted_reclaimed',
-      error_reason: 'The human took control during navigation — do not retry; observe and wait your turn.',
-      stage,
-    };
-  }
-  // D9 refusals (pacing budget, authenticated-use grant) already carry their own reason + hint, with the
-  // live counters in the text. Passing them through verbatim is the whole point of a VISIBLE budget: a
-  // generic "navigation did not complete" would read as a bug.
-  if (nav.error_reason) {
-    return { ok: false, error: nav.reason, error_reason: nav.error_reason, stage, ...(nav.hint ? { hint: nav.hint } : {}) };
-  }
-  return { ok: false, error: nav.reason, error_reason: `Session navigation did not complete (${nav.reason}).`, stage };
-}
+export { isSessionTargeted };
 
 /**
- * Session-targeted fetch: navigate the live session (GATED + SSRF-fenced), read the resulting page, extract,
- * persist content_trusted=0, and return the fetch shape. A credential-context page is excluded entirely
- * (the trusted-0 insert refuses it) — surfaced as a refusal, content never returned and never cached.
+ * POST one session-target request to the paired companion and return its typed answer.
+ *
+ * Returns null — never throws — for every transport-level failure, and for any body that satisfies neither
+ * arm of the wire. A well-formed refusal IS returned even on a 4xx: the status is not the gate, because
+ * "the companion refused" and "no companion answered" are different facts and the caller's error text
+ * depends on telling them apart.
  */
-export async function runSessionFetch(
-  accessor: StudioSessionsAccessor,
-  input: FetchInput,
-): Promise<StageResult<FetchOutput>> {
-  const drive = accessor.getSessionDrive(input.session_id!);
-  if (!drive) return sessionNotFound('fetch', input.session_id);
-
-  // Navigate-class: the gated drive navigate (the SOLE navigation lane — no ungated bypass).
-  const nav = await drive.gatedNavigate(input.url);
-  if (!nav.ok) return navError('fetch', nav);
-
-  const page = await drive.readCurrentPage();
-  const extractor = await getExtractProvider();
-  const extraction = await extractor.extract(page.html, page.url, {
-    maxChars: input.max_chars,
-    section: input.section,
-    sectionIndex: input.section_index,
+export async function postSessionTarget(
+  handle: SessionHandle,
+  request: SessionTargetRequest<unknown>,
+): Promise<SessionTargetResult<unknown> | null> {
+  return postCompanion<SessionTargetResult<unknown>>(handle, {
+    route: SESSION_TARGET_ROUTE,
+    body: request,
+    accept: (parsed, httpOk) => {
+      if (isSessionTargetRefusal(parsed)) return parsed;
+      if (!httpOk) return null;
+      if (typeof parsed === 'object' && parsed !== null && (parsed as { ok?: unknown }).ok === true) {
+        return parsed as SessionTargetResult<unknown>;
+      }
+      return null;
+    },
   });
-
-  // Trusted-0 BY CONSTRUCTION (captureFromPage). A credential-context page throws CaptureRefusedError →
-  // exclude entirely (no content returned, nothing cached) — the agent must hand a login off to the human.
-  try {
-    await drive.insertTrusted0({ url: page.url, title: extraction.title, markdown: extraction.markdown });
-  } catch (e) {
-    if (e instanceof CaptureRefusedError) {
-      return {
-        ok: false,
-        error: 'capture_refused',
-        error_reason: 'The live session page is a login/credential context — its content is excluded from the agent and the cache.',
-        stage: 'fetch',
-        hint: 'Do not retry; hand the login off to the human.',
-      };
-    }
-    throw e;
-  }
-
-  const markdown =
-    input.max_content_chars !== undefined ? truncateSmartly(extraction.markdown, input.max_content_chars) : extraction.markdown;
-
-  const out: FetchOutput = {
-    url: page.url,
-    title: extraction.title,
-    markdown,
-    metadata: { ...extraction.metadata },
-    links: extraction.links,
-    images: extraction.images,
-    cached: false,
-    // The bytes came off a headed browser session.
-    fetch_method: 'browser',
-    ...(extraction.site_data ? { site_data: extraction.site_data } : {}),
-  };
-  return { ok: true, data: out };
 }
 
-/**
- * Session-targeted extract: read the session's CURRENT page and run the full extract pipeline against the
- * LIVE html. The SOLE token-free read — it does NOT navigate, so there is no control-token gate and no SSRF
- * nav guard (there is no navigation). Reuses handleExtract with `html` (no url ⇒ no router fetch); the live
- * page url is post-set as source_url for citation parity.
- */
+/** The unpaired / unreachable refusal. `reason` says which, because the fix differs. */
+function unavailable(stage: SessionTargetOp, reason: string, hint: string): SessionTargetRefusal {
+  return { ok: false, error: 'companion_unavailable', error_reason: reason, stage, hint };
+}
+
+async function forward<TInput extends { session_id?: string }, TData>(
+  op: SessionTargetOp,
+  input: TInput,
+  deps: SessionTargetDeps,
+): Promise<SessionTargetResult<TData>> {
+  const handle = readHandle(deps.dataDir);
+  if (!handle) {
+    return unavailable(
+      op,
+      'No companion is paired, so there is no live session to run this against.',
+      'Install and launch the companion app (`wigolo studio setup`), then retry — or omit session_id for an ordinary request.',
+    );
+  }
+
+  const call = deps.call ?? postSessionTarget;
+  const answer = await call(handle, { op, session_id: input.session_id ?? '', input });
+  if (answer === null) {
+    // The handle is on disk but nothing answered it: the companion died without removing it, or it is
+    // wedged. Logged at debug so a stale handle is diagnosable without narrating on every call.
+    log.debug('session-target forward failed', { op, endpoint: handle.endpoint });
+    return unavailable(
+      op,
+      'The paired companion did not answer — it may have exited without clearing its handle.',
+      'Relaunch the companion app, then retry — or omit session_id for an ordinary request.',
+    );
+  }
+  return answer as SessionTargetResult<TData>;
+}
+
+/** Session-targeted fetch: the companion navigates the named session (gated + fenced) and returns the page. */
+export async function runSessionFetch(
+  input: FetchInput,
+  deps: SessionTargetDeps = {},
+): Promise<SessionTargetResult<FetchOutput>> {
+  return forward<FetchInput, FetchOutput>('fetch', input, deps);
+}
+
+/** Session-targeted extract: the companion reads the named session's CURRENT page — no navigation. */
 export async function runSessionExtract(
-  accessor: StudioSessionsAccessor,
   input: ExtractInput,
-  router: SmartRouter,
-): Promise<StageResult<ExtractOutput>> {
-  const drive = accessor.getSessionDrive(input.session_id!);
-  if (!drive) return sessionNotFound('extract', input.session_id);
-
-  const page = await drive.readCurrentPage();
-  const r = await handleExtract({ ...input, html: page.html, url: undefined }, router);
-  if (r.ok) r.data.source_url = page.url;
-  return r;
+  deps: SessionTargetDeps = {},
+): Promise<SessionTargetResult<ExtractOutput>> {
+  return forward<ExtractInput, ExtractOutput>('extract', input, deps);
 }
 
-/**
- * Session-targeted crawl: navigate the seed (GATED + SSRF-fenced) and return its page. Minimum-viable —
- * a multi-page crawl driving the live co-browse browser across the link graph is deferred (flagged, not
- * silently capped); the single-page result keeps the "crawl always navigates → always gated" contract.
- */
-export async function runSessionCrawl(accessor: StudioSessionsAccessor, input: CrawlInput): Promise<CrawlOutput> {
-  const drive = accessor.getSessionDrive(input.session_id!);
-  if (!drive) {
-    return { pages: [], total_found: 0, crawled: 0, error: `no_such_session: no live studio session with id ${input.session_id ?? '(missing)'}` };
-  }
-  const nav = await drive.gatedNavigate(input.url);
-  if (!nav.ok) return { pages: [], total_found: 0, crawled: 0, error: nav.reason };
-
-  const page = await drive.readCurrentPage();
-  const extractor = await getExtractProvider();
-  const extraction = await extractor.extract(page.html, page.url, {});
-  return {
-    pages: [{ url: page.url, title: extraction.title, markdown: extraction.markdown, depth: 0 }],
-    total_found: 1,
-    crawled: 1,
-  };
+/** Session-targeted crawl: the companion navigates the seed in the named session (always gated). */
+export async function runSessionCrawl(
+  input: CrawlInput,
+  deps: SessionTargetDeps = {},
+): Promise<SessionTargetResult<CrawlOutput>> {
+  return forward<CrawlInput, CrawlOutput>('crawl', input, deps);
 }

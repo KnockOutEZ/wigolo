@@ -18,6 +18,15 @@
  * as a type parameter each side supplies from its own stage types.
  */
 
+/**
+ * The HTTP route the session-target exchange rides, appended to the endpoint the companion publishes in
+ * its handle file. The ADDRESS belongs to the wire for the same reason the op set does: two sides that
+ * disagree about it produce a 404, not a typed refusal, and at the client a 404 looks exactly like an
+ * absent companion. Everything else about the transport — client, timeouts, retries — stays out of this
+ * package, which still performs no I/O.
+ */
+export const SESSION_TARGET_ROUTE = '/companion/session';
+
 /** The three navigation-class ops, CLOSED. */
 export const SESSION_TARGET_OPS = Object.freeze(['crawl', 'extract', 'fetch'] as const);
 
