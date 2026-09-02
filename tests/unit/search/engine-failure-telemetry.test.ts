@@ -61,7 +61,11 @@ describe('search.engine_failure at the circuit breaker', () => {
     dataDir = mkdtempSync(join(tmpdir(), 'wigolo-engine-telemetry-'));
     process.env = { ...ORIGINAL_ENV };
     process.env.WIGOLO_DATA_DIR = dataDir;
-    delete process.env.WIGOLO_TELEMETRY;
+    // Forced ON rather than deleted: leaving it unset makes the switch depend on the
+    // ambient absence of a persisted setting, and a byte search over a queue that was
+    // silent for that reason passes vacuously. Measured — a settings file with
+    // `telemetryEnabled: false` produced exactly that empty-queue false pass.
+    process.env.WIGOLO_TELEMETRY = 'on';
     resetConfig();
     telemetry._resetTelemetryForTest();
     resetBreakers();

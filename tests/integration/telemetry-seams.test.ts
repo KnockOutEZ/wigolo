@@ -40,6 +40,7 @@ const PLANTED_FRAGMENTS = [
 const mintKeys = generateMintKeyPair();
 let dataDir: string;
 let savedPubkey: string | undefined;
+let savedTelemetryEnv: string | undefined;
 
 function activate(): void {
   const { token } = mintToken(
@@ -82,7 +83,12 @@ describe('telemetry seams — rest, cli and repl surfaces', () => {
     process.env.WIGOLO_DATA_DIR = dataDir;
     savedPubkey = process.env.WIGOLO_ACCOUNTS_PUBKEY;
     process.env.WIGOLO_ACCOUNTS_PUBKEY = mintKeys.publicKeyB64Url;
-    delete process.env.WIGOLO_TELEMETRY;
+    savedTelemetryEnv = process.env.WIGOLO_TELEMETRY;
+    // Forced ON rather than deleted: leaving it unset makes the switch depend on the
+    // ambient absence of a persisted setting, and a byte search over a queue that was
+    // silent for that reason passes vacuously. Measured — a settings file with
+    // `telemetryEnabled: false` produced exactly that empty-queue false pass.
+    process.env.WIGOLO_TELEMETRY = 'on';
     resetConfig();
     setActivationChecker(null);
     _resetTelemetryForTest();
@@ -98,6 +104,8 @@ describe('telemetry seams — rest, cli and repl surfaces', () => {
     delete process.env.WIGOLO_DATA_DIR;
     if (savedPubkey === undefined) delete process.env.WIGOLO_ACCOUNTS_PUBKEY;
     else process.env.WIGOLO_ACCOUNTS_PUBKEY = savedPubkey;
+    if (savedTelemetryEnv === undefined) delete process.env.WIGOLO_TELEMETRY;
+    else process.env.WIGOLO_TELEMETRY = savedTelemetryEnv;
     resetConfig();
     vi.restoreAllMocks();
     try { closeDatabase(); } catch { /* already closed by a one-shot's finally */ }

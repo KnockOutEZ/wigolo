@@ -131,6 +131,7 @@ async function connectClient() {
 describe('tool.run / tool.error at the MCP dispatch seam', () => {
   let dataDir: string;
   let savedPubkey: string | undefined;
+  let savedTelemetryEnv: string | undefined;
   const mintKeys = generateMintKeyPair();
 
   function activate(): void {
@@ -173,7 +174,12 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
     process.env.WIGOLO_DATA_DIR = dataDir;
     savedPubkey = process.env.WIGOLO_ACCOUNTS_PUBKEY;
     process.env.WIGOLO_ACCOUNTS_PUBKEY = mintKeys.publicKeyB64Url;
-    delete process.env.WIGOLO_TELEMETRY;
+    savedTelemetryEnv = process.env.WIGOLO_TELEMETRY;
+    // Forced ON rather than deleted: leaving it unset makes the switch depend on the
+    // ambient absence of a persisted setting, and a byte search over a queue that was
+    // silent for that reason passes vacuously. Measured — a settings file with
+    // `telemetryEnabled: false` produced exactly that empty-queue false pass.
+    process.env.WIGOLO_TELEMETRY = 'on';
     resetConfig();
     setActivationChecker(null);
     _resetMigrationGuard();
@@ -187,6 +193,8 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
     delete process.env.WIGOLO_DATA_DIR;
     if (savedPubkey === undefined) delete process.env.WIGOLO_ACCOUNTS_PUBKEY;
     else process.env.WIGOLO_ACCOUNTS_PUBKEY = savedPubkey;
+    if (savedTelemetryEnv === undefined) delete process.env.WIGOLO_TELEMETRY;
+    else process.env.WIGOLO_TELEMETRY = savedTelemetryEnv;
     resetConfig();
     try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
@@ -248,6 +256,8 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
     }
 
     const bytes = queueBytes();
+    // The search is worthless over an empty queue — pin that events were actually written.
+    expect(queuedEvents().map((e) => e.name)).toEqual(['tool.run', 'tool.error']);
     expect(bytes).not.toContain(PLANTED_URL);
     expect(bytes).not.toContain('zqxjkvw-plan');
     expect(bytes).not.toContain('hunter2');
