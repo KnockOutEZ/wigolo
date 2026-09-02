@@ -133,8 +133,11 @@ async function connectClient() {
   };
 }
 
-function textOf(res: { content: unknown }): string {
-  return (res.content as Array<{ text: string }>)[0].text;
+/** First text block of a CallToolResult. Takes `unknown` because the SDK's own
+ *  result type carries an index signature the narrower shape cannot absorb. */
+function textOf(res: unknown): string {
+  const blocks = (res as { content?: Array<{ text?: string }> }).content;
+  return blocks?.[0]?.text ?? '';
 }
 
 /** Let the `setImmediate` the scheduler defers through actually run. */
