@@ -374,14 +374,9 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
   }, 1_800_000);
 
   it('sends ZERO requests to the telemetry endpoint with WIGOLO_TELEMETRY=off, and sends them when it is on', async () => {
-    // A fresh access token first, for BOTH arms. `flush` mints its Bearer through the
-    // shared 24 h refresh throttle (`acquireAccessToken` → `maybeRefresh`), so a session
-    // that started with a stale cached token would find no token, send nothing, and the ON
-    // arm would agree with the OFF arm for a reason that has nothing to do with the switch.
-    // `wigolo account` is an explicit gesture and forces the refresh (A-212-13), so the two
-    // arms below differ in exactly one variable.
-    const primed = await runCli(full, ['account'], { env });
-    expect(primed.code, `priming the access token failed:\n${primed.combined}`).toBe(0);
+    // Both arms start with the refresh throttle OPEN — see `openRefreshThrottle` for why
+    // this, and not a priming `wigolo account`, is what lets a spawned server hold a Bearer.
+    await openRefreshThrottle(full);
 
     const queuedBefore = await telemetryQueueDepth(full);
     // Arms 1-4 ran with telemetry at its default (ON, 0.3.0 is opt-OUT), so the counter
@@ -409,7 +404,11 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     expect(queuedAfterOff, 'the off switch still wrote events to the disk queue').toBe(queuedBefore);
 
     // ---- ON, the flip that makes the zero above mean something ------------------------
+    //
+    // Same install, same tool calls, same starting state — including the same open
+    // throttle, so the two arms differ in the switch and in nothing else.
     proxy.reset();
+    await openRefreshThrottle(full);
     let onRequests: readonly { method: string; bodyBytes: number }[] = [];
     let deliveredInMs = -1;
     await burnTelemetryEvents(full, env, async () => {
@@ -665,6 +664,25 @@ async function ageLastRefresh(install: FreshInstall, byMs: number): Promise<Acco
   };
   await writeState(install, aged);
   return aged;
+}
+
+/**
+ * Open the 24 h refresh throttle by clearing `last_refresh_attempt_at`.
+ *
+ * MEASURED, AND IT IS WHY THE FIRST RUN OF THIS ARM WENT RED. The access JWT is an
+ * IN-PROCESS cache (`accessCache`, `src/account/token-store.ts:153`) — nothing about it
+ * survives a process boundary — so a freshly spawned server holds none and `flush` falls
+ * through to `maybeRefresh`, which allows one attempt per 24 h. Priming the arm with
+ * `wigolo account` made it strictly worse: that verb FORCES a refresh and stamps
+ * `last_refresh_attempt_at`, closing the throttle on the very session that needed it open,
+ * and the ON arm sent nothing for a reason that had nothing to do with telemetry.
+ *
+ * Clearing the stamp is therefore the precondition, not a convenience, and both arms start
+ * from it so the flip stays a single-variable comparison.
+ */
+async function openRefreshThrottle(install: FreshInstall): Promise<void> {
+  const state = await readState(install);
+  await writeState(install, { ...state, last_refresh_attempt_at: null });
 }
 
 /** How many events are sitting in the install's durable telemetry queue. */
