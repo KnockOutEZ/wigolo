@@ -538,6 +538,86 @@ export interface CacheFilter {
   query?: string;
   urlPattern?: string;
   since?: string;
+  /** Exact normalized hostname (apex and subdomains remain separate). */
+  domain?: string;
+  /** Inclusive lower bound for fetched_at. */
+  from?: string;
+  /** Inclusive upper bound for fetched_at. */
+  to?: string;
+}
+
+export type LibrarySort = 'relevance' | 'recency';
+
+export interface LibraryPageOptions extends CacheFilter {
+  sort?: LibrarySort;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface LibraryPageRow {
+  id: number;
+  url: string;
+  normalized_url: string;
+  host: string;
+  title: string;
+  markdown: string;
+  fetch_method: string;
+  content_hash: string;
+  fetched_at: string;
+  http_status: number | null;
+  origin_authenticated: boolean;
+  relevance: number | null;
+}
+
+export interface LibraryPageResult {
+  rows: LibraryPageRow[];
+  next_cursor: string | null;
+  total: number;
+}
+
+interface LibraryDbRow {
+  id: number;
+  url: string;
+  normalized_url: string;
+  title: string;
+  markdown: string;
+  fetch_method: string;
+  content_hash: string;
+  fetched_at: string;
+  http_status: number | null;
+  origin_authenticated: number | null;
+  relevance: number | null;
+}
+
+interface LibraryCursor {
+  v: 1;
+  sort: LibrarySort;
+  snapshotId: number;
+  filterHash: string;
+  id: number;
+  fetchedAt?: string;
+  relevance?: number;
+}
+
+const DEFAULT_LIBRARY_LIMIT = 50;
+const MAX_LIBRARY_LIMIT = 200;
+
+function normalizedLibraryDomain(domain: string): string {
+  const value = domain.trim();
+  const parsed = new URL(value.includes('://') ? value : `https://${value}`);
+  return parsed.hostname.toLowerCase().replace(/^www\./, '');
+}
+
+function addExactDomainFilter(conditions: string[], params: unknown[], domain: string): void {
+  const host = normalizedLibraryDomain(domain);
+  const origins = [`http://${host}`, `https://${host}`];
+  conditions.push(`(
+    url_cache.normalized_url = ? OR url_cache.normalized_url LIKE ? OR url_cache.normalized_url LIKE ?
+    OR url_cache.normalized_url = ? OR url_cache.normalized_url LIKE ? OR url_cache.normalized_url LIKE ?
+  )`);
+  for (const origin of origins) {
+    params.push(origin, `${origin}/%`, `${origin}:%`);
+  }
 }
 
 /**
@@ -572,6 +652,20 @@ function buildCacheFilterClauses(options: CacheFilter): {
     params.push(options.since);
   }
 
+  if (options.domain) {
+    addExactDomainFilter(conditions, params, options.domain);
+  }
+
+  if (options.from) {
+    conditions.push('url_cache.fetched_at >= datetime(?)');
+    params.push(options.from);
+  }
+
+  if (options.to) {
+    conditions.push('url_cache.fetched_at <= datetime(?)');
+    params.push(options.to);
+  }
+
   return {
     fromClause,
     whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
@@ -604,6 +698,153 @@ export function countCacheFiltered(options: CacheFilter): number {
   const sql = `SELECT count(*) AS n FROM ${fromClause} ${whereClause}`;
   const row = db.prepare(sql).get(...params) as { n: number } | undefined;
   return row?.n ?? 0;
+}
+
+function clampLibraryLimit(limit?: number): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) return DEFAULT_LIBRARY_LIMIT;
+  return Math.max(1, Math.min(MAX_LIBRARY_LIMIT, Math.floor(limit)));
+}
+
+function libraryFilterHash(options: CacheFilter, sort: LibrarySort): string {
+  const domain = options.domain ? normalizedLibraryDomain(options.domain) : null;
+  return createHash('sha256').update(JSON.stringify({
+    query: options.query?.trim() || null,
+    domain,
+    from: options.from ?? null,
+    to: options.to ?? null,
+    sort,
+  })).digest('hex');
+}
+
+function decodeLibraryCursor(cursor: string): LibraryCursor {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (
+      typeof parsed !== 'object' || parsed === null ||
+      !('v' in parsed) || parsed.v !== 1 ||
+      !('sort' in parsed) || (parsed.sort !== 'relevance' && parsed.sort !== 'recency') ||
+      !('snapshotId' in parsed) || !Number.isSafeInteger(parsed.snapshotId) ||
+      !('id' in parsed) || !Number.isSafeInteger(parsed.id) ||
+      !('filterHash' in parsed) || typeof parsed.filterHash !== 'string'
+    ) {
+      throw new Error('shape');
+    }
+    return parsed as LibraryCursor;
+  } catch {
+    throw new Error('invalid library cursor');
+  }
+}
+
+function encodeLibraryCursor(cursor: LibraryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function libraryHost(normalizedUrl: string): string {
+  try {
+    return new URL(normalizedUrl).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Page through the local fetched-page corpus without OFFSET drift.
+ *
+ * The first page captures the current maximum row id. Later pages keep that
+ * watermark in their opaque cursor, so rows inserted while a consumer is
+ * paging cannot displace or duplicate rows from the original view.
+ */
+export function listLibraryPages(options: LibraryPageOptions = {}): LibraryPageResult {
+  const query = options.query?.trim() || undefined;
+  const sort: LibrarySort = options.sort === 'relevance' && query ? 'relevance' : 'recency';
+  const filter: CacheFilter = {
+    query,
+    domain: options.domain,
+    from: options.from,
+    to: options.to,
+  };
+  const filterHash = libraryFilterHash(filter, sort);
+  const decoded = options.cursor ? decodeLibraryCursor(options.cursor) : null;
+  if (decoded && (decoded.sort !== sort || decoded.filterHash !== filterHash)) {
+    throw new Error('library cursor does not match the requested filters');
+  }
+
+  const db = getDatabase();
+  const limit = clampLibraryLimit(options.limit);
+  const readPage = db.transaction((): LibraryPageResult => {
+    const snapshotId = decoded?.snapshotId ?? (
+      db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM url_cache').get() as { id: number }
+    ).id;
+    const { fromClause, whereClause, params } = buildCacheFilterClauses(filter);
+    const conditions = whereClause ? [whereClause.slice('WHERE '.length)] : [];
+    const pageParams = [...params];
+    conditions.push('url_cache.id <= ?');
+    pageParams.push(snapshotId);
+
+    if (decoded) {
+      if (sort === 'relevance') {
+        if (typeof decoded.relevance !== 'number') throw new Error('invalid library cursor');
+        conditions.push('(url_cache_fts.rank > ? OR (url_cache_fts.rank = ? AND url_cache.id > ?))');
+        pageParams.push(decoded.relevance, decoded.relevance, decoded.id);
+      } else {
+        if (typeof decoded.fetchedAt !== 'string') throw new Error('invalid library cursor');
+        conditions.push('(url_cache.fetched_at < ? OR (url_cache.fetched_at = ? AND url_cache.id < ?))');
+        pageParams.push(decoded.fetchedAt, decoded.fetchedAt, decoded.id);
+      }
+    }
+
+    const relevance = sort === 'relevance' ? 'url_cache_fts.rank' : 'NULL';
+    const order = sort === 'relevance'
+      ? 'url_cache_fts.rank ASC, url_cache.id ASC'
+      : 'url_cache.fetched_at DESC, url_cache.id DESC';
+    const select = `
+      SELECT url_cache.id, url_cache.url, url_cache.normalized_url, url_cache.title,
+        url_cache.markdown, url_cache.fetch_method, url_cache.content_hash,
+        url_cache.fetched_at, url_cache.http_status, url_cache.origin_authenticated,
+        ${relevance} AS relevance
+      FROM ${fromClause}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY ${order}
+      LIMIT ?`;
+    const fetched = db.prepare(select).all(...pageParams, limit + 1) as LibraryDbRow[];
+    const hasMore = fetched.length > limit;
+    const visible = fetched.slice(0, limit);
+
+    const countConditions = whereClause ? [whereClause.slice('WHERE '.length)] : [];
+    countConditions.push('url_cache.id <= ?');
+    const totalRow = db.prepare(
+      `SELECT count(*) AS n FROM ${fromClause} WHERE ${countConditions.join(' AND ')}`,
+    ).get(...params, snapshotId) as { n: number };
+
+    const rows = visible.map((row): LibraryPageRow => ({
+      id: row.id,
+      url: row.url,
+      normalized_url: row.normalized_url,
+      host: libraryHost(row.normalized_url),
+      title: row.title,
+      markdown: row.markdown,
+      fetch_method: row.fetch_method,
+      content_hash: row.content_hash,
+      fetched_at: row.fetched_at,
+      http_status: row.http_status,
+      origin_authenticated: row.origin_authenticated === 1,
+      relevance: row.relevance,
+    }));
+    const last = hasMore ? visible.at(-1) : undefined;
+    const next_cursor = last ? encodeLibraryCursor({
+      v: 1,
+      sort,
+      snapshotId,
+      filterHash,
+      id: last.id,
+      ...(sort === 'relevance'
+        ? { relevance: last.relevance ?? 0 }
+        : { fetchedAt: last.fetched_at }),
+    }) : null;
+    return { rows, next_cursor, total: totalRow.n };
+  });
+
+  return readPage();
 }
 
 /**
