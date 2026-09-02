@@ -97,12 +97,12 @@ export function schemaHead(db: Database.Database): number {
  * heard of is still a real column of the table it is looking at, so an app one migration ahead can write
  * it, which is the entire point of a table-scoped wire.
  */
-function columnsOf(db: Database.Database, table: BrokerTable): ReadonlySet<string> {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+function columnsOf(db: Database.Database, table: BrokerTable): ReadonlyMap<string, string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string }>;
   if (rows.length === 0) {
     throw new BrokerOpError(`table ${table} does not exist in this database`);
   }
-  return new Set(rows.map((r) => r.name));
+  return new Map(rows.map((r) => [r.name, (r.type ?? '').toUpperCase()]));
 }
 
 function assertColumns(db: Database.Database, table: BrokerTable, row: BrokerRow | undefined): void {
@@ -148,15 +148,18 @@ function equalityClause(where: BrokerRow | undefined, params: Array<string | num
  * The cursor column for a table, or undefined when it has none.
  *
  * `since`/`before` are the wire's only ordering, and the column they range over is a property of the
- * STORAGE, so it is read off the table rather than declared: `seq` where the table has one, else the
- * integer `id`. A table with neither takes no cursor, and naming one against it is a protocol error
- * rather than a silently ignored bound — a caller paging through a table that cannot page would
- * otherwise re-read page one forever.
+ * STORAGE, so it is read off the table rather than declared: `seq` where the table has one, else an
+ * INTEGER `id`. The type check is the load-bearing half — three of the shared tables key on an opaque
+ * TEXT id, where `>` is a string comparison and a caller paging by it would walk an order nothing wrote
+ * in. A table with no integer ordering takes no cursor at all, and naming one against it is a protocol
+ * error rather than a silently ignored bound, because a silently ignored bound re-reads page one forever.
  */
 function cursorColumn(db: Database.Database, table: BrokerTable): string | undefined {
   const known = columnsOf(db, table);
-  if (known.has('seq')) return 'seq';
-  if (known.has('id')) return 'id';
+  for (const candidate of ['seq', 'id']) {
+    const type = known.get(candidate);
+    if (type !== undefined && type.includes('INT')) return candidate;
+  }
   return undefined;
 }
 

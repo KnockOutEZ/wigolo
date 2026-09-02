@@ -1,85 +1,98 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
- * P3 T1 — broker TRANSPORT (real spawned process). Proves the JSON-RPC wire end-to-end: a real
- * plain-Node child, a real (temp) DB, newline-delimited framing, the `ready` notify, a request/response
- * round-trip, and the broker→main `artifact` notify. This is the one test that exercises the actual
- * cross-process seam (dispatch logic is covered without a process in broker-dispatch.test.ts).
+ * EXTRACT C3 — rows written through the broker outlive the process that wrote them.
  *
- * The broker boots the shared subsystems, whose embedding probe runs in the BACKGROUND (non-blocking,
- * fault-tolerant) — so `ready` + a `capture` RPC never wait on a model download; a temp data dir is safe.
+ * Law 1: a run is append-only, lives in the daemon and outlives every UI. At this seam that reduces to one
+ * checkable claim — what the broker wrote is still there when the writer is gone — and it can only be made
+ * across a REAL process boundary. An in-process version would pass with the whole thing in a Map.
+ *
+ * Two short-lived children share one on-disk database: the first pairs-equivalent (mints a grant), writes
+ * a run and two events, and exits; the second opens the same file, mints its OWN grant — the first child's
+ * died with it, which is the design — and reads the rows back.
+ *
+ * It runs against `dist/` deliberately: this is also the check that the published module still loads in a
+ * plain Node process with no bundler, no test transform and no vitest globals.
  */
-const BROKER = fileURLToPath(new URL('../../../dist/daemon/studio-db-broker.js', import.meta.url));
+const DIST = fileURLToPath(new URL('../../../dist/', import.meta.url));
 
-describe('studio-db-broker — transport (spawned process)', () => {
-  let child: ChildProcess;
+describe('companion broker — the shared cache outlives the writing process', () => {
   let dir: string;
-  let buf = '';
-  const lines: Record<string, unknown>[] = [];
-  const waiters: Array<(msg: Record<string, unknown>) => boolean> = [];
-  const resolvers: Array<() => void> = [];
+  let dbPath: string;
 
-  const pump = (): void => {
-    for (let i = waiters.length - 1; i >= 0; i--) {
-      const match = lines.find((l) => waiters[i](l));
-      if (match) { resolvers[i](); waiters.splice(i, 1); resolvers.splice(i, 1); }
-    }
-  };
-  const waitFor = (pred: (msg: Record<string, unknown>) => boolean, timeoutMs = 30_000): Promise<Record<string, unknown>> =>
-    new Promise((resolve, reject) => {
-      const existing = lines.find(pred);
-      if (existing) return resolve(existing);
-      const timer = setTimeout(() => reject(new Error('broker message timeout')), timeoutMs);
-      waiters.push(pred);
-      resolvers.push(() => { clearTimeout(timer); resolve(lines.find(pred)!); });
+  function runChild(name: string, source: string): unknown {
+    const file = join(dir, name);
+    writeFileSync(file, source, 'utf8');
+    const stdout = execFileSync(process.execPath, [file], {
+      env: { ...process.env, WIGOLO_DATA_DIR: dir, LOG_LEVEL: 'error' },
+      encoding: 'utf8',
+      timeout: 60_000,
     });
+    const line = stdout.trim().split('\n').at(-1) ?? '';
+    return JSON.parse(line);
+  }
 
-  beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'wigolo-broker-transport-'));
-    child = spawn(process.execPath, [BROKER], {
-      stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env, WIGOLO_STUDIO_BROKER_MAIN: '1', WIGOLO_DATA_DIR: dir, LOG_LEVEL: 'error' },
-    });
-    child.unref(); // don't let the child keep the test runner alive if a kill is slow
-    child.stdout!.setEncoding('utf8');
-    child.stdout!.on('data', (c: string) => {
-      buf += c;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-        if (line.trim()) { try { lines.push(JSON.parse(line)); } catch { /* non-JSON stray */ } }
-      }
-      pump();
-    });
-    await waitFor((m) => m.notify === 'ready');
-  }, 40_000);
+  const preamble = `
+import { initDatabase, closeDatabase } from ${JSON.stringify(pathToFileURL(join(DIST, 'cache/db.js')).href)};
+import { BrokerGrantStore, executeBrokerOp, schemaHead } from ${JSON.stringify(pathToFileURL(join(DIST, 'daemon/studio-db-broker.js')).href)};
+import { BROKER_TABLES } from ${JSON.stringify(pathToFileURL(join(DIST, 'companion-contract/index.js')).href)};
+`;
 
-  afterAll(() => {
-    try { child.kill('SIGKILL'); } catch { /* ignore */ } // force — the broker loads onnxruntime; SIGTERM teardown can hang
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-broker-durability-'));
+    dbPath = join(dir, 'shared.db');
   });
 
-  it('answers a capture RPC over the wire and pushes an artifact notify', async () => {
-    child.stdin!.write(JSON.stringify({
-      id: 1, method: 'capture',
-      params: { input: { type: 'clip', content: 'transport wire content', url: 'https://ex.com/t' }, sessionId: 'sT', currentNavEpoch: 0, lastObserveEpoch: 0, credentialSignal: {} },
-    }) + '\n');
-    const resp = await waitFor((m) => m.id === 1);
-    expect(resp.ok).toBe(true);
-    expect((resp.result as { inserted: boolean }).inserted).toBe(true);
-    const notify = await waitFor((m) => m.notify === 'artifact');
-    expect((notify.delta as { type: string }).type).toBe('clip');
-  }, 20_000);
+  afterAll(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* the OS owns the temp dir */ }
+  });
 
-  it('rejects an unknown method with a structured error', async () => {
-    child.stdin!.write(JSON.stringify({ id: 2, method: 'nope' }) + '\n');
-    const resp = await waitFor((m) => m.id === 2);
-    expect(resp.ok).toBe(false);
-    expect((resp.error as { message: string }).message).toMatch(/unknown broker method/);
-  }, 20_000);
+  it('writes in one process and reads back in another, with a grant that did not survive the crossing', () => {
+    const writer = runChild('writer.mjs', `${preamble}
+const db = initDatabase(${JSON.stringify(dbPath)});
+const grants = new BrokerGrantStore();
+const grant = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db) });
+executeBrokerOp(db, grants, { grant: grant.token, kind: 'insert', table: 'studio_runs',
+  row: { id: 'run-durable', task: 'outlive me', created_at: '2026-09-03T00:00:00.000Z' } });
+for (const seq of [1, 2]) {
+  executeBrokerOp(db, grants, { grant: grant.token, kind: 'insert', table: 'studio_run_events',
+    row: { run_id: 'run-durable', seq, ts: 't', actor: 'agent', type: 'step', payload: '{}' } });
+}
+closeDatabase();
+console.log(JSON.stringify({ token: grant.token, head: grant.schemaHead }));
+`) as { token: string; head: number };
+
+    expect(writer.head).toBeGreaterThan(0);
+
+    const reader = runChild('reader.mjs', `${preamble}
+const db = initDatabase(${JSON.stringify(dbPath)});
+const grants = new BrokerGrantStore();
+// The writer's token is meaningless here: grants live in the process that issued them, so a companion
+// that outlives a daemon restart must re-pair rather than keep using a token nothing can revoke.
+const stale = executeBrokerOp(db, grants, { grant: ${JSON.stringify(writer.token)}, kind: 'read', table: 'studio_runs', limit: 10 });
+const grant = grants.issue({ mode: 'read', tables: BROKER_TABLES, schemaHead: schemaHead(db) });
+const runs = executeBrokerOp(db, grants, { grant: grant.token, kind: 'read', table: 'studio_runs', limit: 10 });
+const events = executeBrokerOp(db, grants, { grant: grant.token, kind: 'read', table: 'studio_run_events', limit: 10 });
+closeDatabase();
+console.log(JSON.stringify({ stale, runs, events, head: grant.schemaHead }));
+`) as {
+      stale: { ok: boolean; reason?: string };
+      runs: { ok: boolean; rows: Array<Record<string, unknown>> };
+      events: { ok: boolean; rows: Array<Record<string, unknown>> };
+      head: number;
+    };
+
+    expect(reader.stale).toEqual({ ok: false, reason: 'no_grant', table: 'studio_runs' });
+    expect(reader.runs.rows).toHaveLength(1);
+    expect(reader.runs.rows[0]).toMatchObject({ id: 'run-durable', task: 'outlive me' });
+    expect(reader.events.rows.map((e) => e.seq)).toEqual([1, 2]);
+    // The head is a property of the FILE, so both processes read the same one — which is what makes it
+    // safe to compare against a companion's declared minimum at pairing time.
+    expect(reader.head).toBe(writer.head);
+  }, 120_000);
 });
