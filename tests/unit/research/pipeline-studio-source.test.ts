@@ -4,14 +4,15 @@ import type { SmartRouter } from '../../../src/fetch/router.js';
 import type { MergedSearchResult } from '../../../src/search/dedup.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { captureFromPage } from '../../../src/studio/capture/artifacts.js';
+import { createHash } from 'node:crypto';
+import { seedArtifact } from '../../helpers/companion-tables.js';
 import { enclosingRegion } from '../../helpers/untrusted-fence.js';
 
 /**
  * C3 slice-1 — studio_artifacts (clip + qa) as LOCAL research sources.
  *
- * Real db + real cache/store (so captureFromPage seeds + the shared studio read run for
- * real) — the cache-studio-union pattern. Only the WEB side is mocked: a stub engine +
+ * Real db + real cache/store (rows seeded directly — the capture writer left with the domain
+ * layer — and the shared companion read runs for real) — the cache-studio-union pattern. Only the WEB side is mocked: a stub engine +
  * router + the extractor. embedding is off (no ONNX); the local LLM is off so the keyless
  * brief path runs deterministically (and the env's real Google key can't 429-flake us).
  *
@@ -97,11 +98,16 @@ function stubRouter(): SmartRouter {
   } as unknown as SmartRouter;
 }
 
-function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+/** The capture pipeline's own composition: clip hashes its markdown, qa its question + answer. */
+function contentHash(parts: string[]): string {
+  return createHash('sha256').update(parts.join('\u0000')).digest('hex');
+}
+
+function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD, title = 'Capture Pipeline Notes'): number {
+  return seedArtifact(getDatabase(), { sessionId, type: 'clip', url, title, markdown, contentHash: contentHash([markdown]) });
 }
 function seedQa(sessionId = 's1', question = QA_Q, answer = QA_A): number {
-  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedArtifact(getDatabase(), { sessionId, type: 'qa', title: question, markdown: answer, contentHash: contentHash([question, answer]) });
 }
 
 describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
@@ -221,10 +227,7 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
   // ── PIN-G — forged markdown in a studio source is defused in the brief render (rides sanitizeSourceText) ──
   it('PIN-G: a studio source with a forged "## heading" and "[9]" is DEFUSED in the brief-render output', async () => {
     const forgedTitle = '## Forged Heading [9]';
-    const clipId = captureFromPage(
-      { type: 'clip', sessionId: 's1', url: 'https://example.com/forge', title: forgedTitle, markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    ).id;
+    const clipId = seedClip('s1', 'https://example.com/forge', CLIP_MD, forgedTitle);
     const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
     expect(out.sources.find((s) => s.url === `studio://clip|${clipId}`), 'forged clip is a source').toBeDefined();
     // keyless brief render is the default path here; its Sources list runs every title through

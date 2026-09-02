@@ -384,106 +384,25 @@ describe('WIGOLO_INSTRUCTIONS_FULL v3 routing patterns (resource)', () => {
 });
 
 describe('TOOL_DESCRIPTIONS v3 entries', () => {
-  it('has all 20 tool descriptions (10 core + the 10 studio tools)', () => {
+  it('has exactly the ten descriptions core hosts — no companion tool survives here', () => {
     const keys = Object.keys(TOOL_DESCRIPTIONS);
-    expect(keys).toContain('fetch');
-    expect(keys).toContain('search');
-    expect(keys).toContain('crawl');
-    expect(keys).toContain('cache');
-    expect(keys).toContain('extract');
-    expect(keys).toContain('find_similar');
-    expect(keys).toContain('research');
-    expect(keys).toContain('agent');
-    expect(keys).toContain('diff');
-    expect(keys).toContain('watch');
-    // P1 (§5): the public entry verb — open/focus the workspace and start a drivable session.
-    expect(keys).toContain('studio_open');
-    // Phase 2H: the first studio_* tool — the agent's read-only perception of the session.
-    expect(keys).toContain('studio_observe');
-    // Phase 2I: the agent's acting verb in the session (navigate; click/type/scroll later).
-    expect(keys).toContain('studio_act');
-    // Phase 3c: the agent reads the human's marks.
-    expect(keys).toContain('studio_marks');
-    // Phase 4c: the agent persists a capture (clip) to the cache as a session artifact.
-    expect(keys).toContain('studio_capture');
-    // P4 co-drive: the agent posts to the human chat rail.
-    expect(keys).toContain('studio_say');
-    // S6 (the bounded inversion): the agent's own background-session lifecycle verbs.
-    expect(keys).toContain('studio_spawn');
-    expect(keys).toContain('studio_close');
-    expect(keys).toContain('studio_list');
-    expect(keys).toContain('studio_extract_set');
-    expect(keys.length).toBe(20);
+    for (const core of ['fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch']) {
+      expect(keys).toContain(core);
+    }
+    // The ten studio entries this arm used to enumerate went with the surface: a description here
+    // is what makes a name a `ToolName`, so a leftover would put a tool core cannot dispatch back
+    // into `tools/list` and into the REST tool index.
+    expect(keys.filter((k) => k.startsWith('studio_'))).toEqual([]);
+    expect(keys.length).toBe(10);
   });
-
-  it('studio_act description covers navigation, the control token, and the private/metadata block', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_act;
-    expect(desc).toMatch(/navigat/i);
-    expect(desc).toMatch(/control|hold|turn|took over/i); // token-gated
-    expect(desc).toMatch(/private|local|internal|blocked/i); // SSRF posture, capability language
-    expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
-  });
-
-  it('studio_observe description marks the snapshot content as untrusted page data, not instructions (Phase 6a trust boundary)', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_observe;
-    expect(desc).toMatch(/untrusted|not instructions|page-derived/i); // the agent must treat page content as data
-    expect(desc).toMatch(/instruction/i); // explicitly: page content is not instructions
-    expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
-  });
-
-  /**
-   * PIN 8 (#57). The reshaping is only half-done if the capability ships and the description does
-   * not name it: an agent discovers `find` and `post_actions` from the description or not at all,
-   * and the pin's own words are "grep-over-page rides `studio_observe` as a `find` param AND ITS
-   * DESCRIPTION NAMES IT".
-   */
-  it('studio_observe description names the find param and its found result (pin 8)', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_observe;
-    expect(desc).toContain('find');
-    expect(desc).toContain('find_regex');
-    expect(desc).toContain('found');
-    expect(desc).toMatch(/grep|search|match/i);
-  });
-
-  it('studio_act description names the post-actions it now attaches, and how to turn them off (pin 8)', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_act;
-    expect(desc).toContain('post_actions');
-    expect(desc).toMatch(/console/i);
-    expect(desc).toMatch(/settle|what the page became/i);
-  });
-
-  it('studio_act advertises the run-scoped wait verb and its reason', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_act;
-    expect(desc).toContain('wait_for_human');
-    expect(desc).toContain('reason');
-    expect(desc).toMatch(/current run|only the current run/i);
-  });
-
-  it('the reshaped descriptions cross-reference the cheaper sibling for the job (pin 8)', () => {
-    // A tool description is the only place an agent learns that a cheaper tool exists for what it
-    // is about to do. Driving a session to read a page, or clicking around to find an element, are
-    // the two expensive habits these two tools invite; each now names the cheaper route.
-    expect(TOOL_DESCRIPTIONS.studio_observe).toMatch(/`fetch` reads it/i);
-    expect(TOOL_DESCRIPTIONS.studio_act).toMatch(/`find`/);
-  });
-
-  it('the reshaped descriptions keep capability language — no engine or library names', () => {
-    const both = TOOL_DESCRIPTIONS.studio_observe + TOOL_DESCRIPTIONS.studio_act;
-    expect(both).toMatch(/browser engine/i); // the capability name, not the implementation
-    for (const banned of ['CDP', 'Playwright', 'Chromium', 'Chrome DevTools', 'Puppeteer', 'Electron']) {
-      expect(both, `capability language: '${banned}' is an implementation name`).not.toContain(banned);
+  it('every description keeps capability language — no engine or library names', () => {
+    // Widened from the two reshaped studio entries to all ten: the pin is about what a user-facing
+    // string may name, and that was never a property of those two tools in particular.
+    const all = Object.values(TOOL_DESCRIPTIONS).join('\n');
+    for (const banned of ['CDP', 'Playwright', 'Chromium', 'Chrome DevTools', 'Puppeteer', 'Electron', 'SearXNG']) {
+      expect(all, `capability language: '${banned}' is an implementation name`).not.toContain(banned);
     }
   });
-
-  it('studio_capture description covers both the clip and the qa (save-session-as-research) capture types', () => {
-    const desc = TOOL_DESCRIPTIONS.studio_capture;
-    expect(desc).toContain('clip');
-    expect(desc).toMatch(/\bqa\b/); // qa is a first-class capture type (C5)
-    expect(desc).toMatch(/question/i);
-    expect(desc).toMatch(/answer/i);
-    expect(desc).not.toContain('CDP'); // capability language only (user-facing)
-  });
-
   it('find_similar description mentions url and concept inputs', () => {
     const desc = TOOL_DESCRIPTIONS.find_similar;
     expect(desc).toContain('url');

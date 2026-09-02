@@ -76,15 +76,7 @@ import {
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { ToolRegistry } from './server/tool-registry.js';
-// The studio_* seam: routes execute-on-host / proxy / refuse. Reaches the session ONLY
-// through the proxy + the (host-injected) studioHost closure — no session-module import,
-// so the stdio path stays untouched (grep invariant).
-import { proxyToStudioHost, withStudioDispatchSignal, type StudioHostHandlers } from './daemon/studio-dispatch.js';
 import { attachCapabilityHandshake, withClientProfile } from './daemon/capability-handshake.js';
-// Core hosts the studio surface but does not enumerate it: this is the ONE reference, an injection
-// point rather than a list. When Studio moves to its own repo, this line moves with it.
-import { createStudioToolProvider } from './studio/tool-provider.js';
-import type { StudioSessionsAccessor } from './studio/session-drive.js';
 import { isSessionTargeted, runSessionFetch, runSessionExtract, runSessionCrawl } from './tools/session-target.js';
 import { projectToolArgs, recordToolCall, type ToolAuditDb } from './server/tool-audit.js';
 import { registerExtractor } from './extraction/pipeline.js';
@@ -107,7 +99,7 @@ function readPackageVersion(): string {
 const SERVER_VERSION = readPackageVersion();
 
 /** D10: best-effort pull of the typed `error_reason` from a failed tool result's JSON envelope. The
- * value is a typed reason string (e.g. 'invalid_url', 'no_studio_session'), not user content — safe to
+ * value is a typed reason string (e.g. 'invalid_url', 'no_companion_session'), not user content — safe to
  * audit. Returns undefined when the envelope is absent/unparseable or carries no reason. */
 function extractErrorReason(result: { content: { type: 'text'; text: string }[] }): string | undefined {
   const text = result.content[0]?.text;
@@ -166,11 +158,7 @@ export interface Subsystems {
   toolRegistry?: ToolRegistry;
   shutdown: () => Promise<void>;
   bootstrapSearxng: () => Promise<void>;
-  /** Set ONLY in the live Studio host process (injected by cli/studio.ts via DaemonHttpServer.setStudioHost). Undefined on stdio → studio_* calls proxy to the host. */
-  studioHost?: StudioHostHandlers;
-  /** D19: Set ONLY in the live Studio host process (injected via DaemonHttpServer.setStudioSessions). Undefined on stdio → a session-targeted fetch/extract/crawl proxies to the host (never a silent ephemeral fallback). */
-  studioSessions?: StudioSessionsAccessor;
-  /** D10: the (injected) handle the non-studio tool-invocation audit writes through. Wired from
+  /** D10: the (injected) handle the tool-invocation audit writes through. Wired from
    * getDatabase() in initSubsystems; left undefined by test harnesses that don't exercise the audit
    * (recordToolCall no-ops on undefined). The leaf never reaches for the global DB itself. */
   toolAuditDb?: ToolAuditDb;
@@ -185,7 +173,7 @@ export async function initSubsystems(): Promise<Subsystems> {
   // is armed — that is how the client tells a long-lived process from a one-shot. This is
   // the right place to arm it because it is the bootstrap every long-lived surface shares
   // and no short-lived one uses: the stdio MCP server, the daemon (which calls this through
-  // `../server.js`) and the studio DB broker all reach it, while the CLI's one-shots and
+  // `../server.js`) and the companion broker all reach it, while the CLI's one-shots and
   // the REPL never call it. The timer is unref'd, so arming it can never be the reason a
   // process stays alive, and it is a no-op when telemetry is off.
   startTelemetry();
@@ -377,32 +365,25 @@ export async function initSubsystems(): Promise<Subsystems> {
     // D10: the live cache DB is the audit sink. initDatabase ran above, so getDatabase() resolves.
     toolAuditDb: getDatabase(),
   };
-  // Built AFTER the object exists: the provider reads `studioHost` off it on every dispatch, and
-  // that field is populated by a LATE setter (DaemonHttpServer.setStudioHost).
-  subsystems.toolRegistry = defaultToolRegistry(subsystems);
+  subsystems.toolRegistry = defaultToolRegistry();
   return subsystems;
 }
 
 /**
- * The tool surfaces core hosts by default. One provider today. Core's own ten tools are NOT in here
- * — it owns those, and owning a list you wrote is fine; hosting someone else's is what needed a seam.
+ * The tool surfaces core hosts by default. Empty since the extraction: the one provider that lived
+ * here was the studio surface, and the companion advertises that on its own MCP server now. The
+ * seam stays — core's own tools are dispatched inline below, and hosting someone else's surface is
+ * what this was built for, so the next one registers here rather than re-growing a name chain.
  */
-function defaultToolRegistry(subsystems: Subsystems): ToolRegistry {
-  const registry = new ToolRegistry();
-  registry.register(
-    createStudioToolProvider({
-      getHost: () => subsystems.studioHost,
-      getDataDir: () => getConfig().dataDir,
-    }),
-  );
-  return registry;
+function defaultToolRegistry(): ToolRegistry {
+  return new ToolRegistry();
 }
 
 export function createMcpServer(subsystems: Subsystems): Server {
   const { searchEngines, router, backendStatus } = subsystems;
   // A stubbed Subsystems may carry no registry; fall back so the hosted surface is never silently
   // dropped, and so a harness that DOES inject one gets exactly what it injected.
-  const toolRegistry = subsystems.toolRegistry ?? defaultToolRegistry(subsystems);
+  const toolRegistry = subsystems.toolRegistry ?? defaultToolRegistry();
 
   const server = new Server(
     { name: 'wigolo', version: SERVER_VERSION },
@@ -497,8 +478,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.watch,
         inputSchema: WATCH_TOOL_SCHEMA,
       },
-      // Then every hosted surface, in registration order. Core no longer hand-lists the studio
-      // tools; the provider derives them, so tools/list cannot disagree with dispatch.
+      // Then every hosted surface, in registration order. A provider derives its own entries, so
+      // tools/list cannot disagree with dispatch.
       ...toolRegistry.listTools(),
     ],
   }));
@@ -511,8 +492,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
     // scheduler below re-fetches overdue URLs and posts webhooks, so a gate placed
     // under it would refuse the call and still egress on behalf of an install that
     // has no account. One check covers stdio, the daemon's per-session HTTP MCP
-    // (both build their servers from this factory) and the hosted `studio_*`
-    // pass-through, because every one of them arrives here.
+    // (both build their servers from this factory) and any hosted surface, because
+    // every one of them arrives here.
     //
     // `initialize` and `tools/list` are untouched — the protocol still works, and
     // the refusal is a designed tool error rather than a dead connection.
@@ -557,7 +538,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
         : undefined;
 
     // D10: the whole tool dispatch runs inside one inner function so a SINGLE post-dispatch wrap can
-    // audit every (non-studio_*) call — compute the result first, record it after as a fail-safe.
+    // audit every call — compute the result first, record it after as a fail-safe.
     const dispatch = async (): Promise<{ content: { type: 'text'; text: string }[]; isError: boolean }> => {
     if (name === 'fetch') {
       const input = (args ?? {}) as unknown as FetchInput;
@@ -735,13 +716,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    // Any hosted surface. The provider owns the name set, so core needs no list of its own; the
-    // studio provider routes through the shared seam (execute-on-host when studioHost is set,
-    // otherwise proxy/refuse on stdio) and studio_act's control-token gate stays host-authoritative.
+    // Any hosted surface. The provider owns the name set, so core needs no list of its own.
     const provider = toolRegistry.find(name);
     if (provider) {
-      const result = await withStudioDispatchSignal(extra.signal, () =>
-        provider.dispatch(name, (args ?? {}) as Record<string, unknown>));
+      const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);
       return { content: result.content, isError: result.isError };
     }
 
@@ -753,20 +731,19 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     // D10: compute the tool result FIRST, then record it as a best-effort fail-safe side effect.
     // recordToolCall swallows DB errors, so an audit write can never corrupt or fail the result.
-    // studio_* calls are EXCLUDED — they carry the richer per-session studio_audit.
+    // The studio_* exception this used to carry went with the surface: those calls carried their own
+    // per-session audit, and they no longer arrive here at all.
     const auditStartedAt = Date.now();
     const result = await withClientProfile(clientProfile(), dispatch);
     const errorReason = result.isError ? extractErrorReason(result) : undefined;
-    if (!name.startsWith('studio_')) {
-      recordToolCall(subsystems.toolAuditDb, {
-        tool: name,
-        argsMeta: projectToolArgs(name, (args ?? {}) as Record<string, unknown>),
-        outcomeOk: !result.isError,
-        errorReason,
-        ts: Date.now(),
-        durationMs: Date.now() - auditStartedAt,
-      });
-    }
+    recordToolCall(subsystems.toolAuditDb, {
+      tool: name,
+      argsMeta: projectToolArgs(name, (args ?? {}) as Record<string, unknown>),
+      outcomeOk: !result.isError,
+      errorReason,
+      ts: Date.now(),
+      durationMs: Date.now() - auditStartedAt,
+    });
     // Telemetry rides the same seam as the audit, and deliberately BELOW the gate: a
     // refused call returned above and never reaches here, so an unactivated install
     // produces no account, no queue write and no event — the absence is structural,

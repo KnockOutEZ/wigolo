@@ -248,8 +248,7 @@ Subcommands:
   backfill [--json]       Backfill embeddings for cached pages without them
   export [--out DIR] [--url-pattern GLOB] [--since DATE] [--dry-run] [--json]
                           Write the cached corpus out as dated Markdown + a manifest
-  flow <list|show> [FLOW_ID] [--json]
-                          Inspect flows recorded during a supervised browser session
+  studio setup            Install the browser companion and pair it with this machine
 
 Your wigolo account (\`wigolo auth\` is a different thing — site sign-ins for
 the browser engine):

@@ -15,13 +15,13 @@ describe('WIGOLO_INSTRUCTIONS (per-session)', () => {
     expect(WIGOLO_INSTRUCTIONS).toContain('include_domains');
   });
 
-  it('stays lean (~3.4 KB) so it is cheap to inject every session', () => {
-    // Per-session injection budget — keep additions terse. Raised from 3072 → 3300
-    // (11th tool, studio_observe, Phase 2H) → 3400 (12th tool, studio_act, Phase 2I) →
-    // 3500 (13th tool, studio_marks, Phase 3c) → 3600 (14th tool, studio_capture, Phase 4c:
-    // its list entry only — no routing bullet, per the frugal cadence) → 3900 (S6: the 3 lifecycle
-    // verbs studio_spawn/close/list, tool-list entry only, no routing bullets — same frugal cadence).
-    expect(WIGOLO_INSTRUCTIONS.length).toBeLessThan(3900);
+  it('stays lean so it is cheap to inject every session', () => {
+    // Per-session injection budget — keep additions terse. It climbed 3072 → 3900 one tool at a
+    // time while core hosted the studio surface; the extraction handed all ten of those names back,
+    // so the cap comes DOWN with them (3900 → 3250, ~75 bytes of headroom over the measured body)
+    // rather than leaving 700 bytes nobody paid for. A tool added here is a deliberate raise, which
+    // is the whole point of the number.
+    expect(WIGOLO_INSTRUCTIONS.length).toBeLessThan(3250);
   });
 
   it('points readers to the wigolo://docs/usage resource for the long guide', () => {
@@ -40,13 +40,14 @@ describe('WIGOLO_INSTRUCTIONS (per-session)', () => {
     }
   });
 
-  it('routes the pin-8 studio capabilities in the per-session body, inside the char budget', () => {
-    // The per-session body is the ONLY layer an agent reads before it picks a tool, so a capability
-    // that exists solely in the per-tool description is invisible at routing time. Both new ones are
-    // one clause each precisely because this block is capped.
-    expect(WIGOLO_INSTRUCTIONS).toContain('`find` greps the live page');
-    expect(WIGOLO_INSTRUCTIONS).toContain('results report what the page became');
-    expect(WIGOLO_INSTRUCTIONS.length).toBeLessThan(3900);
+  it('routes only the tools core still hosts — no companion capability is advertised here', () => {
+    // The per-session body is the ONLY layer an agent reads before it picks a tool, so a name left
+    // behind here would route an agent at a tool core cannot dispatch: it would call it, get
+    // `Unknown tool`, and have no way to learn where the capability went.
+    expect(WIGOLO_INSTRUCTIONS).not.toContain('studio_');
+    for (const tool of ['search', 'fetch', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch']) {
+      expect(WIGOLO_INSTRUCTIONS, `'${tool}' missing from the per-session routing body`).toContain(tool);
+    }
   });
 });
 
@@ -72,7 +73,7 @@ describe('WIGOLO_DOCS_URI', () => {
 describe('TOOL_DESCRIPTIONS', () => {
   it('has one description per public tool', () => {
     expect(Object.keys(TOOL_DESCRIPTIONS).sort()).toEqual(
-      ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture', 'studio_extract_set', 'studio_say', 'studio_spawn', 'studio_close', 'studio_list', 'watch'].sort(),
+      ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'watch'].sort(),
     );
   });
 });

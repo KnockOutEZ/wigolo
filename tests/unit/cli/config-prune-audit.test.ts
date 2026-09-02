@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { SessionAuditLog } from '../../../src/studio/audit.js';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { insertFlowStep, flowIdForSession } from '../../../src/studio/flow/store.js';
+import { flowIdForSession, seedAuditRow, seedFlowStep } from '../../helpers/companion-tables.js';
 
 /**
  * D9 — the operator-CLI entry for the audit prune: `wigolo config --prune-audit --older-than <dur> --yes`.
@@ -33,8 +32,8 @@ function sessionCount(): number {
 beforeEach(() => {
   testDb = migratedDb();
   // One ancient row (ts=1000 — far older than any cutoff) + one fresh row (ts≈now).
-  new SessionAuditLog({ db: testDb, sessionId: 'sess-1', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
-  new SessionAuditLog({ db: testDb, sessionId: 'sess-1', now: () => Date.now() }).record({ action: 'click', epoch: 1, outcome: { ok: true } });
+  seedAuditRow(testDb, { sessionId: 'sess-1', seq: 1, action: 'navigate', epoch: 0, ts: 1000 });
+  seedAuditRow(testDb, { sessionId: 'sess-1', seq: 2, action: 'click', epoch: 1, ts: Date.now() });
 });
 
 describe('wigolo config --prune-audit (operator-CLI entry)', () => {
@@ -51,7 +50,7 @@ describe('wigolo config --prune-audit (operator-CLI entry)', () => {
     // The prune deletes recorded flow steps alongside the audit rows. An operator who is told only
     // the audit count cannot tell how much of the recording surface the command just removed —
     // and the flow steps are the half that carries page URLs and element seeds.
-    insertFlowStep(testDb, {
+    seedFlowStep(testDb, {
       flowId: flowIdForSession('sess-1'),
       sessionId: 'sess-1',
       seq: 1,

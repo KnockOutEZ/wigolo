@@ -16,10 +16,10 @@ import ts from 'typescript';
  * broken `dist/` path. The child process also keeps the probe on Node's own ESM
  * resolver rather than the test runner's.
  *
- * The runtime key sets are PINNED to what `src/studio/**` and the app measurably import
- * (measured 2026-09-02). They are a ceiling, not a floor: a barrel that grows a symbol
- * nobody measured widens the public surface of a repo whose whole point here is to
- * shrink it, and that reds here.
+ * The runtime key sets are PINNED to what the extracted domain layer and the app measurably
+ * import (measured 2026-09-02, against `src/studio/**` while it was still here). They are a
+ * ceiling, not a floor: a barrel that grows a symbol nobody measured widens the public surface of
+ * a repo whose whole point here is to shrink it, and that reds here.
  *
  * A type-only export is INVISIBLE to the runtime probe — `Object.keys` of the imported
  * module never sees it, so dropping one from a barrel is silent there. The barrels A6
@@ -103,9 +103,9 @@ const SUBPATHS: Subpath[] = [
     runtime: ['createLogger', 'getLogSuppression', 'setLogSuppression'],
   },
   {
-    // The app boots the embedded gateway and drives it with the bearer client; both point
-    // at daemon modules that STAY in core. Today it reaches them through the `wigolo/studio`
-    // barrel, which Phase C deletes.
+    // The app boots the embedded gateway and drives it with the bearer client; both point at
+    // daemon modules that STAY in core. This subpath is how it reaches them now that the
+    // `wigolo/studio` barrel it used to go through is gone.
     spec: 'wigolo/daemon',
     target: './dist/daemon/index.js',
     runtime: ['DaemonHttpServer', 'DaemonProxy'],
@@ -116,10 +116,10 @@ const SUBPATHS: Subpath[] = [
     // B1 then copied the domain layer into `packages/studio-core`, rewrote its imports
     // onto these subpaths, and the compiler enumerated ten more that the layer measurably
     // imports. A6 widened the barrel to exactly that enumeration plus the handle +
-    // `resolveHostToken` set D1's switch table sends here when C4 deletes `wigolo/studio`.
+    // `resolveHostToken` set D1's switch table sends here now that `wigolo/studio` is deleted.
     // A7 adds the two origin-budget defaults: the gate's own spec asserts against them, and
-    // the only other door to them is `wigolo/studio`, which loads a second `OriginBudget`
-    // beside the one under test and boots the engine at import time.
+    // the only other door to them was `wigolo/studio`, which loaded a second `OriginBudget`
+    // beside the one under test and booted the engine at import time.
     // Still a ceiling: each name below has a named import site outside core. Daemon-route
     // auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately out —
     // core imports it directly and nothing outside core reaches for it.

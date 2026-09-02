@@ -11,12 +11,21 @@
  * client therefore behaves identically to a mapped one — the default only ever under-promises
  * (A-51-9). SD8's adopted/wrapped tiers are where a harness earns capabilities, against evidence.
  *
- * Deliberately free of heavy imports: `studio-mcp-server.ts` hosts this on the Electron main, where
- * better-sqlite3 cannot load at all, so the run-log side of the handshake lives in the separate
- * `run-client-attach.ts` and nothing here reaches the store.
+ * Deliberately free of heavy imports and of any store: the run log the attach used to be recorded
+ * in belongs to the companion now, so this module is the badge and the capability set and nothing
+ * else. It runs wherever the MCP server runs, including hosts where a native store cannot load.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { Actor, ClientInfo, RunEventInput } from '../studio/run-store.js';
+
+/**
+ * The badge the MCP `initialize` handshake carries. Declared here rather than imported: the run
+ * store this used to borrow it from is the companion's now, and a two-field self-reported name is
+ * not a wire shape worth publishing on the contract for one consumer.
+ */
+export interface ClientInfo {
+  readonly name: string;
+  readonly version: string;
+}
 
 /** §2.1, verbatim. */
 export type Capability = 'push' | 'narrate' | 'reasoning' | 'interrupt' | 'resume' | 'identity';
@@ -181,26 +190,4 @@ export function withClientProfile<T>(profile: ClientProfile, fn: () => T): T {
  */
 export function currentClientProfile(): ClientProfile {
   return ambient.getStore() ?? UNKNOWN_CLIENT_PROFILE;
-}
-
-/** The run-log name for an attach. `tab.attached` is a different subject and already taken. */
-export const CLIENT_ATTACHED = 'client.attached';
-
-/**
- * The durable record of "this client, with these capabilities, attached to this run". The payload
- * is the profile whole, so a replay or an audit can answer what the client could do at the time
- * without re-deriving it from a table that will have moved by then.
- */
-export function clientAttachedEvent(profile: ClientProfile): RunEventInput {
-  const actor: Actor = { kind: 'agent', ...(profile.client ? { client: profile.client } : {}) };
-  return {
-    actor,
-    type: CLIENT_ATTACHED,
-    payload: {
-      tier: profile.tier,
-      phrasing: profile.phrasing,
-      capabilities: [...profile.capabilities],
-      ...(profile.client ? { client: profile.client } : {}),
-    },
-  };
 }

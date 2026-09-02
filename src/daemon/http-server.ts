@@ -7,15 +7,9 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 // `../server.js` and `../cache/db.js` pull the full subsystem graph incl. the native cache DB
 // (better-sqlite3). They are imported DYNAMICALLY inside start()/the health path (full-daemon mode
-// only) so that a studio-only gateway (mcpServerFactory set) — which runs in the Electron main where
-// better-sqlite3 cannot load (spec §13.7) — never triggers that load. Type-only imports are erased.
+// only) so that a companion-hosted gateway (mcpServerFactory set) — which runs in a process where the
+// native cache module cannot load — never triggers that load. Type-only imports are erased.
 import type { Subsystems } from '../server.js';
-import type { DispatchStoreOptions } from './dispatch-store.js';
-import { setBatonGate, setDeliveryHooks, setFooterSource, setReceiptDelivery } from './studio-dispatch.js';
-import { createBatonGate } from './driver-baton.js';
-import { createReceiptDelivery } from './driver-receipt.js';
-import { createDeliveryHooks } from './message-queue.js';
-import { createFooterSource } from './result-footer.js';
 import { probeHealth } from './health-check.js';
 import {
   BROKER_ROUTE,
@@ -40,47 +34,26 @@ import { checkActivation } from '../server/activation.js';
  * because the gate's predicate is "can this reach one of the ten tool handlers"
  * (A-212-1) and these cannot (A-222-3).
  *
- * Two groups, for two different reasons:
+ * DISCOVERY — `/openapi.json`, `/v1/openapi.json`, `/v1/tools` describe the
+ * surface and execute nothing. They are this transport's `initialize` and
+ * `tools/list`, which mini-spec §3 keeps open on MCP; a REST client must be
+ * able to learn what a server offers before it has an account.
  *
- *   DISCOVERY — `/openapi.json`, `/v1/openapi.json`, `/v1/tools` describe the
- *   surface and execute nothing. They are this transport's `initialize` and
- *   `tools/list`, which mini-spec §3 keeps open on MCP; a REST client must be
- *   able to learn what a server offers before it has an account.
- *
- *   RUNS — `/v1/runs*` is the run store. Verified against the tree: neither
- *   `rest/runs.ts` nor `rest/runs-store.ts` imports anything from `src/tools/`,
- *   so creating, listing or reading a run reaches no tool handler. The tools a
- *   run's driver eventually calls arrive at `/v1/{tool}` or at the MCP dispatch
- *   closure, and both are gated — so nothing escapes by being wrapped in a run.
- *   REVERSAL: if the runs surface ever executes a tool itself, it moves to the
- *   gated column, exactly as A-212-1 pins for any command that grows one.
+ * The runs surface used to be the second group, ungated for the same predicate. It left core with
+ * the companion extraction, and the group left with it rather than being kept warm for it.
  */
 const REST_UNGATED_EXACT: ReadonlySet<string> = new Set([
   '/openapi.json',
   '/v1/openapi.json',
   '/v1/tools',
-  '/v1/runs',
 ]);
 
 function restPathIsUngated(pathname: string): boolean {
-  return REST_UNGATED_EXACT.has(pathname) || pathname.startsWith('/v1/runs/');
+  return REST_UNGATED_EXACT.has(pathname);
 }
 import type { RestRouter } from './rest/router.js';
-import type { RunsStore } from './rest/runs-store.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
-
-/**
- * The two host-injection slots, typed off the SUBSYSTEM shape rather than off the modules that own them.
- *
- * The daemon only stores these and hands them back; it has no business knowing what a host handler or a
- * session drive can do. Sourcing the types here keeps the file free of any import from the domain layer
- * while the companion extraction proceeds, and — unlike moving them onto the public companion contract —
- * it puts no domain method name on a wire whose whole design (spec D8) is that it names storage, never
- * behaviour.
- */
-type HostHandlerSlot = NonNullable<Subsystems['studioHost']>;
-type SessionsAccessorSlot = NonNullable<Subsystems['studioSessions']>;
 
 /**
  * Cap on a companion request body. Broker writes carry rows, not documents, and the read side answers
@@ -130,19 +103,12 @@ export interface DaemonOptions {
    */
   onUpgrade?: UpgradeHandler;
   /**
-   * STUDIO-ONLY MODE: when set, start() SKIPS `initSubsystems()` (and never imports `../server.js` /
-   * the native cache DB) and every MCP session is served by this factory instead of `createMcpServer`.
-   * The Electron app passes a factory that hosts only the `studio_*` surface (spec §13.7). Full-daemon
-   * behavior is unchanged when this is absent.
+   * COMPANION-HOSTED MODE: when set, start() SKIPS `initSubsystems()` (and never imports
+   * `../server.js` / the native cache DB) and every MCP session is served by this factory instead of
+   * `createMcpServer`. A companion that hosts its own tool surface in a process where the native
+   * cache module cannot load passes one. Full-daemon behavior is unchanged when this is absent.
    */
   mcpServerFactory?: () => Server;
-  /**
-   * The run store this process serves `/v1/runs*` from, for an owner that cannot open a native
-   * handle. SD1 §6 rules that the studio-hosting process is the ONE live owner while the app runs,
-   * and the Electron main reaches its store only through the broker child — so without this the
-   * owner answers 503 and nobody serves. Absent on the daemon, which opens the shared cache DB.
-   */
-  runStore?: RunsStore;
   /** Configured API token (null = open mode). Resolved by the CLI. */
   apiToken?: string | null;
   /** Operator opted into open remote access. */
@@ -154,18 +120,6 @@ export interface DaemonOptions {
    * actually binding a public interface.
    */
   restBindHost?: string;
-}
-
-/**
- * What a studio host hands the daemon alongside its handlers (#331).
- *
- * A host holding a native handle passes nothing and keeps today's behaviour exactly. A host whose
- * store is reachable only over an async port — the desktop app's, whose main process never loads a
- * native module — passes the port it already binds for REST, and the footer, the baton, the
- * delivery queue and the release receipt begin working there for the first time.
- */
-export interface StudioHostStoreOptions {
-  store?: RunsStore;
 }
 
 export class DaemonHttpServer {
@@ -184,8 +138,6 @@ export class DaemonHttpServer {
   /** Set by start() in full-daemon mode from the dynamically-imported `../server.js`; null in studio-only mode. */
   private createMcpServerFn: ((subsystems: Subsystems) => Server) | null = null;
   private mcpRequestCount = 0;
-  private studioHost: HostHandlerSlot | null = null;
-  private studioSessions: SessionsAccessorSlot | null = null;
   /**
    * Live broker grants (EXTRACT C3 / spec D8). Built on first pairing: a daemon nobody paired with holds
    * no credential at all, and a daemon restart un-pairs, which is the same shape as the handle file the
@@ -228,53 +180,6 @@ export class DaemonHttpServer {
     this.restBindHost = options.restBindHost ?? options.host;
   }
 
-  /**
-   * Inject the live studio host handlers (late setter). cli/studio.ts calls this AFTER
-   * start() builds the subsystems but BEFORE the handle is published — closing the
-   * window where a studio_* call could arrive with studioHost unset. The lazy
-   * per-session createMcpServer reads subsystems.studioHost, so a late-set value is
-   * picked up by every subsequent agent connection.
-   */
-  setStudioHost(handlers: HostHandlerSlot, options: StudioHostStoreOptions = {}): void {
-    this.studioHost = handlers;
-    if (this.subsystems) this.subsystems.studioHost = handlers;
-    // THE SEAM (#331). A host that reaches its run store some other way passes it here, and all
-    // four mechanisms below are built on it. Omitted, they fall back to a native handle exactly as
-    // they did — which keeps the daemon's own path unchanged while the desktop app, whose main
-    // process deliberately never loads a native store, stops being served by four inert mechanisms
-    // that rendered `— no run —` on every result it ever produced.
-    const store: DispatchStoreOptions = options.store
-      ? { openStore: async (): Promise<RunsStore | undefined> => options.store }
-      : {};
-    // SD2 §7 row 12. Becoming the live host is the one moment a process both owns the handlers and
-    // can reach the run log, so it is where the baton gate is installed: from here an act-class call
-    // naming a run someone else drives is refused with `not_the_driver` before it touches the page.
-    // Idempotent — a re-set replaces the closure rather than stacking a second gate.
-    setBatonGate(createBatonGate(store));
-    // SD2 §3.2 mechanism 1, installed at the same moment and for the same reason: the delivery
-    // queue is a fold over the run log, so it can only be drained by the process that can read it.
-    setDeliveryHooks(createDeliveryHooks(store));
-    // SD2 §4.4, installed here for the third time for the third instance of one reason: every field
-    // the footer renders is a projection of the run log, and this process is the only one that can
-    // read it. Elsewhere the footer still lands, saying `— no run —`.
-    setFooterSource(createFooterSource(store));
-    // SD2 §1.4 / §7 row 3, and the fourth instance of the same reason: the release receipt is a
-    // projection of `driver.changed`, so the process that can read the run log is the process that
-    // can tell a stranded driver where its wheel went.
-    setReceiptDelivery(createReceiptDelivery(store));
-  }
-
-  /**
-   * D19: inject the live session-drive accessor (late setter, mirrors setStudioHost). cli/studio.ts calls this
-   * alongside setStudioHost, AFTER start() builds the subsystems but BEFORE the handle is published. The lazy
-   * per-session createMcpServer reads subsystems.studioSessions, so a late-set value is picked up by every
-   * subsequent agent connection — a session-targeted fetch/extract/crawl forwarded to this host resolves here.
-   */
-  setStudioSessions(accessor: SessionsAccessorSlot): void {
-    this.studioSessions = accessor;
-    if (this.subsystems) this.subsystems.studioSessions = accessor;
-  }
-
   /** Count of MCP (`POST /mcp`) requests handled — observability + round-trip verification. */
   getMcpRequestCount(): number {
     return this.mcpRequestCount;
@@ -294,7 +199,6 @@ export class DaemonHttpServer {
           bindHost: this.restBindHost,
           token: this.apiToken,
           allowUnauthenticated: this.allowUnauthenticated,
-          ...(this.options.runStore ? { runStore: this.options.runStore } : {}),
         });
         this.restRouter = router;
         return router;
@@ -353,14 +257,12 @@ export class DaemonHttpServer {
       // STUDIO-ONLY: no subsystems, and crucially no `../server.js` import → the native cache DB is
       // never loaded, so this gateway boots in the Electron main (spec §13.7). Sessions are served by
       // the injected factory below.
-      log.info('Daemon HTTP server starting in studio-only mode (no core subsystems)');
+      log.info('Daemon HTTP server starting in companion-hosted mode (no core subsystems)');
     } else {
       try {
         const mod = await import('../server.js');
         this.createMcpServerFn = mod.createMcpServer;
         this.subsystems = await mod.initSubsystems();
-        if (this.studioHost) this.subsystems.studioHost = this.studioHost; // apply if set before start()
-        if (this.studioSessions) this.subsystems.studioSessions = this.studioSessions; // D19: same apply-if-pre-start
       } catch (err) {
         log.error('Failed to initialize subsystems', { error: String(err) });
         throw err;

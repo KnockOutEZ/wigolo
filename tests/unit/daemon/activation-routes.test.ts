@@ -10,9 +10,10 @@
  * path a check placed one layer lower would silently miss.
  *
  * The complement matters just as much. `/health` is a liveness probe, and
- * `/openapi.json`, `/v1/openapi.json`, `/v1/tools` and `/v1/runs*` execute no
- * tool — gating them would make an un-activated install unable to describe
- * itself, which is the REST equivalent of refusing `tools/list`.
+ * `/openapi.json`, `/v1/openapi.json` and `/v1/tools` execute no tool — gating
+ * them would make an un-activated install unable to describe itself, which is the
+ * REST equivalent of refusing `tools/list`. `/v1/runs*` was in that column for the
+ * same reason until the run surface left core with the companion extraction.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
@@ -124,10 +125,12 @@ describe('daemon routes — un-activated install', () => {
     }
   });
 
-  it('leaves /v1/runs open — the run store reaches no tool handler', async () => {
-    // A 400 for a missing task, NOT a 403: the route was reached and validated.
+  it('refuses /v1/runs like any other unknown path — the run surface is not core\'s any more', async () => {
+    // It used to be the second ungated group, exempt because the run store reached no tool handler.
+    // The surface left core with the run layer, so the exemption left with it: what a client gets
+    // is the ordinary un-activated refusal, not a route that half-answers.
     const r = await request('POST', '/v1/runs', {});
-    expect(r.status).not.toBe(403);
+    expect(r.status).toBe(403);
   });
 });
 

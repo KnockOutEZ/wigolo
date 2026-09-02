@@ -28,7 +28,6 @@ import {
 import { validateInput } from './validate.js';
 import { dispatchTool, type DispatchContext } from './dispatch.js';
 import { buildOpenApi, buildToolsIndex } from './openapi.js';
-import type { RunsStore } from './runs-store.js';
 import {
   resolveUntrustedMode,
   UNTRUSTED_MODE_HEADER,
@@ -67,11 +66,6 @@ export interface RestRouterOptions {
   bindHost: string;
   token: string | null;
   allowUnauthenticated: boolean;
-  /**
-   * The bound run store, for an owner that cannot open a native handle (the Electron main — SD1 §6 /
-   * A-43-5). Absent on the daemon, which resolves its own.
-   */
-  runStore?: RunsStore;
 }
 
 export class RestRouter {
@@ -202,38 +196,6 @@ export class RestRouter {
         }
         if (!this.passesAuth(req, res)) return;
         this.respond(res, 200, buildToolsIndex());
-        return;
-      }
-
-      // Run routes: /v1/runs, /v1/runs/{id}, and its /events, /driver and /messages sub-routes
-      // (SD1 §5, SD2 §1 and §3). These sit BEFORE tool
-      // dispatch because that branch slices a flat single-segment tool name and would read
-      // `runs/abcd` as an unknown tool. Auth is the same gate.
-      //
-      // Create/list/fetch take the SAME slot and deadline discipline as the tool routes — they are
-      // ordinary request work and must not be an unbounded-in-flight escape hatch. The SSE tail is
-      // the single exemption in the whole surface: a deadline would 504 a healthy stream and the
-      // slot would be pinned for the life of the tail, so it is bounded by its own connection cap
-      // instead (see runs.ts).
-      if (pathname === '/v1/runs' || pathname.startsWith('/v1/runs/')) {
-        if (!this.passesAuth(req, res)) return;
-        const { handleRunsRequest, parseRunsPath, RUNS_ROUTE_LABEL } = await import('./runs.js');
-        const runsOpts = {
-          pathname,
-          method,
-          url,
-          respond: (status: number, body: unknown, headers?: Record<string, string>) =>
-            this.respond(res, status, body, headers),
-          sendError: (e: HttpError) => this.sendError(res, e),
-          ...(this.opts.runStore ? { store: this.opts.runStore } : {}),
-        };
-        if (parseRunsPath(pathname)?.kind === 'events') {
-          await handleRunsRequest(req, res, runsOpts);
-          return;
-        }
-        await this.runUnderSlotAndDeadline(res, deadlineFor(RUNS_ROUTE_LABEL), RUNS_ROUTE_LABEL, async () => {
-          await handleRunsRequest(req, res, runsOpts);
-        });
         return;
       }
 

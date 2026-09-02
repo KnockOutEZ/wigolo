@@ -3,7 +3,7 @@
 import { parseCommand } from './cli/index.js';
 import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
-import { runStudio } from './cli/studio.js';
+import { runStudioSetup } from './cli/studio-setup.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctorIsolated } from './cli/doctor.js';
 import { runShell } from './cli/shell.js';
@@ -11,7 +11,6 @@ import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
 import { runInit } from './cli/init.js';
 import { runConfig } from './cli/config.js';
-import { runFlowCommand } from './cli/flow.js';
 import { runMcp } from './cli/mcp.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
@@ -93,11 +92,13 @@ export async function main(): Promise<void> {
       runDaemon(args);
       break;
 
-    // Internal/unadvertised (Phase 0): boots the Studio session host. Intentionally
-    // absent from `help` until the full UX lands so it isn't mistaken for complete.
-    case 'studio':
-      runStudio(args);
+    // The companion install path. `studio` kept its name and lost everything else: the session
+    // and flow verbs live in the companion application now, so `setup` is the whole surface.
+    case 'studio': {
+      const code = await runStudioSetup(args);
+      await exitCli(code);
       break;
+    }
 
     case 'health': {
       const exitCode = await runHealthCheck(args);
@@ -190,12 +191,6 @@ export async function main(): Promise<void> {
 
     case 'verify': {
       const code = await runVerifyE2E(args);
-      await exitCli(code);
-      break;
-    }
-
-    case 'flow': {
-      const code = await runFlowCommand(args);
       await exitCli(code);
       break;
     }

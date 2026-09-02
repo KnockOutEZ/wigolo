@@ -162,43 +162,50 @@ describe('diff + watch tool registration', () => {
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('tools/list exposes 19 tools including diff, watch, and the nine studio tools', async () => {
+  it('tools/list exposes core\'s ten and nothing hosted — no companion tool name survives', async () => {
     const { client, teardown } = await connectClient();
     try {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual(
-        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_act', 'studio_capture', 'studio_close', 'studio_extract_set', 'studio_list', 'studio_marks', 'studio_observe', 'studio_open', 'studio_say', 'studio_spawn', 'watch']
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'watch']
       );
-      expect(res.tools).toHaveLength(20);
+      expect(res.tools).toHaveLength(10);
+      // The RUNTIME half of the extraction's negative grep: source can be clean of `studio_` while a
+      // default provider still advertises one, and a client only ever sees this list.
+      expect(names.filter((n) => n.startsWith('studio_'))).toEqual([]);
     } finally {
       await teardown();
     }
   });
 
-  // P1a: the surface beyond core's own ten arrives through an INJECTED registry. If the injection
-  // point were decorative — core still reaching for the studio names itself — swapping the registry
-  // would leave studio_* advertised anyway, and this test would red. It also proves core's own ten
-  // are unaffected by whatever a host injects.
-  it('an injected tool registry replaces the hosted surface and leaves core\'s ten intact', async () => {
+  // P1a: a surface beyond core's own ten arrives through an INJECTED registry, and after the
+  // extraction that is the ONLY way one arrives — core's default registry is empty. The arm proves
+  // the injection point is real (an injected name is advertised AND dispatched) and that core's own
+  // ten are unaffected by whatever a host injects.
+  it('an injected tool registry adds a hosted surface and leaves core\'s ten intact', async () => {
     const { ToolRegistry } = await import('../../../src/server/tool-registry.js');
-    const { TOOL_SCHEMAS } = await import('../../../src/server/tool-schemas.js');
     const registry = new ToolRegistry();
     registry.register({
       name: 'fake-surface',
-      tools: [{ name: 'studio_list', description: 'a stand-in surface', inputSchema: TOOL_SCHEMAS.studio_list }],
-      handles: (n) => n === 'studio_list',
+      tools: [{
+        name: 'hosted_probe',
+        description: 'a stand-in surface',
+        inputSchema: { type: 'object' as const, properties: {}, required: [] },
+      }],
+      handles: (n) => n === 'hosted_probe',
       dispatch: async () => ({ content: [{ type: 'text' as const, text: '{"from":"fake"}' }], isError: false }),
     });
     const { client, teardown } = await connectClient((subs) => { subs.toolRegistry = registry; });
     try {
       const names = (await client.listTools()).tools.map((t) => t.name).sort();
       expect(names).toEqual(
-        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_list', 'watch'],
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'hosted_probe', 'research', 'search', 'watch'],
       );
-      const res = await client.callTool({ name: 'studio_list', arguments: {} });
+      const res = await client.callTool({ name: 'hosted_probe', arguments: {} });
       expect((res.content as Array<{ text: string }>)[0].text).toBe('{"from":"fake"}');
-      // A studio tool the injected registry does not own is now genuinely unknown to core.
+      // A name no provider owns is genuinely unknown to core — including the ones that used to be
+      // hosted here.
       const gone = await client.callTool({ name: 'studio_observe', arguments: {} });
       expect(gone.isError).toBe(true);
       expect((gone.content as Array<{ text: string }>)[0].text).toBe('Unknown tool: studio_observe');

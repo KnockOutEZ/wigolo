@@ -10,7 +10,7 @@ import vitestConfig from '../../vitest.config.js';
  * A handful of tests rebuild `dist/`, and tsup's `clean: true` DELETES it before writing
  * anything. A handful of others read or spawn `dist/` — `tests/e2e/mcp-startup.test.ts` spawns
  * `dist/index.js`, `tests/integration/build-output.test.ts` asserts over dist/ files,
- * `tests/integration/studio-runs-proxy.test.ts` imports dist/ in a child process.
+ * `tests/unit/package-exports.test.ts` imports every dist/ subpath export in a child process.
  *
  * Those two sets are only safe together while they are all in the SAME vitest project, and
  * that project is `spawn-serial` — one fork, `fileParallelism: false`, so they take turns.
@@ -169,7 +169,6 @@ describe('no parallel-lane test can rebuild or clean dist/', () => {
       'tests/integration/budget-tarball-gate.test.ts', // rebuilds: npm pack -> prepare -> build
       'tests/integration/build-output.test.ts', // rebuilds: explicit `npm run build` in beforeAll
       'tests/e2e/mcp-startup.test.ts', // rebuilds on demand, then spawns dist/index.js
-      'tests/integration/studio-runs-proxy.test.ts', // reads dist/ from a child process
     ];
     const present = allTestFiles();
     const serial = serialLaneFiles();
@@ -209,11 +208,11 @@ const SPAWNS = /(?:execSync|execFileSync|spawnSync|execFile|spawn|fork|exec)\s*\
 const LOCAL_SCRIPT = /['"](\.[^'"\n]*\.(?:mjs|cjs|js))['"]/g;
 
 /**
- * Scripts a test file hands to a child process. A fixture is where the indirection bites:
- * `tests/unit/studio/run-store-disk-projection.test.ts` spawns
- * `fixtures/run-store-exit-drain-child.mjs`, and it is the FIXTURE that imports `dist/`. The
- * spawner's own source never says `dist`, so a scan of test files alone would call it clean while
- * its child died to the very same rebuild.
+ * Scripts a test file hands to a child process. A fixture is where the indirection bites: a
+ * spawner whose own source never says `dist` can hand a child a fixture script that imports it, so
+ * a scan of test files alone would call the spawner clean while its child died to the very same
+ * rebuild. (The case that taught this — a run-store projection spec spawning an exit-drain child —
+ * left with the domain layer; the indirection it exposed has not.)
  */
 function spawnedScripts(file: string, source: string): string[] {
   const base = join(ROOT, dirname(file));
@@ -250,10 +249,7 @@ describe('no parallel-lane test can spawn a dist/ path', () => {
     // Must-fire direction, and the reason the list is named rather than counted: a spawner that is
     // deleted or renamed has to be noticed here, not silently drop out of the scan above.
     const spawners = [
-      'tests/unit/studio/broker-transport.test.ts', // its children import dist/ (broker + cache db)
-      'tests/unit/studio/run-store-disk-projection.test.ts', // its fixture imports dist/ in a child
       'tests/unit/package-exports.test.ts', // imports every dist/ subpath export in a child
-      'tests/integration/studio-runs-proxy.test.ts', // imports dist/ in a child process
       'tests/e2e/mcp-startup.test.ts', // spawns dist/index.js
     ];
     const present = allTestFiles();

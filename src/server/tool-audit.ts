@@ -1,12 +1,13 @@
 /**
- * D10 — non-studio tool-invocation audit (LEAF).
+ * D10 — tool-invocation audit (LEAF).
  *
- * Records every NON-studio_* MCP tool call into the append-only `tool_audit` table for forensics:
- * which tool ran, a privacy-projected slice of its args, the outcome, and how long it took. The
- * studio_* tools are excluded at the wrap (server.ts) — they carry their own richer studio_audit.
+ * Records every MCP tool call into the append-only `tool_audit` table for forensics: which tool
+ * ran, a privacy-projected slice of its args, the outcome, and how long it took. The exception this
+ * carried — the companion's own tools, which write their own richer per-session audit — left core
+ * with the companion surface, so the wrap in server.ts records everything that arrives.
  *
  * This module holds two jobs and nothing else (it is a true leaf — no global-DB reach, the handle
- * is injected by the host, mirroring src/studio/audit.ts):
+ * is injected by the host):
  *
  *  1. PRIVACY-AS-A-TYPE (fail-closed). `projectToolArgs` maps a raw call to a CLOSED per-tool shape.
  *     Sensitive inputs are UNREPRESENTABLE in the return type, not stripped at runtime — adding e.g.

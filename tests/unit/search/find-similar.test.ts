@@ -299,12 +299,12 @@ describe('findSimilar', () => {
     expect(result.search_hits).toBe(0);
   });
 
-  // P4c — crawl-rank builds its ENTIRE rank list from a live 1-hop crawl. The
-  // studio DB broker (src/daemon/studio-db-broker.ts) hard-forces
-  // include_web: false on every find_similar it proxies, so a studio session is
-  // supposed to stay on local state; a caller-supplied mode: 'crawl-rank' walked
-  // straight past that and fetched from the network anyway. The flag has to bind
-  // the mode dispatcher, not just the web-search fallback.
+  // P4c — crawl-rank builds its ENTIRE rank list from a live 1-hop crawl. The defect was found
+  // through a caller that hard-forced `include_web: false` on every find_similar it proxied (the
+  // studio DB broker, before the extraction made that broker a table-ops surface that proxies no
+  // tool at all): a caller-supplied `mode: 'crawl-rank'` walked straight past the flag and fetched
+  // from the network anyway. The claim outlives that caller — the flag has to bind the mode
+  // dispatcher, not just the web-search fallback, for anyone who passes it.
   describe('include_web=false and crawl-rank', () => {
     it('does not crawl the network when include_web is false', async () => {
       // The seed URL is pre-cached so resolving the query needs no fetch.

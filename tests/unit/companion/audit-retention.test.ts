@@ -3,17 +3,20 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SessionAuditLog } from '../../../src/studio/audit.js';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { pruneStudioAudit } from '../../../src/companion/audit-retention.js';
+import { seedAuditRow, seedFlowStep, seedSession } from '../../helpers/companion-tables.js';
 
 /**
- * D9 — studio_audit retention prune. The forensic audit log is INSERT-only by construction
- * (src/studio/audit.ts: sole writer, no mutate/remove/clear). A SANCTIONED, operator-gated prune
- * is the ONE deletion path: a standalone fn in this NEW module, injected DB handle + an explicit
- * by-age cutoff. It mirrors the audit.ts injected-leaf pattern + the store.ts where-claused DELETE.
- * It is NOT a method on SessionAuditLog (that would make writer==pruner, breaking the append-only
- * invariant), and it is NOT reachable from any agent surface (operator-CLI-only).
+ * D9 — audit retention prune. The forensic audit log is INSERT-only by construction: its writer
+ * is the companion's session audit log, which has no mutate/remove/clear. A SANCTIONED,
+ * operator-gated prune is the ONE deletion path: a standalone fn in this module, injected DB handle
+ * + an explicit by-age cutoff, NOT a method on the writer (that would make writer==pruner and break
+ * the append-only invariant), and NOT reachable from any agent surface (operator-CLI-only).
+ *
+ * The writer moved to the companion with the domain layer, so the rows here are seeded directly —
+ * which is also how the broker's callers write them after D8. What core still owns is the prune,
+ * and that is what these pins are about.
  */
 
 function migratedDb(): Database.Database {
@@ -34,8 +37,8 @@ function sessionCount(db: Database.Database, id: string): number {
 describe('pruneStudioAudit — by-age prune of the forensic audit log', () => {
   it('deletes ONLY rows older than the cutoff; newer rows survive (pin #4)', () => {
     const db = migratedDb();
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } }); // ancient
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 9000 }).record({ action: 'click', epoch: 1, outcome: { ok: true } }); // newer
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 1, action: 'navigate', ts: 1000 }); // ancient
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 2, action: 'click', epoch: 1, ts: 9000 }); // newer
     expect(auditCount(db, 'sess-1')).toBe(2);
 
     const { deleted } = pruneStudioAudit(db, { cutoffMs: 5000 });
@@ -48,19 +51,19 @@ describe('pruneStudioAudit — by-age prune of the forensic audit log', () => {
 
   it('the INSERT path is unaffected after a prune — appending still works (pin #4)', () => {
     const db = migratedDb();
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 1, action: 'navigate', ts: 1000 });
     pruneStudioAudit(db, { cutoffMs: 5000 }); // removes the only row
 
-    const fresh = new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 9000 });
-    fresh.record({ action: 'scroll', epoch: 2, outcome: { ok: true } });
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 2, action: 'scroll', epoch: 2, ts: 9000 });
     expect(auditCount(db, 'sess-1')).toBe(1);
-    expect(fresh.entries().map((e) => e.action)).toEqual(['scroll']);
+    const rows = db.prepare('SELECT action FROM studio_audit WHERE session_id = ?').all('sess-1') as { action: string }[];
+    expect(rows.map((r) => r.action)).toEqual(['scroll']);
     db.close();
   });
 
   it('touches studio_audit rows ONLY — the studio_sessions parent survives (pin #7)', () => {
     const db = migratedDb();
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 1, action: 'navigate', ts: 1000 });
     expect(sessionCount(db, 'sess-1')).toBe(1);
 
     pruneStudioAudit(db, { cutoffMs: 5000 }); // deletes the (only) audit row
@@ -72,8 +75,8 @@ describe('pruneStudioAudit — by-age prune of the forensic audit log', () => {
 
   it('fail-closed: a non-finite cutoff deletes NOTHING (never default to delete-all) (pin #6)', () => {
     const db = migratedDb();
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
-    new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 9000 }).record({ action: 'click', epoch: 1, outcome: { ok: true } });
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 1, action: 'navigate', ts: 1000 });
+    seedAuditRow(db, { sessionId: 'sess-1', seq: 2, action: 'click', epoch: 1, ts: 9000 });
 
     expect(pruneStudioAudit(db, { cutoffMs: Number.NaN }).deleted).toBe(0);
     expect(pruneStudioAudit(db, { cutoffMs: Number.POSITIVE_INFINITY }).deleted).toBe(0);
@@ -101,6 +104,9 @@ function resolveRelativeImport(fromFile: string, spec: string): string | null {
 }
 
 function importClosure(entries: string[]): Set<string> {
+  // A missing entry used to enter `seen` unread, so every "X is not in the closure" assertion below
+  // passed for a file that had been deleted or moved. The walk must fail on that, not agree with it.
+  for (const entry of entries) readFileSync(entry);
   const seen = new Set<string>();
   const stack = [...entries];
   while (stack.length > 0) {
@@ -122,33 +128,26 @@ function importClosure(entries: string[]): Set<string> {
 }
 
 describe('D9 retention — security seams (structural)', () => {
-  it('the agent tool surface (studio dispatch + studio tool registry) does NOT import audit-retention (pin #1)', () => {
+  it('the agent tool surface does NOT import audit-retention (pin #1)', () => {
     // operator-CLI-only: a confused-deputy / track-covering containment — no agent-reachable path can
-    // delete forensic rows. mutation: add `import '../studio/audit-retention.js'` to studio-dispatch.ts
-    // or tool-schemas.ts → it enters the closure → this REDS.
+    // delete forensic rows. mutation: add `import '../companion/audit-retention.js'` to server.ts or
+    // tool-schemas.ts → it enters the closure → this REDS.
     const closure = importClosure([
-      join(SRC, 'daemon/studio-dispatch.ts'),
-      join(SRC, 'server/tool-schemas.ts'),
       join(SRC, 'server.ts'),
+      join(SRC, 'server/tool-schemas.ts'),
     ]);
-    expect(closure.has(join(SRC, 'daemon/studio-dispatch.ts'))).toBe(true); // sanity: walked
+    expect(closure.has(join(SRC, 'server.ts'))).toBe(true); // sanity: walked
     expect(closure.size).toBeGreaterThan(20);
-    expect(closure.has(join(SRC, 'studio/audit-retention.ts'))).toBe(false);
+    expect(closure.has(join(SRC, 'companion/audit-retention.ts'))).toBe(false);
   });
 
-  it('audit-retention does NOT import the SessionAuditLog writer — shares only table-name + DB handle (pin #3)', () => {
-    const closure = importClosure([join(SRC, 'studio/audit-retention.ts')]);
-    expect(closure.has(join(SRC, 'studio/audit-retention.ts'))).toBe(true); // sanity: the module exists + was walked
-    // mutation: add `import { SessionAuditLog } from './audit.js'` to audit-retention.ts → REDS.
-    expect(closure.has(join(SRC, 'studio/audit.ts'))).toBe(false);
-  });
-
-  it('SessionAuditLog remains append-only — exposes NO row-altering method (pin #2; audit.ts :8-9 unchanged)', () => {
-    const log = new SessionAuditLog();
-    for (const m of ['update', 'delete', 'remove', 'clear', 'set', 'mutate', 'prune']) {
-      // mutation: add a `remove`/`prune` method to SessionAuditLog → REDS (writer must never also delete).
-      expect((log as unknown as Record<string, unknown>)[m]).toBeUndefined();
-    }
+  it('audit-retention imports NOTHING — it shares a table name and a DB handle and no more (pin #3)', () => {
+    // It used to be stated as "does not import the audit writer". That writer left core, and a pin
+    // naming a module that cannot exist would be green forever. The stronger property was always
+    // true and is what the containment actually rests on: the pruner reaches no other module, so
+    // nothing it imports can drag a writer — or an agent-reachable surface — back in behind it.
+    const closure = importClosure([join(SRC, 'companion/audit-retention.ts')]);
+    expect([...closure]).toEqual([join(SRC, 'companion/audit-retention.ts')]);
   });
 
   /**
@@ -158,13 +157,9 @@ describe('D9 retention — security seams (structural)', () => {
    */
   it('prunes the derived flow sidecar with the audit rows it was derived from', () => {
     const db = migratedDb();
-    db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess-derived');
-    new SessionAuditLog({ db, sessionId: 'sess-derived', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
-    const ins = db.prepare(
-      `INSERT INTO studio_flow_steps (flow_id, session_id, seq, audit_seq, action, page_url, ts) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    ins.run('flw_old', 'sess-derived', 1, 1, 'navigate', 'https://example.com/orders?token=abc', 1000);
-    ins.run('flw_new', 'sess-derived', 1, 2, 'navigate', 'https://example.com/orders?token=xyz', 9000);
+    seedAuditRow(db, { sessionId: 'sess-derived', seq: 1, action: 'navigate', ts: 1000 });
+    seedFlowStep(db, { flowId: 'flw_old', sessionId: 'sess-derived', seq: 1, auditSeq: 1, action: 'navigate', pageUrl: 'https://example.com/orders?token=abc', ts: 1000 });
+    seedFlowStep(db, { flowId: 'flw_new', sessionId: 'sess-derived', seq: 1, auditSeq: 2, action: 'navigate', pageUrl: 'https://example.com/orders?token=xyz', ts: 9000 });
 
     const result = pruneStudioAudit(db, { cutoffMs: 5000 });
     expect(result.deleted).toBe(1);
@@ -175,9 +170,8 @@ describe('D9 retention — security seams (structural)', () => {
 
   it('a non-finite cutoff deletes no flow step either — fail-closed on both tables', () => {
     const db = migratedDb();
-    db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess-nan');
-    db.prepare(`INSERT INTO studio_flow_steps (flow_id, session_id, seq, audit_seq, action, ts) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run('flw_x', 'sess-nan', 1, 1, 'navigate', 1000);
+    seedSession(db, 'sess-nan');
+    seedFlowStep(db, { flowId: 'flw_x', sessionId: 'sess-nan', seq: 1, auditSeq: 1, action: 'navigate', ts: 1000 });
     const result = pruneStudioAudit(db, { cutoffMs: Number.NaN });
     expect(result).toEqual({ deleted: 0, flowStepsDeleted: 0 });
     expect((db.prepare('SELECT COUNT(*) c FROM studio_flow_steps').get() as { c: number }).c).toBe(1);

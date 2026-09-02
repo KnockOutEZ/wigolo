@@ -4,7 +4,7 @@ import type { SmartRouter } from '../../../src/fetch/router.js';
 import type { MergedSearchResult } from '../../../src/search/dedup.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { captureFromPage, captureHumanNote } from '../../../src/studio/capture/artifacts.js';
+import { seedCapture, seedNote as seedNoteRow } from '../../helpers/companion-tables.js';
 
 /**
  * C3 slice-2 — note trust through the OTHER research citation constructor: the Phase-5b
@@ -85,10 +85,10 @@ function stubRouter(): SmartRouter {
 }
 
 function seedNote(sessionId = 's1', text = NOTE_TEXT): number {
-  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedNoteRow(getDatabase(), { sessionId, text }).id;
 }
 function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
+  return seedCapture(getDatabase(), { type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }).id;
 }
 
 async function research() {

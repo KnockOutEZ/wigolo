@@ -40,9 +40,6 @@ import type {
   BrokerResult,
 } from '../../../src/companion-contract/broker.js';
 
-import { STUDIO_FETCH_CAPABILITY as IMPL_FETCH_CAPABILITY } from '../../../src/studio/studio-fetch.js';
-import { STUDIO_UNADVERTISED_CAPABILITY } from '../../../contracts/studio-mcp/src/tool-names.js';
-
 const repoRoot = process.cwd();
 
 function sourceOf(...segments: string[]): string {
@@ -61,16 +58,20 @@ function literalsOf(source: string, key: string): string[] {
  *
  * Same bargain `contracts/studio-mcp/tests/schema-drift.test.ts` strikes: the contract states shapes the
  * implementation also states, so a copy that can silently diverge is worse than no contract. Each block
- * below therefore reads the WORKING TREE of the producer it claims to describe — the studio fetch seam,
- * the session-target composition, the migration set — rather than only asserting against itself. A new
- * decline code, a renamed refusal or a seventh shared table reds HERE, at contract-authoring cost,
- * instead of becoming a wire arm nobody declared.
+ * below therefore reads the WORKING TREE of the producer it claims to describe — the escalation
+ * bridge, the session-target forwarding client, the migration set — rather than only asserting
+ * against itself. A new decline code, a renamed refusal or a seventh shared table reds HERE, at
+ * contract-authoring cost, instead of becoming a wire arm nobody declared.
+ *
+ * The two cross-checks against the domain-side producers went with the domain layer: the fetch
+ * capability name and the unadvertised-capability constant were read out of `src/studio/` and
+ * `contracts/studio-mcp/`, and after the extraction the contract is the sole owner of both. The
+ * companion repo asserts its own side against this contract, which is what makes the name shared
+ * rather than duplicated.
  */
 describe('escalation wire', () => {
-  it('owns the fetch-capability name the implementation and the studio-mcp contract use', () => {
+  it('owns the fetch-capability name every side of the wire uses', () => {
     expect(STUDIO_FETCH_CAPABILITY).toBe('studio_fetch');
-    expect(IMPL_FETCH_CAPABILITY).toBe(STUDIO_FETCH_CAPABILITY);
-    expect(STUDIO_UNADVERTISED_CAPABILITY).toBe(STUDIO_FETCH_CAPABILITY);
   });
 
   it('keeps exactly one literal of the capability name in src/ — the contract\'s', () => {
@@ -103,7 +104,12 @@ describe('escalation wire', () => {
   });
 
   it('declares a CLOSED decline enum that covers every code the escalation seam emits', () => {
-    const emitted = literalsOf(sourceOf('src', 'studio', 'studio-fetch.ts'), 'error_reason');
+    // The seam that produced these codes is the companion's fetch handler now; what core keeps is
+    // the bridge that READS them, so the bridge is the arm's producer: every decline literal it
+    // reaches for — including the one it mints itself when the transport dies before an answer —
+    // has to be a member, or core would branch on a code the wire does not declare.
+    const bridge = sourceOf('src', 'fetch', 'companion-bridge.ts');
+    const emitted = [...bridge.matchAll(/reason:\s*(?:[^'"\n]*?)'([a-z_]+)'/g)].map((m) => m[1]);
     expect(emitted.length).toBeGreaterThan(0);
     for (const code of emitted) expect(ESCALATION_DECLINE_REASONS).toContain(code);
   });
@@ -187,12 +193,10 @@ describe('session-target wire', () => {
   });
 
   it('declares a CLOSED refusal enum that covers every code the composition emits', () => {
-    // BOTH producers, while both exist: the forwarding client core keeps, and the host-side composition
-    // that still lives in `src/studio/` until the Phase-C deletion takes it (spec 2.3). Reading only the
-    // client would silently stop covering the host codes the day the composition moved out of tools/.
+    // The forwarding client is now the only producer in this repo: the host-side composition left
+    // with the domain layer, and the codes it emitted are the ones this enum publishes for it.
     const emitted = [
       ...literalsOf(sourceOf('src', 'tools', 'session-target.ts'), 'error'),
-      ...literalsOf(sourceOf('src', 'studio', 'session-target-host.ts'), 'error'),
     ];
     expect(emitted.length).toBeGreaterThan(0);
     for (const code of emitted) expect(SESSION_TARGET_REFUSAL_REASONS).toContain(code);
