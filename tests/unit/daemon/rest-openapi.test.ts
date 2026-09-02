@@ -189,7 +189,7 @@ describe('OpenAPI run surface', () => {
     return (buildOpenApi() as { paths: Record<string, Record<string, never>> }).paths;
   }
 
-  it('serves all four run routes with their operation ids', () => {
+  it('serves every run route with its operation id', () => {
     // MUT: drop any runPaths() entry → RED. A generated SDK silently loses the whole resource family.
     const paths = runPaths();
     expect(paths['/v1/runs']?.post?.operationId).toBe('createRun');
@@ -197,6 +197,32 @@ describe('OpenAPI run surface', () => {
     expect(paths['/v1/runs/{id}']?.get?.operationId).toBe('getRun');
     expect(paths['/v1/runs/{id}/events']?.get?.operationId).toBe('streamRunEvents');
     expect(paths['/v1/runs/{id}/driver']?.post?.operationId).toBe('driverGesture');
+    expect(paths['/v1/runs/{id}/messages']?.post?.operationId).toBe('sendRunMessage');
+    expect(paths['/v1/runs/{id}/messages']?.get?.operationId).toBe('listRunMessages');
+  });
+
+  it('documents the delivery queue as a queue: 202, three states, and no word for "sent"', () => {
+    // The served document is what a generated SDK's docstrings are made of, so law 7's honesty rule
+    // has to hold HERE too — an SDK that describes this POST as sending a message would put the one
+    // claim §3.1 forbids into every client that reads it.
+    const messages = runPaths()['/v1/runs/{id}/messages'] as unknown as {
+      post: { description: string; responses: Record<string, { description: string; content?: unknown }> };
+      get: { responses: Record<string, { content: { 'application/json': { schema: { properties: { messages: { items: { properties: { state: { enum: string[] }; delivered_at_step: object; state_line: object } } } } } } } }> };
+    };
+    // 202, not 200: accepted into the log, nothing delivered. A 200 here would be the HTTP "sent".
+    expect(messages.post.responses['202']).toBeDefined();
+    expect(messages.post.responses['200']).toBeUndefined();
+    expect(messages.post.responses['202'].description).toMatch(/NOT been delivered/);
+    // Deliberately NOT a word ban on the prose: this description names "sent" and "seen" in order
+    // to forbid them, and a check that cannot tell a denial from a claim would fail the correct
+    // text and pass a rewrite that dropped the denial. What is checked is the substance — the
+    // description has to state WHEN the message arrives, which is the whole of the honesty rule.
+    expect(messages.post.description).toMatch(/reaches the agent when the agent next calls a tool/);
+
+    const item = messages.get.responses['200'].content['application/json'].schema.properties.messages.items;
+    expect(item.properties.state.enum).toEqual(['queued', 'delivered', 'acknowledged']);
+    expect(item.properties.delivered_at_step).toBeDefined();
+    expect(item.properties.state_line).toBeDefined();
   });
 
   it('documents the baton: the five gestures, and the one driver name a client should render', () => {

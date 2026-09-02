@@ -1,5 +1,6 @@
 /**
- * The `/v1/runs` REST family (SD1 mini-spec §5) — create, list, fetch, and tail a run.
+ * The `/v1/runs` REST family (SD1 mini-spec §5) — create, list, fetch and tail a run, move its
+ * driver baton (SD2 §1) and queue a message for its agent (SD2 §3).
  *
  * Law 1: the run is the unit of everything and every surface is a projection of the same event
  * stream. REST is not a lesser citizen than the desktop app or the MCP tools — it reads the same
@@ -39,6 +40,13 @@ import {
 } from '../../studio/run-store.js';
 import { subscribeRunEvents } from '../../studio/run-bus.js';
 import { sqliteRunsStore, type DriverGesture, type DriverGestureKind, type RunsStore } from './runs-store.js';
+import {
+  messageView,
+  DEFAULT_MESSAGE_LIST_LIMIT,
+  MAX_MESSAGE_LIST_LIMIT,
+  MAX_MESSAGE_TEXT_CHARS,
+  type QueueMessageInput,
+} from '../message-queue.js';
 import { formatDriver } from '../driver-baton.js';
 import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
 import { MAX_CLIENT_FIELD_CHARS } from '../capability-handshake.js';
@@ -253,12 +261,13 @@ export type RunsRoute =
   | { kind: 'collection' }
   | { kind: 'item'; id: string }
   | { kind: 'events'; id: string }
-  | { kind: 'driver'; id: string };
+  | { kind: 'driver'; id: string }
+  | { kind: 'messages'; id: string };
 
 /**
- * `/v1/runs`, `/v1/runs/<id>`, `/v1/runs/<id>/events`, `/v1/runs/<id>/driver` and nothing else.
- * Anything deeper or with an empty id is not a run route at all — it must 404 rather than be
- * coerced into the nearest match.
+ * `/v1/runs`, `/v1/runs/<id>`, and the `events`, `driver` and `messages` sub-routes of one run —
+ * and nothing else. Anything deeper or with an empty id is not a run route at all: it must 404
+ * rather than be coerced into the nearest match.
  */
 export function parseRunsPath(pathname: string): RunsRoute | null {
   const rest = pathname.slice('/v1/runs'.length);
@@ -267,6 +276,7 @@ export function parseRunsPath(pathname: string): RunsRoute | null {
   if (segments.length === 1 && segments[0]) return { kind: 'item', id: segments[0] };
   if (segments.length === 2 && segments[0] && segments[1] === 'events') return { kind: 'events', id: segments[0] };
   if (segments.length === 2 && segments[0] && segments[1] === 'driver') return { kind: 'driver', id: segments[0] };
+  if (segments.length === 2 && segments[0] && segments[1] === 'messages') return { kind: 'messages', id: segments[0] };
   return null;
 }
 
@@ -353,7 +363,11 @@ export async function handleRunsRequest(
     opts.sendError(methodNotAllowed('POST'));
     return;
   }
-  if (route.kind !== 'collection' && route.kind !== 'driver' && method !== 'GET') {
+  if (route.kind === 'messages' && method !== 'POST' && method !== 'GET') {
+    opts.sendError(methodNotAllowed('GET, POST'));
+    return;
+  }
+  if (route.kind !== 'collection' && route.kind !== 'driver' && route.kind !== 'messages' && method !== 'GET') {
     opts.sendError(methodNotAllowed('GET'));
     return;
   }
@@ -400,7 +414,7 @@ async function handleRunsRoute(
     // and the fallback below needs to create the run itself. Re-serializing it is safe in a way
     // re-serializing an SSE frame is not: a JSON body carries no framing contract, and reading it
     // here is also what keeps THIS daemon's body cap the one that applies.
-    if (method === 'POST' && (route.kind === 'collection' || route.kind === 'driver')) {
+    if (method === 'POST' && (route.kind === 'collection' || route.kind === 'driver' || route.kind === 'messages')) {
       const cap = bodyCapFor(RUNS_ROUTE_LABEL);
       try {
         createBody = await readJsonBodyCapped(req, cap);
@@ -442,6 +456,11 @@ async function handleRunsRoute(
     }
     if (route.kind === 'driver') {
       await handleDriverGesture(req, opts, store, route.id, createBody);
+      return;
+    }
+    if (route.kind === 'messages') {
+      if (method === 'POST') await handleSendMessage(req, opts, store, route.id, createBody);
+      else await handleListMessages(opts, store, route.id);
       return;
     }
     // Past here the stream owns the slot: it outlives this call, and `cleanup` is what gives it back.
@@ -668,6 +687,8 @@ function runView(run: Run): Run & { driverName: string } {
 /** Free text on its way into an append-only log, so it is capped for the same reason `spaceId` is. */
 export const MAX_GESTURE_REASON_CHARS = 500;
 export const MAX_REQUEST_ID_CHARS = 200;
+/** A caller-supplied idempotency key reaches the log, so it takes the same bound a request id does. */
+export const MAX_MESSAGE_ID_CHARS = 200;
 
 const GESTURE_KINDS = new Set<string>(['request', 'grant', 'release', 'takeover', 'deny']);
 
@@ -688,6 +709,144 @@ const GESTURE_REFUSAL_STATUS: Readonly<Record<string, number>> = {
  * this surface. There is deliberately no "set the driver" write: a transition that did not go
  * through a gesture would be a second source of truth for who drives.
  */
+/**
+ * SD2 §3.1 — accept a message into the run's delivery queue.
+ *
+ * `202`, not `200` or `201`, and that is the honesty rule (law 7) written in the status line: the
+ * request has been ACCEPTED and nothing has been delivered. A `200` on this route would be the HTTP
+ * spelling of "sent", which is the one word §3.1 forbids every surface from using — and the body
+ * says the same thing again in `state` and in `state_line`, because a client that reads only the
+ * status code and a client that reads only the body must reach the same conclusion.
+ *
+ * The status does not change on a replay. A retry that appended nothing is still a message accepted
+ * and not yet delivered — the only difference is `replayed`, which tells the caller its first POST
+ * had in fact landed.
+ */
+async function handleSendMessage(
+  req: IncomingMessage,
+  opts: RunsRequestOptions,
+  store: RunsStore,
+  rawId: string,
+  preRead?: unknown,
+): Promise<void> {
+  if (!store.sendMessage) {
+    opts.sendError(storeUnavailable());
+    return;
+  }
+  const decoded = decodeRunId(rawId);
+  if (decoded === null) {
+    opts.sendError(runNotFound());
+    return;
+  }
+  const cap = bodyCapFor(RUNS_ROUTE_LABEL);
+  let body: unknown;
+  if (preRead !== undefined) {
+    body = preRead;
+  } else {
+    try {
+      body = await readJsonBodyCapped(req, cap);
+    } catch (err) {
+      opts.sendError(err instanceof BodyTooLargeError ? bodyTooLarge(cap) : invalidJson());
+      return;
+    }
+  }
+  const parsed = parseMessageBody(body);
+  if (!parsed.ok) {
+    opts.sendError(invalidInput(parsed.detail));
+    return;
+  }
+
+  let result;
+  try {
+    result = await store.sendMessage(decoded, parsed.input);
+  } catch (err) {
+    log.error('message queue failed', { error: err instanceof Error ? err.message : String(err) });
+    opts.sendError(internalError());
+    return;
+  }
+  if (!result.ok) {
+    opts.sendError({
+      status: MESSAGE_REFUSAL_STATUS[result.error_reason] ?? 400,
+      body: errorEnvelope(result.error_reason, result.error, { hint: result.hint }),
+      headers: {},
+    });
+    return;
+  }
+  opts.respond(202, {
+    ok: true,
+    message: messageView(result.message),
+    ...(result.replayed ? { replayed: true } : {}),
+  });
+}
+
+/** The run's messages, newest first. A read of the log, so no baton and no driver check. */
+async function handleListMessages(opts: RunsRequestOptions, store: RunsStore, rawId: string): Promise<void> {
+  if (!store.messages) {
+    opts.sendError(storeUnavailable());
+    return;
+  }
+  const decoded = decodeRunId(rawId);
+  if (decoded === null || !(await store.exists(decoded))) {
+    opts.sendError(runNotFound());
+    return;
+  }
+  let limit = DEFAULT_MESSAGE_LIST_LIMIT;
+  const rawLimit = opts.url.searchParams.get('limit');
+  if (rawLimit !== null) {
+    const asked = Number(rawLimit);
+    if (!Number.isInteger(asked) || asked < 1 || asked > MAX_MESSAGE_LIST_LIMIT) {
+      opts.sendError(invalidInput(`Query "limit" must be an integer between 1 and ${MAX_MESSAGE_LIST_LIMIT} (default ${DEFAULT_MESSAGE_LIST_LIMIT}).`));
+      return;
+    }
+    limit = asked;
+  }
+  const messages = await store.messages(decoded, limit);
+  opts.respond(200, { ok: true, messages: messages.map(messageView) });
+}
+
+const MESSAGE_REFUSAL_STATUS: Readonly<Record<string, number>> = {
+  run_not_found: 404,
+  invalid_message: 400,
+};
+
+/**
+ * What one POST may carry: a text, an urgency, and an idempotency key. There is deliberately no
+ * `from` — this route IS a person typing, so the sender is the human actor and a caller cannot name
+ * a different one. (A-54-2. Reversal: when a non-human sender needs the queue — a relay forwarding
+ * on someone's behalf — it arrives with its own authenticated identity, which is a field the
+ * transport supplies rather than one the body claims.)
+ *
+ * `message_id` is accepted under both spellings because the same route RETURNS `message_id`, and a
+ * client retrying with the key it was just handed should not have to transliterate it first.
+ */
+function parseMessageBody(raw: unknown): { ok: true; input: QueueMessageInput } | { ok: false; detail: string } {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, detail: 'Body must be an object with a "text" field.' };
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.text !== 'string' || obj.text.trim().length === 0) {
+    return { ok: false, detail: 'Field "text" must be a non-empty string.' };
+  }
+  if (obj.text.length > MAX_MESSAGE_TEXT_CHARS) {
+    return { ok: false, detail: `Field "text" is capped at ${MAX_MESSAGE_TEXT_CHARS} characters. Split the message.` };
+  }
+  if (obj.urgent !== undefined && typeof obj.urgent !== 'boolean') {
+    return { ok: false, detail: 'Field "urgent" must be a boolean.' };
+  }
+  const rawId = obj.message_id ?? obj.messageId;
+  if (rawId !== undefined && (typeof rawId !== 'string' || rawId.trim().length === 0 || rawId.length > MAX_MESSAGE_ID_CHARS)) {
+    return { ok: false, detail: `Field "message_id" must be a non-empty string of at most ${MAX_MESSAGE_ID_CHARS} characters.` };
+  }
+  return {
+    ok: true,
+    input: {
+      text: obj.text,
+      ...(obj.urgent === true ? { urgent: true } : {}),
+      ...(typeof rawId === 'string' ? { messageId: rawId.trim() } : {}),
+    },
+  };
+}
+
 async function handleDriverGesture(
   req: IncomingMessage,
   opts: RunsRequestOptions,
