@@ -10,11 +10,19 @@ import { attachCapabilityHandshake, withClientProfile } from './capability-hands
  * A MINIMAL MCP server hosting ONLY the `studio_*` tools, for the Electron app's embedded gateway.
  *
  * WHY separate from `createMcpServer` (server.ts): server.ts pulls the full wigolo subsystem graph
- * (cache → better-sqlite3), which CANNOT load in the Electron main — Electron 43's V8 rejects
- * better-sqlite3 12.9.0 (spec §13.7). This module imports ONLY the SDK + the studio tool schemas +
- * `dispatchStudioTool` (all verified better-sqlite3-free), so it boots in-process on any Electron.
- * The 10 core tools stay on the user's stdio server; the stdio proxy forwards `studio_*` here.
- * Cache-backed studio features (capture / knowledge rail) arrive in P3 behind a decoupled DB path.
+ * (cache → better-sqlite3), and this module imports ONLY the SDK + the studio tool schemas +
+ * `dispatchStudioTool`, so it boots in-process without that graph. The 10 core tools stay on the
+ * user's stdio server; the stdio proxy forwards `studio_*` here. Cache-backed studio features
+ * (capture / knowledge rail) go through the decoupled DB path.
+ *
+ * ⚠ THE ORIGINAL REASON NO LONGER HOLDS, and is corrected here rather than left to mislead. This
+ * said the graph "CANNOT load in the Electron main — Electron 43's V8 rejects better-sqlite3
+ * 12.9.0 (spec §13.7)". That was true of the 12.9.0 pin, which is V8-ABI-bound and fails with
+ * NODE_MODULE_VERSION 127 vs 148. The pin is now 13.0.3, whose Node-API prebuilds load in a real
+ * Electron 43 main — measured, in both the main and renderer processes, with FTS5 and the vector
+ * extension working and no rebuild step. So the ABI wall is gone and the separation now rests on
+ * what it costs to boot, not on what can be loaded. Keeping a falsified cause in a comment is how
+ * the next reader spends a day proving something that is already known.
  *
  * The tool set + schemas + descriptions come from the SAME ToolProvider the stdio server registers
  * (one source of truth, derived from the tool schemas — no third literal list), so the agent sees an

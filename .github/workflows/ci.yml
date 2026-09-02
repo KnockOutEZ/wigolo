@@ -338,9 +338,36 @@ jobs:
       matrix:
         # Every desktop OS across the supported Node range. The floor is Node 22
         # (`engines.node: ">=22"`): Node 20 "Iron" went EOL upstream on
-        # 2026-03-24, so it is no longer built or tested here. 12.9.0 ships
-        # prebuilt native binaries for every row (win32-x64 + darwin/linux arm64
-        # across Node 22/24), so npm ci never falls back to a source compile.
+        # 2026-03-24, so it is no longer built or tested here. better-sqlite3
+        # 13.0.3 ships prebuilt native binaries for every row: v13's are
+        # Node-API, carry no ABI suffix, and all eight targets travel in the ONE
+        # tarball, so there is no per-platform artifact to resolve. The
+        # postinstall then drops the seven the host cannot load
+        # (scripts/prune/sqlite-prebuilds.mjs).
+        #
+        # ⚠ AND ON WINDOWS `npm ci` STILL COMPILES FROM SOURCE, WHICH IS WHY
+        # THIS PIN IS NOT MERGEABLE. An earlier version of this comment claimed
+        # v13 "never falls back to a source compile on any row". That is false
+        # and was written from a green macOS run; this matrix measured it. Every
+        # macOS and Linux row passes, every Windows row fails, at `npm ci`:
+        #   npm error command C:\...\cmd.exe /d /s /c node-gyp rebuild
+        #   npm error gyp ERR! find VS could not find a version of
+        #                          Visual Studio 2017 or newer to use
+        # v12 shipped an `install` script (prebuild-install) that ran in pure
+        # Node and exited 0 the moment it found the bundled binary, so node-gyp
+        # was never invoked. v13 removed it, and npm then supplies its own
+        # implicit `node-gyp rebuild` for any package carrying a binding.gyp.
+        # better-sqlite3 publishes `gypfile: false` precisely to suppress that,
+        # and npm ignores it (npm/cli#9837, WiseLibs/better-sqlite3#1503/#1505).
+        # binding.gyp's own `prebuild_exists` guard cannot save it either: gyp
+        # must CONFIGURE before it can evaluate any variable, and configure is
+        # the step that needs the toolchain.
+        #
+        # This is not a CI-image problem to paper over. It means a Windows user
+        # without Python and VC++ Build Tools cannot `npm i wigolo` at all, and
+        # that is exactly the failure this clean-machine job exists to catch.
+        # Revisit when npm/cli#9837 lands or better-sqlite3 restores a
+        # JS-only install script.
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['22', '24']
         include:

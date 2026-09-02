@@ -1,5 +1,5 @@
 {
-  "//": "pkg config for the wigolo single-file binary. Copied to the repo root as pkg.build.json at build time so all globs resolve relative to the repo root (pkg resolves scripts/assets relative to the CONFIG file's directory — round-1 finding). The entry fed to pkg is the esbuild CJS bundle at dist/cli/agents/wigolo.bundle.cjs; `scripts` stays empty because the bundle is self-contained JS. Native .node/.dylib and asset-carrier packages are declared here so pkg's require-hook can extract them at runtime.",
+  "//": "pkg config for the wigolo single-file binary. Copied to the repo root as pkg.build.json at build time so all globs resolve relative to the repo root (pkg resolves scripts/assets relative to the CONFIG file's directory — round-1 finding). The entry fed to pkg is the esbuild CJS bundle at dist/cli/agents/wigolo.bundle.cjs; `scripts` stays empty because the bundle is self-contained JS. Native .node/.dylib and asset-carrier packages are declared here so pkg's require-hook can extract them at runtime. NOTE the better-sqlite3 line is PLATFORM-SPECIFIC and was not always: v12 compiled to a fixed `build/Release/better_sqlite3.node`, the same path on every target, so it sat with the platform-agnostic entries and binary-build.yml's composer left it alone. v13 ships per-target Node-API prebuilds under `prebuilds/<platform>-<arch>.node` and the loader computes that name at RUNTIME, so pkg cannot discover it by static analysis and it must be declared per target — this file carries the darwin-arm64 one and the workflow strips it for the other rows exactly as it does the other natives.",
   "pkg": {
     "scripts": [],
     "assets": [
@@ -17,7 +17,7 @@
       "node_modules/playwright-core/browsers.json",
       "node_modules/playwright-core/cli.js",
       "node_modules/playwright-core/**/*.js",
-      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+      "node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
       "node_modules/onnxruntime-node/bin/napi-v3/darwin/arm64/onnxruntime_binding.node",
       "node_modules/onnxruntime-node/bin/napi-v3/darwin/arm64/libonnxruntime.1.21.0.dylib",
       "node_modules/sqlite-vec-darwin-arm64/vec0.dylib",
