@@ -36,8 +36,10 @@ import {
 import { accountsEnv, DAY_MS, RC_GATE_DISABLED, RC_GATE_SKIP_NOTICE } from './rc-gate-env.js';
 import {
   blockedEgress,
+  installEnv,
   installTarball,
   packWigolo,
+  run,
   runCli,
   type FreshInstall,
   type PackedTarball,
@@ -243,12 +245,23 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     // support conversation must never happen against a moved trust root.
     expect(result.combined).toContain('custom sign-in verification key in use');
 
-    const tier = await custodyTier(full);
-    // Asserted rather than assumed: an optional-dep prebuild that failed silently
-    // would otherwise leave this arm testing the file tier while claiming the
-    // keychain one.
-    expect(['keychain', 'encrypted-file']).toContain(tier);
-    record('arm 1a — full install custody tier', `${tier}\n\n$ wigolo whoami\n${result.combined}`);
+    const custody = await custodyTier(full);
+    // Asserted rather than assumed: an optional-dep prebuild that failed silently would
+    // otherwise leave this arm testing the file tier while claiming the keychain one. The
+    // two signals must agree — the code's own predicate and the file on disk.
+    expect(
+      custody.keychainAvailable,
+      `custody signals disagree: the installed package reports keychainAvailable()=` +
+        `${custody.keychainAvailable}, but the encrypted fallback file ` +
+        `${custody.encryptedFileExists ? 'EXISTS' : 'does not exist'}`,
+    ).toBe(!custody.encryptedFileExists);
+    expect(['keychain', 'encrypted-file']).toContain(custody.tier);
+    record(
+      'arm 1a — full install custody tier',
+      `${custody.tier}\n  installed package keychainAvailable(): ${custody.keychainAvailable}\n` +
+        `  encrypted fallback file present: ${custody.encryptedFileExists}\n\n` +
+        `$ wigolo whoami\n${result.combined}`,
+    );
   }, 300_000);
 
   it('runs all ten tools against local servers only, once registered', async () => {
@@ -383,10 +396,15 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     const ran = await runCli(omitOptional, ['cache', '--stats'], { env });
     expect(ran.code).toBe(0);
 
-    const tier = await custodyTier(omitOptional);
+    const custody = await custodyTier(omitOptional);
+    // The point of this arm: with the optional dependency omitted there is no keychain
+    // binding to find, so the fallback tier is forced rather than hoped for.
+    expect(custody.keychainAvailable, 'an --omit=optional install still found a keychain binding').toBe(false);
+    expect(custody.tier).toBe('encrypted-file');
     record(
       'arm 1b — --omit=optional install',
-      `custody tier: ${tier}\n\n$ wigolo cache --stats (unregistered)\n${refused.combined}\n` +
+      `custody tier: ${custody.tier} (keychainAvailable()=${custody.keychainAvailable})\n\n` +
+        `$ wigolo cache --stats (unregistered)\n${refused.combined}\n` +
         `\n$ wigolo register --email ${email}\n${registered.combined}` +
         `\n$ wigolo cache --stats (registered) → exit ${ran.code}`,
     );
@@ -618,18 +636,60 @@ async function readState(install: FreshInstall): Promise<AccountState> {
 }
 
 /**
- * Which store the refresh credential actually landed in.
+ * Ask the INSTALLED package which custody tier it is on.
  *
- * Observed from the filesystem rather than from a log line: the encrypted file
- * either exists or it does not, and that is the one signal neither tier can fake.
+ * `wigolo/security` re-exports `keychainAvailable()` (`src/security/index.ts:10`), the same
+ * predicate `key-store.ts:108` branches on, so this is the product's own answer read out of
+ * the tarball rather than a guess about it.
  */
-async function custodyTier(install: FreshInstall): Promise<'keychain' | 'encrypted-file'> {
+const KEYCHAIN_PROBE =
+  "import('wigolo/security')" +
+  ".then((m) => { process.stdout.write(m.keychainAvailable() ? 'keychain' : 'file'); })" +
+  ".catch((e) => { process.stdout.write('probe-failed: ' + e.message); process.exitCode = 1; });";
+
+interface Custody {
+  /** What the two signals agree the credential is stored in. */
+  tier: 'keychain' | 'encrypted-file';
+  /** The installed package's own `keychainAvailable()`. */
+  keychainAvailable: boolean;
+  /** Whether the encrypted fallback file is on disk. */
+  encryptedFileExists: boolean;
+}
+
+/**
+ * Which store the refresh credential actually landed in — from TWO independent signals.
+ *
+ * A-212-11 asks for the tier to be asserted and recorded because optional-dependency
+ * prebuilds fail silently, and an unasserted tier is an unmeasured gate. One signal cannot
+ * do that: `keychainAvailable()` asked alone can only agree with itself, and the file's
+ * presence alone says nothing about what the code BELIEVED. So the predicate the product
+ * branches on is read out of the installed package, the filesystem is observed
+ * independently, and the two are required to agree — a disagreement means the credential
+ * went somewhere other than where the code thinks it did, which no single reading catches.
+ */
+async function custodyTier(install: FreshInstall): Promise<Custody> {
+  let encryptedFileExists = true;
   try {
     await readFile(join(install.dataDir, 'keys', 'account.enc'));
-    return 'encrypted-file';
   } catch {
-    return 'keychain';
+    encryptedFileExists = false;
   }
+
+  const probe = await run('node', ['-e', KEYCHAIN_PROBE], {
+    cwd: install.root,
+    env: installEnv(install),
+    timeoutMs: 120_000,
+  });
+  const reported = probe.stdout.trim();
+  if (reported !== 'keychain' && reported !== 'file') {
+    throw new Error(`the installed package's keychainAvailable() probe answered ${JSON.stringify(reported)}`);
+  }
+
+  return {
+    tier: encryptedFileExists ? 'encrypted-file' : 'keychain',
+    keychainAvailable: reported === 'keychain',
+    encryptedFileExists,
+  };
 }
 
 interface EntitlementPayload {
