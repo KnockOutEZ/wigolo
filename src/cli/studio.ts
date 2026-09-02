@@ -20,6 +20,8 @@ import { createObserver } from '../studio/observe.js';
 import { SessionMetrics } from '../studio/metrics.js';
 import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
+import { HeldSnapshot, snapshotInvalidatedEvent } from '../studio/perception/held-snapshot.js';
+import { appendRunEventWithTail } from '../studio/run-bus.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
 import { captureFromPage, captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta, type CaptureResult } from '../studio/capture/artifacts.js';
@@ -154,6 +156,15 @@ export interface StudioHostOptions extends StudioArgs {
   /** 5eb1: host-level surface for a profile↔origin binding MISMATCH (refuse-persist). Defaults to a host log.
    *  Receives origins/profileId only — never any storageState/cookie. */
   onLoginOriginMismatch?: (info: OriginMismatch) => void;
+  /**
+   * #317 (§7 row 1): the run this session drives — the log a `snapshot.invalidated` lands on, and so the
+   * SSE tail every surface projects. Absent means the session is not bound to a run (the browserless unit
+   * harness, a session spawned before its run exists): the invalidation STILL happens, it just has no log
+   * to reach. Never a reason to keep serving a snapshot we know is stale.
+   */
+  runId?: string;
+  /** #317: the tab this session's held snapshot perceives (law 4's address); rides each `snapshot.invalidated`. */
+  tabId?: string;
 }
 
 export interface StudioHost {
@@ -220,6 +231,13 @@ export interface StudioHost {
   onComment: (msg: Record<string, unknown>) => void;
   /** Human-channel pre-grant ingress (was the WS {t:'grant'}; now Electron IPC / test driver). Host-stamps party='human'; rejects party='agent'. */
   onGrant: (msg: Record<string, unknown>) => void;
+  /**
+   * #317 — §7 row 1's human-input ingress (Electron IPC / test driver): the app's input sink reports the
+   * HUMAN half of the input channel here, invalidating the session's held snapshot. `kind` is untrusted at
+   * that boundary and is coerced against §5's page-mutating shapes; anything else is ignored. Returns
+   * whether a live snapshot was actually invalidated (false = nothing was held, or it was already stale).
+   */
+  onHumanInput: (kind: unknown) => boolean;
 }
 
 /**
@@ -397,7 +415,36 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     agentMouseAt: async () => {},
     viewportCenter: () => ({ x: 0, y: 0 }),
   };
-  controller = new SessionController(controlToken, noopInputSink, (msg) => hub.broadcast(session.id, msg));
+  // #317 — §7 row 1: THE SESSION'S ONE HELD SNAPSHOT. Created here, before every consumer, because the
+  // three surfaces that read it must be reading the SAME object: the observer (its diff base), the act
+  // handler (a `ref` was minted from it) and this controller (the human half of the input channel, which
+  // is the trigger). Three holders — the pre-#317 state, where each consumer defaulted to a private one —
+  // let studio_observe and studio_act disagree about whether the page is still the one the agent knows,
+  // which is exactly the disagreement the holder exists to make impossible.
+  //
+  // `onInvalidated` binds to the run log (law 1: every surface is a projection of the one event stream),
+  // which also puts it on the SSE tail. `dataDir` is threaded so a test's run projection stays in its own
+  // tmpdir. The append is best-effort BY DESIGN: the human's keystroke has already landed on the real
+  // page, so a failure to record must not stop the invalidation — but it is logged, never swallowed.
+  const held = new HeldSnapshot({
+    ...(opts.tabId !== undefined ? { tabId: opts.tabId } : {}),
+    onInvalidated: (invalidation) => {
+      const runId = opts.runId;
+      if (!runId) return; // no run bound to this session — nothing to project onto
+      try {
+        appendRunEventWithTail(getDatabase(), runId, snapshotInvalidatedEvent(invalidation), { dataDir: opts.dataDir });
+      } catch (e) {
+        logger.warn('snapshot.invalidated not recorded on the run log', { runId, error: e instanceof Error ? e.message : String(e) });
+      }
+    },
+  });
+  const sessionController = new SessionController(controlToken, noopInputSink, (msg) => hub.broadcast(session.id, msg), held);
+  controller = sessionController;
+  // #317: the human-input ingress (mirrors onComment/onGrant — was a WS message, now Electron IPC / a test
+  // driver). The app's debuggerInputSink reports the HUMAN half of the input channel over IPC; `kind` is
+  // untrusted at that boundary and `humanInput` coerces it (an unrecognised or non-page-mutating shape is
+  // ignored, never guessed at). Returns whether a live snapshot was actually invalidated.
+  const onHumanInputHandler = (kind: unknown): boolean => sessionController.humanInput(kind);
 
   // Phase 6c approval round-trip. Its ONE consumer is driveGate.requestApproval below (the D9 authenticated-use
   // card), which holds a `navigate` to a signed-in origin until the human answers. It does NOT gate risky
@@ -515,7 +562,16 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const navEpoch = new NavEpoch();
   const navInterceptor = new NavInterceptor(
     () => policyForHolder(controlToken.holder, grant),
-    () => navEpoch.bumpNavigation(),
+    () => {
+      navEpoch.bumpNavigation();
+      // #317 — §7 row 1's `navigation` cause, which must not be left to the app alone: the epoch bump is
+      // deliberately source-agnostic, so this ONE callback is where a human hop is distinguishable. The
+      // control token IS the attribution (law 3, one driver at a time): a committed hop while the HUMAN
+      // holds the token is a human navigation and invalidates; the agent's own `studio_act navigate` runs
+      // under holder='agent' and cannot reach the trigger, which is the property `HeldSnapshot` promises.
+      // An agent nav still forces a full snapshot — via the observe `navigated` path, not this one.
+      if (controlToken.holder === 'human') held.humanEdit('navigation');
+    },
   );
   await navInterceptor.start(sessionBrowser.cdp);
   // Finding A: rebind the nav interceptor on the FRESH cdp BEFORE the crash-recovery
@@ -788,6 +844,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const observe = createObserver({
     snapshot: () => snapshotter.snapshot(sessionBrowser.cdp),
     eventQueue,
+    // #317: the SESSION's holder, not the observer's private default — the diff base and the act handler's
+    // staleness verdict come from one object, so they cannot disagree.
+    held,
     inlineBudget: cfg.studioSnapshotTokenBudget,
     spillMaxBytes: STUDIO_SPILL_MAX_BYTES,
     dataDir: opts.dataDir,
@@ -925,6 +984,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     controlToken,
     grant,
     resolve,
+    // #317: the SAME holder the observer reads. A `ref` the agent chose from a page a human has since
+    // changed is refused here (`page_changed_by_human`) rather than resolved against the new page.
+    held,
     channel: controller,
     audit: auditLog,
     ...(flow ? { flow } : {}),
@@ -1097,7 +1159,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, originBudget, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m) };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, originBudget, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m), onHumanInput: onHumanInputHandler };
 }
 
 /** The teardown-relevant slice of a StudioHost (structural — StudioHost satisfies it). */
