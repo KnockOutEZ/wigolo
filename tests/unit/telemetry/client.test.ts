@@ -385,7 +385,7 @@ describe('TelemetryClient', () => {
       expect(new TelemetryQueue(dataDir).count()).toBe(1);
     });
 
-    it('forces refresh when the memory-only access token is stale despite the daily throttle', async () => {
+    it('respects the automatic refresh throttle when the memory-only access token is stale', async () => {
       new AccountStateStore(dataDir).write({
         account_id: 'acc_test',
         email: 'x@example.com',
@@ -427,8 +427,89 @@ describe('TelemetryClient', () => {
       });
       telemetry.emit(toolRun());
 
+      await expect(telemetry.flush()).resolves.toMatchObject({ status: 'no_token', sent: 0, retained: 1 });
+      expect(paths).toEqual([]);
+    });
+
+    it('mints an access JWT when the automatic refresh throttle window is open', async () => {
+      new AccountStateStore(dataDir).write({ account_id: 'acc_test', email: 'x@example.com' });
+      await storeRefreshToken('refresh-token', { dataDir });
+      const paths: string[] = [];
+      const accounts = new AccountsClient({
+        baseUrl: BASE_URL,
+        fetchImpl: async (url, init) => {
+          const path = new URL(url).pathname;
+          paths.push(path);
+          if (path === '/auth/refresh') {
+            return new Response(JSON.stringify({
+              access_token: 'fresh-access',
+              access_expires_in_s: 900,
+              refresh_token: 'rotated-refresh',
+              refresh_expires_at: '2026-12-01T00:00:00.000Z',
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+          }
+          if (path === '/entitlements/token') {
+            return new Response(JSON.stringify({ token: 'ent', valid_until: '2026-12-01T00:00:00.000Z', kid: 'k1' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          expect((init?.headers as Record<string, string>)['authorization']).toBe('Bearer fresh-access');
+          return ok(1);
+        },
+      });
+      const telemetry = new TelemetryClient({
+        dataDir,
+        accountsUrl: BASE_URL,
+        enabled: true,
+        accountsClient: accounts,
+        now: () => clock,
+        sleep: async (ms) => { clock += ms; },
+        client: CLIENT_INFO,
+      });
+      telemetry.emit(toolRun());
+
       await expect(telemetry.flush()).resolves.toMatchObject({ status: 'sent', sent: 1 });
       expect(paths).toEqual(['/auth/refresh', '/entitlements/token', '/telemetry/batch']);
+    });
+
+    it('attempts a dead refresh credential at most once per throttle window', async () => {
+      new AccountStateStore(dataDir).write({ account_id: 'acc_test', email: 'x@example.com' });
+      await storeRefreshToken('dead-refresh-token', { dataDir });
+      const paths: string[] = [];
+      const accounts = new AccountsClient({
+        baseUrl: BASE_URL,
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          paths.push(path);
+          return err(401, 'invalid_refresh');
+        },
+      });
+      const telemetry = new TelemetryClient({
+        dataDir,
+        accountsUrl: BASE_URL,
+        enabled: true,
+        accountsClient: accounts,
+        now: () => clock,
+        sleep: async (ms) => { clock += ms; },
+        client: CLIENT_INFO,
+      });
+      telemetry.start();
+      try {
+        for (let i = 0; i < FLUSH_EVENT_THRESHOLD; i += 1) telemetry.emit(toolRun());
+        await vi.waitFor(() => expect(paths).toEqual(['/auth/refresh']));
+
+        for (let i = 0; i < 3; i += 1) {
+          clock += MIN_FLUSH_SPACING_MS;
+          telemetry.emit(toolRun('fetch'));
+          await telemetry.flush();
+        }
+
+        expect(new AccountStateStore(dataDir).read().needs_relogin).toBe(true);
+        expect(paths).toEqual(['/auth/refresh']);
+      } finally {
+        telemetry.stop();
+      }
     });
   });
 

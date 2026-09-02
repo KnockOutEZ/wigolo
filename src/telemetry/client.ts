@@ -329,9 +329,9 @@ export class TelemetryClient {
   private async acquireAccessToken(): Promise<string | null> {
     const cached = getAccessToken({ dataDir: this.dataDir }, this.now());
     if (cached !== null) return cached;
-    // Access JWT expiry is a hard protocol need, not the once-daily entitlement refresh.
-    // Bypass that throttle here so a healthy refresh credential always mints a fresh Bearer.
-    const outcome = await maybeRefresh({ dataDir: this.dataDir, client: this.accounts, nowMs: this.now, force: true });
+    // A fresh access JWT is a protocol need, but telemetry is still an automatic path. The
+    // shared 24-hour refresh throttle therefore decides when a new Bearer may be minted.
+    const outcome = await maybeRefresh({ dataDir: this.dataDir, client: this.accounts, nowMs: this.now });
     if (outcome.status !== 'refreshed') {
       log.debug('telemetry flush has no access token', { refresh: outcome.status });
       return null;
