@@ -75,9 +75,19 @@ const SUBPATHS: Subpath[] = [
     runtime: ['normalizeUrl', 'sanitizeFtsQuery'],
   },
   {
+    // A7 adds the class and the test reset beside the singleton. The factory is not a
+    // substitute: it hard-codes `dbPath`, `syncMode` and `maxAttempts` and takes no provider,
+    // so the extracted layer's constructor-injected specs cannot reach it, and without the
+    // reset hook two of them share one cached singleton over one db file.
+    // `_resetBackgroundIndexQueueForTest` is test support published on purpose — pinning it
+    // here is what makes that a decision rather than an accident.
     spec: 'wigolo/embedding-queue',
     target: './dist/embedding/index.js',
-    runtime: ['getBackgroundIndexQueue'],
+    runtime: [
+      'BackgroundIndexQueue',
+      '_resetBackgroundIndexQueueForTest',
+      'getBackgroundIndexQueue',
+    ],
   },
   {
     spec: 'wigolo/search-tokens',
@@ -107,12 +117,17 @@ const SUBPATHS: Subpath[] = [
     // onto these subpaths, and the compiler enumerated ten more that the layer measurably
     // imports. A6 widened the barrel to exactly that enumeration plus the handle +
     // `resolveHostToken` set D1's switch table sends here when C4 deletes `wigolo/studio`.
+    // A7 adds the two origin-budget defaults: the gate's own spec asserts against them, and
+    // the only other door to them is `wigolo/studio`, which loads a second `OriginBudget`
+    // beside the one under test and boots the engine at import time.
     // Still a ceiling: each name below has a named import site outside core. Daemon-route
     // auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately out —
     // core imports it directly and nothing outside core reaches for it.
     spec: 'wigolo/companion',
     target: './dist/companion/index.js',
     runtime: [
+      'DEFAULT_ANONYMOUS_ORIGIN_BUDGET',
+      'DEFAULT_ORIGIN_BUDGET',
       'OriginBudget',
       'budgetOrigin',
       'budgetRefusal',

@@ -3,7 +3,8 @@
  *
  * Not a general barrel: it carries exactly what the extracted studio domain layer and the app
  * were MEASURED importing from this directory (A4 2026-09-02, widened at A6 2026-09-02 from the
- * compiler's own enumeration once B1 rewrote `packages/studio-core` onto these subpaths). Every
+ * compiler's own enumeration once B1 rewrote `packages/studio-core` onto these subpaths, and again
+ * at A7 2026-09-02 for the two origin-budget defaults the extracted specs name). Every
  * other kept file here is reached by core's own seams — the daemon, the CLI, config, the fetch
  * router — which import the module directly and do not need a subpath at all.
  *
@@ -21,11 +22,15 @@ export { normalizeOrigin, type AuthenticatedOriginOverrides } from './origin.js'
 // `session.ts` mints the host token; the app resolves the configured one (D1 switch table).
 export { mintHostToken, resolveHostToken } from './auth.js';
 
-// `agent-drive-gate.ts` — per-origin escalation budget.
+// `agent-drive-gate.ts` — per-origin escalation budget. The two defaults are the library
+// constants the gate's own spec asserts against: a test that hardcodes `20` mirrors a number
+// with nothing keeping the two in step, and goes green on a stale value the day core changes it.
 export {
   budgetOrigin,
   budgetRefusal,
   OriginBudget,
+  DEFAULT_ORIGIN_BUDGET,
+  DEFAULT_ANONYMOUS_ORIGIN_BUDGET,
   type OriginBudgetVerdict,
   type OriginClass,
 } from './origin-budget.js';
