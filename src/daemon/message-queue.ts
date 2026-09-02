@@ -23,7 +23,7 @@
  * carried a message so all four remain distinguishable in one log.
  */
 import type Database from 'better-sqlite3';
-import { appendRunEventWithTail, subscribeRunEvents } from '../studio/run-bus.js';
+import { appendRunEventWithTail } from '../studio/run-bus.js';
 import {
   eventsOfTypes,
   getRun,
@@ -36,10 +36,15 @@ import {
   type ProjectableEvent,
   type Run,
   type RunEvent,
+  type RunEventInput,
+  type TypedEventQuery,
+  type UnansweredEventQuery,
 } from '../studio/run-store.js';
 import { createLogger } from '../logger.js';
 import { currentClientProfile, hasCapability, type ClientProfile } from './capability-handshake.js';
 import { notDriving } from './driver-baton.js';
+import { resolveDispatchStore, type DispatchStoreOptions } from './dispatch-store.js';
+import type { RunsStore } from './rest/runs-store.js';
 import type { DeliveryHooks, McpToolResult } from './studio-dispatch.js';
 
 const log = createLogger('studio');
@@ -256,14 +261,36 @@ export function queueMessage(db: Database.Database, runId: string, input: QueueM
  * Bounded by `limit`, and FIFO within it.
  */
 export function undeliveredMessages(db: Database.Database, runId: string, limit = MAX_MESSAGES_PER_RESULT): RunMessage[] {
-  return unansweredEvents(db, runId, {
-    askType: MESSAGE_QUEUED,
-    answerType: MESSAGE_DELIVERED,
-    correlationKey: CORRELATION_KEY,
-    limit,
-  })
-    .map(queuedMessageOf)
-    .filter((m): m is RunMessage => m !== undefined);
+  return messagesOf(unansweredEvents(db, runId, undeliveredQuery(limit)));
+}
+
+/**
+ * THE anti-join, named once (#331). Both the handle path above and the port path below ask this
+ * exact question; two spellings of it would be two definitions of "not yet delivered".
+ */
+function undeliveredQuery(limit: number): UnansweredEventQuery {
+  return { askType: MESSAGE_QUEUED, answerType: MESSAGE_DELIVERED, correlationKey: CORRELATION_KEY, limit };
+}
+
+function unacknowledgedQuery(limit: number): UnansweredEventQuery {
+  return { askType: MESSAGE_DELIVERED, answerType: MESSAGE_ACKNOWLEDGED, correlationKey: CORRELATION_KEY, limit };
+}
+
+/** Queued rows read back as messages, dropping any row that is not one. */
+function messagesOf(rows: readonly ProjectableEvent[]): RunMessage[] {
+  return rows.map(queuedMessageOf).filter((m): m is RunMessage => m !== undefined);
+}
+
+/**
+ * The undelivered set over the store PORT. A binding with no anti-join delivers nothing on every
+ * call, which is the same degradation an unreadable store already had: messages stay queued.
+ */
+async function undeliveredOn(store: RunsStore, runId: string, limit = MAX_MESSAGES_PER_RESULT): Promise<RunMessage[]> {
+  return messagesOf((await store.unansweredEvents?.(runId, undeliveredQuery(limit))) ?? []);
+}
+
+async function unacknowledgedOn(store: RunsStore, runId: string, limit = MAX_MESSAGES_PER_RESULT): Promise<ProjectableEvent[]> {
+  return (await store.unansweredEvents?.(runId, unacknowledgedQuery(limit))) ?? [];
 }
 
 /**
@@ -271,12 +298,7 @@ export function undeliveredMessages(db: Database.Database, runId: string, limit 
  * exactly what this call's existence acknowledges (A-51-4).
  */
 export function unacknowledgedDeliveries(db: Database.Database, runId: string, limit = MAX_MESSAGES_PER_RESULT): ProjectableEvent[] {
-  return unansweredEvents(db, runId, {
-    askType: MESSAGE_DELIVERED,
-    answerType: MESSAGE_ACKNOWLEDGED,
-    correlationKey: CORRELATION_KEY,
-    limit,
-  });
+  return unansweredEvents(db, runId, unacknowledgedQuery(limit));
 }
 
 export interface DeliverOptions {
@@ -302,15 +324,46 @@ export function deliverMessages(db: Database.Database, runId: string, opts: Deli
     : undeliveredMessages(db, runId, opts.limit ?? MAX_MESSAGES_PER_RESULT);
   const delivered: RunMessage[] = [];
   for (const message of pending) {
-    // No `step` in the payload: the row's own `seq` IS step N (A-51-3, A-54-1), and a copy of it in
-    // the payload would be a second source of truth for one number — one that can only ever be
-    // written by predicting a `seq` the append has not assigned yet.
-    const event = appendRunEventWithTail(db, runId, {
-      actor,
-      type: MESSAGE_DELIVERED,
-      payload: { messageId: message.messageId, via },
-    });
-    delivered.push({ ...message, state: 'delivered', deliveredAtStep: event.seq, deliveredVia: via });
+    const event = appendRunEventWithTail(db, runId, deliveryEvent(message, via, actor));
+    delivered.push(deliveredMessage(message, event, via));
+  }
+  return delivered;
+}
+
+/**
+ * WHAT ONE DELIVERY IS — the row it appends and the message it yields, defined once (#331).
+ *
+ * The handle path and the port path differ only in how they get the row written; what a delivery
+ * MEANS is here, so the two cannot drift into disagreeing about it.
+ *
+ * No `step` in the payload: the row's own `seq` IS step N (A-51-3, A-54-1), and a copy of it in the
+ * payload would be a second source of truth for one number — one that can only ever be written by
+ * predicting a `seq` the append has not assigned yet.
+ */
+function deliveryEvent(message: RunMessage, via: DeliveryMechanism, actor: Actor): RunEventInput {
+  return { actor, type: MESSAGE_DELIVERED, payload: { messageId: message.messageId, via } };
+}
+
+function deliveredMessage(message: RunMessage, event: RunEvent, via: DeliveryMechanism): RunMessage {
+  return { ...message, state: 'delivered', deliveredAtStep: event.seq, deliveredVia: via };
+}
+
+/**
+ * Deliver over the store PORT. A binding with no append delivers nothing and marks nothing, which
+ * keeps the queue's one invariant: a message is never recorded as delivered onto a result it did
+ * not ride.
+ */
+async function deliverOn(store: RunsStore, runId: string, opts: DeliverOptions = {}): Promise<RunMessage[]> {
+  if (!store.appendEvent) return [];
+  const via = opts.via ?? 'piggyback';
+  const actor = opts.actor ?? DAEMON;
+  const pending = opts.messages
+    ? [...opts.messages].slice(0, opts.limit ?? MAX_MESSAGES_PER_RESULT)
+    : await undeliveredOn(store, runId, opts.limit ?? MAX_MESSAGES_PER_RESULT);
+  const delivered: RunMessage[] = [];
+  for (const message of pending) {
+    const event = await store.appendEvent(runId, deliveryEvent(message, via, actor));
+    delivered.push(deliveredMessage(message, event, via));
   }
   return delivered;
 }
@@ -324,16 +377,36 @@ export function acknowledgeDelivered(db: Database.Database, runId: string, opts:
   const actor = opts.actor ?? DAEMON;
   const acknowledged: string[] = [];
   for (const delivery of unacknowledgedDeliveries(db, runId, opts.limit ?? MAX_TYPED_EVENT_ROWS)) {
-    const messageId = str(delivery.payload.messageId);
-    if (!messageId) continue;
-    // `step` here names the DELIVERY this acknowledges, which is information the row does not
-    // otherwise carry — unlike the delivered row's own step, which is its `seq`.
-    appendRunEventWithTail(db, runId, {
-      actor,
-      type: MESSAGE_ACKNOWLEDGED,
-      payload: { messageId, step: delivery.seq },
-    });
-    acknowledged.push(messageId);
+    const ack = acknowledgementEvent(delivery, actor);
+    if (!ack) continue;
+    appendRunEventWithTail(db, runId, ack.input);
+    acknowledged.push(ack.messageId);
+  }
+  return acknowledged;
+}
+
+/**
+ * WHAT ONE ACKNOWLEDGEMENT IS, defined once for both paths (#331).
+ *
+ * `step` here names the DELIVERY this acknowledges, which is information the row does not otherwise
+ * carry — unlike the delivered row's own step, which is its `seq`.
+ */
+function acknowledgementEvent(delivery: ProjectableEvent, actor: Actor): { input: RunEventInput; messageId: string } | undefined {
+  const messageId = str(delivery.payload.messageId);
+  if (!messageId) return undefined;
+  return { messageId, input: { actor, type: MESSAGE_ACKNOWLEDGED, payload: { messageId, step: delivery.seq } } };
+}
+
+/** Acknowledge over the store PORT. No append means nothing is acknowledged and nothing is lost. */
+async function acknowledgeOn(store: RunsStore, runId: string, opts: { actor?: Actor; limit?: number } = {}): Promise<string[]> {
+  if (!store.appendEvent) return [];
+  const actor = opts.actor ?? DAEMON;
+  const acknowledged: string[] = [];
+  for (const delivery of await unacknowledgedOn(store, runId, opts.limit ?? MAX_TYPED_EVENT_ROWS)) {
+    const ack = acknowledgementEvent(delivery, actor);
+    if (!ack) continue;
+    await store.appendEvent(runId, ack.input);
+    acknowledged.push(ack.messageId);
   }
   return acknowledged;
 }
@@ -372,7 +445,22 @@ export function getMessage(db: Database.Database, runId: string, messageId: stri
  * message is in", which is the whole of law 1 at this scale: two folds would be two answers.
  */
 function foldMessages(db: Database.Database, runId: string): Map<string, RunMessage> {
-  const rows = eventsOfTypes(db, runId, { types: MESSAGE_EVENT_TYPES, limit: MAX_TYPED_EVENT_ROWS, newestFirst: true });
+  return foldRows(eventsOfTypes(db, runId, MESSAGE_WINDOW));
+}
+
+/** The window both paths fold, named once so neither can read a different one. */
+const MESSAGE_WINDOW: TypedEventQuery = { types: MESSAGE_EVENT_TYPES, limit: MAX_TYPED_EVENT_ROWS, newestFirst: true };
+
+/** The fold over the store PORT. No typed read means no message is known, so none is folded. */
+async function foldMessagesOn(store: RunsStore, runId: string): Promise<Map<string, RunMessage>> {
+  return foldRows((await store.typedEvents?.(runId, MESSAGE_WINDOW)) ?? []);
+}
+
+async function getMessageOn(store: RunsStore, runId: string, messageId: string): Promise<RunMessage | undefined> {
+  return (await foldMessagesOn(store, runId)).get(messageId);
+}
+
+function foldRows(rows: readonly ProjectableEvent[]): Map<string, RunMessage> {
   const byId = new Map<string, RunMessage>();
   // Oldest first inside the window, so a fold reads the states in the order they happened.
   for (const row of [...rows].sort((a, b) => a.seq - b.seq)) {
@@ -448,13 +536,7 @@ function clientOf(raw: unknown): ClientInfo | undefined {
 // Mechanism 1 — return-channel piggyback (§3.2), at the dispatch seam.
 // ---------------------------------------------------------------------------
 
-export interface DeliveryHooksOptions {
-  /**
-   * The run log. Resolved per call and allowed to fail, for the same reason the baton gate's is: a
-   * process that cannot open the store has no queue to drain, and refusing the call over that would
-   * be a worse answer than the surface had before the queue existed.
-   */
-  openDb?: () => Promise<Database.Database | undefined>;
+export interface DeliveryHooksOptions extends DispatchStoreOptions {
   /** Which run this call is about. The same seam `#217` moves onto the connection's attachment. */
   runIdFor?: (name: string, args: Record<string, unknown>) => string | undefined;
   /** Who is calling. Defaults to the MCP handshake badge, scoped over the dispatch. */
@@ -473,23 +555,14 @@ function runIdFromArgs(_name: string, args: Record<string, unknown>): string | u
   return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
 }
 
-async function defaultDb(): Promise<Database.Database | undefined> {
-  try {
-    const { getDatabase } = await import('../cache/db.js');
-    return getDatabase();
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Resolve the run this call is about, and refuse to touch its queue unless the caller is the one
  * driving it. Absence allows, exactly as the baton does: an unnamed run, an unreadable store or a
  * badgeless client is not evidence that someone ELSE holds the wheel, and delivering to the only
  * client there is is the whole of the single-client case.
  */
-function drivingRun(db: Database.Database, runId: string, caller: ClientInfo | undefined): Run | undefined {
-  const run = getRun(db, runId);
+async function drivingRun(store: RunsStore, runId: string, caller: ClientInfo | undefined): Promise<Run | undefined> {
+  const run = await store.get(runId);
   if (!run) return undefined;
   return notDriving(run, caller) ? undefined : run;
 }
@@ -525,7 +598,7 @@ export function withHumanMessages(result: McpToolResult, messages: readonly RunM
  * is "at the agent's next tool call".
  */
 export function createDeliveryHooks(options: DeliveryHooksOptions = {}): DeliveryHooks {
-  const openDb = options.openDb ?? defaultDb;
+  const openStore = resolveDispatchStore(options);
   const runIdFor = options.runIdFor ?? runIdFromArgs;
   const profile = options.profile ?? currentClientProfile;
   const caller = options.caller ?? (() => profile().client);
@@ -537,13 +610,13 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
     });
   });
 
-  async function resolve(name: string, args: Record<string, unknown>): Promise<{ db: Database.Database; run: Run } | undefined> {
+  async function resolve(name: string, args: Record<string, unknown>): Promise<{ store: RunsStore; run: Run } | undefined> {
     const runId = runIdFor(name, args);
     if (!runId) return undefined;
-    const db = await openDb();
-    if (!db) return undefined;
-    const run = drivingRun(db, runId, caller());
-    return run ? { db, run } : undefined;
+    const store = await openStore();
+    if (!store) return undefined;
+    const run = await drivingRun(store, runId, caller());
+    return run ? { store, run } : undefined;
   }
 
   return {
@@ -554,30 +627,30 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
       try {
         const runId = runIdFor(name, args);
         if (!runId) return undefined;
-        const db = await openDb();
-        if (!db) return undefined;
-        let run = getRun(db, runId);
+        const store = await openStore();
+        if (!store) return undefined;
+        let run = await store.get(runId);
         if (!run) return undefined;
         const who = caller();
 
-        const queued = undeliveredMessages(db, run.id);
+        const queued = await undeliveredOn(store, run.id);
         if (queued.length > 0 && !notDriving(run, who) && hasCapability(profile(), 'push')) {
           await outOfBandProbe(run.id, queued);
           // Stub only until SD8: never append a delivery row here. Falling through is the contract.
         }
 
-        let pending = pendingInterrupt(db, run, who);
+        let pending = await pendingInterrupt(store, run, who);
         const mayAcknowledge = !notDriving(run, who)
           || (pending !== undefined && driverMatchesCaller(pending.target, who))
-          || priorInterruptWasFor(db, run, who);
+          || await priorInterruptWasFor(store, run, who);
         if (mayAcknowledge) {
-          acknowledgeDelivered(db, run.id, { actor: callerActor(who, run) });
+          await acknowledgeOn(store, run.id, { actor: callerActor(who, run) });
           // The acknowledgement append advanced the head used to bound the durable interrupt scan.
-          run = getRun(db, run.id) ?? run;
-          pending = pendingInterrupt(db, run, who);
+          run = (await store.get(run.id)) ?? run;
+          pending = await pendingInterrupt(store, run, who);
         }
         if (!pending) return undefined;
-        return consumeInterrupt(db, run, who, pending);
+        return await consumeInterrupt(store, run, who, pending);
       } catch (err) {
         log.warn('delivery interrupt check failed; continuing normal dispatch', { error: String(err) });
         return undefined;
@@ -587,7 +660,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
       try {
         const resolved = await resolve(name, args);
         if (!resolved) return;
-        acknowledgeDelivered(resolved.db, resolved.run.id, { actor: actorForRun(resolved.run) });
+        await acknowledgeOn(resolved.store, resolved.run.id, { actor: actorForRun(resolved.run) });
       } catch (err) {
         log.warn('delivery queue could not acknowledge; leaving the messages delivered', { error: String(err) });
       }
@@ -595,7 +668,7 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
     async deliver(name, args, result, signal) {
       try {
         if (isWaitForHumanResult(name, args, result)) {
-          return await resolveHumanWait(openDb, runIdFor, caller, activeWaits, name, args, result, signal);
+          return await resolveHumanWait(openStore, runIdFor, caller, activeWaits, name, args, result, signal);
         }
         const resolved = await resolve(name, args);
         if (!resolved) return result;
@@ -603,13 +676,13 @@ export function createDeliveryHooks(options: DeliveryHooksOptions = {}): Deliver
         // messages leaves them queued for the next one rather than marking them delivered into
         // nowhere. So the pending set is read, the merge is rehearsed, and only then are the
         // `message.delivered` rows written for exactly the messages that rode.
-        const pending = undeliveredMessages(resolved.db, resolved.run.id);
+        const pending = await undeliveredOn(resolved.store, resolved.run.id);
         if (pending.length === 0) return result;
         if (!withHumanMessages(result, pending)) {
           log.debug('delivery queue: result block is not a JSON object; messages stay queued', { run: resolved.run.id });
           return result;
         }
-        const delivered = deliverMessages(resolved.db, resolved.run.id, {
+        const delivered = await deliverOn(resolved.store, resolved.run.id, {
           via: 'piggyback',
           actor: actorForRun(resolved.run),
         });
@@ -656,30 +729,39 @@ function callerActor(caller: ClientInfo | undefined, run: Run): Actor {
   };
 }
 
-function pendingInterrupt(db: Database.Database, run: Run, caller: ClientInfo | undefined): PendingInterrupt | undefined {
-  for (const event of unconsumedInterruptEvents(db, run.id, caller)) {
-    if (event.type === 'driver.changed') {
-      if (event.payload.cause !== 'takeover') continue;
-      const target = driverFrom(event.payload.from);
-      if (!target || !driverMatchesCaller(target, caller)) continue;
-      const detail = str(event.payload.reason);
-      return { event, target, reason: 'human took control', ...(detail ? { detail } : {}) };
-    }
-    if (event.type === MESSAGE_QUEUED) {
-      if (event.actor.kind !== 'human' || event.payload.urgent !== true || notDriving(run, caller)) continue;
-      const messageId = str(event.payload.messageId);
-      // A wait or an earlier result may already have carried this urgent message. In that case the
-      // interrupt mechanism lost the race, exactly as the selection rule says it should.
-      if (!messageId || getMessage(db, run.id, messageId)?.state !== 'queued') continue;
-      return { event, target: run.driver, reason: 'urgent human message', detail: str(event.payload.text), messageId };
-    }
-    if (event.actor.kind !== 'human' || notDriving(run, caller)) continue;
-    if (event.type === 'run.paused') {
-      return { event, target: run.driver, reason: 'human paused the run', detail: str(event.payload.detail) ?? str(event.payload.reason) };
-    }
-    return { event, target: run.driver, reason: 'human cancelled the run', detail: str(event.payload.reason) };
+async function pendingInterrupt(store: RunsStore, run: Run, caller: ClientInfo | undefined): Promise<PendingInterrupt | undefined> {
+  // A binding with no trigger read is owed no interrupt it can prove, so mechanism 3 is simply off
+  // there: the call dispatches normally rather than being handed a receipt nobody recorded.
+  const event = await store.interruptTrigger?.(run.id, caller);
+  if (!event) return undefined;
+  const pending = classifyTrigger(event, run, caller);
+  if (!pending?.messageId) return pending;
+  // A wait or an earlier result may already have carried this urgent message. In that case the
+  // interrupt mechanism lost the race, exactly as the selection rule says it should.
+  const message = await getMessageOn(store, run.id, pending.messageId);
+  return message?.state === 'queued' ? pending : undefined;
+}
+
+/** Which interruption a trigger row IS — pure, so the state check above is the only read left. */
+function classifyTrigger(event: RunEvent, run: Run, caller: ClientInfo | undefined): PendingInterrupt | undefined {
+  if (event.type === 'driver.changed') {
+    if (event.payload.cause !== 'takeover') return undefined;
+    const target = driverFrom(event.payload.from);
+    if (!target || !driverMatchesCaller(target, caller)) return undefined;
+    const detail = str(event.payload.reason);
+    return { event, target, reason: 'human took control', ...(detail ? { detail } : {}) };
   }
-  return undefined;
+  if (event.type === MESSAGE_QUEUED) {
+    if (event.actor.kind !== 'human' || event.payload.urgent !== true || notDriving(run, caller)) return undefined;
+    const messageId = str(event.payload.messageId);
+    if (!messageId) return undefined;
+    return { event, target: run.driver, reason: 'urgent human message', detail: str(event.payload.text), messageId };
+  }
+  if (event.actor.kind !== 'human' || notDriving(run, caller)) return undefined;
+  if (event.type === 'run.paused') {
+    return { event, target: run.driver, reason: 'human paused the run', detail: str(event.payload.detail) ?? str(event.payload.reason) };
+  }
+  return { event, target: run.driver, reason: 'human cancelled the run', detail: str(event.payload.reason) };
 }
 
 interface InterruptEventRow { seq: number; ts: string; actor: string; type: string; payload: string }
@@ -733,13 +815,13 @@ export function unconsumedInterruptEvents(db: Database.Database, runId: string, 
   }));
 }
 
-function priorInterruptWasFor(db: Database.Database, run: Run, caller: ClientInfo | undefined): boolean {
-  if (!unacknowledgedDeliveries(db, run.id).some((row) => row.payload.via === 'interrupt')) return false;
-  const rows = eventsOfTypes(db, run.id, {
+async function priorInterruptWasFor(store: RunsStore, run: Run, caller: ClientInfo | undefined): Promise<boolean> {
+  if (!(await unacknowledgedOn(store, run.id)).some((row) => row.payload.via === 'interrupt')) return false;
+  const rows = (await store.typedEvents?.(run.id, {
     types: [DELIVERY_INTERRUPT_CONSUMED],
     limit: MAX_TYPED_EVENT_ROWS,
     newestFirst: true,
-  });
+  })) ?? [];
   const target = driverFrom(rows[0]?.payload.target);
   return target !== undefined && driverMatchesCaller(target, caller);
 }
@@ -758,23 +840,23 @@ function interruptResult(pending: PendingInterrupt): McpToolResult {
   };
 }
 
-function consumeInterrupt(
-  db: Database.Database,
+async function consumeInterrupt(
+  store: RunsStore,
   run: Run,
   caller: ClientInfo | undefined,
   pending: PendingInterrupt,
-): McpToolResult | undefined {
+): Promise<McpToolResult | undefined> {
   const base = interruptResult(pending);
   const waiting = pending.messageId
-    ? [getMessage(db, run.id, pending.messageId)].filter((message): message is RunMessage => message?.state === 'queued')
-    : undeliveredMessages(db, run.id);
+    ? [await getMessageOn(store, run.id, pending.messageId)].filter((message): message is RunMessage => message?.state === 'queued')
+    : await undeliveredOn(store, run.id);
   // Rehearse the merge before recording delivery. A fixed JSON object is expected here, but
   // preserving the queue's no-delivery-into-nowhere invariant costs almost nothing.
   if (waiting.length > 0 && !withHumanMessages(base, waiting)) return undefined;
   const delivered = waiting.length > 0
-    ? deliverMessages(db, run.id, { via: 'interrupt', actor: callerActor(caller, run), messages: waiting })
+    ? await deliverOn(store, run.id, { via: 'interrupt', actor: callerActor(caller, run), messages: waiting })
     : [];
-  appendRunEventWithTail(db, run.id, {
+  await store.appendEvent?.(run.id, {
     actor: callerActor(caller, run),
     type: DELIVERY_INTERRUPT_CONSUMED,
     payload: { triggerSeq: pending.event.seq, target: pending.target },
@@ -811,7 +893,7 @@ function mintWaitId(): string {
 }
 
 async function resolveHumanWait(
-  openDb: () => Promise<Database.Database | undefined>,
+  openStore: () => Promise<RunsStore | undefined>,
   runIdFor: (name: string, args: Record<string, unknown>) => string | undefined,
   caller: () => ClientInfo | undefined,
   activeWaits: Map<string, () => void>,
@@ -827,9 +909,17 @@ async function resolveHumanWait(
   if (reason.length > MAX_MESSAGE_TEXT_CHARS) {
     return waitError('invalid_wait', `wait_for_human reason is capped at ${MAX_MESSAGE_TEXT_CHARS} characters.`);
   }
-  const db = await openDb();
-  if (!db) return waitError('run_store_unavailable', 'The run store is unavailable; the wait was not started.');
-  const run = drivingRun(db, runId, caller());
+  const store = await openStore();
+  if (!store) return waitError('run_store_unavailable', 'The run store is unavailable; the wait was not started.');
+  // Mechanism 2 is the one mechanism that cannot degrade quietly: parking a run on a store that can
+  // neither record the wait nor tell us when a message lands would hang the agent until it gives
+  // up, which is the silence law 7 and §7 row 11 both forbid. So it is refused BEFORE anything is
+  // appended — a typed refusal the agent can act on, and a log that never claims a wait nobody kept.
+  const { appendEvent, subscribeEvents } = store;
+  if (!appendEvent || !subscribeEvents) {
+    return waitError('wait_unsupported', 'This host cannot park a run on the human queue; ask your question in the result and return.');
+  }
+  const run = await drivingRun(store, runId, caller());
   if (!run) return waitError('run_not_found', `No driven run ${runId} is available for this wait.`);
   if (activeWaits.has(run.id)) {
     return waitError('wait_already_pending', 'This run is already waiting for a human answer.');
@@ -837,14 +927,14 @@ async function resolveHumanWait(
   // A request row with no live in-process waiter can only be the tail of a restarted/replaced
   // coordinator. Close it before starting the replacement so the durable log never claims two
   // simultaneous waits for one run.
-  const orphaned = unansweredEvents(db, run.id, {
+  const orphaned = (await store.unansweredEvents?.(run.id, {
     askType: DELIVERY_WAIT_REQUESTED,
     answerType: DELIVERY_WAIT_RESOLVED,
     correlationKey: 'waitId',
     limit: 1,
-  })[0];
+  }))?.[0];
   if (orphaned) {
-    appendRunEventWithTail(db, run.id, {
+    await appendEvent(run.id, {
       actor: actorForRun(run),
       type: DELIVERY_WAIT_RESOLVED,
       payload: { waitId: orphaned.payload.waitId, outcome: 'abandoned' },
@@ -853,7 +943,7 @@ async function resolveHumanWait(
   activeWaits.set(run.id, () => {});
   const waitId = mintWaitId();
   try {
-    appendRunEventWithTail(db, run.id, {
+    await appendEvent(run.id, {
       actor: actorForRun(run),
       type: DELIVERY_WAIT_REQUESTED,
       payload: { waitId, reason },
@@ -872,30 +962,41 @@ async function resolveHumanWait(
         signal?.removeEventListener('abort', onAbort);
         resolve(value);
       };
+      // Reads are async now, so a check can still be in flight when the next event arrives. `settled`
+      // already makes a duplicate observation a no-op; the `catch` mirrors it so a rejected read
+      // rejects the wait once instead of escaping as an unhandled rejection.
       const check = (): void => {
-        try {
-          const first = undeliveredMessages(db, run.id, MAX_MESSAGES_PER_RESULT)
-            .find((message) => message.from.kind === 'human');
-          if (first) finish({ kind: 'answer', messageId: first.messageId });
-        } catch (err) {
-          if (settled) return;
-          settled = true;
-          unsubscribe();
-          reject(err);
-        }
+        void (async () => {
+          try {
+            const first = (await undeliveredOn(store, run.id, MAX_MESSAGES_PER_RESULT))
+              .find((message) => message.from.kind === 'human');
+            if (first) finish({ kind: 'answer', messageId: first.messageId });
+          } catch (err) {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            reject(err);
+          }
+        })();
       };
       // Subscribe first, then re-read the durable queue. An append between those operations is seen by
       // the listener and by the read; `settled` turns the duplicate observation into a no-op.
-      unsubscribe = subscribeRunEvents(run.id, (event) => {
+      unsubscribe = subscribeEvents(run.id, (event) => {
         if (event.type === MESSAGE_QUEUED && event.actor.kind === 'human') {
           check();
           return;
         }
         if (event.type !== 'driver.changed' && event.type !== 'run.paused' && event.type !== 'run.cancelled') return;
-        const latest = getRun(db, run.id);
-        if (!latest) return;
-        const pending = pendingInterrupt(db, latest, caller());
-        if (pending) finish({ kind: 'interrupt', pending });
+        void (async () => {
+          try {
+            const latest = await store.get(run.id);
+            if (!latest) return;
+            const pending = await pendingInterrupt(store, latest, caller());
+            if (pending) finish({ kind: 'interrupt', pending });
+          } catch (err) {
+            log.warn('wait could not classify an interrupt trigger; the wait continues', { run: run.id, error: String(err) });
+          }
+        })();
       });
       signal?.addEventListener('abort', onAbort, { once: true });
       activeWaits.set(run.id, onAbort);
@@ -904,7 +1005,7 @@ async function resolveHumanWait(
     });
 
     if (outcome.kind === 'aborted') {
-      appendRunEventWithTail(db, run.id, {
+      await appendEvent(run.id, {
         actor: actorForRun(run),
         type: DELIVERY_WAIT_RESOLVED,
         payload: { waitId, outcome: 'aborted' },
@@ -913,10 +1014,10 @@ async function resolveHumanWait(
     }
 
     if (outcome.kind === 'interrupt') {
-      const latest = getRun(db, run.id) ?? run;
-      const interrupted = consumeInterrupt(db, latest, caller(), outcome.pending);
+      const latest = (await store.get(run.id)) ?? run;
+      const interrupted = await consumeInterrupt(store, latest, caller(), outcome.pending);
       if (!interrupted) return waitError('wait_interrupted', 'The run was interrupted while waiting; call again to inspect it.');
-      appendRunEventWithTail(db, run.id, {
+      await appendEvent(run.id, {
         actor: actorForRun(run),
         type: DELIVERY_WAIT_RESOLVED,
         payload: { waitId, triggerSeq: outcome.pending.event.seq, outcome: 'interrupted' },
@@ -924,16 +1025,16 @@ async function resolveHumanWait(
       return interrupted;
     }
 
-    const delivered = deliverMessages(db, run.id, { via: 'wait', actor: actorForRun(run) });
+    const delivered = await deliverOn(store, run.id, { via: 'wait', actor: actorForRun(run) });
     const answer = delivered.find((message) => message.messageId === outcome.messageId);
     if (!answer) return waitError('wait_resolution_lost', 'The answer was claimed by another result; call wait_for_human again.');
-    appendRunEventWithTail(db, run.id, {
+    await appendEvent(run.id, {
       actor: actorForRun(run),
       type: DELIVERY_WAIT_RESOLVED,
       payload: { waitId, messageId: answer.messageId },
     });
     if (answer.urgent) {
-      appendRunEventWithTail(db, run.id, {
+      await appendEvent(run.id, {
         actor: actorForRun(run),
         type: DELIVERY_INTERRUPT_CONSUMED,
         payload: { triggerSeq: answer.queuedAtStep, target: run.driver },
