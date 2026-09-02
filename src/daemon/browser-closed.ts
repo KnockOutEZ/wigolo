@@ -33,6 +33,13 @@ export const BROWSER_CLOSED = 'browser_closed';
 /**
  * The engine's own vocabulary for a page/context/browser that no longer exists, lowercased. Each
  * entry is a phrase an engine emits verbatim; matching is substring-on-phrase, not on a single word.
+ *
+ * TWO ENGINES, ONE LIST. The first group is what the CLI host's engine says. The second is what the
+ * desktop app's engine says, and it was missing for the whole of SD2: an app session that goes away
+ * mid-run raises `Object has been destroyed` or `No target available`, neither of which contains the
+ * word "closed" at all, so every one of them propagated as a raw internal error instead of the
+ * §4.3 shape — silence where row 11 requires a clean tool error. The phrases below were read out of
+ * the shipped engine binary rather than recalled, which is the only way a signature list stays true.
  */
 const CLOSED_SIGNATURES: readonly string[] = Object.freeze([
   'target page, context or browser has been closed',
@@ -44,6 +51,14 @@ const CLOSED_SIGNATURES: readonly string[] = Object.freeze([
   'session closed',
   'target closed',
   'the browser engine closed',
+  // The desktop app's engine. `object has been destroyed` is what it raises for any call onto a
+  // window, view or web-contents handle that no longer exists; `no target available` is its
+  // debugging channel answering for a target that has gone. The other two name the same fact one
+  // layer down, and `render frame was disposed` is the shared prefix of both messages that carry it.
+  'object has been destroyed',
+  'no target available',
+  'webcontents was destroyed',
+  'render frame was disposed',
 ]);
 
 /** Error classes an engine raises for the same fact without a matching message. */

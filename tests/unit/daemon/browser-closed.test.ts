@@ -53,6 +53,49 @@ describe('classifying a dead browser — narrow on purpose', () => {
     }
   });
 
+  it('recognises the desktop app engine\'s words for the same fact — the SD2-long silence (#331)', () => {
+    // Not paraphrases: each of these is a phrase read verbatim out of the shipped engine binary,
+    // and the first two are what a killed app session actually raised when measured against the
+    // running product. None of them contains "closed", which is exactly why the list missed them.
+    for (const message of [
+      'Object has been destroyed',
+      'No target available',
+      'WebContents was destroyed',
+      'Render frame was disposed before WebFrameMain could be accessed',
+      'Render frame was disposed before call stack was received',
+    ]) {
+      expect(isBrowserClosedError(new Error(message)), message).toBe(true);
+    }
+  });
+
+  it('gives each desktop phrase the \u00a74.3 shape, not a raw internal error', () => {
+    // Row 11's requirement is a CLEAN TOOL ERROR, so classifying is only half of it: what the agent
+    // reads has to be the named, run-addressed shape with the remedy in it.
+    for (const message of ['Object has been destroyed', 'No target available']) {
+      expect(isBrowserClosedError(new Error(message)), message).toBe(true);
+      const shape = browserClosedError('mkv6');
+      expect(shape.error_reason).toBe('browser_closed');
+      expect(shape.run).toBe('mkv6');
+      expect(shape.hint).toContain('browser engine');
+    }
+  });
+
+  it('stays narrow across the widening the desktop phrases invite', () => {
+    // `object has been destroyed` and friends arrive lowercased into a substring test, and the same
+    // engine bundle ships stream/session errors that end in the same three words. Matching those
+    // would send an agent to re-open a browser over a dead socket.
+    for (const message of [
+      'The session has been destroyed',
+      'The stream has been destroyed',
+      'Cannot call write after a stream was destroyed',
+      'The client is destroyed',
+      'destroyed',
+      'no target',
+    ]) {
+      expect(isBrowserClosedError(new Error(message)), message).toBe(false);
+    }
+  });
+
   it('recognises the error CLASS an engine raises without a matching message', () => {
     const typed = Object.assign(new Error('nope'), { name: 'TargetClosedError' });
     expect(isBrowserClosedError(typed)).toBe(true);
