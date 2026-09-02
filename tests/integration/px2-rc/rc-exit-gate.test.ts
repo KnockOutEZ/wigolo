@@ -1,13 +1,21 @@
 /**
- * PX2 RC exit gate, arms 1-4 (mini-spec §13): a fresh install demands
- * registration, completes it against a locally-run accounts service, and then
- * runs all ten tools with nothing leaving this machine.
+ * PX2 RC exit gate, every arm (mini-spec §13): a fresh install demands
+ * registration, completes it against a locally-run accounts service, runs all
+ * ten tools with nothing leaving this machine, sends zero telemetry when
+ * telemetry is off, and refuses once a non-perpetual entitlement falls out of
+ * both its own validity window and the fourteen-day grace.
  *
  * The whole file is one sequence on purpose. Each arm's precondition is the
  * previous arm's outcome — an install that has not refused has not proven it was
  * fresh, and tools that run before registration would prove the opposite of the
  * gate — so splitting them across files would mean re-paying a multi-minute
  * install to assert something the previous file already established.
+ *
+ * ORDER IS LOAD-BEARING AT THE TAIL. The telemetry arm needs a healthy activated
+ * install, and the grace arm ENDS with one that is deliberately expired and a
+ * service running on a back-dated clock. So telemetry runs first and grace runs
+ * last; putting grace earlier would make every later arm test an install whose
+ * activation had already been taken away from it.
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
@@ -16,14 +24,16 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  delay,
   readOutboxCode,
   readOutboxMail,
   startAccountsService,
   startPostgresCluster,
+  withServiceDatabase,
   type AccountsService,
   type PostgresCluster,
 } from './rc-accounts-service.js';
-import { accountsEnv, RC_GATE_DISABLED, RC_GATE_SKIP_NOTICE } from './rc-gate-env.js';
+import { accountsEnv, DAY_MS, RC_GATE_DISABLED, RC_GATE_SKIP_NOTICE } from './rc-gate-env.js';
 import {
   blockedEgress,
   installTarball,
@@ -47,6 +57,47 @@ if (RC_GATE_DISABLED) console.warn(RC_GATE_SKIP_NOTICE);
 /** The refusal a never-activated install must give, verbatim (`src/account/gate.ts`). */
 const NEVER_ACTIVATED_LINE =
   'wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).';
+
+/** The refusal step 6 must give, verbatim (`src/account/gate.ts` `ACTIVATION_REFUSALS`). */
+const EXPIRED_LINE = 'Your wigolo sign-in has expired — run `wigolo login` to reconnect.';
+
+/** `ACTIVATION_GRACE_MS` in `src/account/gate.ts`. Restated, not imported: the arms drive an
+ *  INSTALLED tarball, and importing the constant from the working tree would let a change to
+ *  the source move the test's own boundary with it. */
+const GRACE_MS = 14 * DAY_MS;
+
+/**
+ * How far back the service's clock and the client's `last_refresh_at` are moved.
+ *
+ * Fifteen days is the smallest number that lands the fixture in the GAP between the two
+ * layers this arm has to tell apart. The token's own window is seven days from `issued_at`
+ * (`ENTITLEMENT_TOKEN_TTL_MS`), so a service minting at now-15d produces `valid_until` at
+ * now-8d — step 4 is already out. Grace is fourteen days from `last_refresh_at`, so aging
+ * that by fifteen puts step 5 out too. A smaller offset would leave one of the two steps
+ * passing and the arm would agree with itself for the wrong reason; a much larger one would
+ * satisfy every layer at once and stop distinguishing them.
+ */
+const BACKDATE_MS = 15 * DAY_MS;
+
+/**
+ * `FLUSH_EVENT_THRESHOLD` in `src/telemetry/client.ts` is 50 events, and each successful
+ * tool call emits exactly one `tool.run`. Fifty-five calls therefore cross it with margin
+ * on a long-lived surface, which is the only place the flush timer is armed
+ * (`initSubsystems`; a CLI one-shot only ever appends).
+ */
+const TELEMETRY_BURN_CALLS = 55;
+
+/**
+ * How long each telemetry arm waits for a batch that may never come.
+ *
+ * Ninety seconds, and the number is not padding. `MIN_FLUSH_SPACING_MS` is 60 s and the
+ * durable delivery state carries the previous flush's timestamp ACROSS processes, so a
+ * session started right after arms 1-4 flushed is refused its own first attempt as `spaced`
+ * for up to a minute. A shorter wait would make the ON arm flaky in exactly the direction
+ * that quietly hollows out the OFF arm — a flip-test that fails to flip gets "fixed" by
+ * deleting it.
+ */
+const TELEMETRY_SETTLE_MS = 90_000;
 
 const EMAIL = 'px2-rc-gate@example.test';
 
@@ -321,6 +372,200 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
         `\n$ wigolo cache --stats (registered) → exit ${ran.code}`,
     );
   }, 1_800_000);
+
+  it('sends ZERO requests to the telemetry endpoint with WIGOLO_TELEMETRY=off, and sends them when it is on', async () => {
+    // A fresh access token first, for BOTH arms. `flush` mints its Bearer through the
+    // shared 24 h refresh throttle (`acquireAccessToken` → `maybeRefresh`), so a session
+    // that started with a stale cached token would find no token, send nothing, and the ON
+    // arm would agree with the OFF arm for a reason that has nothing to do with the switch.
+    // `wigolo account` is an explicit gesture and forces the refresh (A-212-13), so the two
+    // arms below differ in exactly one variable.
+    const primed = await runCli(full, ['account'], { env });
+    expect(primed.code, `priming the access token failed:\n${primed.combined}`).toBe(0);
+
+    const queuedBefore = await telemetryQueueDepth(full);
+    // Arms 1-4 ran with telemetry at its default (ON, 0.3.0 is opt-OUT), so the counter
+    // carries their requests. Zeroing it here is what makes the number below this arm's.
+    proxy.reset();
+
+    // ---- OFF -------------------------------------------------------------------------
+    await burnTelemetryEvents(full, { ...env, WIGOLO_TELEMETRY: 'off' }, async () => {
+      // The flush is fire-and-forget, so "none yet" and "none ever" are only the same
+      // claim after the window in which one could have arrived. The ON arm below measures
+      // how long that actually takes; this wait is deliberately longer.
+      await delay(TELEMETRY_SETTLE_MS);
+    });
+
+    const offRequests = proxy.telemetryRequests();
+    const queuedAfterOff = await telemetryQueueDepth(full);
+
+    // THE GATE'S CLAUSE, ASSERTED AND NOT ARGUED (mini-spec §13). Not "the code has an if".
+    expect(
+      offRequests.length,
+      `telemetry reached the endpoint with the switch off: ${JSON.stringify(offRequests)}`,
+    ).toBe(0);
+    // The independent second signal. Without it, a zero here would also be the reading for
+    // "collected everything, just had not sent it yet" — which is not what off means.
+    expect(queuedAfterOff, 'the off switch still wrote events to the disk queue').toBe(queuedBefore);
+
+    // ---- ON, the flip that makes the zero above mean something ------------------------
+    proxy.reset();
+    let onRequests: readonly { method: string; bodyBytes: number }[] = [];
+    let deliveredInMs = -1;
+    await burnTelemetryEvents(full, env, async () => {
+      const startedAt = Date.now();
+      const deadline = startedAt + TELEMETRY_SETTLE_MS;
+      while (Date.now() < deadline && proxy.telemetryRequests().length === 0) {
+        await delay(250);
+      }
+      onRequests = [...proxy.telemetryRequests()];
+      deliveredInMs = Date.now() - startedAt;
+    });
+
+    // WHY THIS ASSERTION IS THE MOST IMPORTANT ONE IN THE ARM. A listener that can never
+    // record anything reports zero for every input, and would have passed the OFF arm on a
+    // build with telemetry ripped out entirely. This is the arm that proves the counter is
+    // load-bearing, and the OFF arm is worth nothing without it.
+    expect(
+      onRequests.length,
+      'telemetry did not reach the endpoint with the switch ON, so the zero measured with ' +
+        'it OFF proves nothing about the switch',
+    ).toBeGreaterThan(0);
+    expect(onRequests.every((request) => request.method === 'POST')).toBe(true);
+    expect(onRequests.every((request) => request.bodyBytes > 0)).toBe(true);
+
+    record(
+      'arm 6 — telemetry off = zero calls, flip-tested',
+      `WIGOLO_TELEMETRY=off, ${TELEMETRY_BURN_CALLS} tool calls over MCP, ${TELEMETRY_SETTLE_MS}ms settle\n` +
+        `  POST /telemetry/batch requests observed at the front door: ${offRequests.length}\n` +
+        `  disk queue depth before: ${queuedBefore}, after: ${queuedAfterOff}\n` +
+        `flip — telemetry at its default (on), same install, same ${TELEMETRY_BURN_CALLS} calls\n` +
+        `  POST /telemetry/batch requests observed: ${onRequests.length} ` +
+        `(first after ${deliveredInMs}ms, ${onRequests.map((r) => `${r.method} ${r.bodyBytes}B`).join(', ')})`,
+    );
+  }, 1_800_000);
+
+  it('refuses when a non-perpetual entitlement is out of BOTH its validity window and grace, while a perpetual one survives the identical clock', async () => {
+    // ---- move the service's clock, not the assertion ----------------------------------
+    //
+    // Revoking the grant and ageing `last_refresh_at` is NOT sufficient on its own: the
+    // refresh that follows mints a token valid for another seven days, so step 4 passes and
+    // grace is never consulted. Rather than soften the arm to whatever the API can reach,
+    // the service is restarted on a back-dated clock through its own documented seam, so
+    // the token it mints is already outside its window when the client stores it. The
+    // front door keeps its URL across the restart, so `WIGOLO_ACCOUNTS_URL` is unchanged.
+    const dataDir = service.dataDir;
+    await service.stop();
+    service = await startAccountsService({
+      databaseUrl: cluster.databaseUrl('accounts'),
+      // The same data dir means the same signing key and therefore the same `kid` — the
+      // pinned override still verifies, so a refusal below is about expiry and can never be
+      // the `update_required` arm wearing its clothes.
+      dataDir,
+      clockOffsetMs: -BACKDATE_MS,
+    });
+    proxy.setTarget(service.url);
+
+    // ---- the perpetual arm, forced into the same corner --------------------------------
+    const perpetualRefresh = await runCli(full, ['account'], { env });
+    expect(perpetualRefresh.code, `refresh against the back-dated service failed:\n${perpetualRefresh.combined}`).toBe(0);
+    const perpetualState = await ageLastRefresh(full, BACKDATE_MS);
+    const perpetualPayload = decodePayload(perpetualState.entitlement_token);
+
+    // THE FIXTURE HAS TO SIT IN THE GAP OR THE ARM PROVES NOTHING. If `valid_until` were
+    // still ahead of now, step 4 would pass and this would be a test of token validity
+    // wearing a perpetual grant's name; if the grace window still covered it, step 5 would.
+    expect(
+      Date.parse(perpetualPayload.valid_until),
+      'the back-dated service minted a token that is still valid, so the perpetual arm would ' +
+        'pass at step 4 and say nothing about perpetual grants',
+    ).toBeLessThan(Date.now());
+    expect(
+      Date.now() - Date.parse(perpetualState.last_refresh_at ?? ''),
+      'grace still covers this state, so the arm would pass at step 5',
+    ).toBeGreaterThan(GRACE_MS);
+    expect(perpetualPayload.grants).toContainEqual(expect.objectContaining({ type: 'perpetual' }));
+
+    const perpetualRun = await runCli(full, ['cache', '--stats'], { env });
+    // Brief §3: an offline machine keeps a perpetual grant for good.
+    expect(perpetualRun.combined).not.toContain(EXPIRED_LINE);
+    expect(perpetualRun.code, `a perpetual grant did not survive the aged clock:\n${perpetualRun.combined}`).toBe(0);
+
+    // ---- take the perpetual grant away, and nothing else --------------------------------
+    //
+    // Raw SQL because PX1 exposes no endpoint that revokes a grant (PX1-G precedent). An
+    // arm written against the API could only test a state the service will not enter.
+    const liveGrants = await withServiceDatabase(service.databaseUrl, async (query) => {
+      const accounts = await query('SELECT id FROM accounts WHERE email = $1', [EMAIL]);
+      const accountId = accounts.rows[0]?.['id'];
+      if (accountId === undefined) throw new Error(`no account row for ${EMAIL}`);
+
+      await query(
+        `UPDATE grants SET revoked_at = now()
+          WHERE account_id = $1 AND type = 'perpetual' AND revoked_at IS NULL`,
+        [accountId],
+      );
+      await query(
+        `INSERT INTO grants (account_id, product, type, features, expires, created_at)
+         VALUES ($1, 'core', 'subscription', '[]'::jsonb, now() + interval '30 days', now())`,
+        [accountId],
+      );
+
+      const live = await query(
+        `SELECT product, type FROM grants WHERE account_id = $1 AND revoked_at IS NULL
+          ORDER BY product, created_at`,
+        [accountId],
+      );
+      return live.rows;
+    });
+    expect(liveGrants).toEqual([{ product: 'core', type: 'subscription' }]);
+
+    // ---- the subscription arm: identical clock, one variable changed --------------------
+    const expiredRefresh = await runCli(full, ['account'], { env });
+    expect(expiredRefresh.code, `refresh after the grant change failed:\n${expiredRefresh.combined}`).toBe(0);
+    const expiredState = await ageLastRefresh(full, BACKDATE_MS);
+    const expiredPayload = decodePayload(expiredState.entitlement_token);
+
+    expect(
+      expiredPayload.grants.some((grant) => grant.type === 'perpetual'),
+      'the perpetual grant survived the revoke, so a refusal below could not be about grace',
+    ).toBe(false);
+    expect(expiredPayload.grants).toContainEqual(expect.objectContaining({ type: 'subscription' }));
+    expect(Date.parse(expiredPayload.valid_until)).toBeLessThan(Date.now());
+    expect(Date.now() - Date.parse(expiredState.last_refresh_at ?? '')).toBeGreaterThan(GRACE_MS);
+
+    const refusedRun = await runCli(full, ['cache', '--stats'], { env });
+    expect(refusedRun.code).toBe(1);
+    expect(refusedRun.combined).toContain(EXPIRED_LINE);
+    // WHICH refusal fired is the whole arm. `never_activated` is step 1/2 and would mean the
+    // state or the signature broke — an earlier clause answering in step 6's place.
+    expect(
+      refusedRun.combined,
+      'the install refused as never-activated, so the state or the pinned key broke rather ' +
+        'than the entitlement expiring',
+    ).not.toContain(NEVER_ACTIVATED_LINE);
+
+    // ---- restore: the same binary, the same clock, the perpetual state back -------------
+    await writeState(full, perpetualState);
+    const restoredRun = await runCli(full, ['cache', '--stats'], { env });
+    expect(
+      restoredRun.code,
+      `restoring the perpetual state did not restore the install, so the refusal above was ` +
+        `not about the entitlement:\n${restoredRun.combined}`,
+    ).toBe(0);
+
+    record(
+      'arm 5 — offline grace, forced clock',
+      `service restarted with its clock at now-${BACKDATE_MS / DAY_MS}d; client last_refresh_at aged ${BACKDATE_MS / DAY_MS}d\n\n` +
+        `perpetual grant — grants=${JSON.stringify(perpetualPayload.grants)}\n` +
+        `  valid_until ${perpetualPayload.valid_until} (in the past), grace exhausted\n` +
+        `  $ wigolo cache --stats → exit ${perpetualRun.code} (PASSES, brief §3)\n\n` +
+        `after raw SQL revoke + subscription insert — live grants ${JSON.stringify(liveGrants)}\n` +
+        `  grants=${JSON.stringify(expiredPayload.grants)}, valid_until ${expiredPayload.valid_until}\n` +
+        `  $ wigolo cache --stats → exit ${refusedRun.code}\n${refusedRun.combined.trim()}\n\n` +
+        `restore (perpetual state written back) → exit ${restoredRun.code}`,
+    );
+  }, 1_800_000);
 });
 
 interface AccountState {
@@ -328,6 +573,16 @@ interface AccountState {
   entitlement_token: string;
   last_refresh_at: string | null;
   needs_relogin: boolean;
+  /**
+   * Everything else the file carries.
+   *
+   * The grace arm writes the state back after editing one field, and the refresh
+   * bookkeeping it does not name — `last_refresh_attempt_at`, `refresh_expires_at`,
+   * `account_id` — is what keeps the 24 h throttle closed across the runs that follow. A
+   * closed shape here would drop them on the write and the next one-shot would refresh,
+   * undoing the ageing this arm exists to impose.
+   */
+  [key: string]: unknown;
 }
 
 /** The state as it is right now, or `null` — for a failure message, never a check. */
@@ -359,13 +614,97 @@ async function custodyTier(install: FreshInstall): Promise<'keychain' | 'encrypt
   }
 }
 
-/** The grants inside a `v1.<kid>.<payload>.<sig>` entitlement token. */
+interface EntitlementPayload {
+  valid_until: string;
+  grants: { product: string; type: string; expires: string | null }[];
+}
+
+/**
+ * The payload inside a `v1.<kid>.<payload>.<sig>` entitlement token.
+ *
+ * Read here rather than asked of the CLI because every verb that would report it also
+ * REFRESHES, which would re-stamp the `last_refresh_at` the grace arm just aged. The arms
+ * assert on the state that actually reaches the gate, then assert on what the gate did
+ * with it.
+ */
+function decodePayload(token: string): EntitlementPayload {
+  const encoded = token.split('.')[2];
+  const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<EntitlementPayload>;
+  return { valid_until: decoded.valid_until ?? '', grants: decoded.grants ?? [] };
+}
+
+/** The grants inside an entitlement token. */
 function decodeGrants(token: string): { type: string; expires: string | null }[] {
-  const payload = token.split('.')[2];
-  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
-    grants?: { type: string; expires: string | null }[];
+  return decodePayload(token).grants;
+}
+
+/** Write the state file back, whole. */
+async function writeState(install: FreshInstall, state: AccountState): Promise<void> {
+  await writeFile(
+    join(install.dataDir, 'account', 'state.json'),
+    `${JSON.stringify(state, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+/**
+ * Move `last_refresh_at` back by `byMs` and return the state as it now stands.
+ *
+ * Editing the file is the honest way to force a fourteen-day boundary: the alternative is
+ * to wait fourteen days, and the gate's own docstring says `now` is a parameter end-to-end
+ * so that the boundary is forced rather than waited for. The returned value is the whole
+ * file, so a caller can put it back byte-for-byte.
+ */
+async function ageLastRefresh(install: FreshInstall, byMs: number): Promise<AccountState> {
+  const state = await readState(install);
+  const anchorMs =
+    state.last_refresh_at === null ? Date.now() : Date.parse(state.last_refresh_at);
+  const aged: AccountState = {
+    ...state,
+    last_refresh_at: new Date(anchorMs - byMs).toISOString(),
   };
-  return decoded.grants ?? [];
+  await writeState(install, aged);
+  return aged;
+}
+
+/** How many events are sitting in the install's durable telemetry queue. */
+async function telemetryQueueDepth(install: FreshInstall): Promise<number> {
+  try {
+    const raw = await readFile(join(install.dataDir, 'telemetry', 'queue.ndjson'), 'utf8');
+    return raw.split('\n').filter((line) => line.trim().length > 0).length;
+  } catch {
+    // No queue file is no events, which is the reading the off arm expects.
+    return 0;
+  }
+}
+
+/**
+ * Run enough tool calls on a long-lived surface to cross the flush threshold, then hold the
+ * session open while `settle` decides what happened.
+ *
+ * The settle runs INSIDE the session on purpose: the flush lives in the server process, so
+ * stopping it first would kill the very request the ON arm is waiting for and the flip-test
+ * would fail for a reason that has nothing to do with telemetry.
+ */
+async function burnTelemetryEvents(
+  install: FreshInstall,
+  env: Record<string, string>,
+  settle: () => Promise<void>,
+): Promise<void> {
+  const session = await startMcpSession(install, env);
+  try {
+    for (let index = 0; index < TELEMETRY_BURN_CALLS; index += 1) {
+      const outcome = await session.call('cache', { stats: true });
+      expect(
+        outcome.isError,
+        `cache call ${index} failed, so fewer than ${TELEMETRY_BURN_CALLS} events were ` +
+          `emitted: ${firstLines(outcome.text, 3)}`,
+      ).toBe(false);
+    }
+    await settle();
+  } finally {
+    await session.stop();
+  }
 }
 
 function firstLines(text: string, count: number): string {

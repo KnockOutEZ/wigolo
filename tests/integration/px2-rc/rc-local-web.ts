@@ -221,6 +221,16 @@ export interface RecordingProxy extends LocalServer {
   /** Every path the client asked this front door for. */
   paths(): readonly string[];
   reset(): void;
+  /**
+   * Point the front door at a different service, keeping this URL.
+   *
+   * The grace arm restarts the accounts service on a back-dated clock, which
+   * takes a new port. Re-pointing rather than re-creating is what keeps
+   * `WIGOLO_ACCOUNTS_URL` byte-identical across that restart, so the arm changes
+   * exactly one variable — what time the service thinks it is — instead of also
+   * moving the address the client trusts.
+   */
+  setTarget(url: string): void;
 }
 
 /**
@@ -238,6 +248,7 @@ export interface RecordingProxy extends LocalServer {
 export async function startRecordingProxy(targetUrl: string): Promise<RecordingProxy> {
   let telemetry: { method: string; bodyBytes: number }[] = [];
   let paths: string[] = [];
+  let target = targetUrl;
 
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const path = request.url ?? '/';
@@ -254,7 +265,7 @@ export async function startRecordingProxy(targetUrl: string): Promise<RecordingP
         }
 
         try {
-          const forwarded = await fetch(`${targetUrl}${path}`, {
+          const forwarded = await fetch(`${target}${path}`, {
             method: request.method,
             headers: forwardableHeaders(request),
             ...(body.byteLength > 0 ? { body } : {}),
@@ -279,6 +290,7 @@ export async function startRecordingProxy(targetUrl: string): Promise<RecordingP
     telemetryRequests: () => telemetry,
     paths: () => paths,
     reset: () => { telemetry = []; paths = []; },
+    setTarget: (next: string) => { target = next; },
     stop: () => close(server),
   };
 }
