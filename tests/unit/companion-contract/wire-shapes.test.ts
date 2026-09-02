@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import {
   ESCALATION_DECLINE_REASONS,
+  ESCALATION_ROUTE,
   STUDIO_FETCH_CAPABILITY,
   isEscalationDecline,
   isEscalationServed,
@@ -78,6 +79,22 @@ describe('escalation wire', () => {
         const rel = `${dir}/${entry.name}`;
         if (entry.isDirectory()) walk(rel);
         else if (entry.name.endsWith('.ts') && /=\s*'studio_fetch'/.test(sourceOf(rel))) hits.push(rel);
+      }
+    };
+    walk('src');
+    expect(hits).toEqual(['src/companion-contract/escalation.ts']);
+  });
+
+  it('owns the route the transport POSTs to, with no second literal in src/', () => {
+    // The address is wire, not implementation: two sides that disagree about it produce a 404 rather than
+    // a typed decline, so the same one-literal rule the capability name lives under applies to it.
+    expect(ESCALATION_ROUTE).toBe('/companion/escalate');
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
+        const rel = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) walk(rel);
+        else if (entry.name.endsWith('.ts') && sourceOf(rel).includes(`'${ESCALATION_ROUTE}'`)) hits.push(rel);
       }
     };
     walk('src');

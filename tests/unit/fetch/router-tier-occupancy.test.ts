@@ -19,7 +19,7 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 });
 
 import { SmartRouter } from '../../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface, StudioBridgeFetchers } from '../../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, CompanionBridgeFetchers } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { readTierOccupancy } from '../../../src/fetch/tier-occupancy.js';
 import { resetBrowserTierAnnouncements, BROWSER_TIER_ENV } from '../../../src/fetch/browser-tier.js';
@@ -30,7 +30,7 @@ import { resetBrowserTierAnnouncements, BROWSER_TIER_ENV } from '../../../src/fe
  * WHY THIS FILE EXISTS SEPARATELY from the unit tests: the classifier can be perfect and the
  * instrument still useless, because the failure D-S10-4 names is a PLACEMENT failure. The shipped
  * D10(a) counters classify correctly and answer nothing, since every increment sits in
- * `studio-bridge.ts` — on a host with no substrate they read zero forever, and zero there is
+ * `companion-bridge.ts` — on a host with no substrate they read zero forever, and zero there is
  * indistinguishable from no demand. So these cases drive a real `SmartRouter.fetch` on a host
  * where no substrate exists, and assert the counters move anyway. Point the increments back at
  * the bridge (spec probe P-9) and this file is what reds.
@@ -44,7 +44,7 @@ const BRIDGED: RawFetchResult = {
   html: `<html><body><article>${'the real article text that beats the empty-content threshold. '.repeat(5)}</article></body></html>`,
   contentType: 'text/html',
   statusCode: 200,
-  // The bridge reports the browser method on purpose — see studio-bridge.ts. The router has to
+  // The bridge reports the browser method on purpose — see companion-bridge.ts. The router has to
   // distinguish the rungs anyway.
   method: 'browser',
   headers: {},
@@ -100,8 +100,8 @@ describe('SmartRouter — tier-occupancy counters on a host with no substrate', 
     vi.clearAllMocks();
   });
 
-  const router = (bridge?: StudioBridgeFetchers) =>
-    new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, ...(bridge ? { studioBridge: bridge } : {}) });
+  const router = (bridge?: CompanionBridgeFetchers) =>
+    new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, ...(bridge ? { companionBridge: bridge } : {}) });
 
   it('records browser-rung occupancy on a no-display host with no substrate anywhere', async () => {
     // THE assertion the D10(b) decision rests on. If this number is negligible in the field, the
@@ -166,10 +166,10 @@ describe('SmartRouter — tier-occupancy counters on a host with no substrate', 
       fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
     } as unknown as BrowserPoolInterface;
     const bridge = {
-      studioBridgeAvailable: vi.fn(() => true),
-      studioBridgeFetch: vi.fn(async () => BRIDGED),
-    } as unknown as StudioBridgeFetchers;
-    const r = new SmartRouter({ httpClient, browserPool: blocked, pdfProbe: async () => false, studioBridge: bridge });
+      companionBridgeAvailable: vi.fn(() => true),
+      companionBridgeFetch: vi.fn(async () => BRIDGED),
+    } as unknown as CompanionBridgeFetchers;
+    const r = new SmartRouter({ httpClient, browserPool: blocked, pdfProbe: async () => false, companionBridge: bridge });
     await r.fetch('https://walled.example/x', { renderJs: 'always' });
     const occ = readTierOccupancy(dataDir)['no-display'];
     expect(occ.substrate).toBe(1);

@@ -16,12 +16,12 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 });
 
 import { SmartRouter } from '../../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface, StudioBridgeFetchers } from '../../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, CompanionBridgeFetchers } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
 
 /**
- * S9 slice 1 — the Studio escalation rung inside SmartRouter.
+ * S9 slice 1 — the companion escalation rung inside SmartRouter.
  *
  * The rung exists because of one measured loss: on a Cloudflare-fronted page the C0 referee recorded
  * wigolo returning `blocked_by_challenge`, 0 chars, where a competitor returned the article. These tests
@@ -44,14 +44,14 @@ const BRIDGED: RawFetchResult = {
 
 const CLEAN_HTML = `<html><head><title>ok</title></head><body><article>${'ordinary content the extractor is happy with. '.repeat(5)}</article></body></html>`;
 
-describe('SmartRouter — the Studio bridge rung', () => {
+describe('SmartRouter — the companion bridge rung', () => {
   let httpClient: HttpClient;
   let browserPool: BrowserPoolInterface;
   // Bound to the REAL rung types: declared ReturnType<typeof vi.fn> and cast in,
-  // neither spy had to satisfy StudioBridgeFetchers.
-  let studioBridgeFetch: MockedFunction<StudioBridgeFetchers['studioBridgeFetch']>;
-  let studioBridgeAvailable: MockedFunction<StudioBridgeFetchers['studioBridgeAvailable']>;
-  let studioBridge: StudioBridgeFetchers;
+  // neither spy had to satisfy CompanionBridgeFetchers.
+  let companionBridgeFetch: MockedFunction<CompanionBridgeFetchers['companionBridgeFetch']>;
+  let companionBridgeAvailable: MockedFunction<CompanionBridgeFetchers['companionBridgeAvailable']>;
+  let companionBridge: CompanionBridgeFetchers;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -60,9 +60,9 @@ describe('SmartRouter — the Studio bridge rung', () => {
     browserPool = {
       fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
     };
-    studioBridgeFetch = vi.fn(async () => null);
-    studioBridgeAvailable = vi.fn(() => true);
-    studioBridge = { studioBridgeAvailable, studioBridgeFetch };
+    companionBridgeFetch = vi.fn(async () => null);
+    companionBridgeAvailable = vi.fn(() => true);
+    companionBridge = { companionBridgeAvailable, companionBridgeFetch };
   });
 
   afterEach(() => {
@@ -72,12 +72,12 @@ describe('SmartRouter — the Studio bridge rung', () => {
   });
 
   const router = (pool = browserPool) =>
-    new SmartRouter({ httpClient, browserPool: pool, pdfProbe: async () => false, studioBridge });
+    new SmartRouter({ httpClient, browserPool: pool, pdfProbe: async () => false, companionBridge });
 
   it('serves the page off the live session when the browser tier terminally hits a challenge', async () => {
-    studioBridgeFetch.mockResolvedValueOnce(BRIDGED);
+    companionBridgeFetch.mockResolvedValueOnce(BRIDGED);
     const result = await router().fetch('https://walled.example/x', { renderJs: 'always' });
-    expect(studioBridgeFetch).toHaveBeenCalledOnce();
+    expect(companionBridgeFetch).toHaveBeenCalledOnce();
     expect((result as RawFetchResult).html).toContain('the real article text');
   });
 
@@ -85,16 +85,16 @@ describe('SmartRouter — the Studio bridge rung', () => {
     // The bridge itself owns the "is there a session, can one be started" decision (amended-D4 lets it start
     // one), so from the router's side an unavailable bridge simply declines. The rung adds a path; it never
     // converts a real failure into something else.
-    studioBridgeAvailable.mockReturnValue(false);
-    studioBridgeFetch.mockResolvedValueOnce(null);
+    companionBridgeAvailable.mockReturnValue(false);
+    companionBridgeFetch.mockResolvedValueOnce(null);
     const result = await router().fetch('https://walled.example/x', { renderJs: 'always' });
     expect((result as { error?: string }).error).toBe('blocked_by_challenge');
   });
 
   it('leaves blocked_by_challenge intact when the live session declines (login page, human holding, dead host)', async () => {
-    studioBridgeFetch.mockResolvedValueOnce(null);
+    companionBridgeFetch.mockResolvedValueOnce(null);
     const result = await router().fetch('https://walled.example/x', { renderJs: 'always' });
-    expect(studioBridgeFetch).toHaveBeenCalledOnce();
+    expect(companionBridgeFetch).toHaveBeenCalledOnce();
     expect((result as { error?: string }).error).toBe('blocked_by_challenge');
   });
 
@@ -106,7 +106,7 @@ describe('SmartRouter — the Studio bridge rung', () => {
       contentType: 'text/html', statusCode: 200, headers: {},
     });
     const result = await router().fetch('https://ok.example/');
-    expect(studioBridgeFetch).not.toHaveBeenCalled();
+    expect(companionBridgeFetch).not.toHaveBeenCalled();
     expect((result as RawFetchResult).html).toContain('ordinary content');
   });
 
@@ -120,9 +120,9 @@ describe('SmartRouter — the Studio bridge rung', () => {
         contentType: 'text/html', statusCode: 403, method: 'browser', headers: { 'cf-mitigated': 'challenge' },
       })),
     };
-    studioBridgeFetch.mockResolvedValueOnce(BRIDGED);
+    companionBridgeFetch.mockResolvedValueOnce(BRIDGED);
     const result = await router(shellPool).fetch('https://walled.example/x', { renderJs: 'always' });
-    expect(studioBridgeFetch).toHaveBeenCalledOnce();
+    expect(companionBridgeFetch).toHaveBeenCalledOnce();
     expect((result as RawFetchResult).html).toContain('the real article text');
   });
 });

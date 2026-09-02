@@ -21,6 +21,15 @@
  */
 export const STUDIO_FETCH_CAPABILITY = 'studio_fetch';
 
+/**
+ * The HTTP route the escalation exchange rides, appended to the endpoint published in the companion's
+ * handle file. The ADDRESS is part of the wire in the same sense the capability name is: two sides that
+ * disagree about it produce a 404, not a typed decline, so it belongs in the one module both import
+ * rather than as a literal on either side. Everything else about the transport — client, timeouts,
+ * retries — stays out of this package, which still performs no I/O.
+ */
+export const ESCALATION_ROUTE = '/companion/escalate';
+
 /** One challenge-blocked page, handed to the companion. */
 export interface EscalationRequest {
   capability: typeof STUDIO_FETCH_CAPABILITY;
