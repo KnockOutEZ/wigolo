@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { normaliseEngineList } from '../util/engine-list.js';
 import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats, ContentCompleteness } from '../types.js';
 
 const log = createLogger('cache');
@@ -363,16 +364,9 @@ function normaliseDomainList(list?: string[] | null): string[] | null {
   return [...new Set(lower)].sort();
 }
 
-/** Normalise a caller-supplied engine list: trim, lowercase, dedupe, sort.
- * Mirrors the orchestrator's case-insensitive engine matching, so
- * `['DuckDuckGo']`, `['duckduckgo']`, reordered, or duplicate-name lists —
- * all of which dispatch the same engine set — produce identical cache keys. */
-export function normaliseEngineList(list?: string[] | null): string[] | null {
-  if (!list || list.length === 0) return null;
-  const lower = list.map((e) => e.toLowerCase().trim()).filter((e) => e.length > 0);
-  if (lower.length === 0) return null;
-  return [...new Set(lower)].sort();
-}
+// Shared with the orchestrator's allowlist gates (src/util/engine-list.ts)
+// so the cache-key fingerprint and dispatch matching can never drift apart.
+export { normaliseEngineList } from '../util/engine-list.js';
 
 function hasAnyFilter(filters?: SearchCacheFilters): boolean {
   if (!filters) return false;
