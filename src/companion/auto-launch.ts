@@ -348,7 +348,7 @@ export function normalizeLaunch(result: boolean | void | LaunchOutcome): LaunchO
     // keeps anything else, so a truthy non-function survives normalization and is CALLED by the
     // poll. That call is the one place it cannot be caught: it sits a tick past the try/catch that
     // guards the launcher itself, so the TypeError rejects the shared promise, the memo mapper has
-    // no rejection branch, and `await inFlight` hands it to `studioBridgeFetch`, which awaits with
+    // no rejection branch, and `await inFlight` hands it to `companionBridgeFetch`, which awaits with
     // no catch. A launch problem would become the user's fetch error — the one thing this module's
     // docstring promises it never does. Thrown HERE it is a synchronous throw at the seam, which
     // the try/catch already turns into a clean decline.
@@ -387,7 +387,7 @@ let inFlight: Promise<SessionHandle | null> | null = null;
  *
  * `inFlight` IS NOT THIS. Single-flight only collapses launches that OVERLAP — it clears in the
  * `finally` — and a crawl does not overlap: `src/fetch/router.ts` reaches the bridge rung once per
- * page, sequentially, and `src/fetch/studio-bridge.ts` awaits `ensureStudioRunning` each time. So
+ * page, sequentially, and `src/fetch/companion-bridge.ts` awaits `ensureStudioRunning` each time. So
  * against a substrate that cannot start, 20 challenged pages paid 20 separate budgets: ~10 minutes
  * of sleeping and 20 dead spawn attempts for one broken install. The memo is what makes a fan-out
  * pay it once.
@@ -404,7 +404,7 @@ export async function ensureStudioRunning(deps: AutoLaunchDeps = {}): Promise<Se
   const read = deps.readHandleFn ?? readHandle;
   // GUARDED, because this is the first thing the function does and it sat outside every try in it:
   // a reader that throws rejected straight out of the entry point, past the "never throws" promise
-  // in the docstring above and into `studioBridgeFetch`, which awaits with no catch.
+  // in the docstring above and into `companionBridgeFetch`, which awaits with no catch.
   //
   // A read that cannot answer is NOT evidence the substrate is absent, so it falls through to the
   // launch path rather than declining: the honest reading is "no handle I can see", which is what

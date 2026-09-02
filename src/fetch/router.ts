@@ -259,10 +259,10 @@ export interface SmartRouterOptions {
    */
   escapeHatch?: EscapeHatchFetchers;
   /**
-   * S9 — the Studio bridge rung. Defaults to a lazy `import('./studio-bridge.js')` that is only reached
+   * S9 — the companion bridge rung. Defaults to a lazy `import('./companion-bridge.js')` that is only reached
    * when a live session handle exists, so a default install never loads the module.
    */
-  studioBridge?: StudioBridgeFetchers;
+  companionBridge?: CompanionBridgeFetchers;
   /**
    * D-S10-5 — the companion rung: an authentic browser already installed on this host, driven
    * with a throwaway profile. Injectable so router tests drive the branch without spawning a
@@ -278,10 +278,10 @@ export interface EscapeHatchFetchers {
   hostedReaderFetch: typeof import('./escape-hatch.js').hostedReaderFetch;
 }
 
-/** The Studio bridge rung, injectable for tests. */
-export interface StudioBridgeFetchers {
-  studioBridgeAvailable: typeof import('./studio-bridge.js').studioBridgeAvailable;
-  studioBridgeFetch: typeof import('./studio-bridge.js').studioBridgeFetch;
+/** The companion bridge rung, injectable for tests. */
+export interface CompanionBridgeFetchers {
+  companionBridgeAvailable: typeof import('./companion-bridge.js').companionBridgeAvailable;
+  companionBridgeFetch: typeof import('./companion-bridge.js').companionBridgeFetch;
 }
 
 /** D-S10-5's companion rung. Returns `null` on any decline — it never hard-fails a fetch. */
@@ -600,7 +600,7 @@ export class SmartRouter {
   private readonly browserAcquirer: BrowserAcquirer;
   private readonly clearanceStore: ClearanceStore;
   private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
-  private readonly studioBridgeOverride: StudioBridgeFetchers | undefined;
+  private readonly companionBridgeOverride: CompanionBridgeFetchers | undefined;
   private readonly systemBrowserFetchOverride: SystemBrowserFetch | undefined;
   /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
    * route and reused so the app-only token is minted at most once per window.
@@ -628,7 +628,7 @@ export class SmartRouter {
         'clearanceStore' in httpClientOrOptions ||
         'pdfProbe' in httpClientOrOptions ||
         'escapeHatch' in httpClientOrOptions ||
-        'studioBridge' in httpClientOrOptions ||
+        'companionBridge' in httpClientOrOptions ||
         'systemBrowserFetch' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
@@ -645,7 +645,7 @@ export class SmartRouter {
       this.browserAcquirer = opts.browserAcquirer ?? new BrowserAcquirer();
       this.clearanceStore = opts.clearanceStore ?? defaultClearanceStore();
       this.escapeHatchOverride = opts.escapeHatch;
-      this.studioBridgeOverride = opts.studioBridge;
+      this.companionBridgeOverride = opts.companionBridge;
       this.systemBrowserFetchOverride = opts.systemBrowserFetch;
       return;
     } else {
@@ -946,7 +946,7 @@ export class SmartRouter {
       if (isStageError(guarded) && guarded.error === 'blocked_by_challenge') {
         const retried = await this.retryDirectOnChallenge(url, browserOptions);
         if (retried) return retried;
-        const bridged = await this.tryStudioBridge(url);
+        const bridged = await this.tryCompanionBridge(url);
         if (bridged) return bridged;
       }
       return guarded;
@@ -964,7 +964,7 @@ export class SmartRouter {
         const cleared = await this.tryEscapeHatch(url, browserOptions.signal);
         if (cleared) return cleared;
         // S9 — last rung: the human's own live browser session, if one is running.
-        const bridged = await this.tryStudioBridge(url);
+        const bridged = await this.tryCompanionBridge(url);
         if (bridged) return bridged;
         return {
           error: err.code,
@@ -1034,23 +1034,23 @@ export class SmartRouter {
    * default install never pays for it. Any rung that clears the page wins.
    */
   /**
-   * S9 — the Studio bridge rung, tried only after the browser tier (and any configured escape hatch) has
-   * terminally hit a bot-protection challenge. When a Studio session is LIVE it re-fetches the page through
+   * S9 — the companion bridge rung, tried only after the browser tier (and any configured escape hatch) has
+   * terminally hit a bot-protection challenge. When a companion session is LIVE it re-fetches the page through
    * the human's real, attended browser; with no live session it declines instantly, so a default install
    * never pays for it and never loads the module.
    *
    * Kept OPPORTUNISTIC on purpose: every failure inside the bridge returns null, and the caller falls
    * through to the honest `blocked_by_challenge` it would have returned anyway.
    */
-  private async tryStudioBridge(url: string): Promise<RawFetchResult | null> {
+  private async tryCompanionBridge(url: string): Promise<RawFetchResult | null> {
     const dataDir = getConfig().dataDir;
     // Gate BEFORE resolving the module, so the default path costs two stats and never pulls the bridge graph
     // in — the same discipline the escape hatch applies to its knobs. A live handle OR a launchable substrate
     // both qualify: under amended-D4 the bridge may start the substrate itself.
-    if (this.studioBridgeOverride === undefined && readHandle(dataDir) === null && !studioLaunchable()) return null;
-    const bridge = this.studioBridgeOverride ?? (await import('./studio-bridge.js'));
-    const served = await bridge.studioBridgeFetch(url, { dataDir });
-    // D-S10-4: the bridge reports `method: 'browser'` on purpose (see studio-bridge.ts), so the
+    if (this.companionBridgeOverride === undefined && readHandle(dataDir) === null && !studioLaunchable()) return null;
+    const bridge = this.companionBridgeOverride ?? (await import('./companion-bridge.js'));
+    const served = await bridge.companionBridgeFetch(url, { dataDir });
+    // D-S10-4: the bridge reports `method: 'browser'` on purpose (see companion-bridge.ts), so the
     // occupancy recorder cannot tell the two rungs apart from the result alone. Mark it here,
     // on the ROUTER path, so a host with no substrate still records its own rungs.
     return served ? markSubstrateServed(served) : null;

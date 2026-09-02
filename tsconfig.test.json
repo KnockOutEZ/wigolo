@@ -97,6 +97,7 @@
     "tests/integration/compat-crawl-envelope-fence.test.ts",
     "tests/integration/crawl-link-target-untrusted.test.ts",
     "tests/unit/fetch/browser-request-guard.test.ts",
+    "tests/unit/fetch/companion-bridge.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts",
     "tests/unit/daemon/message-queue.test.ts",
