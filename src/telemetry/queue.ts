@@ -125,7 +125,6 @@ export class TelemetryQueue {
     const appended = this.withWriteLock(() => {
       this.reconcileTransientUnlocked();
       appendFileSync(this.path, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
-      this.reconcilePendingUnlocked();
       this.evictIfOverCapUnlocked();
       return true;
     }, false);
@@ -162,8 +161,8 @@ export class TelemetryQueue {
    * Read an immutable network snapshot while leaving the authoritative queue in place.
    * `null` means lock contention; `[]` means there was no valid work.
    */
-  beginDrain(): QueuedEvent[] | null {
-    return this.withWriteLock(() => {
+  async beginDrain(): Promise<QueuedEvent[] | null> {
+    return this.withWriteLockAsync(() => {
       this.reconcileTransientUnlocked();
       this.evictIfOverCapUnlocked();
       return this.readPath(this.path);
@@ -174,8 +173,8 @@ export class TelemetryQueue {
    * Complete a drain without losing concurrent appends. If cap eviction changed the prefix,
    * leave the queue alone: duplicates are preferable to deleting a newer row.
    */
-  finishDrain(snapshot: readonly QueuedEvent[], retained: readonly QueuedEvent[]): boolean {
-    const result = this.withWriteLock(() => {
+  async finishDrain(snapshot: readonly QueuedEvent[], retained: readonly QueuedEvent[]): Promise<boolean> {
+    const result = await this.withWriteLockAsync(() => {
       this.reconcileTransientUnlocked();
       const current = this.readPath(this.path);
       const prefixStillPresent = current.length >= snapshot.length
@@ -236,8 +235,8 @@ export class TelemetryQueue {
     }
   }
 
-  updateDeliveryState(patch: Partial<TelemetryDeliveryState>): boolean {
-    return this.withWriteLock(() => {
+  async updateDeliveryState(patch: Partial<TelemetryDeliveryState>): Promise<boolean> {
+    return (await this.withWriteLockAsync(() => {
       const next = { ...this.readDeliveryState(), ...patch };
       const tmp = join(this.dir, `.delivery-state-${process.pid}-${randomBytes(4).toString('hex')}.tmp`);
       try {
@@ -248,7 +247,7 @@ export class TelemetryQueue {
         try { unlinkSync(tmp); } catch { /* best effort */ }
         throw err;
       }
-    }) === true;
+    })) === true;
   }
 
   /** Remove retired day-files opportunistically on a flush path. */
@@ -394,6 +393,35 @@ export class TelemetryQueue {
       return null;
     } finally {
       if (handle !== null) this.releaseLock(this.writeLockPath, handle);
+    }
+  }
+
+  private async withWriteLockAsync<T>(fn: () => T): Promise<T | null> {
+    let handle: LockHandle | null = null;
+    try {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      handle = await this.openLockAsync(this.writeLockPath);
+      if (handle === null) {
+        log.debug('telemetry queue write lock unavailable');
+        return null;
+      }
+      return fn();
+    } catch (err) {
+      log.debug('telemetry queue mutation failed', { error: String(err) });
+      return null;
+    } finally {
+      if (handle !== null) this.releaseLock(this.writeLockPath, handle);
+    }
+  }
+
+  private async openLockAsync(path: string): Promise<LockHandle | null> {
+    const deadline = Date.now() + WRITE_LOCK_WAIT_MS;
+    while (true) {
+      const handle = this.openLock(path, false);
+      if (handle !== null) return handle;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return null;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(2, remainingMs)));
     }
   }
 

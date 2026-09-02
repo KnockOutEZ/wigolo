@@ -111,6 +111,8 @@ export class TelemetryClient {
   readonly enabled: boolean;
 
   private queuedSinceFlush = 0;
+  /** Fast-path only; durable delivery state remains authoritative inside every flush. */
+  private nextFlushEligibleAtMs = 0;
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<FlushResult> | null = null;
   private activated: boolean | null = null;
@@ -171,7 +173,9 @@ export class TelemetryClient {
       const queued: QueuedEvent = { ...event, ts: new Date(this.now()).toISOString() };
       if (!this.queue.append(queued)) return false;
       this.queuedSinceFlush += 1;
-      if (this.timer !== null && this.queuedSinceFlush >= FLUSH_EVENT_THRESHOLD) {
+      if (this.timer !== null
+        && this.queuedSinceFlush >= FLUSH_EVENT_THRESHOLD
+        && this.now() >= this.nextFlushEligibleAtMs) {
         // Fire-and-forget. `flush` is total and resolves even if an injected dependency throws.
         void this.flush();
       }
@@ -233,18 +237,28 @@ export class TelemetryClient {
     if (!this.isActivated()) return idle('not_activated');
 
     const release = this.queue.tryAcquireFlushLease();
-    if (release === null) return idle('busy');
+    if (release === null) {
+      // A sibling drain can hold the lease across its network timeout. One accurate busy
+      // result is enough; do not make every following threshold emit parse the queue again.
+      this.nextFlushEligibleAtMs = Math.max(this.nextFlushEligibleAtMs, this.now() + MIN_FLUSH_SPACING_MS);
+      return idle('busy');
+    }
     let snapshot: QueuedEvent[] | null = null;
     try {
       const delivery = this.queue.readDeliveryState();
       const nowMs = this.now();
+      this.nextFlushEligibleAtMs = Math.max(
+        delivery.retryNotBeforeMs,
+        delivery.lastAttemptAtMs === 0 ? 0 : delivery.lastAttemptAtMs + MIN_FLUSH_SPACING_MS,
+      );
       if (nowMs < delivery.retryNotBeforeMs) return idle('backoff');
       if (delivery.lastAttemptAtMs !== 0 && nowMs - delivery.lastAttemptAtMs < MIN_FLUSH_SPACING_MS) return idle('spaced');
 
       // Durable and stamped before work: process restarts and sibling instances share it.
       // Pacing is a hard precondition, not advisory telemetry state. If it cannot be
       // persisted, fail closed before any network call so sibling processes cannot burst.
-      if (!this.queue.updateDeliveryState({ lastAttemptAtMs: nowMs })) return idle('retained');
+      this.nextFlushEligibleAtMs = Math.max(this.nextFlushEligibleAtMs, nowMs + MIN_FLUSH_SPACING_MS);
+      if (!await this.queue.updateDeliveryState({ lastAttemptAtMs: nowMs })) return idle('retained');
       this.queue.cleanLegacyDayFiles();
 
       if (this.timer !== null) {
@@ -255,14 +269,14 @@ export class TelemetryClient {
         });
       }
 
-      snapshot = this.queue.beginDrain();
+      snapshot = await this.queue.beginDrain();
       if (snapshot === null) return idle('busy');
       this.queuedSinceFlush = snapshot.length;
       if (snapshot.length === 0) return idle('empty');
 
       const token = await this.acquireAccessToken();
       if (token === null) {
-        this.queue.finishDrain(snapshot, snapshot);
+        await this.queue.finishDrain(snapshot, snapshot);
         snapshot = null;
         return { status: 'no_token', sent: 0, dropped: 0, retained: this.queue.count() };
       }
@@ -280,7 +294,9 @@ export class TelemetryClient {
         dropped += outcome.dropped.length;
         if (outcome.halt !== null) {
           if (outcome.halt.reason === 'retry_after') {
-            this.queue.updateDeliveryState({ retryNotBeforeMs: this.now() + outcome.halt.seconds * 1000 });
+            const retryNotBeforeMs = this.now() + outcome.halt.seconds * 1000;
+            this.nextFlushEligibleAtMs = Math.max(this.nextFlushEligibleAtMs, retryNotBeforeMs);
+            await this.queue.updateDeliveryState({ retryNotBeforeMs });
           }
           halted = true;
           break;
@@ -288,7 +304,7 @@ export class TelemetryClient {
       }
 
       const remaining = snapshot.filter((event) => !settled.has(event));
-      if (!this.queue.finishDrain(snapshot, remaining)) {
+      if (!await this.queue.finishDrain(snapshot, remaining)) {
         snapshot = null;
         return idle('retained');
       }
@@ -299,7 +315,7 @@ export class TelemetryClient {
     } catch (err) {
       // Restore the whole snapshot on an unexpected internal error. This may duplicate an
       // accepted prefix, but can never lose it or a concurrent append.
-      if (snapshot !== null) this.queue.finishDrain(snapshot, snapshot);
+      if (snapshot !== null) await this.queue.finishDrain(snapshot, snapshot);
       snapshot = null;
       log.debug('telemetry drain failed internally', { error: String(err) });
       return idle('retained');
@@ -318,9 +334,9 @@ export class TelemetryClient {
   private async acquireAccessToken(): Promise<string | null> {
     const cached = getAccessToken({ dataDir: this.dataDir }, this.now());
     if (cached !== null) return cached;
-    // Access JWT expiry is a hard protocol need, not the once-daily entitlement refresh.
-    // Bypass that throttle here so a healthy refresh credential always mints a fresh Bearer.
-    const outcome = await maybeRefresh({ dataDir: this.dataDir, client: this.accounts, nowMs: this.now, force: true });
+    // A fresh access JWT is a protocol need, but telemetry is still an automatic path. The
+    // shared 24-hour refresh throttle therefore decides when a new Bearer may be minted.
+    const outcome = await maybeRefresh({ dataDir: this.dataDir, client: this.accounts, nowMs: this.now });
     if (outcome.status !== 'refreshed') {
       log.debug('telemetry flush has no access token', { refresh: outcome.status });
       return null;
@@ -382,7 +398,7 @@ export class TelemetryClient {
     const target = previous === 0 ? this.now() : previous + MIN_BATCH_SPACING_MS;
     const waitMs = Math.max(0, target - this.now());
     if (waitMs > 0) await this.sleep(waitMs);
-    if (!this.queue.updateDeliveryState({ lastBatchAtMs: Math.max(target, this.now()) })) {
+    if (!await this.queue.updateDeliveryState({ lastBatchAtMs: Math.max(target, this.now()) })) {
       throw new Error('telemetry batch pacing state unavailable');
     }
   }
