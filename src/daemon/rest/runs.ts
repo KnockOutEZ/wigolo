@@ -33,11 +33,13 @@ import {
   DEFAULT_LIST_LIMIT,
   type Driver,
   type DriverKind,
+  type Run,
   type RunEvent,
   type RunStatus,
 } from '../../studio/run-store.js';
 import { subscribeRunEvents } from '../../studio/run-bus.js';
-import { sqliteRunsStore, type RunsStore } from './runs-store.js';
+import { sqliteRunsStore, type DriverGesture, type DriverGestureKind, type RunsStore } from './runs-store.js';
+import { formatDriver } from '../driver-baton.js';
 import { resolveRunsOwner, proxyRunsRequest, type RunsOwner } from './runs-owner.js';
 import { MAX_CLIENT_FIELD_CHARS } from '../capability-handshake.js';
 
@@ -250,11 +252,13 @@ function acquireSseSlot(): SseSlot | null {
 export type RunsRoute =
   | { kind: 'collection' }
   | { kind: 'item'; id: string }
-  | { kind: 'events'; id: string };
+  | { kind: 'events'; id: string }
+  | { kind: 'driver'; id: string };
 
 /**
- * `/v1/runs`, `/v1/runs/<id>`, `/v1/runs/<id>/events` and nothing else. Anything deeper or with an
- * empty id is not a run route at all — it must 404 rather than be coerced into the nearest match.
+ * `/v1/runs`, `/v1/runs/<id>`, `/v1/runs/<id>/events`, `/v1/runs/<id>/driver` and nothing else.
+ * Anything deeper or with an empty id is not a run route at all — it must 404 rather than be
+ * coerced into the nearest match.
  */
 export function parseRunsPath(pathname: string): RunsRoute | null {
   const rest = pathname.slice('/v1/runs'.length);
@@ -262,6 +266,7 @@ export function parseRunsPath(pathname: string): RunsRoute | null {
   const segments = rest.replace(/^\//, '').split('/');
   if (segments.length === 1 && segments[0]) return { kind: 'item', id: segments[0] };
   if (segments.length === 2 && segments[0] && segments[1] === 'events') return { kind: 'events', id: segments[0] };
+  if (segments.length === 2 && segments[0] && segments[1] === 'driver') return { kind: 'driver', id: segments[0] };
   return null;
 }
 
@@ -342,7 +347,13 @@ export async function handleRunsRequest(
     opts.sendError(methodNotAllowed('GET, POST'));
     return;
   }
-  if (route.kind !== 'collection' && method !== 'GET') {
+  if (route.kind === 'driver' && method !== 'POST') {
+    // The baton moves by GESTURE only (§1.3), so the run's driver has no GET of its own: it is a
+    // projected field of the run, read where every other projected field is read.
+    opts.sendError(methodNotAllowed('POST'));
+    return;
+  }
+  if (route.kind !== 'collection' && route.kind !== 'driver' && method !== 'GET') {
     opts.sendError(methodNotAllowed('GET'));
     return;
   }
@@ -389,7 +400,7 @@ async function handleRunsRoute(
     // and the fallback below needs to create the run itself. Re-serializing it is safe in a way
     // re-serializing an SSE frame is not: a JSON body carries no framing contract, and reading it
     // here is also what keeps THIS daemon's body cap the one that applies.
-    if (route.kind === 'collection' && method === 'POST') {
+    if (method === 'POST' && (route.kind === 'collection' || route.kind === 'driver')) {
       const cap = bodyCapFor(RUNS_ROUTE_LABEL);
       try {
         createBody = await readJsonBodyCapped(req, cap);
@@ -427,6 +438,10 @@ async function handleRunsRoute(
     }
     if (route.kind === 'item') {
       await handleGet(opts, store, route.id);
+      return;
+    }
+    if (route.kind === 'driver') {
+      await handleDriverGesture(req, opts, store, route.id, createBody);
       return;
     }
     // Past here the stream owns the slot: it outlives this call, and `cleanup` is what gives it back.
@@ -637,7 +652,144 @@ async function handleGet(opts: RunsRequestOptions, store: RunsStore, rawId: stri
     opts.sendError(runNotFound());
     return;
   }
-  opts.respond(200, { ok: true, run });
+  opts.respond(200, { ok: true, run: runView(run) });
+}
+
+/**
+ * The run as REST shows it: the projection whole, plus law 3's driver rendered by THE formatter
+ * (`formatDriver`) — the same string minted into `driver.*` payloads for the event stream and named
+ * in a `not_the_driver` tool refusal. A REST client that rendered `driver.kind` itself would be the
+ * second formatter, and a second formatter is how "shown identically everywhere" stops being true.
+ */
+function runView(run: Run): Run & { driverName: string } {
+  return { ...run, driverName: formatDriver(run.driver) };
+}
+
+/** Free text on its way into an append-only log, so it is capped for the same reason `spaceId` is. */
+export const MAX_GESTURE_REASON_CHARS = 500;
+export const MAX_REQUEST_ID_CHARS = 200;
+
+const GESTURE_KINDS = new Set<string>(['request', 'grant', 'release', 'takeover', 'deny']);
+
+/**
+ * The HTTP status a baton refusal deserves. `not_the_driver` and `unknown_request` are both 409:
+ * the request is well formed and the caller may well be entitled to make it a moment later — it is
+ * the CURRENT STATE of the run that says no, which is exactly what a conflict is.
+ */
+const GESTURE_REFUSAL_STATUS: Readonly<Record<string, number>> = {
+  run_not_found: 404,
+  not_the_driver: 409,
+  unknown_request: 409,
+  no_successor: 400,
+};
+
+/**
+ * `POST /v1/runs/<id>/driver` — the baton gestures (SD2 §1.3), and the only way the wheel moves on
+ * this surface. There is deliberately no "set the driver" write: a transition that did not go
+ * through a gesture would be a second source of truth for who drives.
+ */
+async function handleDriverGesture(
+  req: IncomingMessage,
+  opts: RunsRequestOptions,
+  store: RunsStore,
+  rawId: string,
+  preRead?: unknown,
+): Promise<void> {
+  if (!store.driver) {
+    opts.sendError(storeUnavailable());
+    return;
+  }
+  const decoded = decodeRunId(rawId);
+  if (decoded === null) {
+    opts.sendError(runNotFound());
+    return;
+  }
+  const cap = bodyCapFor(RUNS_ROUTE_LABEL);
+  let body: unknown;
+  if (preRead !== undefined) {
+    body = preRead;
+  } else {
+    try {
+      body = await readJsonBodyCapped(req, cap);
+    } catch (err) {
+      opts.sendError(err instanceof BodyTooLargeError ? bodyTooLarge(cap) : invalidJson());
+      return;
+    }
+  }
+  const parsed = parseGesture(body);
+  if (!parsed.ok) {
+    opts.sendError(invalidInput(parsed.detail));
+    return;
+  }
+
+  let result;
+  try {
+    result = await store.driver(decoded, parsed.gesture);
+  } catch (err) {
+    log.error('driver gesture failed', { error: err instanceof Error ? err.message : String(err) });
+    opts.sendError(internalError());
+    return;
+  }
+  if (!result.ok) {
+    opts.sendError({
+      status: GESTURE_REFUSAL_STATUS[result.error_reason] ?? 409,
+      body: errorEnvelope(result.error_reason, result.error, { hint: result.hint }),
+      headers: {},
+    });
+    return;
+  }
+  opts.respond(200, {
+    ok: true,
+    run: runView(result.run),
+    // The events this gesture was worth — EMPTY when it was a no-op (a transition to the current
+    // driver emits nothing), which is the honest answer and the one a client can act on.
+    events: result.events,
+    ...(result.requestId ? { requestId: result.requestId } : {}),
+  });
+}
+
+function parseGesture(body: unknown): { ok: true; gesture: DriverGesture } | { ok: false; detail: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, detail: 'Body must be a JSON object.' };
+  }
+  const input = body as Record<string, unknown>;
+  if (typeof input.gesture !== 'string' || !GESTURE_KINDS.has(input.gesture)) {
+    return { ok: false, detail: `Field "gesture" must be one of ${[...GESTURE_KINDS].join(', ')}.` };
+  }
+  const gesture = input.gesture as DriverGestureKind;
+  if (input.by === undefined) {
+    return { ok: false, detail: 'Field "by" is required: a gesture is made BY someone (law 3).' };
+  }
+  const by = parseDriver(input.by);
+  if (!by.ok) return { ok: false, detail: by.detail };
+
+  let to: Driver | undefined;
+  if (input.to !== undefined) {
+    const parsed = parseDriver(input.to);
+    if (!parsed.ok) return { ok: false, detail: parsed.detail };
+    to = parsed.driver;
+  }
+  if (input.requestId !== undefined
+    && (typeof input.requestId !== 'string' || input.requestId.trim() === '' || input.requestId.length > MAX_REQUEST_ID_CHARS)) {
+    return { ok: false, detail: `Field "requestId" must be a non-empty string of at most ${MAX_REQUEST_ID_CHARS} characters.` };
+  }
+  if (input.reason !== undefined
+    && (typeof input.reason !== 'string' || input.reason.length > MAX_GESTURE_REASON_CHARS)) {
+    return { ok: false, detail: `Field "reason" must be a string of at most ${MAX_GESTURE_REASON_CHARS} characters.` };
+  }
+  if (gesture === 'deny' && typeof input.requestId !== 'string') {
+    return { ok: false, detail: 'A "deny" names the "requestId" it answers.' };
+  }
+  return {
+    ok: true,
+    gesture: {
+      gesture,
+      by: by.driver,
+      ...(typeof input.requestId === 'string' ? { requestId: input.requestId } : {}),
+      ...(to ? { to } : {}),
+      ...(typeof input.reason === 'string' ? { reason: input.reason } : {}),
+    },
+  };
 }
 
 /**
