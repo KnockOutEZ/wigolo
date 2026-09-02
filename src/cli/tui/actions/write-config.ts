@@ -9,6 +9,7 @@ import { applyConfigs, type ConfigApplyResult } from '../config-writer.js';
 import type { AgentId, DetectedAgent } from '../agents.js';
 import type { WriteResult } from './types.js';
 import { writePersistedConfig, readPersistedConfig, defaultConfigPath } from '../../../persisted-config.js';
+import { requireValidNewTabSearchEngine } from '../../../config.js';
 
 export interface WriteMcpConfigOptions {
   dryRun?: boolean;
@@ -80,9 +81,11 @@ function deepSet(obj: Record<string, unknown>, path: string, value: unknown): Re
  */
 export async function persistKey(path: string, value: unknown): Promise<void> {
   if (!path) throw new Error('persistKey: path must be non-empty');
+  const persistedValue =
+    path === 'newTabSearchEngine' ? requireValidNewTabSearchEngine(value) : value;
   const configPath = defaultConfigPath();
   const current = readPersistedConfig(configPath);
-  const settings = deepSet({ ...current.settings }, path, value);
+  const settings = deepSet({ ...current.settings }, path, persistedValue);
   // We pass a fully-merged settings blob (not a partial patch) because
   // writePersistedConfig does a SHALLOW merge — a nested patch like
   // { llm: { apiKey: 'new' } } would clobber siblings under `llm`.
