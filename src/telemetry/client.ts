@@ -232,14 +232,17 @@ export class TelemetryClient {
   }
 
   private async runFlush(): Promise<FlushResult> {
-    // Early exits can happen on every threshold emit. Use the count this client already
-    // maintains instead of synchronously parsing the whole queue merely to report status.
-    const idle = (status: FlushStatus): FlushResult => ({ status, sent: 0, dropped: 0, retained: this.queuedSinceFlush });
+    const idle = (status: FlushStatus): FlushResult => ({ status, sent: 0, dropped: 0, retained: this.queue.count() });
     if (!this.enabled) return idle('disabled');
     if (!this.isActivated()) return idle('not_activated');
 
     const release = this.queue.tryAcquireFlushLease();
-    if (release === null) return idle('busy');
+    if (release === null) {
+      // A sibling drain can hold the lease across its network timeout. One accurate busy
+      // result is enough; do not make every following threshold emit parse the queue again.
+      this.nextFlushEligibleAtMs = Math.max(this.nextFlushEligibleAtMs, this.now() + MIN_FLUSH_SPACING_MS);
+      return idle('busy');
+    }
     let snapshot: QueuedEvent[] | null = null;
     try {
       const delivery = this.queue.readDeliveryState();

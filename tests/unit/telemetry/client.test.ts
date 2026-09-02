@@ -659,6 +659,8 @@ describe('TelemetryClient', () => {
           JSON.stringify({ pid: process.pid, token: 'live-owner', createdAtMs: Date.now() }),
         );
         for (let i = 1; i < FLUSH_EVENT_THRESHOLD; i += 1) telemetry.emit(toolRun());
+        telemetry.emit(toolRun());
+        await new Promise<void>((resolve) => setImmediate(resolve));
         const queueParses = vi.spyOn(TelemetryQueue.prototype, 'readAll');
         queueParses.mockClear();
 
