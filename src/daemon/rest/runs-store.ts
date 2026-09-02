@@ -33,6 +33,7 @@ import {
   type Run,
   type RunEvent,
   type RunEventInput,
+  type RunStoreOptions,
   type TypedEventQuery,
   type UnansweredEventQuery,
 } from '../../studio/run-store.js';
@@ -156,24 +157,38 @@ export interface DriverGesture {
   reason?: string;
 }
 
-function applyGesture(db: Database.Database, runId: string, input: DriverGesture): BatonResult {
+/**
+ * The ONE mapping from a named gesture to the baton function that owns it.
+ *
+ * Exported because the broker child answers the same gesture over its own wire (#334) and a second
+ * switch there would be a second definition of what `grant` means — the exact shape law 1 forbids,
+ * at the exact place a divergence would be invisible: the app's answer and the daemon's answer for
+ * the identical request body. `opts` is threaded so a caller whose watchers live in another process
+ * can carry the committed envelopes out; an in-daemon caller passes nothing and gets the local bus.
+ */
+export function applyDriverGesture(
+  db: Database.Database,
+  runId: string,
+  input: DriverGesture,
+  opts: RunStoreOptions = {},
+): BatonResult {
   const reason = input.reason !== undefined ? { reason: input.reason } : {};
   switch (input.gesture) {
     case 'request':
-      return requestWheel(db, runId, { by: input.by, ...reason });
+      return requestWheel(db, runId, { by: input.by, ...reason }, opts);
     case 'grant':
       return grantWheel(db, runId, {
         by: input.by,
         ...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
         ...(input.to !== undefined ? { to: input.to } : {}),
         ...reason,
-      });
+      }, opts);
     case 'release':
-      return releaseWheel(db, runId, { by: input.by, ...reason });
+      return releaseWheel(db, runId, { by: input.by, ...reason }, opts);
     case 'takeover':
-      return takeWheel(db, runId, { by: input.by, ...reason });
+      return takeWheel(db, runId, { by: input.by, ...reason }, opts);
     case 'deny':
-      return denyWheel(db, runId, { by: input.by, requestId: input.requestId ?? '', ...reason });
+      return denyWheel(db, runId, { by: input.by, requestId: input.requestId ?? '', ...reason }, opts);
   }
 }
 
@@ -219,7 +234,7 @@ export function sqliteRunsStore(db: Database.Database): RunsStore {
     // paged reader on this port stops on an EMPTY page (`rest/runs.ts`'s `pumpDurable`,
     // `run-view-model.ts`'s `readLog`), which is what makes adding the clamp here compatible.
     eventsSince: async (runId, since, limit) => eventsSinceBounded(db, runId, since, limit),
-    driver: async (runId, input) => applyGesture(db, runId, input),
+    driver: async (runId, input) => applyDriverGesture(db, runId, input),
     sendMessage: async (runId, input) => queueMessage(db, runId, input),
     messages: async (runId, limit) => listMessages(db, runId, limit),
     // The dispatch half. Each is the store function this binding already owns, so the native path
