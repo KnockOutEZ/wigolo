@@ -47,6 +47,10 @@
       "import": "./dist/cache/index.js",
       "types": "./dist/cache/index.d.ts"
     },
+    "./cache/library": {
+      "import": "./dist/cache/library.js",
+      "types": "./dist/cache/library.d.ts"
+    },
     "./embedding-queue": {
       "import": "./dist/embedding/index.js",
       "types": "./dist/embedding/index.d.ts"

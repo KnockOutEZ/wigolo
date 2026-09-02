@@ -225,6 +225,47 @@ export function versionByHash(contentHash: string): RetainedVersion | null {
   return row ? toRetained(row) : null;
 }
 
+export interface ListVersionedUrlsOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface VersionedUrlRow {
+  normalized_url: string;
+  versions: number;
+  newest: string;
+  oldest: string;
+}
+
+export interface VersionedUrlsPage {
+  rows: VersionedUrlRow[];
+  next_cursor: string | null;
+}
+
+/** Shared with the plan assertion so the tested index is the production query's index. */
+export const LIST_VERSIONED_URLS_SQL = `
+  SELECT normalized_url, COUNT(*) AS versions,
+    MAX(fetched_at) AS newest, MIN(fetched_at) AS oldest
+  FROM url_versions
+  WHERE normalized_url > ?
+  GROUP BY normalized_url
+  ORDER BY normalized_url ASC
+  LIMIT ?`;
+
+/** Enumerate the retained-version corpus without loading any retained bodies. */
+export function listVersionedUrls(options: ListVersionedUrlsOptions = {}): VersionedUrlsPage {
+  const limit = clampListLimit(options.limit);
+  const fetched = getDatabase()
+    .prepare(LIST_VERSIONED_URLS_SQL)
+    .all(options.cursor ?? '', limit + 1) as VersionedUrlRow[];
+  const hasMore = fetched.length > limit;
+  const rows = fetched.slice(0, limit);
+  return {
+    rows,
+    next_cursor: hasMore ? rows.at(-1)?.normalized_url ?? null : null,
+  };
+}
+
 function clampListLimit(limit?: number): number {
   if (typeof limit !== 'number' || !Number.isFinite(limit)) return DEFAULT_VERSION_LIST_LIMIT;
   return Math.max(1, Math.min(MAX_VERSION_LIST_LIMIT, Math.floor(limit)));
