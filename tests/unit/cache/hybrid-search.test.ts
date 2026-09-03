@@ -35,7 +35,7 @@ function cached(url: string): CachedContent {
     normalizedUrl: url,
     title: 'Result',
     markdown: 'body',
-    rawHtml: null,
+    rawHtml: '',
     metadata: '{}',
     links: '[]',
     images: '[]',
