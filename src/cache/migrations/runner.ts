@@ -455,6 +455,50 @@ const MIGRATION_018_STUDIO_RUNS_LIST_INDEX = `
 -- CREATE INDEX would make this migration require 016 to have run first.
 `;
 
+/**
+ * SD5 §6.1 — the memories store. Greenfield table, no backfill, no dependency on any other studio
+ * table, so it is plain SQL rather than a guarded postStep like 017/018.
+ *
+ * `created_at` and `expires_at` are epoch-ms INTEGERs, matching `studio_audit.ts` rather than
+ * `studio_runs.created_at`'s ISO TEXT: expiry is enforced by comparing against a clock (`expires_at
+ * < now` is excluded from active listings, and the prune pass deletes on the same predicate), and a
+ * numeric comparison is the only one SQLite can serve from an index without a per-row conversion.
+ *
+ * NO CHECK constraints on `scope`, `provenance` or `status`, deliberately, and consistently with
+ * every other studio_* table. The broker that serves this table is dumb by design (spec D8): it
+ * binds cells and does no domain validation, and only the external core migrates the shared cache.
+ * A CHECK here would therefore turn "the companion learned a new scope value one release early"
+ * from a pairing-time schema-skew refusal — which the handshake already decides, with an upgrade
+ * hint — into an opaque constraint error at write time. The enum lives with the writer.
+ *
+ * Two indexes, one per read this table actually has. The listing is scope-filtered and
+ * status-filtered (`status='active' AND scope=? AND scope_key=?`) and ends in `created_at` so the
+ * newest-first order is the same traversal. The prune is `expires_at < ?`, and its index is PARTIAL
+ * — a row with no expiry can never satisfy that predicate, and `expires_at IS NULL` is the common
+ * case, so keeping those rows out of the b-tree costs the prune nothing and saves every insert.
+ */
+const MIGRATION_019_STUDIO_MEMORIES = `
+CREATE TABLE IF NOT EXISTS studio_memories (
+  id            TEXT PRIMARY KEY,
+  text          TEXT NOT NULL,
+  scope         TEXT NOT NULL,
+  scope_key     TEXT,
+  provenance    TEXT NOT NULL,
+  source_run_id TEXT,
+  source_detail TEXT,
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER,
+  status        TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE INDEX IF NOT EXISTS idx_studio_memories_scope
+  ON studio_memories(status, scope, scope_key, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_studio_memories_expiry
+  ON studio_memories(expires_at)
+  WHERE expires_at IS NOT NULL;
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -729,6 +773,7 @@ export const MIGRATIONS: Migration[] = [
       db.exec('DROP INDEX IF EXISTS idx_studio_runs_status');
     },
   },
+  { name: '019-studio-memories', sql: MIGRATION_019_STUDIO_MEMORIES },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
