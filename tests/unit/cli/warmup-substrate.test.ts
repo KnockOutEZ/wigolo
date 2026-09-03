@@ -43,6 +43,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup, warmupResultToJson } from '../../../src/cli/warmup.js';
+import { noopReporter } from '../../../src/cli/tui/reporter.js';
 import { resetConfig } from '../../../src/config.js';
 import {
   resetBrowserTierAnnouncements,
@@ -56,14 +57,8 @@ import {
 const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 let dataDir: string;
 
-/** A silent reporter: warmup's default one paints a TUI we have no interest in here. */
-const quiet = {
-  note: () => {},
-  start: () => {},
-  success: () => {},
-  fail: () => {},
-  finish: () => {},
-};
+/** Warmup's own discard-everything reporter: its default one paints a TUI nothing here reads. */
+const quiet = noopReporter;
 
 beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'wigolo-warmup-substrate-'));
