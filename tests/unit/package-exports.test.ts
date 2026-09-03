@@ -72,7 +72,19 @@ const SUBPATHS: Subpath[] = [
   {
     spec: 'wigolo/cache',
     target: './dist/cache/index.js',
-    runtime: ['normalizeUrl', 'sanitizeFtsQuery'],
+    runtime: [
+      'getAuthenticatedCorpusStats',
+      'normalizeUrl',
+      'purgeAuthenticatedCorpus',
+      'sanitizeFtsQuery',
+    ],
+    types: [
+      'AuthenticatedCorpusPurgeOptions',
+      'AuthenticatedCorpusPurgeResult',
+      'AuthenticatedCorpusStats',
+      'ArtifactProvider',
+      'ArtifactRecord',
+    ],
   },
   {
     // A7 adds the class and the test reset beside the singleton. The factory is not a
