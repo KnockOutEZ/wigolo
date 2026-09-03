@@ -4,7 +4,9 @@
  * Not a general barrel: it carries exactly what the extracted studio domain layer and the app
  * were MEASURED importing from this directory (A4 2026-09-02, widened at A6 2026-09-02 from the
  * compiler's own enumeration once B1 rewrote `packages/studio-core` onto these subpaths, and again
- * at A7 2026-09-02 for the two origin-budget defaults the extracted specs name). Every
+ * at A7 2026-09-02 for the two origin-budget defaults the extracted specs name, and again at
+ * A8 2026-09-03 for the auth-origin ledger and the escalation counter, whose modules stay here
+ * and which `exports` reaches by no other path — there is no wildcard subpath). Every
  * other kept file here is reached by core's own seams — the daemon, the CLI, config, the fetch
  * router — which import the module directly and do not need a subpath at all.
  *
@@ -35,8 +37,23 @@ export {
   type OriginClass,
 } from './origin-budget.js';
 
-// `agent-drive-gate.ts`, `human-solve-bridge.ts` — the counter key union.
-export { type EscalationCounterKey } from './escalation-counters.js';
+// `agent-drive-gate.ts`, `human-solve-bridge.ts` — the counter key union. `studio-host.ts` bumps
+// the counters themselves; both modules stay in core and are reachable by no other subpath.
+export { bumpEscalationCounter, type EscalationCounterKey } from './escalation-counters.js';
+
+// `studio-host.ts` records and reads the login-handoff ledger; `authenticated-origin.test.ts`
+// drives the whole store — the override projection, the human-only patch and its refusal, the
+// setting keys it writes under, and the count `doctor` reports.
+export {
+  recordAuthOrigin,
+  readAuthOriginLedger,
+  readOriginOverrides,
+  overridePatch,
+  authenticatedOriginCount,
+  AgentWriteRefusedError,
+  ANONYMOUS_ORIGINS_KEY,
+  AUTHENTICATED_ORIGINS_KEY,
+} from './auth-origin-store.js';
 
 // The app's session handle (D1 switch table; C4 deletes the `wigolo/studio` barrel it uses today).
 export {
