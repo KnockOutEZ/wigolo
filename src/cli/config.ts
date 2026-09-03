@@ -10,6 +10,7 @@
  *   --import <path>      Import config from file
  *   --cleanup <component> Cleanup a component (cache|embeddings|models|browser|searxng)
  *   --prune-audit --older-than <dur> --yes  Prune studio audit rows older than <dur> (fail-closed)
+ *   --prune-memories --yes  Prune studio memory rows whose expiry has already passed
  *   --uninstall [--yes]  Full uninstall (requires --yes to skip confirmation)
  *   --storage            Print storage usage map
  *   --cache-stats        Print cache statistics
@@ -41,6 +42,7 @@ const CONFIG_USAGE = [
   '  --import <path>          Import config from file',
   '  --cleanup <component>    Free storage for: cache|embeddings|models|browser|searxng',
   '  --prune-audit --older-than <dur> --yes  Prune studio audit rows older than <dur> (e.g. 30d)',
+  '  --prune-memories --yes   Delete studio memories whose expiry has already passed',
   '  --set <key>=<value>      Update a single non-secret setting headlessly',
   '  --authenticated-origin <origin>  Mark an origin as one you are signed in to',
   '  --anonymous-origin <origin>      Mark an origin as one you are NOT signed in to',
@@ -66,6 +68,7 @@ interface ConfigFlags {
   uninstall: boolean;
   yes: boolean;
   pruneAudit: boolean;
+  pruneMemories: boolean;
   olderThan: string | null;
   json: boolean;
   /** S9/F5 human overrides — `[origin, kind]`, or null when neither flag was given. */
@@ -97,6 +100,7 @@ function parseConfigFlags(args: string[]): ConfigFlags {
     uninstall: false,
     yes: false,
     pruneAudit: false,
+    pruneMemories: false,
     olderThan: null,
     json: false,
     originOverride: null,
@@ -116,6 +120,7 @@ function parseConfigFlags(args: string[]): ConfigFlags {
     if (arg === '--yes' || arg === '-y') { flags.yes = true; i++; continue; }
     if (arg === '--uninstall') { flags.uninstall = true; i++; continue; }
     if (arg === '--prune-audit') { flags.pruneAudit = true; i++; continue; }
+    if (arg === '--prune-memories') { flags.pruneMemories = true; i++; continue; }
 
     if (arg === '--older-than') {
       const next = args[i + 1];
@@ -317,6 +322,41 @@ export async function runConfig(args: string[]): Promise<number> {
     return 1;
   }
 
+  if (flags.pruneAudit && flags.pruneMemories) {
+    // Two different retention questions with two different cutoffs. Running one of them because it
+    // was checked first would delete less than the operator asked for and say nothing about it.
+    process.stderr.write('--prune-audit and --prune-memories are separate retention passes. Run them one at a time. No rows deleted.\n');
+    return 1;
+  }
+
+  if (flags.pruneMemories) {
+    // Operator-only prune of studio memories whose absolute expiry has already passed. Same confirm
+    // gate as --prune-audit: irreversible, so it never runs on the bare flag.
+    if (flags.olderThan) {
+      // This verb has NO age policy — the cutoff is the expiry the user set on each row, and "now".
+      // Accepting --older-than would let an operator believe the delete was scoped by age when it
+      // was not.
+      process.stderr.write('--prune-memories takes no --older-than: it removes rows whose own expiry has passed. No rows deleted.\n');
+      return 1;
+    }
+    if (!flags.yes) {
+      process.stderr.write('Pruning expired memories is irreversible. Re-run with --yes to confirm. No rows deleted.\n');
+      return 1;
+    }
+    const { getDatabase } = await import('../cache/db.js');
+    const { pruneExpiredMemories } = await import('../companion/audit-retention.js');
+    let memDb: ReturnType<typeof getDatabase>;
+    try {
+      memDb = getDatabase();
+    } catch {
+      process.stderr.write('No database initialized — nothing to prune.\n');
+      return 1;
+    }
+    const { deleted } = pruneExpiredMemories(memDb, { nowMs: Date.now() });
+    process.stdout.write(`Pruned ${deleted} expired studio memory row(s).\n`);
+    return 0;
+  }
+
   if (flags.pruneAudit) {
     // Operator-only prune of the studio audit forensic log. Fail-closed: require an explicit
     // by-age cutoff AND a typed confirmation before ANY row is deleted (a forensic log — stricter
@@ -498,6 +538,7 @@ export async function runConfig(args: string[]): Promise<number> {
   process.stdout.write('  wigolo config --import <path>    Import settings from file\n');
   process.stdout.write('  wigolo config --cleanup <comp>   Free storage per component\n');
   process.stdout.write('  wigolo config --prune-audit --older-than <dur> --yes  Prune aged studio audit rows\n');
+  process.stdout.write('  wigolo config --prune-memories --yes  Prune expired studio memories\n');
   process.stdout.write('  wigolo config --set k=v          Update a single non-secret setting\n');
   process.stdout.write('  wigolo config --uninstall --yes  Full uninstall\n');
 
