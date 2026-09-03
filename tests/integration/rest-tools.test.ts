@@ -6,10 +6,17 @@ import { allowNetworkInThisFile } from '../net-fence.js';
 
 // Same shape as rest-api.test.ts: a real DaemonHttpServer driving the real tool pipeline, so the
 // crawl/research/agent rows egress. Measured destinations: www.bing.com:443,
-// lite.duckduckgo.com:443, storage.googleapis.com:443. Declared so the dependence is inventoried
-// rather than inferred from a red on a plane.
+// lite.duckduckgo.com:443. Declared so the dependence is inventoried rather than inferred from a
+// red on a plane.
+//
+// `storage.googleapis.com:443` was a third measured destination until #241 — the embedding model
+// downloading into a fresh test home, which put "find_similar -> 200 with results[]" at 7.5s on a
+// fast link and timed it out at exactly 60s on a slow one. `tests/setup.ts` now seeds that model
+// from the machine's real cache and the row costs 56ms. The allowance below stays because the
+// search engines above are a real, remaining egress — unlike find-similar.test.ts, this file
+// cannot arm the fence.
 allowNetworkInThisFile(
-  'drives the real REST tool pipeline end to end: live search engines and the embedding model download',
+  'drives the real REST tool pipeline end to end against live search engines',
 );
 
 /**
