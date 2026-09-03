@@ -318,9 +318,14 @@ describe('studioLaunchable — the recorded distribution ceiling', () => {
  * this is the VALUE's, which is the half no key-side fix reaches. `off` is honoured beyond the house
  * set because the disable half is now this variable's whole job and `off` is what an operator writes
  * for a switch; see DECISIONS-AUTO 2026-08-28 for the reversal condition.
+ *
+ * `no` joined the set for the same reason one step further on (A-202-1). It is the plainest way to
+ * write "do not launch this", it was the one spelling `TELEMETRY_OFF_VALUES` already honoured, and
+ * without it the operator who typed it got the hidden process anyway — the identical consent miss
+ * the casing fix above exists to prevent, reached through vocabulary instead of casing.
  */
 describe('the auto-launch off switch reads its value case-insensitively', () => {
-  for (const spelling of ['0', 'false', 'False', 'FALSE', 'off', 'Off', 'OFF', ' false ']) {
+  for (const spelling of ['0', 'false', 'False', 'FALSE', 'off', 'Off', 'OFF', ' false ', 'no', 'No', 'NO', ' no ']) {
     it(`declines when the variable is ${JSON.stringify(spelling)}`, async () => {
       process.env.WIGOLO_STUDIO_AUTO_LAUNCH = spelling;
       const launch = vi.fn();

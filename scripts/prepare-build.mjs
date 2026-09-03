@@ -45,14 +45,31 @@ const require = createRequire(import.meta.url);
  * ⚠ THIS WAS BARE TRUTHINESS, AND BARE TRUTHINESS READS THE FLAG BACKWARDS. `if (process.env.X)`
  * makes `=0`, `=false` and `=off` all mean SKIP — the inverse of what the operator wrote — while
  * this repo established the opposite rule one file over in the same phase: `autoLaunchDisabled`
- * (`src/companion/auto-launch.ts`) trims, lowercases and compares against exactly these three values.
+ * (`src/companion/auto-launch.ts`) trims, lowercases and compares against exactly these values.
  * Two flags shipped together cannot disagree about what `0` means.
+ *
+ * ⚠ AND `no` WAS THE ONE THE SET FORGOT. It is the plainest English spelling of "do not skip", so
+ * `WIGOLO_SKIP_PREPARE=no` meant SKIP — the same inversion the paragraph above exists to close,
+ * surviving inside the fix for it. `TELEMETRY_OFF_VALUES` (`src/telemetry/off-switch.ts`) had
+ * carried `no` since it was written; the other two had not, and that split is what made this
+ * reachable at all.
+ *
+ * `n` is deliberately NOT here (A-202-1). The three sets are one vocabulary and the rule that keeps
+ * them one is "a spelling is in every set or in none"; adding an abbreviation to two of three would
+ * recreate the split this change closes, and a single letter is a far likelier typo for something
+ * else than a stated intent. Reverse it by adding `n` to ALL THREE sets in one commit.
+ *
+ * KEEP THIS SET BYTE-IDENTICAL to `AUTO_LAUNCH_OFF_VALUES` (`src/companion/auto-launch.ts`) and
+ * `TELEMETRY_OFF_VALUES` (`src/telemetry/off-switch.ts`). No shared constant is possible: this file
+ * runs as npm's `prepare` hook on a freshly cloned git dependency, before `dist/` exists and with
+ * no loader for `src/*.ts`, so it can import nothing from this package. `tests/unit/prepare-build.test.ts`
+ * reads this literal out of this file and reds if the three ever diverge.
  *
  * The fail direction is quiet rather than loud, which is why it is worth a set instead of a cast:
  * a local `npm ci` under a leaked `WIGOLO_SKIP_PREPARE=0` exits 0 with an unbuilt tree, and the
  * absent `dist/` surfaces much later as module-not-found in whatever consumes this package.
  */
-const SKIP_OFF_VALUES = new Set(['0', 'false', 'off']);
+const SKIP_OFF_VALUES = new Set(['0', 'false', 'off', 'no']);
 
 /**
  * Opt-out for a caller that will build explicitly itself.

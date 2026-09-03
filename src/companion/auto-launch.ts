@@ -45,8 +45,20 @@ const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
  * `off` is honoured alongside the house pair because the disable half is this variable's whole job
  * now, and `off` is what an operator writes for a switch that only switches one way. Recorded with
  * its reversal condition in DECISIONS-AUTO (2026-08-28).
+ *
+ * `no` joined it for the same reason one step on (A-202-1): it is the plainest way to write "do not
+ * launch this", and without it the operator who typed it got the detached hidden process anyway —
+ * the identical consent miss {@link autoLaunchDisabled}'s casing fix exists to prevent, reached
+ * through vocabulary rather than casing. `n` is deliberately excluded; see the same decision.
+ *
+ * KEEP BYTE-IDENTICAL to `SKIP_OFF_VALUES` (`scripts/prepare-build.mjs`) and `TELEMETRY_OFF_VALUES`
+ * (`src/telemetry/off-switch.ts`). The three are one vocabulary, and each cites the others as its
+ * precedent, so an operator who learns it from one knob is entitled to it on the next. A shared
+ * constant cannot reach the `.mjs` — that file is npm's `prepare` hook on a git-dependency clone and
+ * must import nothing from this package — so `tests/unit/prepare-build.test.ts` asserts the three
+ * sets are equal and reds on any divergence. Exported for exactly that arm.
  */
-const AUTO_LAUNCH_OFF_VALUES = new Set(['0', 'false', 'off']);
+export const AUTO_LAUNCH_OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
 
 /**
  * Has the operator turned auto-launch off?
