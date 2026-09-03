@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { getDatabase } from './db.js';
+import { getDatabase, isDatabaseInitialized } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { mergeCompleteness } from '../extraction/completeness.js';
@@ -988,21 +988,38 @@ export function routeIdentity(route: string | undefined | null): string {
   }
 }
 
+/**
+ * SQLite expression for "now" as an ISO-8601 UTC instant.
+ *
+ * `datetime('now')` yields `YYYY-MM-DD HH:MM:SS` with no zone marker, which `Date.parse`
+ * reads as LOCAL time — fine for `last_updated`, which nothing but SQLite compares, but
+ * wrong for the clearance ledger's instants, which cross a process boundary into a
+ * surface that renders them as dates. These are written zone-explicit instead.
+ */
+const ISO_NOW = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
 export function recordDomainClearance(host: string, clearance: DomainClearance): void {
   try {
     const db = getDatabase();
     db.prepare(`
       INSERT INTO domain_routing (
         domain, prefer_playwright, http_failures,
-        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route, last_updated
+        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route,
+        clearance_solved_at, reused_count, last_reused_at, last_updated
       )
-      VALUES (?, 0, 0, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, 0, 0, ?, ?, ?, ?, ?, ${ISO_NOW}, 0, NULL, datetime('now'))
       ON CONFLICT(domain) DO UPDATE SET
         cf_clearance = excluded.cf_clearance,
         clearance_ua = excluded.clearance_ua,
         clearance_tier = excluded.clearance_tier,
         clearance_expires_at = excluded.clearance_expires_at,
         solved_route = excluded.solved_route,
+        -- The reuse tally belongs to ONE clearance, not to the host: a fresh solve
+        -- restarts it, so the ledger card can say "solved <date> · reused N x" without
+        -- carrying reuses of a cookie that is no longer there.
+        clearance_solved_at = excluded.clearance_solved_at,
+        reused_count = 0,
+        last_reused_at = NULL,
         last_updated = datetime('now')
     `).run(
       host,
@@ -1025,12 +1042,132 @@ export function clearDomainClearance(host: string): void {
       UPDATE domain_routing
       SET cf_clearance = NULL, clearance_ua = NULL,
           clearance_tier = NULL, clearance_expires_at = NULL,
+          clearance_solved_at = NULL, reused_count = 0, last_reused_at = NULL,
           last_updated = datetime('now')
       WHERE domain = ?
     `).run(host);
   } catch (err) {
     log.warn('clearDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/**
+ * The clearance reuse ledger's read shape — SD6 §10, mini-spec's "solved this wall
+ * 2026-08-12 · reused 14x".
+ *
+ * The cookie value and the user-agent it was minted against are absent BY CONSTRUCTION,
+ * not by a redaction step: this interface never names a field that could hold either, so
+ * there is no code path — present or future — that can place one in a projection typed as
+ * this. Same posture as the authenticated-origin ledger's cookie facts, and the reason a
+ * per-host clearance can be shown in a privacy dashboard at all.
+ */
+export interface DomainClearanceRecord {
+  /** Raw hostname the clearance is keyed on — the same key `domain_routing` uses. */
+  host: string;
+  /**
+   * ISO-8601 UTC instant the current clearance was solved. Pre-020 rows carry no solve
+   * stamp; they resolve to `last_updated`, the closest instant those rows hold.
+   */
+  solvedAt: string;
+  /** Replays of the CURRENT clearance. Reset to 0 by every fresh solve and every purge. */
+  reusedCount: number;
+  /** ISO-8601 UTC instant of the most recent replay; absent until the first one. */
+  lastReusedAt?: string;
+  /** Normalised egress route the clearance was solved on (`routeIdentity`), never a credential. */
+  route: string;
+}
+
+interface DomainClearanceRecordRawRow {
+  domain: string;
+  clearance_solved_at: string | null;
+  last_updated: string | null;
+  reused_count: number | null;
+  last_reused_at: string | null;
+  solved_route: string | null;
+}
+
+/**
+ * Count one replay of the host's stored clearance.
+ *
+ * Best-effort and silent by design: it is called from a fetch hot path whose job is to
+ * serve a page, and a ledger write that failed must never turn into a failed fetch. When
+ * no cache DB is open in this process it returns without touching one — a pure-helper
+ * unit test must not conjure a database, and there is nothing to count in a process that
+ * never read a clearance in the first place.
+ *
+ * The bump is conditional on a clearance actually being present, so a race that purges
+ * the row between read and replay cannot resurrect a count against nothing.
+ */
+export function recordClearanceReuse(host: string): void {
+  if (!isDatabaseInitialized()) return;
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      UPDATE domain_routing
+      SET reused_count = COALESCE(reused_count, 0) + 1,
+          last_reused_at = ${ISO_NOW}
+      WHERE domain = ? AND cf_clearance IS NOT NULL
+    `).run(host);
+  } catch (err) {
+    log.warn('recordClearanceReuse failed', { host, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * Every host holding a clearance, newest solve first, as value-free ledger records.
+ *
+ * Hosts with no clearance are omitted rather than listed with a zero count: the row
+ * describes a solve, and a host that never had one has nothing to show or delete.
+ * Follows the read-swallow convention of the other routing getters — a read failure
+ * degrades to an empty list rather than crashing an inspection surface.
+ */
+export function listDomainClearances(): DomainClearanceRecord[] {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT domain, clearance_solved_at, last_updated, reused_count, last_reused_at, solved_route
+       FROM domain_routing
+       WHERE cf_clearance IS NOT NULL
+       ORDER BY COALESCE(clearance_solved_at, last_updated) DESC, domain ASC`,
+    ).all() as DomainClearanceRecordRawRow[];
+    return rows.map((row) => ({
+      host: row.domain,
+      solvedAt: row.clearance_solved_at ?? row.last_updated ?? '',
+      reusedCount: row.reused_count ?? 0,
+      lastReusedAt: row.last_reused_at ?? undefined,
+      // A legacy NULL route reads back as 'direct', the same way getDomainClearance
+      // resolves it — one rule for the same column on both reads.
+      route: row.solved_route ?? 'direct',
+    }));
+  } catch (err) {
+    log.warn('listDomainClearances failed', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+/**
+ * Forget one host's clearance outright — the privacy dashboard's delete.
+ *
+ * Wipes the cookie, the minting user-agent, the tier, the expiry, the solve stamp and the
+ * reuse tally, and keeps the routing row's learned preferences: the user asked to forget a
+ * solved wall, not to un-learn which engine serves the host. Returns rows changed (0 when
+ * the host is untracked).
+ *
+ * Deliberately does NOT swallow: unlike the hot-path purge {@link clearDomainClearance},
+ * a delete a user asked for must surface its failure to the caller rather than reporting
+ * a deletion that did not happen. Same posture as {@link resetDomainRouting}.
+ */
+export function deleteDomainClearance(host: string): number {
+  const db = getDatabase();
+  const info = db.prepare(`
+    UPDATE domain_routing
+    SET cf_clearance = NULL, clearance_ua = NULL,
+        clearance_tier = NULL, clearance_expires_at = NULL,
+        clearance_solved_at = NULL, reused_count = 0, last_reused_at = NULL,
+        last_updated = datetime('now')
+    WHERE domain = ?
+  `).run(host);
+  return info.changes;
 }
 
 /** Record a per-host cooldown (epoch ms) after repeated blocks. */
@@ -1143,6 +1280,9 @@ const RESET_ROUTING_COLUMNS = `
   clearance_ua = NULL,
   clearance_tier = NULL,
   clearance_expires_at = NULL,
+  clearance_solved_at = NULL,
+  reused_count = 0,
+  last_reused_at = NULL,
   last_updated = datetime('now')
 `;
 

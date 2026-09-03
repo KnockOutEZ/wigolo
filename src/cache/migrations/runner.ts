@@ -499,6 +499,13 @@ CREATE INDEX IF NOT EXISTS idx_studio_memories_expiry
   WHERE expires_at IS NOT NULL;
 `;
 
+// SD6 §10 — the clearance reuse ledger's storage half: when the current clearance for a host was
+// solved, how many times it has been replayed since, and when it was last replayed. Three columns
+// on domain_routing — the table the clearance already occupies 1:1 per host — rather than a second
+// table, which would make the same host's clearance state readable from two places. SQL is empty
+// because the whole effect is the guarded ADD COLUMNs in the postStep (mirrors 008/010).
+const MIGRATION_020_CLEARANCE_REUSE_COUNTERS = '';
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -774,6 +781,30 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   { name: '019-studio-memories', sql: MIGRATION_019_STUDIO_MEMORIES },
+  {
+    name: '020-clearance-reuse-counters',
+    sql: MIGRATION_020_CLEARANCE_REUSE_COUNTERS,
+    /**
+     * Adds the solve instant and the reuse tally to domain_routing, skipping any column already
+     * present (idempotent) — mirrors the 010 postStep. `reused_count` carries a NOT NULL DEFAULT 0
+     * so existing rows read back as "never reused" rather than as an unknown; the two instants are
+     * nullable, and a pre-020 row's NULL `clearance_solved_at` is resolved to `last_updated` by the
+     * read projection, the closest instant those rows carry.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(domain_routing)') as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has('clearance_solved_at')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN clearance_solved_at TEXT');
+      }
+      if (!names.has('reused_count')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN reused_count INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!names.has('last_reused_at')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN last_reused_at TEXT');
+      }
+    },
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
