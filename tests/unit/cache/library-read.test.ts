@@ -118,20 +118,40 @@ describe('listLibraryPages', () => {
       .toThrow(/invalid library cursor/);
   });
 
-  it('orders query results by relevance and paginates equal scores by row id', () => {
+  it('orders query results by BM25 relevance rather than by row id', () => {
+    // Seeded so that scoring order and insertion order disagree. Equal-content
+    // rows would let an id tiebreak alone reproduce the expected sequence, and
+    // the assertion would hold with the rank term deleted.
+    seed('https://example.com/one', 'One', 'needle needle needle needle');
+    seed('https://example.com/two', 'Two', `needle ${'unrelated filler prose '.repeat(40)}`);
+    seed('https://example.com/three', 'Three', 'needle');
+
+    const page = listLibraryPages({ query: 'needle', sort: 'relevance', limit: 10 });
+    const scores = page.rows.map((row) => row.relevance);
+    expect(scores.every((score) => typeof score === 'number')).toBe(true);
+    // FTS5 rank is negative and ascending-is-better.
+    expect(scores).toEqual([...scores].sort((a, b) => (a ?? 0) - (b ?? 0)));
+    expect(new Set(scores).size).toBe(3);
+
+    const ids = page.rows.map((row) => row.id);
+    expect(ids).not.toEqual([...ids].sort((a, b) => a - b));
+  });
+
+  it('paginates a relevance-sorted result set across cursors without repeats', () => {
     seed('https://example.com/one', 'One', 'needle needle needle');
     seed('https://example.com/two', 'Two', 'needle');
     seed('https://example.com/three', 'Three', 'needle');
 
-    const first = listLibraryPages({ query: 'needle', sort: 'relevance', limit: 1 });
-    expect(first.rows[0]?.normalized_url).toBe('https://example.com/one');
-    const second = listLibraryPages({
-      query: 'needle',
-      sort: 'relevance',
-      limit: 2,
-      cursor: first.next_cursor ?? undefined,
-    });
-    expect(second.rows.map((row) => row.normalized_url).sort()).toEqual([
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = listLibraryPages({ query: 'needle', sort: 'relevance', limit: 1, cursor });
+      seen.push(...page.rows.map((row) => row.normalized_url));
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+
+    expect(seen.sort()).toEqual([
+      'https://example.com/one',
       'https://example.com/three',
       'https://example.com/two',
     ]);
