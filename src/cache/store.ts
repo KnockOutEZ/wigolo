@@ -763,7 +763,16 @@ function libraryHost(normalizedUrl: string): string {
  *
  * The first page captures the current maximum row id. Later pages keep that
  * watermark in their opaque cursor, so rows inserted while a consumer is
- * paging cannot displace or duplicate rows from the original view.
+ * paging cannot displace or duplicate rows from the original view. The cursor
+ * is also bound to the filter set and sort it was issued under and is rejected
+ * against any other, since replaying it elsewhere pages a different result set
+ * silently rather than failing.
+ *
+ * One consequence is worth stating: url_cache writes are INSERT OR REPLACE, so
+ * re-fetching a URL already inside a pagination gives its row a fresh id above
+ * the watermark and drops it from the remainder of that listing. A re-fetched
+ * page therefore goes missing from an in-progress listing rather than appearing
+ * twice (A-362-1).
  */
 export function listLibraryPages(options: LibraryPageOptions = {}): LibraryPageResult {
   const query = options.query?.trim() || undefined;

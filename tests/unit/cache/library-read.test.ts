@@ -53,8 +53,11 @@ describe('listLibraryPages', () => {
     expect(first.total).toBe(4);
     expect(first.next_cursor).toEqual(expect.any(String));
 
+    // Lands INSIDE the window the second page still has to read, so a keyset
+    // cursor alone would surface it and push a real row off the last page. Only
+    // the snapshot watermark can exclude it.
     seed('https://example.com/new', 'NEW');
-    retime('https://example.com/new', '2026-09-01 12:00:00');
+    retime('https://example.com/new', '2026-08-02 12:00:00');
 
     const second = listLibraryPages({
       sort: 'recency',
@@ -96,6 +99,23 @@ describe('listLibraryPages', () => {
     ]);
     expect(page.total).toBe(1);
     expect(countCacheFiltered(filter)).toBe(page.total);
+  });
+
+  it('refuses a cursor whose filters or sort no longer match the request', () => {
+    seed('https://example.com/a', 'A');
+    seed('https://example.com/b', 'B');
+    const first = listLibraryPages({ domain: 'example.com', limit: 1 });
+    const cursor = first.next_cursor ?? '';
+    expect(cursor).not.toBe('');
+
+    // Same page size, different filter set: the snapshot and keyset in the
+    // cursor describe a view the caller is no longer asking for, so replaying
+    // it would silently page through the wrong result set.
+    expect(() => listLibraryPages({ limit: 1, cursor })).toThrow(/does not match/);
+    expect(() => listLibraryPages({ domain: 'other.example', limit: 1, cursor }))
+      .toThrow(/does not match/);
+    expect(() => listLibraryPages({ domain: 'example.com', limit: 1, cursor: 'not-a-cursor' }))
+      .toThrow(/invalid library cursor/);
   });
 
   it('orders query results by relevance and paginates equal scores by row id', () => {
