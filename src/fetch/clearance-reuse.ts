@@ -1,14 +1,20 @@
 import { currentStealthChromeMajor } from './stealth.js';
-import { routeIdentity } from '../cache/store.js';
+import { routeIdentity, recordClearanceReuse } from '../cache/store.js';
 import type { DomainClearance } from '../cache/store.js';
 
 /**
- * Anti-bot clearance reuse (S-A2). Pure, browser-engine-free helpers that decide
+ * Anti-bot clearance reuse (S-A2). Browser-engine-free helpers that decide
  * whether a stored clearance (see {@link DomainClearance}) may be replayed for a
  * given fetch tier, and shape the cookie for the two injection paths (a browser
  * `context.addCookies(...)` cookie, or a `Cookie:` request header). Kept
  * dependency-light so the tiers stay decoupled and the rules are unit-testable
  * without a DB or a live page.
+ *
+ * Every eligibility predicate here is pure. The one exception is deliberate:
+ * {@link parsedClearanceCookie} is the browser tier's consumption seam and counts
+ * SD6 §10's reuse tally as the cookie leaves — see its note for why the count
+ * belongs there and not on the predicate. Its writer is injectable and its default
+ * is a no-op without an open cache DB, so the helpers stay DB-free under test.
  */
 
 /** The single anti-bot clearance cookie name we mint / replay. */
@@ -119,13 +125,27 @@ export function clearanceCookieValue(cookie: string): string | null {
  * originating host so it is dropped on any cross-host redirect hop (the browser
  * only sends a cookie back to its own domain). Returns null when the stored
  * value is not a clearance cookie.
+ *
+ * This is also the browser tier's clearance CONSUMPTION seam — not a pure
+ * formatter — and that is where SD6 §10's reuse tally is counted. Counting at
+ * the eligibility predicate would be wrong twice over: `isClearanceReusable` is
+ * asked before every attempt including the ones it refuses, and a refused
+ * clearance was never reused. By the time this returns a cookie the clearance
+ * has passed every gate and is being injected, which is the only honest
+ * definition of "reused" the ledger card ("reused 14x") can carry.
+ *
+ * `onReuse` is injectable so the pure-helper tests can observe the bump without
+ * a database; the default writes the ledger and is silently a no-op in a
+ * process with no cache DB open.
  */
 export function parsedClearanceCookie(
   cookie: string,
   host: string,
+  onReuse: (host: string) => void = recordClearanceReuse,
 ): { name: string; value: string; domain: string; path: string } | null {
   const value = clearanceCookieValue(cookie);
   if (value == null) return null;
+  onReuse(host);
   return { name: CLEARANCE_COOKIE_NAME, value, domain: host, path: '/' };
 }
 
