@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ._errors import WigoloAPIError, WigoloConnectionError
 from ._manifest import MANIFEST
+from ._runs import Runs
 from ._untrusted import UNTRUSTED_CONTENT_HEADER, UNTRUSTED_CONTENT_MODES
 
 if TYPE_CHECKING:
@@ -133,6 +134,10 @@ class Client:
                 self._base_url = os.environ.get("WIGOLO_BASE_URL") or _DEFAULT_BASE_URL
 
         self._base_url = self._base_url.rstrip("/")
+        # The runs surface — create/get/list a run, queue a message, make a baton gesture, and
+        # tail the event stream. A projection of the daemon's append-only log; this client holds
+        # no run state of its own.
+        self.runs = Runs(self)
         # Loopback targets bypass any ambient proxy (see _NO_PROXY_OPENER); the
         # default opener (which honors http(s)_proxy) is used otherwise.
         self._urlopen = (
