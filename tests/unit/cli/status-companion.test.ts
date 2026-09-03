@@ -52,8 +52,11 @@ import { runStatus } from '../../../src/cli/status.js';
 const NO_ESCALATIONS = {
   bridgeAttempted: 0,
   bridgeServed: 0,
+  bridgeDeclined: 0,
   budgetRefused: 0,
   cardShown: 0,
+  cardApproved: 0,
+  cardRefused: 0,
   cardUnattended: 0,
 };
 
@@ -124,6 +127,7 @@ describe('status — browser-session counters come from the companion escalation
     // WHY each on its own (tracker rule 7): summarising the block by its total would let a
     // regression that zeroes one lane stay green as long as the others moved.
     readEscalationCountersMock.mockReturnValue({
+      ...NO_ESCALATIONS,
       bridgeAttempted: 11,
       bridgeServed: 7,
       budgetRefused: 3,
