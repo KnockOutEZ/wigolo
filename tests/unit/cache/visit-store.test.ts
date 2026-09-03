@@ -1,6 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
-import {
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+/**
+ * The semantic leg is stubbed OFF for this suite.
+ *
+ * Everything here is the FTS/retention contract, and `searchVisits` now degrades
+ * to exactly that shape when the vector side is unavailable — which is what a
+ * rejected `getVectorStore()` produces. Stubbing it is not avoidance: an
+ * unstubbed call would warm a real embedding model in a unit suite, and the
+ * semantic behaviour has its own suite (`visits-semantic.test.ts`) where the
+ * vectors are real.
+ */
+vi.mock('../../../src/providers/vector-store.js', () => ({
+  getVectorStore: vi.fn(async () => {
+    throw new Error('vector store unavailable in this suite');
+  }),
+}));
+
+const { initDatabase, closeDatabase, getDatabase } = await import('../../../src/cache/db.js');
+const {
   VISIT_RETENTION_DEFAULTS,
   deleteVisits,
   isSiteCaptureEnabled,
@@ -9,7 +26,7 @@ import {
   recordVisit,
   searchVisits,
   setSiteCapture,
-} from '../../../src/cache/visit-store.js';
+} = await import('../../../src/cache/visit-store.js');
 import type { VisitRetentionBounds } from '../../../src/cache/visit-store.js';
 
 /**
@@ -176,39 +193,41 @@ describe('visit store — searchVisits (FTS)', () => {
     closeDatabase();
   });
 
-  it('finds a visit by text that only its stored body carries', () => {
-    const hits = searchVisits({ query: 'quokka' });
-    expect(hits.map((h) => h.url)).toEqual(['https://example.com/a']);
-    expect(hits[0].title).toBe('A');
-    expect(hits[0].snippet).toContain('quokka');
+  it('finds a visit by text that only its stored body carries', async () => {
+    const { results, method } = await searchVisits({ query: 'quokka' });
+    expect(results.map((h) => h.url)).toEqual(['https://example.com/a']);
+    expect(results[0].title).toBe('A');
+    expect(results[0].snippet).toContain('quokka');
+    // With no vector side reachable the search says so rather than implying it
+    // searched by meaning and found nothing.
+    expect(method).toBe('fts');
   });
 
-  it('returns nothing for a term no stored body carries', () => {
-    expect(searchVisits({ query: 'badger' })).toEqual([]);
+  it('returns nothing for a term no stored body carries', async () => {
+    expect((await searchVisits({ query: 'badger' })).results).toEqual([]);
   });
 
-  it('scopes to one site when asked', () => {
-    expect(searchVisits({ query: 'quokka OR wombat', site: 'other.org' }).map((h) => h.url)).toEqual([
-      'https://other.org/b',
-    ]);
+  it('scopes to one site when asked', async () => {
+    const { results } = await searchVisits({ query: 'quokka OR wombat', site: 'other.org' });
+    expect(results.map((h) => h.url)).toEqual(['https://other.org/b']);
   });
 
-  it('survives a hostile query instead of throwing FTS syntax at the caller', () => {
+  it('survives a hostile query instead of throwing FTS syntax at the caller', async () => {
     for (const query of ['"unclosed', 'a AND (', '*', '']) {
-      expect(() => searchVisits({ query })).not.toThrow();
+      await expect(searchVisits({ query })).resolves.toBeDefined();
     }
   });
 
-  it('honours limit', () => {
-    expect(searchVisits({ query: 'quokka OR wombat', limit: 1 })).toHaveLength(1);
+  it('honours limit', async () => {
+    expect((await searchVisits({ query: 'quokka OR wombat', limit: 1 })).results).toHaveLength(1);
   });
 
-  it('surfaces every visit that shares one deduped body', () => {
+  it('surfaces every visit that shares one deduped body', async () => {
     visit({ url: 'https://example.com/a', ts: '2026-09-03 14:00:00' });
     // Two visits, one body: search is over visits, so both rows come back.
-    const hits = searchVisits({ query: 'quokka' });
-    expect(hits).toHaveLength(2);
-    expect(new Set(hits.map((h) => h.contentHash)).size).toBe(1);
+    const { results } = await searchVisits({ query: 'quokka' });
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map((h) => h.contentHash)).size).toBe(1);
   });
 });
 
@@ -325,12 +344,12 @@ describe('visit store — deleteVisits (3bf per-site and per-day controls)', () 
     expect(visitCount()).toBe(1);
   });
 
-  it('drops deleted bodies out of the visits FTS index', () => {
+  it('drops deleted bodies out of the visits FTS index', async () => {
     visit({ markdown: 'quokka telemetry ledger notes' });
-    expect(searchVisits({ query: 'quokka' })).toHaveLength(1);
+    expect((await searchVisits({ query: 'quokka' })).results).toHaveLength(1);
     deleteVisits({ site: 'example.com' });
     // Not merely unlinked: the index row is gone, so a later search cannot resurrect the text.
-    expect(searchVisits({ query: 'quokka' })).toEqual([]);
+    expect((await searchVisits({ query: 'quokka' })).results).toEqual([]);
     const indexed = getDatabase()
       .prepare(`SELECT COUNT(*) AS n FROM studio_visit_pages_fts WHERE studio_visit_pages_fts MATCH 'quokka'`)
       .get() as { n: number };
@@ -377,7 +396,7 @@ describe('visit store — retention bounds', () => {
     expect(listVisits({}).rows.map((r) => r.title)).toEqual(['NEW']);
   });
 
-  it('spends the byte bound on BODIES and keeps the visit rows they served', () => {
+  it('spends the byte bound on BODIES and keeps the visit rows they served', async () => {
     const bounds = { ...TINY, maxBytes: 3000 };
     for (let i = 1; i <= 4; i += 1) {
       visit({
@@ -398,8 +417,8 @@ describe('visit store — retention bounds', () => {
     expect(bytes).toBeLessThanOrEqual(3000);
     // The history itself survives the loss of its bodies.
     expect(listVisits({}).rows.map((r) => r.title)).toEqual(['P4', 'P3', 'P2', 'P1']);
-    expect(searchVisits({ query: 'body1' })).toEqual([]);
-    expect(searchVisits({ query: 'body4' })).toHaveLength(1);
+    expect((await searchVisits({ query: 'body1' })).results).toEqual([]);
+    expect((await searchVisits({ query: 'body4' })).results).toHaveLength(1);
   });
 
   it('stops recording when a bound is disabled, and purges nothing already stored', () => {
