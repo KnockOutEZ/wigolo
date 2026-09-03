@@ -87,6 +87,33 @@ const SUBPATHS: Subpath[] = [
     ],
   },
   {
+    spec: 'wigolo/cache/library',
+    target: './dist/cache/library.js',
+    runtime: [
+      'computeDiffEnvelope',
+      'listLibraryPages',
+      'listVersionMeta',
+      'listVersionedUrls',
+      'runHybridSearch',
+      'versionAt',
+      'versionByHash',
+    ],
+    types: [
+      'DiffEnvelopeInput',
+      'HybridSearchInput',
+      'HybridSearchMethod',
+      'HybridSearchResult',
+      'LibraryPageOptions',
+      'LibraryPageResult',
+      'LibraryPageRow',
+      'LibrarySort',
+      'ListVersionedUrlsOptions',
+      'RetainedVersion',
+      'VersionedUrlRow',
+      'VersionedUrlsPage',
+    ],
+  },
+  {
     // A7 adds the class and the test reset beside the singleton. The factory is not a
     // substitute: it hard-codes `dbPath`, `syncMode` and `maxAttempts` and takes no provider,
     // so the extracted layer's constructor-injected specs cannot reach it, and without the
