@@ -159,6 +159,52 @@ describe('runs.events — streaming and resume', () => {
     expect(connections[1].headers[LAST_EVENT_ID_HEADER]).toBe('3');
   });
 
+  it('treats a socket RESET mid-stream as a dropped connection and resumes', async () => {
+    // A clean end-of-stream and a reset are different events on the wire, and a reset is the
+    // ordinary way a stream dies. Caught by the demo: the throw escaped the reconnect loop and
+    // killed the watch instead of resuming it.
+    const reset = new Error('terminated');
+    const transport: RunsTransport = {
+      request: async () => undefined as never,
+      stream: (() => {
+        let call = 0;
+        return () => {
+          call += 1;
+          const first = call === 1;
+          return (async function* () {
+            yield frame(1, 'run.created');
+            yield frame(2, 'tab.attached');
+            if (first) throw reset;
+            yield frame(3, 'run.completed');
+          })();
+        };
+      })(),
+    };
+    const events = await collect(
+      new Runs(transport).events('7fq2', { reconnectDelayMs: 0 }),
+      3,
+    );
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('surfaces the transport error once reconnecting has stopped getting anywhere', async () => {
+    // Never a quiet nothing: a caller must be able to tell "the daemon is gone" from "nothing
+    // more is coming".
+    const gone = new Error('ECONNREFUSED');
+    const transport: RunsTransport = {
+      request: async () => undefined as never,
+      stream: () =>
+        (async function* () {
+          throw gone;
+          // eslint-disable-next-line no-unreachable
+          yield '';
+        })(),
+    };
+    await expect(
+      collect(new Runs(transport).events('7fq2', { reconnectDelayMs: 0, maxReconnects: 1 }), 1),
+    ).rejects.toThrow('ECONNREFUSED');
+  });
+
   it('drops a duplicate the server re-sent rather than yielding it twice', async () => {
     // The second connection replays 3 (which the client already has) before continuing.
     const { transport } = scriptedTransport([

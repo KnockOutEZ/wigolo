@@ -404,6 +404,10 @@ export class Runs {
         if (lastSeq > 0) headers[LAST_EVENT_ID_HEADER] = String(lastSeq);
 
         let delivered = false;
+        // A transport error mid-stream is what a RESET socket looks like, and a reset is the
+        // ordinary way a stream dies — the resume machinery exists for exactly this. So it is
+        // held, not thrown: it surfaces only if reconnecting never gets anywhere.
+        let transportError: unknown;
         try {
           for await (const chunk of this.transport.stream(path, headers, controller.signal)) {
             for (const message of parser.push(chunk)) {
@@ -418,15 +422,27 @@ export class Runs {
               yield event;
             }
           }
+        } catch (err) {
+          transportError = err;
         } finally {
           // Half-parsed bytes belong to a connection that is gone; the resume id survives.
           parser.reset();
         }
 
-        if (controller.signal.aborted || !reconnect) return;
+        if (controller.signal.aborted || !reconnect) {
+          if (transportError !== undefined && !controller.signal.aborted) throw transportError;
+          return;
+        }
         if (!delivered) {
           attempts += 1;
-          if (attempts > maxReconnects) return;
+          if (attempts > maxReconnects) {
+            // Exhausted. A stream that kept FAILING is not the same as one that kept ending
+            // cleanly, and a caller must be able to tell "the daemon is gone" from "nothing
+            // more is coming" — the same reason a browser closed mid-run owes the agent a
+            // clean error rather than silence.
+            if (transportError !== undefined) throw transportError;
+            return;
+          }
         }
         await sleep(
           options.reconnectDelayMs ?? parser.retryMs ?? DEFAULT_RECONNECT_DELAY_MS,
