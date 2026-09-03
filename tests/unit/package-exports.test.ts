@@ -70,6 +70,16 @@ const SUBPATHS: Subpath[] = [
     types: ['ClearanceCookie'],
   },
   {
+    // The SD7 capture seam's entire need: the settled page's HTML as the markdown body
+    // `recordVisit` stores, plus its title. The type set is pinned EMPTY on purpose — the
+    // pipeline's types would arrive with the pipeline's graph, which is what routing the
+    // capture seam through two functions instead of `pipeline.ts` exists to avoid.
+    spec: 'wigolo/extraction',
+    target: './dist/extraction/index.js',
+    runtime: ['extractMetadata', 'htmlToMarkdown'],
+    types: [],
+  },
+  {
     spec: 'wigolo/cache',
     target: './dist/cache/index.js',
     runtime: [
