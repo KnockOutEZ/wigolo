@@ -703,6 +703,147 @@ export function clearCacheEntries(options: {
   return changes;
 }
 
+/**
+ * On-disk page bodies known to have been fetched with authenticated session
+ * material applied. A zero marker means "not known authenticated" (including
+ * legacy rows), so this surface intentionally makes no claim that those rows
+ * are public.
+ */
+export interface AuthenticatedCorpusStats {
+  /** Authenticated bodies currently retained in the one-row-per-URL hot cache. */
+  currentRows: number;
+  /** Authenticated bodies retained on the append-on-change time axis. */
+  versionRows: number;
+  /** UTF-8 bytes across retained body columns, including current/version duplication. */
+  bodyBytes: number;
+  /** Earliest fetched_at among both stores, or null when the set is empty. */
+  oldestFetchedAt: string | null;
+  /** Latest fetched_at among both stores, or null when the set is empty. */
+  newestFetchedAt: string | null;
+}
+
+export interface AuthenticatedCorpusPurgeResult {
+  /** Authenticated live cache rows removed. */
+  currentRows: number;
+  /** Authenticated historical version rows removed. */
+  versionRows: number;
+  /** External vector records removed for authenticated live rows. */
+  vectorRows: number;
+}
+
+export interface AuthenticatedCorpusPurgeOptions {
+  /** Also remove authenticated live cache rows and their vectors/FTS entries. Defaults to false. */
+  includeLiveRows?: boolean;
+}
+
+/**
+ * Summarize the known-authenticated corpus without exposing any body content.
+ *
+ * SQLite LENGTH(text) counts characters, not bytes. Casting current body
+ * columns to BLOB gives UTF-8 byte counts matching Buffer.byteLength used by
+ * url_versions.byte_len. The UNION keeps current and version rows separate:
+ * both are physically retained even when they describe the same body.
+ */
+export function getAuthenticatedCorpusStats(): AuthenticatedCorpusStats {
+  const db = getDatabase();
+  const row = db.prepare(`
+    WITH authenticated_bodies AS (
+      SELECT
+        1 AS current_rows,
+        0 AS version_rows,
+        length(CAST(COALESCE(markdown, '') AS BLOB))
+          + length(CAST(COALESCE(raw_html, '') AS BLOB)) AS body_bytes,
+        fetched_at
+      FROM url_cache
+      WHERE origin_authenticated = 1
+
+      UNION ALL
+
+      SELECT
+        0 AS current_rows,
+        1 AS version_rows,
+        byte_len AS body_bytes,
+        fetched_at
+      FROM url_versions
+      WHERE origin_authenticated = 1
+    )
+    SELECT
+      COALESCE(SUM(current_rows), 0) AS current_rows,
+      COALESCE(SUM(version_rows), 0) AS version_rows,
+      COALESCE(SUM(body_bytes), 0) AS body_bytes,
+      MIN(fetched_at) AS oldest_fetched_at,
+      MAX(fetched_at) AS newest_fetched_at
+    FROM authenticated_bodies
+  `).get() as {
+    current_rows: number;
+    version_rows: number;
+    body_bytes: number;
+    oldest_fetched_at: string | null;
+    newest_fetched_at: string | null;
+  };
+
+  return {
+    currentRows: row.current_rows,
+    versionRows: row.version_rows,
+    bodyBytes: row.body_bytes,
+    oldestFetchedAt: row.oldest_fetched_at,
+    newestFetchedAt: row.newest_fetched_at,
+  };
+}
+
+/**
+ * Delete historical bodies known to have authenticated origin, atomically.
+ *
+ * Live rows require explicit opt-in: history cleanup is safe to run without
+ * changing the current cache. Only authenticated version rows are deleted.
+ * Removing history by URL would
+ * also destroy anonymous bodies retained for a URL whose current body happens
+ * to be authenticated. Versions have no vectors or FTS rows; live rows do, so
+ * when live deletion is requested their raw and normalized URL keys are
+ * collected before deletion and evicted inside the same transaction. A
+ * user-requested purge surfaces failures so the transaction rolls back instead
+ * of reporting success prematurely.
+ */
+export function purgeAuthenticatedCorpus(
+  options: AuthenticatedCorpusPurgeOptions = {},
+): AuthenticatedCorpusPurgeResult {
+  const db = getDatabase();
+  const purge = db.transaction(() => {
+    let currentRows = 0;
+    let vectorRows = 0;
+    if (options.includeLiveRows === true) {
+      const doomed = db.prepare(`
+        SELECT url, normalized_url
+        FROM url_cache
+        WHERE origin_authenticated = 1
+      `).all() as Array<{ url: string; normalized_url: string }>;
+
+      currentRows = db.prepare(
+        'DELETE FROM url_cache WHERE origin_authenticated = 1',
+      ).run().changes;
+
+      const ids = new Set<string>();
+      for (const row of doomed) {
+        ids.add(row.url);
+        ids.add(row.normalized_url);
+      }
+      vectorRows = deleteVectorsByExternalId(db, [...ids]);
+    }
+
+    const versions = db.prepare(
+      'DELETE FROM url_versions WHERE origin_authenticated = 1',
+    ).run();
+
+    return {
+      currentRows,
+      versionRows: versions.changes,
+      vectorRows,
+    };
+  });
+
+  return purge();
+}
+
 // Counts cached URLs for an exact host (apex scoping — `blog.example.com`
 // and `example.com` are NOT collapsed). Leading `www.` is stripped to align
 // with normalizeUrl.
