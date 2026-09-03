@@ -1077,6 +1077,24 @@ export interface DomainClearanceRecord {
   route: string;
 }
 
+/**
+ * Compile-time proof that {@link DomainClearanceRecord} names no field a clearance secret
+ * could occupy.
+ *
+ * The runtime test asserts today's projection leaks nothing; this asserts no future one
+ * CAN. `Extract` is empty while the record stays value-free, and `AssertNoSecretField`
+ * only accepts `never` — so adding `cookie`, `cf_clearance`, a bare `value` or the minting
+ * user-agent to the record fails `tsc` on the commit that adds it.
+ *
+ * It lives in `src/` on purpose: `tsconfig.test.json` type-checks an explicit allowlist of
+ * test files, so the same assertion written in a test file would compile nowhere and hold
+ * nothing.
+ */
+type AssertNoSecretField<T extends never> = T;
+export type ClearanceRecordCarriesNoSecret = AssertNoSecretField<
+  Extract<keyof DomainClearanceRecord, 'cookie' | 'cf_clearance' | 'value' | 'ua' | 'clearanceUa' | 'clearance_ua'>
+>;
+
 interface DomainClearanceRecordRawRow {
   domain: string;
   clearance_solved_at: string | null;

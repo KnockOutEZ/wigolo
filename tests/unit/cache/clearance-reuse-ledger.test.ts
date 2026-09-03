@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,37 +136,6 @@ describe('clearance reuse ledger', () => {
     });
   });
 
-  /**
-   * The type half of the no-value-field construction, and the half with teeth: these
-   * `@ts-expect-error`s INVERT if a cookie- or UA-shaped field is ever added to
-   * `DomainClearanceRecord`, so `typecheck:studio` goes red on the commit that adds it
-   * rather than on the release that ships the leak.
-   */
-  describe('the read type cannot name a secret', () => {
-    it('has exactly the five ledger keys', () => {
-      expectTypeOf<keyof DomainClearanceRecord>().toEqualTypeOf<
-        'host' | 'solvedAt' | 'reusedCount' | 'lastReusedAt' | 'route'
-      >();
-    });
-
-    it('has no cookie, value or user-agent field', () => {
-      const record: DomainClearanceRecord = {
-        host: 'typed.example',
-        solvedAt: '2026-09-03T00:00:00Z',
-        reusedCount: 0,
-        route: 'direct',
-      };
-      // @ts-expect-error the clearance cookie has no field to live in
-      void record.cookie;
-      // @ts-expect-error nor under the column name
-      void record.cf_clearance;
-      // @ts-expect-error nor as a bare value
-      void record.value;
-      // @ts-expect-error the minting user-agent is equally session-bearing
-      void record.ua;
-    });
-  });
-
   describe('value-free read', () => {
     it('reports the ledger fields for a solved host', () => {
       solve('ledger.example', 'http://proxy.example.com:8080');
@@ -181,8 +150,10 @@ describe('clearance reuse ledger', () => {
 
     /**
      * The runtime half of the no-value-field construction. The type half is
-     * `clearance-record-no-value.test-d.ts`, which fails to COMPILE if a cookie-shaped
-     * field is ever added; this one fails if a value reaches a caller some other way.
+     * `ClearanceRecordCarriesNoSecret` in the store itself — it fails to COMPILE if a
+     * cookie- or UA-shaped field is ever added to the record, and it lives in `src/`
+     * because `tsconfig.test.json` type-checks an allowlist that this file is not on.
+     * This one fails if a value reaches a caller some other way.
      */
     it('carries neither the cookie nor the minting user-agent', () => {
       solve('secret.example');
