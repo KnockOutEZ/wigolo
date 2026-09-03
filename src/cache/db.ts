@@ -348,6 +348,16 @@ export function getDatabase(): Database.Database {
   return instance;
 }
 
+/**
+ * Whether a cache DB is currently open in this process. Distinct from
+ * {@link probeCacheDb}: this asks only "would getDatabase() succeed", with no query, so a
+ * best-effort writer can skip its work in a process that never opened the cache (a pure-helper
+ * unit test, a CLI path that touches no DB) instead of throwing into a swallow.
+ */
+export function isDatabaseInitialized(): boolean {
+  return instance !== null;
+}
+
 export function closeDatabase(): void {
   if (instance) {
     instance.close();

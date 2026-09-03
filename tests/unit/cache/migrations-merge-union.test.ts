@@ -63,6 +63,7 @@ const POST_MERGE_ADDED = [
   '017-studio-run-cost',
   '018-studio-runs-list-index',
   '019-studio-memories',
+  '020-clearance-reuse-counters',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */
