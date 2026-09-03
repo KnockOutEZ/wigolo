@@ -81,7 +81,7 @@ function getHelpText(): string {
     '  find-similar <url-or-concept> [--limit=N] [--domains=a,b] [--no-cache] [--no-web]',
     '  research <question> [--depth=quick|standard|comprehensive] [--max-sources=N] [--domains=a,b]',
     '  agent <prompt> [--urls=u1,u2] [--max-pages=N] [--max-time=MS]',
-    '  diff <url> [--output=unified|hunks|summary] [--granularity=line|word|section]',
+    '  diff <url> [--old-hash=<sha256>] [--output=unified|hunks|summary] [--granularity=line|word|section]',
     '  watch add <url> [--interval=SECONDS] | watch list | watch rm <id> | watch run <id>',
     '',
     '  help       Show this help',

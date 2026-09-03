@@ -225,6 +225,8 @@ Compare two versions of content: a live URL against its cached copy (populate th
 
 **`content_hash` can reach a past body, within what is retained.** It resolves in two steps: the body some cached URL holds right now, and failing that, a retained earlier version of a page. So a hash handed out by an earlier `fetch` still works after that page changes — which is the ordinary case, since the cache keeps one row per URL and a re-fetch replaces it in place.
 
+On the CLI the same reach is `--old-hash`: `wigolo diff <url> --old-hash=<sha256>` diffs the body carrying that hash against a live fetch of `<url>`, and `--old-hash` with `--new="text"` diffs it against inline text. The hash to pass is the `content_hash` an earlier `wigolo fetch <url> --json` printed.
+
 What it cannot do is promise the reach. Retained versions are bounded and swept oldest-first **across every URL**, so a version can be evicted by activity on unrelated pages, and a hash older than what survives matches nothing and the lookup fails explicitly rather than falling back to the page's current body. Use `cache` with `versions: true` to see what is actually retained for a page and to get the hashes that still resolve. For a version you must be able to reach indefinitely, hold onto its markdown (or export it — see [export](./export.md)) and pass that as `old.markdown`.
 
 | Param | Type | Notes |
