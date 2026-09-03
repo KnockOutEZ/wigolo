@@ -258,17 +258,36 @@ describe('session-target wire', () => {
 });
 
 describe('broker wire', () => {
+  /**
+   * studio_* tables that are deliberately NOT on the wire, each with the ruling that keeps them
+   * off it. The list is explicit rather than derived: a new studio_* table must be classified by
+   * an author, and the default classification is "shared", which is what the assertion below
+   * enforces for everything absent from here.
+   *
+   * A-18-5 (SD7 #363) — the visits store is history-with-content, i.e. what a HUMAN read. Law 4
+   * keeps the user's own tabs invisible to every agent, and A-18-5 extends that to what those
+   * tabs contained: reachable over the broker, they would be agent-readable by construction.
+   */
+  const NOT_SHARED_BY_RULING = new Set(['studio_visits', 'studio_visit_pages', 'studio_visit_site_prefs']);
+
   it('names exactly the shared studio_* tables the migrations create', () => {
     const dir = join(repoRoot, 'src', 'cache', 'migrations');
     const declared = new Set<string>();
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.sql'))) {
       const sql = readFileSync(join(dir, file), 'utf8');
       for (const m of sql.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(studio_[a-z_]+)"?/gi)) {
-        declared.add(m[1]!.toLowerCase());
+        const table = m[1]!.toLowerCase();
+        if (NOT_SHARED_BY_RULING.has(table)) continue;
+        declared.add(table);
       }
     }
     expect([...BROKER_TABLES].sort()).toEqual([...declared].sort());
     expect(Object.isFrozen(BROKER_TABLES)).toBe(true);
+    // The carve-out cannot be used to smuggle a table ONTO the wire: an excluded table that is
+    // also in BROKER_TABLES is a contradiction, not an exemption.
+    for (const table of NOT_SHARED_BY_RULING) {
+      expect(BROKER_TABLES as readonly string[]).not.toContain(table);
+    }
   });
 
   it('is a DUMB broker: the op shapes name tables, never domain methods', () => {
