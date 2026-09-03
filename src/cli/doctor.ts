@@ -25,6 +25,7 @@ import { telemetryStatus } from '../telemetry/index.js';
 import { readPersistedConfig } from '../persisted-config.js';
 import { authenticatedOriginCount } from '../companion/auth-origin-store.js';
 import { readEscalationCounters, formatEscalationCounterLines } from '../companion/escalation-counters.js';
+import { formatPacingWindow } from '../companion/origin-budget.js';
 import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
@@ -1385,6 +1386,22 @@ export function buildAuthenticatedOriginLine(count: number): string {
     ' adjust with `wigolo config --authenticated-origin` / `--anonymous-origin`)';
 }
 
+/**
+ * The pacing rail, in one line. BOTH lanes are named, because a single printed number would hide the
+ * split that makes the tight one acceptable — and a limit the user cannot see is indistinguishable from
+ * a bug when it fires.
+ *
+ * The two lanes are now paced DIFFERENTLY, so the line has to say which is which: the signed-in lane is
+ * a rate inside a sliding window and refills, the other is a session total that does not. Printing "per
+ * session" against both — as this line did while the counter was windowless — would send a user who hit
+ * the tight lane looking for a session to restart instead of a window to wait out.
+ */
+export function buildOriginBudgetLine(p: { limit: number; windowMs: number; anonymousLimit: number }): string {
+  return `  Per-origin request budget: ${p.limit} requests per signed-in site in any ${formatPacingWindow(p.windowMs)},` +
+    ` ${p.anonymousLimit} elsewhere per session` +
+    ` (WIGOLO_STUDIO_ORIGIN_BUDGET / WIGOLO_STUDIO_ORIGIN_BUDGET_WINDOW_MS / WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET)`;
+}
+
 function checkAuthenticatedOrigins(dataDir: string): void {
   out('');
   out('[wigolo doctor] Browser sessions:');
@@ -1393,13 +1410,11 @@ function checkAuthenticatedOrigins(dataDir: string): void {
     const count = authenticatedOriginCount(readPersistedConfig(configPath).settings, dataDir);
     out(buildAuthenticatedOriginLine(count));
     const cfg = getConfig();
-    // BOTH lanes, named, because a single printed number would hide the split that makes the tight one
-    // acceptable — and a limit the user cannot see is indistinguishable from a bug when it fires.
-    out(
-      `  Per-origin request budget: ${cfg.studioOriginBudget} on sites you are signed in to,` +
-        ` ${cfg.studioAnonymousOriginBudget} elsewhere, per session` +
-        ` (WIGOLO_STUDIO_ORIGIN_BUDGET / WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET)`,
-    );
+    out(buildOriginBudgetLine({
+      limit: cfg.studioOriginBudget,
+      windowMs: cfg.studioOriginBudgetWindowMs,
+      anonymousLimit: cfg.studioAnonymousOriginBudget,
+    }));
     for (const line of formatEscalationCounterLines(readEscalationCounters(dataDir))) out(line);
   } catch {
     out('  Signed-in origins: unavailable');

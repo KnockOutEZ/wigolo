@@ -1,4 +1,5 @@
 import type { ConnectedAgent } from './status-agents.js';
+import { formatPacingWindow } from '../../companion/origin-budget.js';
 
 export interface StatusBag {
   version: string;
@@ -19,6 +20,13 @@ export interface StatusBag {
    */
   browserSession?: {
     signedInBudget: number;
+    /**
+     * The signed-in lane's pacing window. Required rather than optional: the two lanes are paced
+     * differently now, and a formatter that could print the tight limit without saying what it is a
+     * rate OVER would fall back to the old "per session" reading — which is wrong in the direction
+     * that sends a user looking for a session to restart.
+     */
+    signedInWindowMs: number;
     anonymousBudget: number;
     bridgeAttempted: number;
     bridgeServed: number;
@@ -88,7 +96,10 @@ export function formatStatus(bag: StatusBag): string {
     const b = bag.browserSession;
     lines.push('');
     lines.push('Browser session:');
-    lines.push(`  Pacing: ${b.signedInBudget} requests per signed-in site, ${b.anonymousBudget} elsewhere, per session`);
+    lines.push(
+      `  Pacing: ${b.signedInBudget} requests per signed-in site in any ${formatPacingWindow(b.signedInWindowMs)},` +
+        ` ${b.anonymousBudget} elsewhere per session`,
+    );
     lines.push(`  Escalations: ${b.bridgeAttempted} attempted, ${b.bridgeServed} served`);
     if (b.budgetRefused > 0) lines.push(`  Held back by pacing: ${b.budgetRefused}`);
     if (b.cardShown + b.cardUnattended > 0) {

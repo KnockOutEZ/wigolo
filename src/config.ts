@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseBrowserTypes } from './fetch/browser-types.js';
 import { PRODUCTION_ACCOUNTS_URL } from './account/constants.js';
 import { TELEMETRY_ENV, TELEMETRY_SETTINGS_KEY, resolveTelemetryEnabled } from './telemetry/off-switch.js';
-import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET } from './companion/origin-budget.js';
+import { DEFAULT_ORIGIN_BUDGET, DEFAULT_ANONYMOUS_ORIGIN_BUDGET, DEFAULT_ORIGIN_BUDGET_WINDOW_MS } from './companion/origin-budget.js';
 import type { BrowserType } from './types.js';
 import {
   readPersistedConfig,
@@ -130,6 +130,12 @@ export interface Config {
    * the escalation-rate data this phase starts collecting — not a considered number.
    */
   studioOriginBudget: number;
+  /**
+   * The length of the authenticated lane's pacing window. Paired with `studioOriginBudget`, which is
+   * a rate rather than a total once a window exists — the two are meaningless apart, so both are
+   * configurable or neither is.
+   */
+  studioOriginBudgetWindowMs: number;
   studioAnonymousOriginBudget: number;
   playwrightLoadTimeoutMs: number;
   playwrightNavTimeoutMs: number;
@@ -815,6 +821,7 @@ export function getConfig(): Config {
     maxRedirects: envInt('MAX_REDIRECTS', 5, settings, 'maxRedirects'),
     fetchAllowPrivate: envBool('WIGOLO_FETCH_ALLOW_PRIVATE', false, settings, 'fetchAllowPrivate'),
     studioOriginBudget: envInt('WIGOLO_STUDIO_ORIGIN_BUDGET', DEFAULT_ORIGIN_BUDGET, settings, 'studioOriginBudget'),
+    studioOriginBudgetWindowMs: envInt('WIGOLO_STUDIO_ORIGIN_BUDGET_WINDOW_MS', DEFAULT_ORIGIN_BUDGET_WINDOW_MS, settings, 'studioOriginBudgetWindowMs'),
     studioAnonymousOriginBudget: envInt('WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET', DEFAULT_ANONYMOUS_ORIGIN_BUDGET, settings, 'studioAnonymousOriginBudget'),
     playwrightLoadTimeoutMs: envInt('PLAYWRIGHT_LOAD_TIMEOUT_MS', 15000, settings, 'playwrightLoadTimeoutMs'),
     playwrightNavTimeoutMs: envInt('PLAYWRIGHT_NAV_TIMEOUT_MS', 30000, settings, 'playwrightNavTimeoutMs'),

@@ -16,6 +16,7 @@ const { cfg, readSubstrateRecordMock, readEscalationCountersMock } = vi.hoisted(
   cfg: {
     dataDir: '/tmp/wigolo-companion-status',
     studioOriginBudget: 40,
+    studioOriginBudgetWindowMs: 90_000,
     studioAnonymousOriginBudget: 4,
   },
   readSubstrateRecordMock: vi.fn(),
@@ -70,6 +71,7 @@ interface StatusJson {
   browserTier: { desktopComponent: string };
   browserSession?: {
     signedInBudget: number;
+    signedInWindowMs: number;
     anonymousBudget: number;
     bridgeAttempted: number;
     bridgeServed: number;
@@ -149,6 +151,14 @@ describe('status — browser-session counters come from the companion escalation
     const bag = await statusJson();
     expect(bag.browserSession!.signedInBudget).toBe(cfg.studioOriginBudget);
     expect(bag.browserSession!.anonymousBudget).toBe(cfg.studioAnonymousOriginBudget);
+  });
+
+  it('carries the signed-in lane\'s pacing WINDOW, without which its limit is not a readable number', async () => {
+    // SD6-C2: 40 requests means nothing until the reader knows 40 per what. The sentinel proves the
+    // window comes from config rather than from a default baked into the formatter.
+    readEscalationCountersMock.mockReturnValue({ ...NO_ESCALATIONS, bridgeAttempted: 1 });
+    const bag = await statusJson();
+    expect(bag.browserSession!.signedInWindowMs).toBe(cfg.studioOriginBudgetWindowMs);
   });
 
   it('omits the whole block while the session has never been used', async () => {
