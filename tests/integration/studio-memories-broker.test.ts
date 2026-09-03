@@ -58,7 +58,7 @@ describe('studio_memories over the companion broker', () => {
     return executeBrokerOp(db(), grants, op);
   }
 
-  function rowsOf(result: ReturnType<typeof executeBrokerOp>): BrokerRow[] {
+  function rowsOf(result: ReturnType<typeof executeBrokerOp>): readonly BrokerRow[] {
     if (!result.ok) throw new Error(`expected rows, got a refusal: ${JSON.stringify(result)}`);
     return result.rows ?? [];
   }
