@@ -74,6 +74,29 @@ describe('wigolo config --prune-audit (operator-CLI entry)', () => {
     expect(out).toContain('1 recorded flow step(s)');
   });
 
+  it('deletes the aged flow-step ROW and leaves the fresh one, not only the counts it printed', async () => {
+    // EXTRACT C6: the sibling case above asserts the printed counts. A count is what the command
+    // CLAIMS it removed; this case asserts the table afterwards, which is the only evidence that
+    // the recorded page URLs actually left the machine — and that the cutoff applies to the flow
+    // steps on their own timestamps rather than sweeping the whole flow because one step aged out.
+    const flowId = flowIdForSession('sess-1');
+    seedFlowStep(testDb, {
+      flowId, sessionId: 'sess-1', seq: 1, auditSeq: 1,
+      action: 'navigate', pageUrl: 'https://example.com/aged', ts: 1000,
+    });
+    seedFlowStep(testDb, {
+      flowId, sessionId: 'sess-1', seq: 2, auditSeq: 2,
+      action: 'click', pageUrl: 'https://example.com/fresh', ts: Date.now(),
+    });
+
+    expect(await runConfig(['--prune-audit', '--older-than', '1h', '--yes'])).toBe(0);
+
+    const urls = (testDb
+      .prepare('SELECT page_url FROM studio_flow_steps WHERE session_id = ? ORDER BY seq')
+      .all('sess-1') as { page_url: string }[]).map((r) => r.page_url);
+    expect(urls).toEqual(['https://example.com/fresh']);
+  });
+
   it('fail-closed: WITHOUT --yes, nothing is deleted (pin #5)', async () => {
     const code = await runConfig(['--prune-audit', '--older-than', '1h']);
     expect(code).toBe(1);
