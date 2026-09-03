@@ -147,12 +147,20 @@ const TOOL_USAGE: Record<ToolCommand, { usage: string; blurb: string }> = {
     blurb: 'Autonomous data gathering across the web.',
   },
   diff: {
-    usage: 'wigolo diff <url> [flags]\nwigolo diff --old="text" --new="text"',
+    usage:
+      'wigolo diff <url> [flags]\nwigolo diff --old="text" --new="text"\n' +
+      'wigolo diff --old-hash=<sha256> <url>',
     blurb:
       'Diff a page against its cached copy (populate the cache with `fetch`/`crawl`\n' +
       'first), or diff two inline strings.\n' +
       '  --old="text"               Left side (inline mode)\n' +
-      '  --new="text"               Right side (inline mode)',
+      '  --new="text"               Right side (inline mode)\n' +
+      '  --old-hash=<sha256>        Left side is the body carrying that content hash —\n' +
+      '                             the `content_hash` an earlier `fetch <url> --json`\n' +
+      '                             printed. Resolves against the live cache row first,\n' +
+      '                             then a retained earlier version, so a hash still\n' +
+      '                             works after the page changes. Right side stays\n' +
+      '                             <url> (fetched live) or --new.',
   },
   watch: {
     usage: 'wigolo watch <subcommand> [flags]',

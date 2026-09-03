@@ -268,17 +268,28 @@ export function getCachedContentByNormalizedUrl(normalizedUrl: string): CachedCo
 
 /**
  * Reverse lookup: reach a cached body by the content fingerprint `fetch`
- * returned for it, without knowing the URL. Backs `diff`'s `old.content_hash`
- * input, letting a caller diff against a cached body with no network
- * round-trip.
+ * returned for it, without knowing the URL. Backs the FIRST step of `diff`'s
+ * `old.content_hash` input, letting a caller diff against a cached body with no
+ * network round-trip.
  *
- * This resolves only a body that is STILL LIVE. url_cache holds one row per
- * URL and every write is an INSERT OR REPLACE, so a re-fetch overwrites the
- * row and its content_hash in place; the previous hash is then present nowhere
- * in the table and this returns null. A hash handed out in an earlier response
- * is therefore NOT a handle on that earlier version — it is a handle on a
- * current row that happens to still carry that content. Retaining prior
- * versions would need a separate history table; there is none today.
+ * This resolves only a body that is STILL LIVE, and that is the whole of its
+ * job. url_cache holds one row per URL and every write is an INSERT OR REPLACE,
+ * so a re-fetch overwrites the row and its content_hash in place; the previous
+ * hash is then present nowhere in this table and this returns null.
+ *
+ * The earlier body is not gone with it. S14-1's `url_versions` keeps changed
+ * bodies on the time axis and `versionByHash` (version-read.ts) reaches one by
+ * the same fingerprint, so a hash handed out in an earlier response IS a handle
+ * on that earlier version — resolved in two steps, live row here and retained
+ * version there, in that order (K11). The ordering is a policy, not an
+ * optimization: an EXPIRED live row is a TTL decision about those exact bytes,
+ * and the version table must not become a way to read around a refusal the
+ * cache just made. `tools/diff.ts` composes the two steps and owns that rule.
+ *
+ * Neither step is a retention promise. The version store is bounded in bytes
+ * and evicts oldest-first across every URL (K31), so a hash that resolved
+ * yesterday can miss today; a miss says the body is not retained, never that it
+ * never existed.
  *
  * A hash also does not identify a row uniquely: two URLs serving identical
  * markdown share one hash. That is harmless for a content lookup — the hash is

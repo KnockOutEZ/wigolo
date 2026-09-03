@@ -23,11 +23,19 @@
  *
  * This is the REAL table set, verified against the migrations. It is not the app's convenience list: the
  * run projections read `studio_runs` + `studio_run_events`, and omitting either strands paired-mode runs.
+ *
+ * `studio_memories` (SD5 §6.1) is here for the same reason and needs BOTH modes, unlike the tables the
+ * companion only projects: the memories surface is where a person adds, edits and archives a memory, so
+ * a read-only entry would ship the screen with its two write affordances dead. Its semantics — revise
+ * writes a new row and archives the old, expired rows drop out of active listings — are the companion's,
+ * expressed as ordinary insert/update ops on this table. The broker stays dumb; it does not learn what a
+ * memory is.
  */
 export const BROKER_TABLES = Object.freeze([
   'studio_artifacts',
   'studio_audit',
   'studio_flow_steps',
+  'studio_memories',
   'studio_run_events',
   'studio_runs',
   'studio_sessions',
