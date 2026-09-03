@@ -243,6 +243,14 @@ export interface Config {
   solverUrl: string | null;
   /** Opt-in hosted reader-service URL (Tier-B escape hatch). Off unless set. */
   hostedReaderUrl: string | null;
+  /**
+   * Where `wigolo studio setup` reads the browser companion's release manifest.
+   *
+   * `null` by default and deliberately so: no release host is published yet, and a placeholder URL
+   * would turn "not available on this channel" into a DNS error the user cannot act on. With no
+   * host configured the verb says exactly that and prints the manual install path instead.
+   */
+  companionReleaseHost: string | null;
   userAgent: string | null;
   validateLinks: boolean;
   respectRobotsTxt: boolean;
@@ -859,6 +867,7 @@ export function getConfig(): Config {
       envStr('WIGOLO_HOSTED_READER_URL', null, settings, 'hostedReaderUrl'),
       'hostedReaderUrl',
     ),
+    companionReleaseHost: envStr('WIGOLO_COMPANION_RELEASE_HOST', null, settings, 'companionReleaseHost'),
     userAgent: envStr('USER_AGENT', null, settings, 'userAgent'),
     validateLinks: envBool('VALIDATE_LINKS', true, settings, 'validateLinks'),
     respectRobotsTxt: envBool('RESPECT_ROBOTS_TXT', true, settings, 'respectRobotsTxt'),
