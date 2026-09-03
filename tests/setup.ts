@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'n
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installNetworkFence } from './net-fence.js';
+import { installModelCacheSeed, realModelCacheDir } from './model-cache.js';
 import { RUN_DIR_ENV, TEST_HOME_ROOT } from './global-setup.js';
 import { generateMintKeyPair, mintToken, grant, payload } from './unit/account/mint-entitlement.js';
 
@@ -161,6 +162,20 @@ function realBrowsersPath(): string {
   return join(home, '.cache', 'ms-playwright');
 }
 
+// The embedding model's cache needs the SAME rescue, for the same reason, and did not have one:
+// the embedder resolves it as `${dataDir}/fastembed`, so a repointed HOME made the ~128 MB model
+// look missing and every embedding test file re-downloaded it inside a test's timeout budget.
+// Captured at module scope, before the assignments in `ensureTestDataDir` move HOME — the browser
+// path gets away with a call-time `homedir()` only because its assignment happens to precede
+// them; a second call site relying on that ordering would be one edit away from silently reading
+// the throwaway home. See `model-cache.ts` for the mirror's containment argument and for why the
+// rescue is a seed rather than a dependency.
+//
+// The import is static and safe on the same terms as `net-fence.ts`: `model-cache.ts` pulls in
+// `node:fs`, `node:path` and the fence, and NOTHING from `src/`, so it cannot hoist above these
+// assignments and populate the config cache with the wrong values.
+const REAL_MODEL_CACHE = realModelCacheDir(homedir());
+
 function ensureTestDataDir(): void {
   mkdirSync(TEST_DATA_DIR, { recursive: true });
   if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
@@ -180,6 +195,11 @@ function ensureTestDataDir(): void {
   if (!process.env.WIGOLO_DATA_DIR) {
     process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
   }
+  // Runs on every `beforeEach`, not once at load: the seed's own idempotence check is a single
+  // `readdirSync` of a directory that is already there, and re-running it is what restores the
+  // mirror for a test that wiped the data dir (the embedder's own corrupt-archive recovery does
+  // exactly that). The published flag is re-derived each time, so it never outlives its cache.
+  installModelCacheSeed(REAL_MODEL_CACHE, TEST_DATA_DIR);
 }
 ensureTestDataDir();
 

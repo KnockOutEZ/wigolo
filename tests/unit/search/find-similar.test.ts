@@ -5,18 +5,21 @@ import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { cacheContent } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult } from '../../../src/types.js';
-import { allowNetworkInThisFile } from '../../net-fence.js';
+import { allowModelDownloadWhenUnseeded } from '../../model-cache.js';
 
-// MEASURED: one row here reaches `storage.googleapis.com:443`. The router IS mocked — the
-// request is the embedding model being lazily downloaded by the provider, several layers below
-// any seam this file injects.
+// MEASURED: one row here — "still crawls when include_web is true" — used to reach
+// `storage.googleapis.com:443`. The router IS mocked; the request was the embedding model being
+// lazily downloaded by the provider, several layers below any seam this file injects. It cost
+// 9.6s on a fast link and timed out at exactly 20s on a slow one, so this file's result rode on
+// the runner's bandwidth rather than on the code (issue #241).
 //
-// Worth flagging beyond this file: `tests/setup.ts` repoints HOME per worker process, so the
-// model cache never survives a run and this download recurs. Making embeddings injectable (or
-// pinning the model cache outside the throwaway home) would remove the dependence properly;
-// both are outside a test-isolation slice.
-allowNetworkInThisFile(
-  'the embedding provider lazily downloads its model from storage.googleapis.com, below every seam this file can inject',
+// `tests/setup.ts` now seeds the model into the throwaway home from the machine's real cache, so
+// on any machine that has ever run the embedder there is nothing left to download and THE FENCE
+// STAYS ARMED here: a regression that reintroduces the download reds this file immediately
+// instead of quietly making it slow again. The allowance below is registered only on a machine
+// with no cache to seed from, where the download is genuinely still required.
+allowModelDownloadWhenUnseeded(
+  'no local embedding-model cache to seed from, so the provider lazily downloads its model from storage.googleapis.com, below every seam this file can inject',
 );
 
 // Mock the extraction pipeline to avoid Playwright dependency

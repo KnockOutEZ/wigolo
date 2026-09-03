@@ -6,8 +6,9 @@ import { DaemonHttpServer } from '../../src/daemon/http-server.js';
 import { allowNetworkInThisFile } from '../net-fence.js';
 
 // This file drives a REAL DaemonHttpServer and calls the REAL tool pipeline through it, so
-// `search` reaches live engines and the embedding index downloads its model. Measured
-// destinations: www.bing.com:443, lite.duckduckgo.com:443, storage.googleapis.com:443.
+// `search` reaches live engines. Measured destinations: www.bing.com:443,
+// lite.duckduckgo.com:443. `storage.googleapis.com:443` was a third until #241 seeded the
+// embedding model into the test home instead of re-downloading it per test file.
 //
 // That end-to-end reach is the stated point of the file — it exists so a regression in the
 // router pipeline fails loudly — but it also means these rows measure the network as well as the
@@ -15,7 +16,7 @@ import { allowNetworkInThisFile } from '../net-fence.js';
 // mapped failure"). Declared rather than silently tolerated, so the cost is visible and someone
 // can decide whether the engine layer should be stubbed here.
 allowNetworkInThisFile(
-  'drives the real REST pipeline end to end: live search engines and the embedding model download',
+  'drives the real REST pipeline end to end against live search engines',
 );
 
 /**
