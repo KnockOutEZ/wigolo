@@ -68,6 +68,7 @@ describe('formatStatus — the D10(a) browser-session block', () => {
     ...baseBag,
     browserSession: {
       signedInBudget: 20,
+      signedInWindowMs: 10 * 60 * 1000,
       anonymousBudget: 300,
       bridgeAttempted: 7,
       bridgeServed: 4,
@@ -85,6 +86,20 @@ describe('formatStatus — the D10(a) browser-session block', () => {
     const out = formatStatus(withSession);
     expect(out).toMatch(/20 requests per signed-in site/);
     expect(out).toMatch(/300 elsewhere/);
+  });
+
+  it('says the signed-in lane is a rate over a window and the other a session total — the lanes are no longer paced the same way', () => {
+    // SD6-C2: the tight lane refills, the relaxed one does not. Printing "per session" against both
+    // (as this line did while the counter was windowless) sends a user who hit the tight lane looking
+    // for a session to restart instead of a window to wait out.
+    const out = formatStatus(withSession);
+    expect(out).toMatch(/20 requests per signed-in site in any 10 minutes/);
+    expect(out).toMatch(/300 elsewhere per session/);
+  });
+
+  it('renders the configured window rather than a hardcoded ten minutes', () => {
+    const out = formatStatus({ ...withSession, browserSession: { ...withSession.browserSession!, signedInWindowMs: 90_000 } });
+    expect(out).toMatch(/in any 2 minutes/);
   });
 
   it('shows the escalation rate the D9 defaults are meant to be re-decided from — the whole point of collecting it is that a human can read it', () => {

@@ -66,6 +66,7 @@ export async function runStatus(_args: string[]): Promise<number> {
       ? {
           browserSession: {
             signedInBudget: cfg.studioOriginBudget,
+            signedInWindowMs: cfg.studioOriginBudgetWindowMs,
             anonymousBudget: cfg.studioAnonymousOriginBudget,
             bridgeAttempted: counters.bridgeAttempted,
             bridgeServed: counters.bridgeServed,

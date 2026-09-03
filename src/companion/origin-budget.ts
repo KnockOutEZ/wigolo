@@ -263,6 +263,15 @@ export function budgetRefusal(
   };
 }
 
+/**
+ * The window, as a phrase, minted HERE and nowhere else. `doctor` and `status` both describe the rail
+ * and describe it identically; two local formatters would drift the day the default changes, and a
+ * surface printing "per session" against a windowed lane is the exact confusion the window introduces.
+ */
+export function formatPacingWindow(ms: number): string {
+  return humanDuration(ms);
+}
+
 /** Rounds UP, so a caller that waits the stated time never comes back to a second refusal. */
 function humanDuration(ms: number): string {
   if (ms < 60_000) {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConfig } from '../../../src/cli/config.js';
-import { buildAuthenticatedOriginLine } from '../../../src/cli/doctor.js';
+import { buildAuthenticatedOriginLine, buildOriginBudgetLine } from '../../../src/cli/doctor.js';
 import { AUTHENTICATED_ORIGINS_KEY, ANONYMOUS_ORIGINS_KEY } from '../../../src/companion/auth-origin-store.js';
 
 /**
@@ -82,5 +82,28 @@ describe('doctor reports a count, never the list', () => {
 
   it('says count-only in plain words, so nobody later "improves" it by printing the list', () => {
     expect(buildAuthenticatedOriginLine(0)).toContain('count only');
+  });
+});
+
+describe('buildOriginBudgetLine — the pacing rail as doctor prints it', () => {
+  it('states the signed-in lane as a rate over its window, and the other as a session total', () => {
+    // SD6-C2: the lanes are paced differently now. One line describing both as "per session" would
+    // send a user who hit the tight lane looking for a session to restart instead of a window to
+    // wait out — and would keep reading plausibly while the window did nothing.
+    const line = buildOriginBudgetLine({ limit: 60, windowMs: 10 * 60 * 1000, anonymousLimit: 300 });
+    expect(line).toContain('60 requests per signed-in site in any 10 minutes');
+    expect(line).toContain('300 elsewhere per session');
+  });
+
+  it('names every env var that changes it, including the new window', () => {
+    // A visible limit the user cannot find the knob for is barely more useful than a hidden one.
+    const line = buildOriginBudgetLine({ limit: 60, windowMs: 600_000, anonymousLimit: 300 });
+    expect(line).toContain('WIGOLO_STUDIO_ORIGIN_BUDGET');
+    expect(line).toContain('WIGOLO_STUDIO_ORIGIN_BUDGET_WINDOW_MS');
+    expect(line).toContain('WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET');
+  });
+
+  it('renders the configured window, not a hardcoded ten minutes', () => {
+    expect(buildOriginBudgetLine({ limit: 5, windowMs: 30_000, anonymousLimit: 9 })).toContain('in any 30 seconds');
   });
 });
