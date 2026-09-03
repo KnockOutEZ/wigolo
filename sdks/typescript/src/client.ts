@@ -11,6 +11,7 @@
 import { manifest, type ToolName } from './manifest.js';
 import { WigoloApiError, WigoloConnectionError } from './errors.js';
 import { UNTRUSTED_CONTENT_HEADER, type UntrustedContentMode } from './untrusted.js';
+import { Runs, type RunsTransport } from './runs.js';
 import type {
   CallOptions,
   HealthResponse,
@@ -36,6 +37,21 @@ import type {
   WatchResponse,
 } from './types.js';
 
+/**
+ * The two shapes a streaming response body arrives in: a WHATWG `ReadableStream` (browsers, edge,
+ * Node's `fetch`) or a plain async iterable (Node streams, and every test fake). Supporting both
+ * costs one branch and means the runs event stream needs no polyfill anywhere.
+ */
+export type StreamBody =
+  | {
+      getReader(): {
+        read(): Promise<{ done: boolean; value?: Uint8Array }>;
+        cancel?(reason?: unknown): Promise<void> | void;
+        releaseLock?(): void;
+      };
+    }
+  | AsyncIterable<Uint8Array | string>;
+
 /** A `fetch`-compatible function; injectable for tests. */
 export type FetchLike = (
   input: string,
@@ -50,6 +66,11 @@ export type FetchLike = (
   status: number;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
+  /**
+   * Present on a streaming runtime. Only the runs event stream reads it; every non-streaming
+   * call goes through `text()` exactly as before.
+   */
+  body?: StreamBody | null;
 }>;
 
 export interface WigoloClientOptions {
@@ -127,6 +148,11 @@ export class WigoloClient {
   readonly untrustedContent: UntrustedContentMode | undefined;
   private readonly defaultTimeoutMs: number | undefined;
   private readonly fetchImpl: FetchLike;
+  /**
+   * The runs surface — create/get/list a run, queue a message, make a baton gesture, and tail the
+   * event stream. A projection of the daemon's append-only log; this client holds no run state.
+   */
+  readonly runs: Runs;
 
   constructor(options: WigoloClientOptions = {}) {
     // Env is NOT read when the option is explicit.
@@ -151,6 +177,82 @@ export class WigoloClient {
         );
       }
       this.fetchImpl = globalFetch;
+    }
+    this.runs = new Runs(this.runsTransport());
+  }
+
+  /**
+   * The runs namespace talks to the daemon through THIS client — same base URL, same bearer, same
+   * error mapping — rather than owning a second transport. Handing it an interface instead of the
+   * client itself keeps the dependency one-way and makes `Runs` testable without a client.
+   */
+  private runsTransport(): RunsTransport {
+    return {
+      request: <T,>(method: 'GET' | 'POST', path: string, body: unknown, timeoutMs: number) =>
+        this.request<T>(method, path, body, timeoutMs, undefined),
+      stream: (path: string, headers: Record<string, string>, signal: AbortSignal) =>
+        this.streamEvents(path, headers, signal),
+    };
+  }
+
+  /**
+   * Open an event-stream request and yield decoded text chunks until it ends.
+   *
+   * The per-request timeout that every other call arms is deliberately ABSENT: this stream is
+   * meant to stay open indefinitely, and a deadline would close it on a healthy quiet run. The
+   * caller's `signal` is the only thing that ends it.
+   */
+  private async *streamEvents(
+    path: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ): AsyncGenerator<string> {
+    const url = joinUrl(this.baseUrl, path);
+    const requestHeaders: Record<string, string> = { ...headers };
+    if (this.token) requestHeaders.Authorization = `Bearer ${this.token}`;
+
+    let response: Awaited<ReturnType<FetchLike>>;
+    try {
+      response = await this.fetchImpl(url, { method: 'GET', headers: requestHeaders, signal });
+    } catch (err) {
+      if (signal.aborted) return;
+      throw this.connectionError(err);
+    }
+    if (!response.ok) throw await this.apiError(response);
+
+    const body = response.body;
+    if (!body) {
+      throw new WigoloConnectionError(
+        `The event stream at ${url} returned no readable body. This runtime's fetch does not ` +
+          'expose streaming responses; pass a { fetch } implementation whose response carries ' +
+          '`body` (a ReadableStream or an async iterable of chunks).',
+      );
+    }
+
+    // `stream: true` matters: a multi-byte character can straddle a chunk boundary, and decoding
+    // each chunk independently would emit a replacement character in the middle of an envelope.
+    const decoder = new TextDecoder();
+    try {
+      if ('getReader' in body && typeof body.getReader === 'function') {
+        const reader = body.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) yield decoder.decode(value, { stream: true });
+          }
+        } finally {
+          await reader.cancel?.();
+        }
+      } else {
+        for await (const chunk of body as AsyncIterable<Uint8Array | string>) {
+          yield typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+        }
+      }
+    } catch (err) {
+      // An abort is how a caller STOPS the stream, not a failure of it.
+      if (signal.aborted) return;
+      throw this.connectionError(err);
     }
   }
 
