@@ -10,12 +10,111 @@ import {
   resetPersistedConfig,
   defaultConfigPath,
   readCredentialFromKeychain,
+  writePersistedConfig,
 } from './persisted-config.js';
 import {
   credentialKeychainUser,
   recomposeWithUserinfo,
   splitUserinfo,
 } from './fetch/proxy-credentials.js';
+
+export const NEW_TAB_SEARCH_ENGINE_PRESETS = [
+  'google',
+  'duckduckgo',
+  'bing',
+  'wigolo',
+] as const;
+
+export type NewTabSearchEnginePreset = (typeof NEW_TAB_SEARCH_ENGINE_PRESETS)[number];
+export type CustomSearchEngineTemplate = `https://${string}{searchTerms}${string}`;
+export type NewTabSearchEngine = NewTabSearchEnginePreset | CustomSearchEngineTemplate;
+
+export type NewTabSearchEngineValidationReason =
+  | 'not_string'
+  | 'unsupported_preset'
+  | 'template_not_absolute_https'
+  | 'template_missing_search_terms';
+
+export type NewTabSearchEngineValidation =
+  | { valid: true; value: NewTabSearchEngine }
+  | {
+      valid: false;
+      reason: NewTabSearchEngineValidationReason;
+      message: string;
+    };
+
+/** Validate a preset id or an absolute HTTPS search-engine URL template. */
+export function validateNewTabSearchEngine(value: unknown): NewTabSearchEngineValidation {
+  if (typeof value !== 'string') {
+    return {
+      valid: false,
+      reason: 'not_string',
+      message: 'Enter a preset id or a custom search engine template.',
+    };
+  }
+
+  if ((NEW_TAB_SEARCH_ENGINE_PRESETS as readonly string[]).includes(value)) {
+    return { valid: true, value: value as NewTabSearchEnginePreset };
+  }
+
+  if (!value.includes('{searchTerms}')) {
+    const reason = /^[a-z][a-z0-9-]*$/i.test(value)
+      ? 'unsupported_preset'
+      : 'template_missing_search_terms';
+    return {
+      valid: false,
+      reason,
+      message:
+        reason === 'unsupported_preset'
+          ? 'Use google, duckduckgo, bing, wigolo, or a custom HTTPS template.'
+          : 'Custom search engine templates must contain {searchTerms}.',
+    };
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname) {
+      throw new Error('not an absolute HTTPS URL');
+    }
+  } catch {
+    return {
+      valid: false,
+      reason: 'template_not_absolute_https',
+      message: 'Custom search engine templates must be absolute HTTPS URLs.',
+    };
+  }
+
+  return { valid: true, value: value as CustomSearchEngineTemplate };
+}
+
+export class InvalidNewTabSearchEngineError extends Error {
+  readonly reason: NewTabSearchEngineValidationReason;
+
+  constructor(result: Extract<NewTabSearchEngineValidation, { valid: false }>) {
+    super(result.message);
+    this.name = 'InvalidNewTabSearchEngineError';
+    this.reason = result.reason;
+  }
+}
+
+export function requireValidNewTabSearchEngine(value: unknown): NewTabSearchEngine {
+  const result = validateNewTabSearchEngine(value);
+  if (!result.valid) throw new InvalidNewTabSearchEngineError(result);
+  return result.value;
+}
+
+export type AppConfigWriter = 'human' | 'agent';
+export type AppConfigWriteRefusalReason = 'writer_not_allowed' | 'key_not_allowlisted';
+
+export class AppConfigWriteRefusedError extends Error {
+  readonly reason: AppConfigWriteRefusalReason;
+
+  constructor(reason: AppConfigWriteRefusalReason, message: string) {
+    super(message);
+    this.name = 'AppConfigWriteRefusedError';
+    this.reason = reason;
+  }
+}
 
 export interface Config {
   searxngUrl: string | null;
@@ -144,6 +243,14 @@ export interface Config {
   solverUrl: string | null;
   /** Opt-in hosted reader-service URL (Tier-B escape hatch). Off unless set. */
   hostedReaderUrl: string | null;
+  /**
+   * Where `wigolo studio setup` reads the browser companion's release manifest.
+   *
+   * `null` by default and deliberately so: no release host is published yet, and a placeholder URL
+   * would turn "not available on this channel" into a DNS error the user cannot act on. With no
+   * host configured the verb says exactly that and prints the manual install path instead.
+   */
+  companionReleaseHost: string | null;
   userAgent: string | null;
   validateLinks: boolean;
   respectRobotsTxt: boolean;
@@ -213,6 +320,7 @@ export interface Config {
    * `null` means "unset"; the search-provider factory treats it as 'core'.
    */
   searchBackend: string | null;
+  newTabSearchEngine: NewTabSearchEngine;
   llmProvider: string | null;
   /**
    * Base URL for a custom OpenAI-compatible LLM backend. Only consulted when
@@ -759,6 +867,7 @@ export function getConfig(): Config {
       envStr('WIGOLO_HOSTED_READER_URL', null, settings, 'hostedReaderUrl'),
       'hostedReaderUrl',
     ),
+    companionReleaseHost: envStr('WIGOLO_COMPANION_RELEASE_HOST', null, settings, 'companionReleaseHost'),
     userAgent: envStr('USER_AGENT', null, settings, 'userAgent'),
     validateLinks: envBool('VALIDATE_LINKS', true, settings, 'validateLinks'),
     respectRobotsTxt: envBool('RESPECT_ROBOTS_TXT', true, settings, 'respectRobotsTxt'),
@@ -844,6 +953,9 @@ export function getConfig(): Config {
     embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 1800000, settings, 'embeddingIdleTimeoutMs'),
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000, settings, 'embeddingMaxTextLength'),
     searchBackend: envStr('WIGOLO_SEARCH', null, settings, 'searchBackend'),
+    newTabSearchEngine: requireValidNewTabSearchEngine(
+      envStr('WIGOLO_NEW_TAB_SEARCH_ENGINE', 'google', settings, 'newTabSearchEngine'),
+    ),
     llmProvider: envStr('WIGOLO_LLM_PROVIDER', null, settings, 'llmProvider'),
     llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),
     llmCacheTtlDays: envInt('WIGOLO_LLM_CACHE_TTL_DAYS', 7, settings, 'llmCacheTtlDays'),
@@ -954,4 +1066,33 @@ export function resetConfig(): void {
   // Also reset the persisted-config cache so tests that change WIGOLO_CONFIG_PATH
   // or write fresh config files get a clean read on the next getConfig() call.
   resetPersistedConfig();
+}
+
+/**
+ * Narrow persisted-config write seam for a human choosing the app's search
+ * engine. This intentionally cannot write any other setting.
+ */
+export function setAppConfigSetting(
+  key: string,
+  value: unknown,
+  writer: AppConfigWriter,
+  configPath: string = defaultConfigPath(),
+): NewTabSearchEngine {
+  if (writer !== 'human') {
+    throw new AppConfigWriteRefusedError(
+      'writer_not_allowed',
+      `Config write refused for ${writer}: only a human may change the search engine.`,
+    );
+  }
+  if (key !== 'newTabSearchEngine') {
+    throw new AppConfigWriteRefusedError(
+      'key_not_allowlisted',
+      `Config write refused for ${key}: this app seam only changes the search engine.`,
+    );
+  }
+
+  const validated = requireValidNewTabSearchEngine(value);
+  writePersistedConfig(configPath, { settings: { newTabSearchEngine: validated } });
+  resetConfig();
+  return validated;
 }

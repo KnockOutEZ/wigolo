@@ -21,6 +21,10 @@ describe('WIGOLO_INSTRUCTIONS (per-session)', () => {
     // so the cap comes DOWN with them (3900 → 3250, ~75 bytes of headroom over the measured body)
     // rather than leaving 700 bytes nobody paid for. A tool added here is a deliberate raise, which
     // is the whole point of the number.
+    //
+    // C5 spent 73 of that 75 on the `wigolo studio setup` line — the one thing an agent can tell a
+    // user who wants a live browser session. The body measures 3248, so the next addition here is
+    // a raise decision, not a spare-capacity decision. That is the ratchet working, not a defect.
     expect(WIGOLO_INSTRUCTIONS.length).toBeLessThan(3250);
   });
 

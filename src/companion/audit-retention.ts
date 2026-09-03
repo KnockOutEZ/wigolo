@@ -46,3 +46,38 @@ export function pruneStudioAudit(db: RetentionDb, opts: { cutoffMs: number }): P
   const flow = db.prepare('DELETE FROM studio_flow_steps WHERE ts < ?').run(opts.cutoffMs);
   return { deleted: audit.changes, flowStepsDeleted: flow.changes };
 }
+
+/** The result of an expiry prune: how many studio_memories rows were deleted. */
+export interface MemoryPruneResult {
+  deleted: number;
+}
+
+/**
+ * SD5 §6.1 — delete `studio_memories` rows whose absolute `expires_at` is already in the past at
+ * `nowMs`. Rows with no expiry (`expires_at IS NULL` — the common case) and rows whose expiry is
+ * still ahead both survive. Fail-closed on a non-finite clock: it deletes nothing rather than
+ * everything, matching `pruneStudioAudit`.
+ *
+ * It sits HERE, beside the audit prune, under the same rules: a standalone leaf that imports no
+ * writer, shares only a table name and an injected handle, and is reachable only from the operator
+ * CLI verb (`wigolo config --prune-memories`). The memories store is otherwise written through the
+ * companion broker, which has no expiry-sweep op — so this is the one place a memory row is removed
+ * for having outlived the lifetime the user gave it, and it is a deliberate operator action.
+ *
+ * The `expires_at IS NOT NULL` arm is redundant against SQL's three-valued logic (`NULL < ?` is
+ * never true, so a no-expiry row is already safe from a bare comparison), and it is kept anyway:
+ * it is the text of migration 019's partial index `idx_studio_memories_expiry`, so the statement
+ * reads as the index it seeks, and the "NULL means forever" intent is stated at the deletion site
+ * instead of resting on a reader knowing the three-valued rule.
+ *
+ * Status is deliberately NOT in the predicate. Expiry is orthogonal to archiving: an archived row
+ * whose expiry has passed goes with the rest, because the opposite reading would make archiving a
+ * way for a memory to outlive the lifetime it was given.
+ */
+export function pruneExpiredMemories(db: RetentionDb, opts: { nowMs: number }): MemoryPruneResult {
+  if (!Number.isFinite(opts.nowMs)) return { deleted: 0 };
+  const res = db
+    .prepare('DELETE FROM studio_memories WHERE expires_at IS NOT NULL AND expires_at < ?')
+    .run(opts.nowMs);
+  return { deleted: res.changes };
+}

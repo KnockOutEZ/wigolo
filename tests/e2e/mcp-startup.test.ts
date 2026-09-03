@@ -74,6 +74,74 @@ async function spawnMcpAndInit(
   return { response, elapsedMs, stderr };
 }
 
+interface ToolsListResponse {
+  result?: { tools: { name: string; description?: string }[] };
+  error?: unknown;
+}
+
+/**
+ * Boot the real server, complete the handshake, and ask it for its tool list.
+ *
+ * EXTRACT §10: the source-level negative grep added with the deletion proves no `studio_` name is
+ * WRITTEN in the schema files. It cannot prove what the server ANSWERS with — a provider
+ * registered at runtime, a dynamically-named tool, or a stale entry reaching the registry from a
+ * built artifact would all pass the grep and still put the name on the wire. So this asks the
+ * process itself, over the same transport a client uses.
+ */
+async function spawnMcpAndListTools(dataDir: string, timeoutMs: number): Promise<ToolsListResponse> {
+  const child = spawn('node', [DIST_ENTRY, 'mcp'], {
+    env: { ...process.env, WIGOLO_DATA_DIR: dataDir, LOG_LEVEL: 'error' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let buffer = '';
+  const pending = new Map<number, (v: unknown) => void>();
+  child.stderr.on('data', () => {});
+  child.stdout.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as { id?: number };
+        if (typeof parsed.id === 'number') {
+          pending.get(parsed.id)?.(parsed);
+          pending.delete(parsed.id);
+        }
+      } catch {}
+    }
+  });
+
+  const send = (msg: Record<string, unknown>): void => {
+    child.stdin.write(`${JSON.stringify(msg)}\n`);
+  };
+  const request = (id: number, method: string, params: unknown = {}): Promise<unknown> => {
+    const answered = new Promise<unknown>((resolve) => pending.set(id, resolve));
+    send({ jsonrpc: '2.0', id, method, params });
+    return Promise.race([
+      answered,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${method} timeout after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+  };
+
+  try {
+    await request(1, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '0' },
+    });
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    return (await request(2, 'tools/list')) as ToolsListResponse;
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 100));
+    if (!child.killed) child.kill('SIGKILL');
+  }
+}
+
 describe('e2e: MCP server startup', () => {
   let dataDir: string;
 
@@ -127,4 +195,33 @@ describe('e2e: MCP server startup', () => {
     expect(response).not.toBeNull();
     expect(response!.result!.serverInfo.version).toBe(PKG_VERSION);
   }, 30000);
+
+  describe('runtime tool surface after the studio extraction', () => {
+    it('answers tools/list with a non-empty list, so the guard below has something to guard', async () => {
+      // An assertion over an empty list is trivially true. This case forces the condition the next
+      // one depends on: the server really did register its tools before we checked their names.
+      const listed = await spawnMcpAndListTools(dataDir, 30000);
+      expect(listed.error).toBeUndefined();
+      expect(listed.result!.tools.length).toBeGreaterThan(0);
+    }, 40000);
+
+    it('exposes no tool whose name starts with studio_', async () => {
+      // The extraction's user-visible promise: the domain layer left, and the wire surface a
+      // client sees left with it. Asserted against what the running server ANSWERS, because the
+      // source-level grep cannot see a runtime-registered provider or a stale built artifact.
+      const listed = await spawnMcpAndListTools(dataDir, 30000);
+      const offenders = listed.result!.tools.map((t) => t.name).filter((n) => n.startsWith('studio_'));
+      expect(offenders).toEqual([]);
+    }, 40000);
+
+    it('names no studio tool in any tool DESCRIPTION either', async () => {
+      // A tool renamed but still described in terms of `studio_spawn` leaves the old surface
+      // discoverable to a model reading the list, which is the half a name-only check misses.
+      const listed = await spawnMcpAndListTools(dataDir, 30000);
+      const described = listed.result!.tools
+        .filter((t) => (t.description ?? '').includes('studio_'))
+        .map((t) => t.name);
+      expect(described).toEqual([]);
+    }, 40000);
+  });
 });

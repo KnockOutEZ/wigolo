@@ -455,6 +455,57 @@ const MIGRATION_018_STUDIO_RUNS_LIST_INDEX = `
 -- CREATE INDEX would make this migration require 016 to have run first.
 `;
 
+/**
+ * SD5 §6.1 — the memories store. Greenfield table, no backfill, no dependency on any other studio
+ * table, so it is plain SQL rather than a guarded postStep like 017/018.
+ *
+ * `created_at` and `expires_at` are epoch-ms INTEGERs, matching `studio_audit.ts` rather than
+ * `studio_runs.created_at`'s ISO TEXT: expiry is enforced by comparing against a clock (`expires_at
+ * < now` is excluded from active listings, and the prune pass deletes on the same predicate), and a
+ * numeric comparison is the only one SQLite can serve from an index without a per-row conversion.
+ *
+ * NO CHECK constraints on `scope`, `provenance` or `status`, deliberately, and consistently with
+ * every other studio_* table. The broker that serves this table is dumb by design (spec D8): it
+ * binds cells and does no domain validation, and only the external core migrates the shared cache.
+ * A CHECK here would therefore turn "the companion learned a new scope value one release early"
+ * from a pairing-time schema-skew refusal — which the handshake already decides, with an upgrade
+ * hint — into an opaque constraint error at write time. The enum lives with the writer.
+ *
+ * Two indexes, one per read this table actually has. The listing is scope-filtered and
+ * status-filtered (`status='active' AND scope=? AND scope_key=?`) and ends in `created_at` so the
+ * newest-first order is the same traversal. The prune is `expires_at < ?`, and its index is PARTIAL
+ * — a row with no expiry can never satisfy that predicate, and `expires_at IS NULL` is the common
+ * case, so keeping those rows out of the b-tree costs the prune nothing and saves every insert.
+ */
+const MIGRATION_019_STUDIO_MEMORIES = `
+CREATE TABLE IF NOT EXISTS studio_memories (
+  id            TEXT PRIMARY KEY,
+  text          TEXT NOT NULL,
+  scope         TEXT NOT NULL,
+  scope_key     TEXT,
+  provenance    TEXT NOT NULL,
+  source_run_id TEXT,
+  source_detail TEXT,
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER,
+  status        TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE INDEX IF NOT EXISTS idx_studio_memories_scope
+  ON studio_memories(status, scope, scope_key, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_studio_memories_expiry
+  ON studio_memories(expires_at)
+  WHERE expires_at IS NOT NULL;
+`;
+
+// SD6 §10 — the clearance reuse ledger's storage half: when the current clearance for a host was
+// solved, how many times it has been replayed since, and when it was last replayed. Three columns
+// on domain_routing — the table the clearance already occupies 1:1 per host — rather than a second
+// table, which would make the same host's clearance state readable from two places. SQL is empty
+// because the whole effect is the guarded ADD COLUMNs in the postStep (mirrors 008/010).
+const MIGRATION_020_CLEARANCE_REUSE_COUNTERS = '';
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -727,6 +778,31 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_studio_runs_created_at ON studio_runs(created_at, id)');
       db.exec('CREATE INDEX IF NOT EXISTS idx_studio_runs_space_created_at ON studio_runs(space_id, created_at, id)');
       db.exec('DROP INDEX IF EXISTS idx_studio_runs_status');
+    },
+  },
+  { name: '019-studio-memories', sql: MIGRATION_019_STUDIO_MEMORIES },
+  {
+    name: '020-clearance-reuse-counters',
+    sql: MIGRATION_020_CLEARANCE_REUSE_COUNTERS,
+    /**
+     * Adds the solve instant and the reuse tally to domain_routing, skipping any column already
+     * present (idempotent) — mirrors the 010 postStep. `reused_count` carries a NOT NULL DEFAULT 0
+     * so existing rows read back as "never reused" rather than as an unknown; the two instants are
+     * nullable, and a pre-020 row's NULL `clearance_solved_at` is resolved to `last_updated` by the
+     * read projection, the closest instant those rows carry.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(domain_routing)') as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has('clearance_solved_at')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN clearance_solved_at TEXT');
+      }
+      if (!names.has('reused_count')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN reused_count INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!names.has('last_reused_at')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN last_reused_at TEXT');
+      }
     },
   },
 ];

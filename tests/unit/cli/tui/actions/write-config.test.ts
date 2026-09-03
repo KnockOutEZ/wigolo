@@ -126,4 +126,15 @@ describe('persistKey', () => {
     expect(llm?.apiKey).toBe('sk-abc');
     expect(llm?.provider).toBe('openai');
   });
+
+  it('refuses an invalid new-tab search engine before writing', async () => {
+    await persistKey('provider', 'anthropic');
+
+    await expect(
+      persistKey('newTabSearchEngine', 'http://search.example.test/?q={searchTerms}'),
+    ).rejects.toMatchObject({ reason: 'template_not_absolute_https' });
+
+    resetPersistedConfig();
+    expect(readPersistedConfig(tmpConfig).settings).toEqual({ provider: 'anthropic' });
+  });
 });

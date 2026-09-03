@@ -5,7 +5,33 @@
  * "wigolo-sdk/local" subpath; it is deliberately NOT re-exported here.
  */
 export { WigoloClient } from './client.js';
-export type { WigoloClientOptions, FetchLike } from './client.js';
+export type { WigoloClientOptions, FetchLike, StreamBody } from './client.js';
+export { Runs, parseRunEvent } from './runs.js';
+export type {
+  Driver,
+  DriverGestureKind,
+  DriverGestureRequest,
+  DriverGestureResponse,
+  DriverKind,
+  CreateRunRequest,
+  EventsOptions,
+  ListRunsRequest,
+  ListRunsResponse,
+  PendingDecision,
+  Run,
+  RunActor,
+  RunCost,
+  RunEvent,
+  RunMessage,
+  RunStatus,
+  RunWatch,
+  RunsTransport,
+  SendMessageRequest,
+  SendMessageResponse,
+  WatchRunCallbacks,
+} from './runs.js';
+export { SseParser, LAST_EVENT_ID_HEADER } from './sse.js';
+export type { SseMessage } from './sse.js';
 export { WigoloError, WigoloApiError, WigoloConnectionError } from './errors.js';
 export {
   fenceUntrusted,

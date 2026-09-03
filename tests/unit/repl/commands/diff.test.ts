@@ -143,3 +143,117 @@ describe('executeDiff', () => {
     expect(result.error).toContain('boom');
   });
 });
+
+/**
+ * K16 — the CLI path to `old.content_hash`.
+ *
+ * The flag exists so a hash printed by an earlier `fetch` can be the left side
+ * of a diff without the caller knowing which URL it came from. Resolution of
+ * that hash — live row first, then a retained version — belongs to `handleDiff`
+ * and is asserted there; what these pin is that the CLI hands the hash down
+ * unchanged, and that the right side is still chosen the same way it is in
+ * every other shape of the command.
+ */
+describe('executeDiff --old-hash', () => {
+  const HASH = 'a'.repeat(64);
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('diff <url> --old-hash: left side is the hash, right side the live fetch', async () => {
+    vi.mocked(handleFetch).mockResolvedValue({
+      ok: true,
+      data: {
+        url: 'https://example.com', title: '', markdown: 'live body', metadata: {},
+        links: [], images: [], cached: false,
+      },
+    });
+    vi.mocked(handleDiff).mockResolvedValue(okDiff);
+
+    const result = await executeDiff(
+      { command: 'diff', positional: ['https://example.com'], flags: { 'old-hash': HASH } },
+      deps(),
+    );
+
+    expect(handleDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        old: { content_hash: HASH },
+        new: { markdown: 'live body' },
+      }),
+    );
+    expect(result).toEqual(okDiff.data);
+  });
+
+  it('--old-hash with --new skips the fetch entirely', async () => {
+    vi.mocked(handleDiff).mockResolvedValue(okDiff);
+
+    await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': HASH, new: 'new text' } },
+      deps(),
+    );
+
+    expect(handleFetch).not.toHaveBeenCalled();
+    expect(handleDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        old: { content_hash: HASH },
+        new: { markdown: 'new text' },
+      }),
+    );
+  });
+
+  it('uppercase hex is accepted and normalized to the stored lowercase form', async () => {
+    vi.mocked(handleDiff).mockResolvedValue(okDiff);
+
+    await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': 'B'.repeat(64), new: 'x' } },
+      deps(),
+    );
+
+    expect(handleDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ old: { content_hash: 'b'.repeat(64) } }),
+    );
+  });
+
+  it('--old-hash alone has no right-hand side and returns usage', async () => {
+    const result = await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': HASH } },
+      deps(),
+    );
+    expect(result.error).toContain('Usage');
+    expect(handleFetch).not.toHaveBeenCalled();
+    expect(handleDiff).not.toHaveBeenCalled();
+  });
+
+  it('rejects --old-hash together with --old rather than picking one', async () => {
+    const result = await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': HASH, old: 'text', new: 'x' } },
+      deps(),
+    );
+    expect(result.error).toContain('--old-hash');
+    expect(result.error).toContain('--old');
+    expect(handleDiff).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A malformed value is an input error, not a lookup outcome. Sending it down
+   * would come back as the retention-shaped miss ("no retained version carries
+   * it"), which invites a caller to read a typo as an eviction.
+   */
+  it('rejects a value that is not a 64-char hex hash, without a retention story', async () => {
+    const result = await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': 'not-a-hash', new: 'x' } },
+      deps(),
+    );
+    expect(result.error).toContain('64');
+    expect(result.error).not.toMatch(/retain/i);
+    expect(handleDiff).not.toHaveBeenCalled();
+  });
+
+  it('does not treat --old-hash as a stray flag', async () => {
+    vi.mocked(handleDiff).mockResolvedValue(okDiff);
+    const result = await executeDiff(
+      { command: 'diff', positional: [], flags: { 'old-hash': HASH, new: 'x' } },
+      deps(),
+    );
+    expect(result.error).toBeUndefined();
+  });
+});

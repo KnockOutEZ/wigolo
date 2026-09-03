@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { getDatabase } from './db.js';
+import { getDatabase, isDatabaseInitialized } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { mergeCompleteness } from '../extraction/completeness.js';
@@ -268,17 +268,28 @@ export function getCachedContentByNormalizedUrl(normalizedUrl: string): CachedCo
 
 /**
  * Reverse lookup: reach a cached body by the content fingerprint `fetch`
- * returned for it, without knowing the URL. Backs `diff`'s `old.content_hash`
- * input, letting a caller diff against a cached body with no network
- * round-trip.
+ * returned for it, without knowing the URL. Backs the FIRST step of `diff`'s
+ * `old.content_hash` input, letting a caller diff against a cached body with no
+ * network round-trip.
  *
- * This resolves only a body that is STILL LIVE. url_cache holds one row per
- * URL and every write is an INSERT OR REPLACE, so a re-fetch overwrites the
- * row and its content_hash in place; the previous hash is then present nowhere
- * in the table and this returns null. A hash handed out in an earlier response
- * is therefore NOT a handle on that earlier version — it is a handle on a
- * current row that happens to still carry that content. Retaining prior
- * versions would need a separate history table; there is none today.
+ * This resolves only a body that is STILL LIVE, and that is the whole of its
+ * job. url_cache holds one row per URL and every write is an INSERT OR REPLACE,
+ * so a re-fetch overwrites the row and its content_hash in place; the previous
+ * hash is then present nowhere in this table and this returns null.
+ *
+ * The earlier body is not gone with it. S14-1's `url_versions` keeps changed
+ * bodies on the time axis and `versionByHash` (version-read.ts) reaches one by
+ * the same fingerprint, so a hash handed out in an earlier response IS a handle
+ * on that earlier version — resolved in two steps, live row here and retained
+ * version there, in that order (K11). The ordering is a policy, not an
+ * optimization: an EXPIRED live row is a TTL decision about those exact bytes,
+ * and the version table must not become a way to read around a refusal the
+ * cache just made. `tools/diff.ts` composes the two steps and owns that rule.
+ *
+ * Neither step is a retention promise. The version store is bounded in bytes
+ * and evicts oldest-first across every URL (K31), so a hash that resolved
+ * yesterday can miss today; a miss says the body is not retained, never that it
+ * never existed.
  *
  * A hash also does not identify a row uniquely: two URLs serving identical
  * markdown share one hash. That is harmless for a content lookup — the hash is
@@ -933,6 +944,147 @@ export function clearCacheEntries(options: {
   return changes;
 }
 
+/**
+ * On-disk page bodies known to have been fetched with authenticated session
+ * material applied. A zero marker means "not known authenticated" (including
+ * legacy rows), so this surface intentionally makes no claim that those rows
+ * are public.
+ */
+export interface AuthenticatedCorpusStats {
+  /** Authenticated bodies currently retained in the one-row-per-URL hot cache. */
+  currentRows: number;
+  /** Authenticated bodies retained on the append-on-change time axis. */
+  versionRows: number;
+  /** UTF-8 bytes across retained body columns, including current/version duplication. */
+  bodyBytes: number;
+  /** Earliest fetched_at among both stores, or null when the set is empty. */
+  oldestFetchedAt: string | null;
+  /** Latest fetched_at among both stores, or null when the set is empty. */
+  newestFetchedAt: string | null;
+}
+
+export interface AuthenticatedCorpusPurgeResult {
+  /** Authenticated live cache rows removed. */
+  currentRows: number;
+  /** Authenticated historical version rows removed. */
+  versionRows: number;
+  /** External vector records removed for authenticated live rows. */
+  vectorRows: number;
+}
+
+export interface AuthenticatedCorpusPurgeOptions {
+  /** Also remove authenticated live cache rows and their vectors/FTS entries. Defaults to false. */
+  includeLiveRows?: boolean;
+}
+
+/**
+ * Summarize the known-authenticated corpus without exposing any body content.
+ *
+ * SQLite LENGTH(text) counts characters, not bytes. Casting current body
+ * columns to BLOB gives UTF-8 byte counts matching Buffer.byteLength used by
+ * url_versions.byte_len. The UNION keeps current and version rows separate:
+ * both are physically retained even when they describe the same body.
+ */
+export function getAuthenticatedCorpusStats(): AuthenticatedCorpusStats {
+  const db = getDatabase();
+  const row = db.prepare(`
+    WITH authenticated_bodies AS (
+      SELECT
+        1 AS current_rows,
+        0 AS version_rows,
+        length(CAST(COALESCE(markdown, '') AS BLOB))
+          + length(CAST(COALESCE(raw_html, '') AS BLOB)) AS body_bytes,
+        fetched_at
+      FROM url_cache
+      WHERE origin_authenticated = 1
+
+      UNION ALL
+
+      SELECT
+        0 AS current_rows,
+        1 AS version_rows,
+        byte_len AS body_bytes,
+        fetched_at
+      FROM url_versions
+      WHERE origin_authenticated = 1
+    )
+    SELECT
+      COALESCE(SUM(current_rows), 0) AS current_rows,
+      COALESCE(SUM(version_rows), 0) AS version_rows,
+      COALESCE(SUM(body_bytes), 0) AS body_bytes,
+      MIN(fetched_at) AS oldest_fetched_at,
+      MAX(fetched_at) AS newest_fetched_at
+    FROM authenticated_bodies
+  `).get() as {
+    current_rows: number;
+    version_rows: number;
+    body_bytes: number;
+    oldest_fetched_at: string | null;
+    newest_fetched_at: string | null;
+  };
+
+  return {
+    currentRows: row.current_rows,
+    versionRows: row.version_rows,
+    bodyBytes: row.body_bytes,
+    oldestFetchedAt: row.oldest_fetched_at,
+    newestFetchedAt: row.newest_fetched_at,
+  };
+}
+
+/**
+ * Delete historical bodies known to have authenticated origin, atomically.
+ *
+ * Live rows require explicit opt-in: history cleanup is safe to run without
+ * changing the current cache. Only authenticated version rows are deleted.
+ * Removing history by URL would
+ * also destroy anonymous bodies retained for a URL whose current body happens
+ * to be authenticated. Versions have no vectors or FTS rows; live rows do, so
+ * when live deletion is requested their raw and normalized URL keys are
+ * collected before deletion and evicted inside the same transaction. A
+ * user-requested purge surfaces failures so the transaction rolls back instead
+ * of reporting success prematurely.
+ */
+export function purgeAuthenticatedCorpus(
+  options: AuthenticatedCorpusPurgeOptions = {},
+): AuthenticatedCorpusPurgeResult {
+  const db = getDatabase();
+  const purge = db.transaction(() => {
+    let currentRows = 0;
+    let vectorRows = 0;
+    if (options.includeLiveRows === true) {
+      const doomed = db.prepare(`
+        SELECT url, normalized_url
+        FROM url_cache
+        WHERE origin_authenticated = 1
+      `).all() as Array<{ url: string; normalized_url: string }>;
+
+      currentRows = db.prepare(
+        'DELETE FROM url_cache WHERE origin_authenticated = 1',
+      ).run().changes;
+
+      const ids = new Set<string>();
+      for (const row of doomed) {
+        ids.add(row.url);
+        ids.add(row.normalized_url);
+      }
+      vectorRows = deleteVectorsByExternalId(db, [...ids]);
+    }
+
+    const versions = db.prepare(
+      'DELETE FROM url_versions WHERE origin_authenticated = 1',
+    ).run();
+
+    return {
+      currentRows,
+      versionRows: versions.changes,
+      vectorRows,
+    };
+  });
+
+  return purge();
+}
+
 // Counts cached URLs for an exact host (apex scoping — `blog.example.com`
 // and `example.com` are NOT collapsed). Leading `www.` is stripped to align
 // with normalizeUrl.
@@ -1218,21 +1370,38 @@ export function routeIdentity(route: string | undefined | null): string {
   }
 }
 
+/**
+ * SQLite expression for "now" as an ISO-8601 UTC instant.
+ *
+ * `datetime('now')` yields `YYYY-MM-DD HH:MM:SS` with no zone marker, which `Date.parse`
+ * reads as LOCAL time — fine for `last_updated`, which nothing but SQLite compares, but
+ * wrong for the clearance ledger's instants, which cross a process boundary into a
+ * surface that renders them as dates. These are written zone-explicit instead.
+ */
+const ISO_NOW = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
 export function recordDomainClearance(host: string, clearance: DomainClearance): void {
   try {
     const db = getDatabase();
     db.prepare(`
       INSERT INTO domain_routing (
         domain, prefer_playwright, http_failures,
-        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route, last_updated
+        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route,
+        clearance_solved_at, reused_count, last_reused_at, last_updated
       )
-      VALUES (?, 0, 0, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, 0, 0, ?, ?, ?, ?, ?, ${ISO_NOW}, 0, NULL, datetime('now'))
       ON CONFLICT(domain) DO UPDATE SET
         cf_clearance = excluded.cf_clearance,
         clearance_ua = excluded.clearance_ua,
         clearance_tier = excluded.clearance_tier,
         clearance_expires_at = excluded.clearance_expires_at,
         solved_route = excluded.solved_route,
+        -- The reuse tally belongs to ONE clearance, not to the host: a fresh solve
+        -- restarts it, so the ledger card can say "solved <date> · reused N x" without
+        -- carrying reuses of a cookie that is no longer there.
+        clearance_solved_at = excluded.clearance_solved_at,
+        reused_count = 0,
+        last_reused_at = NULL,
         last_updated = datetime('now')
     `).run(
       host,
@@ -1255,12 +1424,150 @@ export function clearDomainClearance(host: string): void {
       UPDATE domain_routing
       SET cf_clearance = NULL, clearance_ua = NULL,
           clearance_tier = NULL, clearance_expires_at = NULL,
+          clearance_solved_at = NULL, reused_count = 0, last_reused_at = NULL,
           last_updated = datetime('now')
       WHERE domain = ?
     `).run(host);
   } catch (err) {
     log.warn('clearDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/**
+ * The clearance reuse ledger's read shape — SD6 §10, mini-spec's "solved this wall
+ * 2026-08-12 · reused 14x".
+ *
+ * The cookie value and the user-agent it was minted against are absent BY CONSTRUCTION,
+ * not by a redaction step: this interface never names a field that could hold either, so
+ * there is no code path — present or future — that can place one in a projection typed as
+ * this. Same posture as the authenticated-origin ledger's cookie facts, and the reason a
+ * per-host clearance can be shown in a privacy dashboard at all.
+ */
+export interface DomainClearanceRecord {
+  /** Raw hostname the clearance is keyed on — the same key `domain_routing` uses. */
+  host: string;
+  /**
+   * ISO-8601 UTC instant the current clearance was solved. Pre-020 rows carry no solve
+   * stamp; they resolve to `last_updated`, the closest instant those rows hold.
+   */
+  solvedAt: string;
+  /** Replays of the CURRENT clearance. Reset to 0 by every fresh solve and every purge. */
+  reusedCount: number;
+  /** ISO-8601 UTC instant of the most recent replay; absent until the first one. */
+  lastReusedAt?: string;
+  /** Normalised egress route the clearance was solved on (`routeIdentity`), never a credential. */
+  route: string;
+}
+
+/**
+ * Compile-time proof that {@link DomainClearanceRecord} names no field a clearance secret
+ * could occupy.
+ *
+ * The runtime test asserts today's projection leaks nothing; this asserts no future one
+ * CAN. `Extract` is empty while the record stays value-free, and `AssertNoSecretField`
+ * only accepts `never` — so adding `cookie`, `cf_clearance`, a bare `value` or the minting
+ * user-agent to the record fails `tsc` on the commit that adds it.
+ *
+ * It lives in `src/` on purpose: `tsconfig.test.json` type-checks an explicit allowlist of
+ * test files, so the same assertion written in a test file would compile nowhere and hold
+ * nothing.
+ */
+type AssertNoSecretField<T extends never> = T;
+export type ClearanceRecordCarriesNoSecret = AssertNoSecretField<
+  Extract<keyof DomainClearanceRecord, 'cookie' | 'cf_clearance' | 'value' | 'ua' | 'clearanceUa' | 'clearance_ua'>
+>;
+
+interface DomainClearanceRecordRawRow {
+  domain: string;
+  clearance_solved_at: string | null;
+  last_updated: string | null;
+  reused_count: number | null;
+  last_reused_at: string | null;
+  solved_route: string | null;
+}
+
+/**
+ * Count one replay of the host's stored clearance.
+ *
+ * Best-effort and silent by design: it is called from a fetch hot path whose job is to
+ * serve a page, and a ledger write that failed must never turn into a failed fetch. When
+ * no cache DB is open in this process it returns without touching one — a pure-helper
+ * unit test must not conjure a database, and there is nothing to count in a process that
+ * never read a clearance in the first place.
+ *
+ * The bump is conditional on a clearance actually being present, so a race that purges
+ * the row between read and replay cannot resurrect a count against nothing.
+ */
+export function recordClearanceReuse(host: string): void {
+  if (!isDatabaseInitialized()) return;
+  try {
+    const db = getDatabase();
+    db.prepare(`
+      UPDATE domain_routing
+      SET reused_count = COALESCE(reused_count, 0) + 1,
+          last_reused_at = ${ISO_NOW}
+      WHERE domain = ? AND cf_clearance IS NOT NULL
+    `).run(host);
+  } catch (err) {
+    log.warn('recordClearanceReuse failed', { host, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * Every host holding a clearance, newest solve first, as value-free ledger records.
+ *
+ * Hosts with no clearance are omitted rather than listed with a zero count: the row
+ * describes a solve, and a host that never had one has nothing to show or delete.
+ * Follows the read-swallow convention of the other routing getters — a read failure
+ * degrades to an empty list rather than crashing an inspection surface.
+ */
+export function listDomainClearances(): DomainClearanceRecord[] {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT domain, clearance_solved_at, last_updated, reused_count, last_reused_at, solved_route
+       FROM domain_routing
+       WHERE cf_clearance IS NOT NULL
+       ORDER BY COALESCE(clearance_solved_at, last_updated) DESC, domain ASC`,
+    ).all() as DomainClearanceRecordRawRow[];
+    return rows.map((row) => ({
+      host: row.domain,
+      solvedAt: row.clearance_solved_at ?? row.last_updated ?? '',
+      reusedCount: row.reused_count ?? 0,
+      lastReusedAt: row.last_reused_at ?? undefined,
+      // A legacy NULL route reads back as 'direct', the same way getDomainClearance
+      // resolves it — one rule for the same column on both reads.
+      route: row.solved_route ?? 'direct',
+    }));
+  } catch (err) {
+    log.warn('listDomainClearances failed', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+/**
+ * Forget one host's clearance outright — the privacy dashboard's delete.
+ *
+ * Wipes the cookie, the minting user-agent, the tier, the expiry, the solve stamp and the
+ * reuse tally, and keeps the routing row's learned preferences: the user asked to forget a
+ * solved wall, not to un-learn which engine serves the host. Returns rows changed (0 when
+ * the host is untracked).
+ *
+ * Deliberately does NOT swallow: unlike the hot-path purge {@link clearDomainClearance},
+ * a delete a user asked for must surface its failure to the caller rather than reporting
+ * a deletion that did not happen. Same posture as {@link resetDomainRouting}.
+ */
+export function deleteDomainClearance(host: string): number {
+  const db = getDatabase();
+  const info = db.prepare(`
+    UPDATE domain_routing
+    SET cf_clearance = NULL, clearance_ua = NULL,
+        clearance_tier = NULL, clearance_expires_at = NULL,
+        clearance_solved_at = NULL, reused_count = 0, last_reused_at = NULL,
+        last_updated = datetime('now')
+    WHERE domain = ?
+  `).run(host);
+  return info.changes;
 }
 
 /** Record a per-host cooldown (epoch ms) after repeated blocks. */
@@ -1373,6 +1680,9 @@ const RESET_ROUTING_COLUMNS = `
   clearance_ua = NULL,
   clearance_tier = NULL,
   clearance_expires_at = NULL,
+  clearance_solved_at = NULL,
+  reused_count = 0,
+  last_reused_at = NULL,
   last_updated = datetime('now')
 `;
 
