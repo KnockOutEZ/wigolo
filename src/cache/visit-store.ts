@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { normalizeUrl, sanitizeFtsQuery } from './store.js';
+import { evictVisitVectors, searchVisitVectors } from './visit-vec.js';
+import { buildRankMap, reciprocalRankFusion, sortByRRFScore } from '../search/rrf.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('cache');
@@ -92,9 +94,29 @@ export interface VisitRow {
 }
 
 export interface VisitSearchRow extends VisitRow {
-  /** BM25 rank from the visits FTS index — lower is better, as FTS5 reports it. */
-  rank: number;
+  /**
+   * BM25 rank from the visits FTS index — lower is better, as FTS5 reports it.
+   *
+   * NULL for a row the keyword leg never matched: a hybrid result can arrive on
+   * the semantic side alone, and reporting a fabricated 0 there would make the
+   * one number a caller might sort on mean two different things.
+   */
+  rank: number | null;
   snippet: string;
+}
+
+/** How a visits search was answered. Mirrors `HybridSearchMethod` — the same word, the same meaning. */
+export type VisitSearchMethod = 'hybrid' | 'fts';
+
+export interface VisitSearchResult {
+  results: VisitSearchRow[];
+  /**
+   * `'fts'` whenever the semantic side could not run — no embedding provider, no
+   * vector extension, an empty index. Degradation is reported rather than
+   * inferred, exactly as #362 made `runHybridSearch` report it, so a UI that
+   * promises "searched by meaning" can say when it did not.
+   */
+  method: VisitSearchMethod;
 }
 
 export interface VisitPage {
@@ -138,6 +160,20 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
+/**
+ * Candidate depth per leg before fusion, and the RRF constant.
+ *
+ * Deliberately the same numbers `hybrid-search.ts` uses for the corpus. Two
+ * fusions over the same kind of thing that disagreed on how deep each leg
+ * reaches would rank the Library and the history differently for reasons no
+ * user could see, and the first person to compare them would be right to call
+ * it a bug.
+ */
+const SEARCH_CANDIDATE_FLOOR = 50;
+const SEARCH_CANDIDATE_FACTOR = 5;
+const RRF_K = 60;
+/** Characters of body head shown for a hit that only the semantic leg found. */
+const SEMANTIC_SNIPPET_CHARS = 160;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function nowUtc(): string {
@@ -255,10 +291,12 @@ function evict(db: ReturnType<typeof getDatabase>, bounds: VisitRetentionBounds)
 
   // Bodies nothing points at any more. A body is shared by every visit to the same unchanged
   // page, so it can only go once the LAST of them has.
-  db.prepare(
-    `DELETE FROM studio_visit_pages
+  dropBodies(
+    db,
+    `SELECT content_hash FROM studio_visit_pages
      WHERE content_hash NOT IN (SELECT content_hash FROM studio_visits WHERE content_hash IS NOT NULL)`,
-  ).run();
+    [],
+  );
 
   // The byte bound is spent on bodies and NOT on visit rows: the record of having read a page
   // is history in its own right, and it costs a few hundred bytes against a body's kilobytes.
@@ -273,8 +311,9 @@ function evict(db: ReturnType<typeof getDatabase>, bounds: VisitRetentionBounds)
   };
   if (total.total <= bounds.maxBytes) return;
 
-  db.prepare(
-    `DELETE FROM studio_visit_pages
+  dropBodies(
+    db,
+    `SELECT content_hash FROM studio_visit_pages
      WHERE content_hash NOT IN (
        SELECT content_hash FROM (
          SELECT content_hash, SUM(byte_len) OVER (ORDER BY created_at DESC, rowid DESC) AS running
@@ -282,7 +321,32 @@ function evict(db: ReturnType<typeof getDatabase>, bounds: VisitRetentionBounds)
        )
        WHERE running <= ?
      )`,
-  ).run(bounds.maxBytes);
+    [bounds.maxBytes],
+  );
+}
+
+/**
+ * Delete the bodies a SELECT names, and the vectors derived from them, together.
+ *
+ * The sweep reads the hashes first rather than issuing a bare DELETE because a
+ * body's embedding is not stored beside it — it lives in the shared vector
+ * index under `visit:<hash>`, and nothing there references `studio_visit_pages`
+ * to cascade from. A body swept for retention whose vector survived would stay
+ * findable by meaning after its text was gone: the search would return a row
+ * whose content the store can no longer show, which is worse than either
+ * keeping it or losing it cleanly.
+ */
+function dropBodies(db: ReturnType<typeof getDatabase>, selectSql: string, params: unknown[]): number {
+  const hashes = (db.prepare(selectSql).all(...params) as Array<{ content_hash: string }>).map(
+    (r) => r.content_hash,
+  );
+  if (hashes.length === 0) return 0;
+  const placeholders = hashes.map(() => '?').join(',');
+  const removed = db
+    .prepare(`DELETE FROM studio_visit_pages WHERE content_hash IN (${placeholders})`)
+    .run(...hashes).changes;
+  evictVisitVectors(db, hashes);
+  return removed;
 }
 
 /**
@@ -471,14 +535,65 @@ export function listVisits(options: ListVisitsOptions = {}): VisitsPage {
 }
 
 /**
- * Full-text search over the visits corpus — and ONLY over it.
+ * Search what the human actually read — by keyword AND by meaning.
  *
- * The query runs against `studio_visit_pages_fts`, the visits' own index. Nothing here reads
- * `url_cache_fts`, `studio_artifacts_fts` or the vector store, and nothing there reads this:
- * that mutual absence is A-18-5's partition.
+ * Two legs, fused with RRF, keyed on `content_hash` because that is the identity
+ * both legs speak: the FTS index is built on the deduped body table (A-363-4)
+ * and one visit vector covers one body however many visits share it. Fusing on
+ * the visit id instead would let a page read five times contribute five
+ * independent ranks and outrank a better match read once.
+ *
+ * Degradation is explicit (`method`), never inferred from an empty result. The
+ * semantic leg reaches only the visits partition of the shared vector store; the
+ * partition is enforced in `SqliteVecStore`, not here — see `visit-vec.ts`.
  */
-export function searchVisits(options: SearchVisitsOptions): VisitSearchRow[] {
+export async function searchVisits(options: SearchVisitsOptions): Promise<VisitSearchResult> {
   const limit = Math.min(Math.max(options.limit ?? DEFAULT_SEARCH_LIMIT, 1), MAX_SEARCH_LIMIT);
+  // A semantic leg has no use for a hostile-FTS-expression guard, so a query that
+  // sanitises down to nothing is still worth embedding. Only a blank query is
+  // nothing to search for on either side.
+  if (options.query.trim().length === 0) return { results: [], method: 'fts' };
+
+  const candidateLimit = Math.max(SEARCH_CANDIDATE_FLOOR, limit * SEARCH_CANDIDATE_FACTOR);
+  const ftsRows = ftsSearchVisits(options, candidateLimit);
+  const vecHashes = await searchVisitVectors(options.query, candidateLimit);
+
+  if (vecHashes === null) {
+    return { results: ftsRows.slice(0, limit), method: 'fts' };
+  }
+
+  const ftsRankMap = buildRankMap(ftsRows.map((row) => row.contentHash ?? ''));
+  ftsRankMap.delete('');
+  const vecRankMap = buildRankMap(vecHashes);
+  if (ftsRankMap.size === 0 && vecRankMap.size === 0) return { results: [], method: 'hybrid' };
+
+  const ordered = sortByRRFScore(reciprocalRankFusion([ftsRankMap, vecRankMap], RRF_K));
+  const ftsByHash = new Map<string, VisitSearchRow[]>();
+  for (const row of ftsRows) {
+    if (!row.contentHash) continue;
+    const bucket = ftsByHash.get(row.contentHash);
+    if (bucket) bucket.push(row);
+    else ftsByHash.set(row.contentHash, [row]);
+  }
+
+  const results: VisitSearchRow[] = [];
+  for (const [hash] of ordered) {
+    if (results.length >= limit) break;
+    // A hash the keyword leg already resolved is reused verbatim, snippet and
+    // BM25 rank intact: re-reading its visits would be a second query for rows
+    // already in hand, and would drop the highlighted snippet on the floor.
+    const known = ftsByHash.get(hash);
+    const rows = known ?? hydrateVisitsForHash(hash, options.site);
+    for (const row of rows) {
+      if (results.length >= limit) break;
+      results.push(row);
+    }
+  }
+  return { results, method: 'hybrid' };
+}
+
+/** The keyword leg: the visits FTS index, unchanged from the FTS-only shape #363 shipped. */
+function ftsSearchVisits(options: SearchVisitsOptions, limit: number): VisitSearchRow[] {
   const match = sanitizeFtsQuery(options.query);
   if (!match) return [];
 
@@ -513,6 +628,62 @@ export function searchVisits(options: SearchVisitsOptions): VisitSearchRow[] {
 }
 
 /**
+ * The visits behind a body the semantic leg matched but the keyword leg did not.
+ *
+ * Newest-first, and site-scoped by the SAME predicate the keyword leg uses: a
+ * per-site filter that held on one leg and not the other would show the user a
+ * row from a site they had just excluded.
+ */
+function hydrateVisitsForHash(contentHash: string, site?: string): VisitSearchRow[] {
+  const conditions: string[] = ['v.content_hash = ?'];
+  const params: unknown[] = [contentHash];
+  if (site) {
+    const scoped = siteConditions('v.normalized_url', visitHost(site));
+    conditions.push(scoped.sql);
+    params.push(...scoped.params);
+  }
+  try {
+    const db = getDatabase();
+    const rows = db
+      .prepare(
+        `SELECT v.id, v.url, v.normalized_url, v.title, v.ts, v.tab_id, v.space_id, v.run_id, v.content_hash
+         FROM studio_visits v
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY v.ts DESC, v.id DESC
+         LIMIT ?`,
+      )
+      .all(...params, MAX_SEARCH_LIMIT) as VisitDbRow[];
+    if (rows.length === 0) return [];
+    const body = db
+      .prepare('SELECT markdown FROM studio_visit_pages WHERE content_hash = ?')
+      .get(contentHash) as { markdown: string } | undefined;
+    const snippet = semanticSnippet(body?.markdown ?? '');
+    // `rank: null` is the honest value: no BM25 score exists for a row the
+    // keyword leg never saw.
+    return rows.map((row) => ({ ...toVisitRow(row), rank: null, snippet }));
+  } catch (err) {
+    log.warn('visit hydration failed', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+/**
+ * The opening of a body, for a hit no keyword matched.
+ *
+ * FTS5's `snippet()` centres on the matched term; a semantic hit has no term to
+ * centre on, so the head of the page is the honest excerpt rather than a
+ * highlighted one. The trailing ellipsis is the same token the FTS leg uses, so
+ * a UI renders both the same way.
+ */
+function semanticSnippet(markdown: string): string {
+  const flat = markdown.replace(/\s+/g, ' ').trim();
+  if (flat.length <= SEMANTIC_SNIPPET_CHARS) return flat;
+  const cut = flat.slice(0, SEMANTIC_SNIPPET_CHARS);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
  * Delete history by site, by day, or by both — 3bf's two controls.
  *
  * A scope is REQUIRED. "Delete everything" is a different, louder consent than "delete this
@@ -543,10 +714,15 @@ export function deleteVisits(scope: DeleteVisitsScope): DeleteVisitsResult {
     let bodies = 0;
     const stillReferenced = db.prepare('SELECT 1 FROM studio_visits WHERE content_hash = ? LIMIT 1');
     const dropBody = db.prepare('DELETE FROM studio_visit_pages WHERE content_hash = ?');
+    const orphaned: string[] = [];
     for (const hash of hashes) {
       if (stillReferenced.get(hash)) continue;
       bodies += dropBody.run(hash).changes;
+      orphaned.push(hash);
     }
+    // The user asked for this text to be gone. Semantic search reads a separate
+    // index, so "gone" has to be said there too.
+    evictVisitVectors(db, orphaned);
     return { visits, bodies };
   })();
 }

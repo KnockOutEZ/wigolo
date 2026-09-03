@@ -55,7 +55,17 @@ export type {
   VisitPage,
   VisitRetentionBounds,
   VisitRow,
+  VisitSearchMethod,
+  VisitSearchResult,
   VisitSearchRow,
   VisitSkipReason,
   VisitsPage,
 } from './visit-store.js';
+
+/**
+ * The semantic arm (A-18-11). `indexVisitPage` is the capture seam's second
+ * call, after `recordVisit`: core keeps history recording synchronous and
+ * never-throwing, and the seam decides whether to pay for meaning.
+ */
+export { indexVisitPage } from './visit-vec.js';
+export type { VisitIndexResult } from './visit-vec.js';

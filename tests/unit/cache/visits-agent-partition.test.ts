@@ -125,7 +125,7 @@ function seedControlPage(): void {
   cacheContent(raw, extraction);
 }
 
-function seedVisit(): void {
+async function seedVisit(): Promise<void> {
   const out = recordVisit({
     url: VISIT_URL,
     title: 'Private Reading',
@@ -137,7 +137,7 @@ function seedVisit(): void {
   expect(out.bodyStored).toBe(true);
   // The visit IS searchable — through the visits store, and only there. Without this the arms
   // below would pass on a fixture that was never indexed.
-  expect(searchVisits({ query: VISIT_TERM }).map((r) => r.url)).toEqual([VISIT_URL]);
+  expect((await searchVisits({ query: VISIT_TERM })).results.map((r) => r.url)).toEqual([VISIT_URL]);
 }
 
 const engine: SearchEngine = { name: 'mock', search: vi.fn().mockResolvedValue([] satisfies RawSearchResult[]) };
@@ -146,7 +146,7 @@ const router = { fetch: vi.fn() } as unknown as SmartRouter;
 describe('A-18-5 — the visits corpus is invisible to agent tools', () => {
   const originalEnv = process.env;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env = { ...originalEnv, LOG_LEVEL: 'error' };
     resetConfig();
     initDatabase(':memory:');
@@ -159,7 +159,7 @@ describe('A-18-5 — the visits corpus is invisible to agent tools', () => {
     mockEmbeddingState.calls = 0;
     mockEmbeddingState.findSimilarImpl = null;
     seedControlPage();
-    seedVisit();
+    await seedVisit();
   });
 
   afterEach(() => {

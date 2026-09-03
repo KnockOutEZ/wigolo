@@ -10,6 +10,19 @@ import { createLogger } from '../logger.js';
 const log = createLogger('cache');
 
 /**
+ * The `extra` key that names a record's partition.
+ *
+ * Generic on purpose: this class knows that partitions exist and that they are
+ * default-deny, and nothing about what any one of them holds. The scope VALUES
+ * are owned by whoever writes the records (SD7's visits store owns `visit`),
+ * so a second partition costs a constant in that module and nothing here.
+ */
+export const VEC_SCOPE_KEY = 'scope';
+
+const KNN_OVERSAMPLE = 5;
+const KNN_OVERSAMPLE_FLOOR = 50;
+
+/**
  * VectorStore backed by the sqlite-vec extension loaded into the shared
  * better-sqlite3 cache database.
  *
@@ -27,10 +40,19 @@ const log = createLogger('cache');
  * Search returns sqlite-vec's native L2 distance converted to a similarity
  * score as `1 / (1 + distance)`. Higher score = closer match.
  *
- * Filter semantics match VectorStore: when `filter` is provided we
- * over-fetch from the KNN side (oversample = limit * 5) then post-filter
- * against vec_metadata before truncating to `limit`. Filters never relax
- * — every populated filter field must match.
+ * Filter semantics match VectorStore: we over-fetch from the KNN side
+ * (oversample = limit * 5) then post-filter against vec_metadata before
+ * truncating to `limit`. Filters never relax — every populated filter field
+ * must match.
+ *
+ * PARTITIONS (SD7 A-18-5). A record may carry `extra.scope`. A scoped row is
+ * returned ONLY to a search whose filter names that same scope; a search that
+ * names no scope sees only unscoped rows. The guard lives here, not in each
+ * caller, because `getVectorStore()` hands this one class to every reader of
+ * the shared index — `runHybridSearch`, `EmbeddingService.findSimilar`, the
+ * backfill and the crawl indexer — and a partition each of them had to
+ * remember is a partition the next reader forgets. Default-deny means a new
+ * caller is correct before it has heard of the scope.
  */
 export class SqliteVecStore implements VectorStore {
   private upsertSelectStmt: Database.Statement;
@@ -123,10 +145,14 @@ export class SqliteVecStore implements VectorStore {
       queryVector.byteLength,
     );
 
-    // When a filter is present we over-fetch from the KNN side and apply
-    // the filter post-hoc, since vec0 MATCH cannot be combined with JOIN
-    // predicates inside a single WHERE clause.
-    const knnLimit = filter ? Math.max(limit * 5, 50) : limit;
+    // We over-fetch from the KNN side and apply the filter post-hoc, since vec0
+    // MATCH cannot be combined with JOIN predicates inside a single WHERE
+    // clause. The oversample is unconditional because the scope partition
+    // post-filters even when the caller passed no filter at all: a store
+    // holding scoped rows would otherwise return short of `limit` for every
+    // unfiltered caller, silently and in proportion to how much history the
+    // user has.
+    const knnLimit = Math.max(limit * KNN_OVERSAMPLE, KNN_OVERSAMPLE_FLOOR);
 
     const candidateStmt = this.db.prepare(`
       SELECT rowid, distance
@@ -190,6 +216,7 @@ export class SqliteVecStore implements VectorStore {
         ...(extra ? { extra } : {}),
       };
 
+      if (!scopeVisible(metadata, filter)) continue;
       if (filter && !matchesFilter(metadata, filter)) continue;
 
       results.push({
@@ -278,6 +305,30 @@ function hasVectorTables(db: Database.Database): boolean {
   } catch {
     return false;
   }
+}
+
+/** The partition a record belongs to, or null when it is part of the shared corpus. */
+function scopeOf(extra: Record<string, unknown> | undefined): string | null {
+  const value = extra?.[VEC_SCOPE_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Default-deny across partitions: a scoped record is invisible to a search that
+ * did not ask for its scope by name.
+ *
+ * This is separate from `matchesFilter` because it is not a filter — it is the
+ * absence of one. `matchesFilter` answers "does this row satisfy what the
+ * caller asked for", which for an unfiltered caller is trivially yes; this
+ * answers "may this caller see this row at all", which for an unfiltered caller
+ * is no for anything partitioned. Folding the two together would make the
+ * partition depend on callers remembering to pass a filter, which is exactly
+ * the arrangement A-18-5 exists to remove.
+ */
+function scopeVisible(meta: VectorMetadata, filter?: Partial<VectorMetadata>): boolean {
+  const requested = scopeOf(filter?.extra);
+  if (requested !== null) return true;
+  return scopeOf(meta.extra) === null;
 }
 
 function matchesFilter(meta: VectorMetadata, filter: Partial<VectorMetadata>): boolean {

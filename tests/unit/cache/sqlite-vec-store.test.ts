@@ -38,6 +38,74 @@ describe('SqliteVecStore', () => {
     db.close();
   });
 
+  describe('partitions (SD7 A-18-5)', () => {
+    /**
+     * The partition is enforced HERE rather than at each caller because
+     * `getVectorStore()` hands this one class to every reader of the shared
+     * index. These arms pin the default-deny direction specifically: a filter
+     * that names the scope is ordinary equality and `matchesFilter` already had
+     * it, but "a caller that asked for nothing sees nothing partitioned" is the
+     * new rule and the one a future reader depends on without knowing it.
+     */
+    const scoped: VectorRecord = {
+      id: 'partitioned',
+      vector: new Float32Array([1, 0, 0, 0]),
+      metadata: { url: 'private', contentHash: 'hp', modelId: 'test', extra: { scope: 'visit' } },
+    };
+    const shared: VectorRecord = {
+      id: 'https://shared',
+      vector: new Float32Array([0.99, 0.01, 0, 0]),
+      metadata: { url: 'https://shared', contentHash: 'hs', modelId: 'test' },
+    };
+
+    it('hides a scoped record from a search that names no scope', async () => {
+      await store.upsert([scoped, shared]);
+      const hits = await store.search(new Float32Array([1, 0, 0, 0]), 10);
+      // The scoped row is the NEARER of the two, so its absence is exclusion and
+      // not a ranking accident.
+      expect(hits.map(h => h.id)).toEqual(['https://shared']);
+    });
+
+    it('returns a scoped record only to a search that names its scope', async () => {
+      await store.upsert([scoped, shared]);
+      const hits = await store.search(new Float32Array([1, 0, 0, 0]), 10, {
+        extra: { scope: 'visit' },
+      });
+      expect(hits.map(h => h.id)).toEqual(['partitioned']);
+    });
+
+    it('does not leak one scope into another', async () => {
+      await store.upsert([
+        scoped,
+        {
+          id: 'other-partition',
+          vector: new Float32Array([1, 0, 0, 0]),
+          metadata: { url: 'other', contentHash: 'ho', modelId: 'test', extra: { scope: 'notes' } },
+        },
+      ]);
+      const hits = await store.search(new Float32Array([1, 0, 0, 0]), 10, {
+        extra: { scope: 'notes' },
+      });
+      expect(hits.map(h => h.id)).toEqual(['other-partition']);
+    });
+
+    it('treats an empty or non-string scope as unscoped rather than as a partition of its own', async () => {
+      // A record whose scope key is present but meaningless must stay in the
+      // shared corpus: silently partitioning it would make a row vanish from
+      // every agent read for a typo, which is the failure this default-deny is
+      // most likely to cause and the one nobody would look for.
+      await store.upsert([
+        {
+          id: 'blank-scope',
+          vector: new Float32Array([1, 0, 0, 0]),
+          metadata: { url: 'https://blank', contentHash: 'hb', modelId: 'test', extra: { scope: '' } },
+        },
+      ]);
+      const hits = await store.search(new Float32Array([1, 0, 0, 0]), 10);
+      expect(hits.map(h => h.id)).toEqual(['blank-scope']);
+    });
+  });
+
   it('upsert + size + search round-trips', async () => {
     const records: VectorRecord[] = [
       { id: 'a', vector: new Float32Array([1, 0, 0, 0]), metadata: { url: 'https://a', contentHash: 'ha', modelId: 'test' } },
