@@ -31,11 +31,16 @@ export const TELEMETRY_ENDPOINT_ENV = 'WIGOLO_TELEMETRY_ENDPOINT';
  * documented off switch would be a silent no-op. Widening `envBool` itself is not the fix:
  * every knob in the catalog reads through it, so `off`/`no` would flip meaning for values
  * already set in the field. The in-tree precedent for a dedicated parser is
- * `AUTO_LAUNCH_OFF_VALUES` (`src/studio/auto-launch.ts`), which bypasses `envBool` for the
+ * `AUTO_LAUNCH_OFF_VALUES` (`src/companion/auto-launch.ts`), which bypasses `envBool` for the
  * same measured reason. Recorded as A-212-5.
  *
  * `envBool` also does not trim, and a value that arrived with the shell's whitespace still
  * attached is the same stated intent.
+ *
+ * KEEP BYTE-IDENTICAL to that set and to `SKIP_OFF_VALUES` (`scripts/prepare-build.mjs`). This one
+ * carried `no` from the start and the other two did not, and that split is precisely how
+ * `WIGOLO_SKIP_PREPARE=no` came to mean SKIP (A-202-1). `tests/unit/prepare-build.test.ts` now
+ * asserts all three are equal, so widening any one of them alone reds.
  */
 export const TELEMETRY_OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
 

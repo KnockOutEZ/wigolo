@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { AUTO_LAUNCH_OFF_VALUES } from '../../src/companion/auto-launch.js';
+import { TELEMETRY_OFF_VALUES } from '../../src/telemetry/off-switch.js';
 
 /*
  * `scripts/prepare-build.mjs` is a two-armed decision and both arms fail FAR from their cause:
@@ -160,16 +162,34 @@ describe('scripts/prepare-build.mjs — the git-dependency build hook', () => {
    * `if (process.env.WIGOLO_SKIP_PREPARE)` made `=0`, `=false` and `=off` all mean SKIP — the
    * inverse of what the operator wrote — and this repo had already established the opposite rule
    * one file over: `autoLaunchDisabled` (src/companion/auto-launch.ts) trims, lowercases and compares
-   * against `{'0','false','off'}` for exactly this class. Two flags shipped by one phase cannot
+   * against the same vocabulary for exactly this class. Two flags shipped by one phase cannot
    * disagree about what `0` means.
+   *
+   * `no` was the spelling that vocabulary was missing, and it is the one an operator reaches for
+   * first: `WIGOLO_SKIP_PREPARE=no` is how you write "do not skip", and it meant SKIP. That is the
+   * original defect in its most plausible costume, so it is pinned by value here rather than left
+   * to the set-identity arm alone.
    *
    * The fail direction is quiet, which is why it needs arms rather than a reading: a local
    * `npm ci` under a leaked `WIGOLO_SKIP_PREPARE=0` exits 0 with an unbuilt tree, and the missing
    * `dist/` surfaces weeks later as module-not-found in whatever consumes it.
    */
-  const OFF_SPELLINGS = ['0', 'false', 'off', ' 0 ', 'FALSE', 'Off', ' False ', '   ', ''];
+  const OFF_SPELLINGS = [
+    '0',
+    'false',
+    'off',
+    'no',
+    ' 0 ',
+    'FALSE',
+    'Off',
+    'NO',
+    ' False ',
+    ' No ',
+    '   ',
+    '',
+  ];
 
-  it('BUILDS for every value that means off — `0`/`false`/`off`, in any casing, trimmed', () => {
+  it('BUILDS for every value that means off — `0`/`false`/`off`/`no`, in any casing, trimmed', () => {
     plantToolchain('tsup');
     plantToolchain('typescript');
     plantBuild();
@@ -187,16 +207,64 @@ describe('scripts/prepare-build.mjs — the git-dependency build hook', () => {
     // Anti-vacuity twin for the arm above: normalising the off values must not soften the opt-out
     // itself. `=1` is the only spelling in the workflows and the Dockerfile today; the rest are
     // here because "any other non-empty value skips" is the stated rule, not "1 skips".
+    //
+    // `yes` stays on this side deliberately. It is the affirmative half of the pair `no` just left,
+    // and moving both would be a different change — the off set is the vocabulary of DENIAL, and
+    // widening it to affirmatives is what the non-goal "changing what a truthy value means" names.
     plantToolchain('tsup');
     plantToolchain('typescript');
     plantBuild();
-    for (const value of ['1', 'true', 'yes', 'TRUE', ' 1 ', 'no']) {
+    for (const value of ['1', 'true', 'yes', 'TRUE', ' 1 ', 'YES']) {
       const run = runPrepare({ WIGOLO_SKIP_PREPARE: value });
       expect(run.status, JSON.stringify(value)).toBe(0);
       expect(run.built, JSON.stringify(value)).toBe(false);
       expect(run.stdout, JSON.stringify(value)).toMatch(/WIGOLO_SKIP_PREPARE/);
     }
   }, 120_000);
+
+  /*
+   * THE THREE SETS ARE ONE VOCABULARY, AND THIS IS THE ARM THAT SAYS SO.
+   *
+   * `SKIP_OFF_VALUES` (this script), `AUTO_LAUNCH_OFF_VALUES` (src/companion/auto-launch.ts) and
+   * `TELEMETRY_OFF_VALUES` (src/telemetry/off-switch.ts) are three copies of the same decision:
+   * bypass `envBool`, trim, lowercase, compare against the spellings that mean OFF. Each file's
+   * docstring cites the others as its precedent, so an operator who learns the vocabulary from one
+   * knob is entitled to it on the next.
+   *
+   * They drifted anyway. Telemetry shipped `no`; the other two did not — which is exactly how
+   * `WIGOLO_SKIP_PREPARE=no` came to mean SKIP while `WIGOLO_TELEMETRY=no` meant off. A per-value
+   * arm cannot catch that class, because the value it would have to guess is the one nobody thought
+   * of; set EQUALITY catches it whichever set moves, and in whichever direction.
+   *
+   * A shared constant would be the usual fix and is unavailable here: `prepare-build.mjs` runs as
+   * npm's `prepare` hook on a freshly cloned git dependency, BEFORE `dist/` exists and with no
+   * loader for `src/*.ts`. It must import nothing from this package. So the literal is matched, and
+   * this arm is what keeps the match honest — it reads the real script's source, not a copy.
+   */
+  it('keeps the off-value vocabulary identical across all three sets that share it', () => {
+    const source = readFileSync(REAL_SCRIPT, 'utf8');
+    const literal = /const SKIP_OFF_VALUES = new Set\(\[([^\]]*)\]\)/.exec(source);
+    // Prove the parse found something before trusting what it found: a renamed constant or a
+    // reformatted literal must fail loudly here, never silently yield an empty set that then
+    // "matches" nothing and passes.
+    expect(literal, 'SKIP_OFF_VALUES literal not found in scripts/prepare-build.mjs').not.toBeNull();
+    const skipOffValues = new Set(
+      (literal?.[1] ?? '')
+        .split(',')
+        .map((part) => part.trim().replace(/^['"]|['"]$/g, ''))
+        .filter((part) => part !== '')
+    );
+
+    const sorted = (values: Iterable<string>) => [...values].sort();
+    expect(sorted(skipOffValues)).toEqual(sorted(AUTO_LAUNCH_OFF_VALUES));
+    expect(sorted(skipOffValues)).toEqual(sorted(TELEMETRY_OFF_VALUES));
+
+    // And name the spelling this issue was about, so dropping `no` from every set at once — which
+    // set equality alone would wave through — still reds.
+    for (const set of [skipOffValues, AUTO_LAUNCH_OFF_VALUES, TELEMETRY_OFF_VALUES]) {
+      expect([...set]).toContain('no');
+    }
+  });
 
   it('propagates a failing build rather than swallowing it', () => {
     // The opt-out must not become a blanket exit 0. A build that fails on the
