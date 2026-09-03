@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
-import { pruneStudioAudit } from '../../../src/companion/audit-retention.js';
+import { pruneExpiredMemories, pruneStudioAudit } from '../../../src/companion/audit-retention.js';
 import { seedAuditRow, seedFlowStep, seedSession } from '../../helpers/companion-tables.js';
 
 /**
@@ -175,5 +175,99 @@ describe('D9 retention — security seams (structural)', () => {
     const result = pruneStudioAudit(db, { cutoffMs: Number.NaN });
     expect(result).toEqual({ deleted: 0, flowStepsDeleted: 0 });
     expect((db.prepare('SELECT COUNT(*) c FROM studio_flow_steps').get() as { c: number }).c).toBe(1);
+  });
+});
+
+/**
+ * SD5 §6.1 — the expired-memory prune, the second sanctioned deletion site in this module.
+ *
+ * `studio_memories` rows carry an OPTIONAL absolute `expires_at`. Until this landed, expiry was
+ * display-only: nothing ever removed an expired row, so a memory the user had scoped to a week
+ * lived on disk forever. The prune is stated here rather than beside the memories CRUD for the
+ * same reason the audit prune is: one deliberate deletion site, operator-reachable only.
+ */
+function seedMemory(
+  db: Database.Database,
+  row: { id: string; expiresAt: number | null; status?: string; text?: string },
+): void {
+  db.prepare(
+    `INSERT INTO studio_memories (id, text, scope, scope_key, provenance, created_at, expires_at, status)
+     VALUES (?, ?, 'global', NULL, 'user', 1000, ?, ?)`,
+  ).run(row.id, row.text ?? `memory ${row.id}`, row.expiresAt, row.status ?? 'active');
+}
+function memoryIds(db: Database.Database): string[] {
+  return (db.prepare('SELECT id FROM studio_memories ORDER BY id').all() as { id: string }[]).map((r) => r.id);
+}
+
+describe('pruneExpiredMemories — expiry prune of the studio memories store', () => {
+  it('deletes ONLY the past-expiry row; a null expiry and a future expiry both survive', () => {
+    const db = migratedDb();
+    seedMemory(db, { id: 'forever', expiresAt: null }); // NULL = no expiry, the common case
+    seedMemory(db, { id: 'future', expiresAt: 9000 });
+    seedMemory(db, { id: 'past', expiresAt: 1000 });
+
+    const { deleted } = pruneExpiredMemories(db, { nowMs: 5000 });
+
+    expect(deleted).toBe(1);
+    expect(memoryIds(db)).toEqual(['forever', 'future']);
+    db.close();
+  });
+
+  it('is strict: a row expiring exactly at nowMs survives (the cutoff is not yet past)', () => {
+    const db = migratedDb();
+    seedMemory(db, { id: 'boundary', expiresAt: 5000 });
+
+    expect(pruneExpiredMemories(db, { nowMs: 5000 }).deleted).toBe(0);
+    expect(memoryIds(db)).toEqual(['boundary']);
+    db.close();
+  });
+
+  it('fail-closed: a non-finite nowMs deletes NOTHING (a garbage clock must not delete everything)', () => {
+    const db = migratedDb();
+    seedMemory(db, { id: 'forever', expiresAt: null });
+    seedMemory(db, { id: 'past', expiresAt: 1000 });
+
+    expect(pruneExpiredMemories(db, { nowMs: Number.NaN }).deleted).toBe(0);
+    expect(pruneExpiredMemories(db, { nowMs: Number.POSITIVE_INFINITY }).deleted).toBe(0);
+    expect(memoryIds(db)).toEqual(['forever', 'past']); // both intact — no delete executed
+    db.close();
+  });
+
+  it('does not special-case status: an expired ARCHIVED row goes with the rest', () => {
+    // Expiry is orthogonal to status. Archiving is the user hiding a memory, not a reason to keep
+    // its text on disk past the lifetime they gave it — the opposite reading would make archiving a
+    // way to outlive your own expiry.
+    const db = migratedDb();
+    seedMemory(db, { id: 'archived-past', expiresAt: 1000, status: 'archived' });
+    seedMemory(db, { id: 'archived-future', expiresAt: 9000, status: 'archived' });
+
+    expect(pruneExpiredMemories(db, { nowMs: 5000 }).deleted).toBe(1);
+    expect(memoryIds(db)).toEqual(['archived-future']);
+    db.close();
+  });
+
+  it('touches studio_memories ONLY — audit rows of any age survive an expiry prune', () => {
+    const db = migratedDb();
+    seedAuditRow(db, { sessionId: 'sess-mem', seq: 1, action: 'navigate', ts: 1 });
+    seedMemory(db, { id: 'past', expiresAt: 1000 });
+
+    expect(pruneExpiredMemories(db, { nowMs: 5000 }).deleted).toBe(1);
+    expect(auditCount(db, 'sess-mem')).toBe(1);
+    db.close();
+  });
+
+  it('the statement it ships SEEKS the partial expiry index rather than scanning', () => {
+    // Migration 019 ships `idx_studio_memories_expiry ... WHERE expires_at IS NOT NULL`. The
+    // integration suite pins the plan for a bare `expires_at < ?`; the statement this module
+    // actually runs carries the `IS NOT NULL` arm too, so the seek is pinned for THAT text.
+    const db = migratedDb();
+    const plan = db
+      .prepare('EXPLAIN QUERY PLAN DELETE FROM studio_memories WHERE expires_at IS NOT NULL AND expires_at < ?')
+      .all(5000) as Array<{ detail: string }>;
+    const detail = plan.map((r) => r.detail).join(' | ');
+
+    expect(detail).toContain('idx_studio_memories_expiry');
+    expect(detail).not.toContain('SCAN studio_memories');
+    db.close();
   });
 });
