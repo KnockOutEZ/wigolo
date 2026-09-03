@@ -184,21 +184,33 @@ const SUBPATHS: Subpath[] = [
     // A7 adds the two origin-budget defaults: the gate's own spec asserts against them, and
     // the only other door to them was `wigolo/studio`, which loaded a second `OriginBudget`
     // beside the one under test and booted the engine at import time.
+    // A8 adds the auth-origin ledger (8 names) and `bumpEscalationCounter`: both modules stay
+    // in core, ship in `dist/`, and are reachable by NO subpath — `exports` carries no wildcard,
+    // so there is no deep path a consumer could legally take instead of the barrel.
     // Still a ceiling: each name below has a named import site outside core. Daemon-route
     // auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately out —
     // core imports it directly and nothing outside core reaches for it.
     spec: 'wigolo/companion',
     target: './dist/companion/index.js',
     runtime: [
+      'ANONYMOUS_ORIGINS_KEY',
+      'AUTHENTICATED_ORIGINS_KEY',
+      'AgentWriteRefusedError',
       'DEFAULT_ANONYMOUS_ORIGIN_BUDGET',
       'DEFAULT_ORIGIN_BUDGET',
       'OriginBudget',
+      'authenticatedOriginCount',
       'budgetOrigin',
       'budgetRefusal',
+      'bumpEscalationCounter',
       'getMyInstanceId',
       'mintHostToken',
       'normalizeOrigin',
+      'overridePatch',
+      'readAuthOriginLedger',
       'readHandle',
+      'readOriginOverrides',
+      'recordAuthOrigin',
       'removeHandle',
       'resolveHostToken',
       'setMyInstanceId',
