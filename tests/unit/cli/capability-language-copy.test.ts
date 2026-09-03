@@ -9,6 +9,7 @@ import { runAccountCommand } from '../../../src/cli/account.js';
 import { ACTIVATION_REFUSALS, type ActivationRefusalReason } from '../../../src/account/gate.js';
 import { activationNextStepLine } from '../../../src/cli/init.js';
 import { advancedCategory } from '../../../src/cli/tui/schema/advanced.js';
+import { runStudioSetup } from '../../../src/cli/studio-setup.js';
 import type { AccountsClient } from '../../../src/account/client.js';
 
 /**
@@ -187,6 +188,46 @@ describe('capability language — the copy PX2 added', () => {
         expect(text, `no notice for ${url}`).toContain('account service address');
         assertCapabilityLanguage(`address notice ${url}`, text);
       }
+    }
+  });
+
+  /**
+   * The companion install verb, run for every outcome it can produce.
+   *
+   * This is the surface most at risk of slipping the register: it talks about a desktop
+   * application, a disk image and a first run, and the honest engineering words for those are
+   * exactly the banned ones. Every arm is exercised, including the failures — a failure line is
+   * the one a hand review skips and the one a user reads most carefully.
+   */
+  it('`wigolo studio setup` names no implementation on any outcome', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wigolo-capability-'));
+    const arms: Array<[string, string[], Record<string, unknown>]> = [
+      ['usage', [], {}],
+      ['help', ['--help'], {}],
+      ['unknown subcommand', ['observe'], {}],
+      ['unknown option', ['setup', '--wat'], {}],
+      ['unsupported platform', ['setup'], { platform: 'linux', arch: 'x64' }],
+      ['no release host', ['setup'], { platform: 'darwin', arch: 'arm64', releaseHost: null }],
+      [
+        'unreachable host',
+        ['setup'],
+        { platform: 'darwin', arch: 'arm64', releaseHost: 'http://127.0.0.1:1' },
+      ],
+    ];
+
+    for (const [label, argv, deps] of arms) {
+      const out = collector();
+      const err = collector();
+      await runStudioSetup(argv, {
+        stdout: out.stream,
+        stderr: err.stream,
+        dataDir: join(root, label.replace(/\s+/g, '-')),
+        installRoot: join(root, 'Applications'),
+        ...deps,
+      });
+      const text = out.text() + err.text();
+      expect(text, `${label} produced no copy at all`).not.toBe('');
+      assertCapabilityLanguage(`studio setup / ${label}`, text);
     }
   });
 

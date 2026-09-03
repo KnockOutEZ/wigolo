@@ -60,6 +60,7 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 - \`cache\` — check before hitting the network. \`extract\` — specific data points (tables, metadata, schema-shaped fields).
 - \`find_similar\` — more-like-this from URL or concept.
 - \`research\` — decomposition + parallel search + synthesis. Set \`depth\`. \`agent\` — natural-language data gathering, optional \`schema\`.
+- \`wigolo studio setup\` installs the browser companion for live sessions.
 
 Full usage detail: read resource \`wigolo://docs/usage\`.`;
 
