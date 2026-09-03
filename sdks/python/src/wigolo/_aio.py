@@ -17,6 +17,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional, Union
 
+from ._aio_runs import AsyncRuns
 from ._client import Client
 
 __all__ = ["AsyncClient"]
@@ -61,6 +62,9 @@ class AsyncClient:
             untrusted_content=untrusted_content,
         )
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        # The runs surface, awaitable. Same transport as the synchronous twin, so sync and
+        # async cannot drift apart in what they send or how they resume.
+        self.runs = AsyncRuns(self)
 
     # ---- lifecycle -------------------------------------------------------
 

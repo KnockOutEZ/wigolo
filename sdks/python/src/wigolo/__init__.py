@@ -9,9 +9,12 @@ that.
 from __future__ import annotations
 
 from ._aio import AsyncClient
+from ._aio_runs import AsyncRunWatch, AsyncRuns
 from ._client import Client
 from ._errors import WigoloAPIError, WigoloConnectionError, WigoloError
 from ._local import local_client
+from ._runs import RunWatch, Runs, parse_run_event
+from ._sse import LAST_EVENT_ID_HEADER, SseMessage, SseParser
 from ._untrusted import (
     UNTRUSTED_CONTENT_HEADER,
     UNTRUSTED_CONTENT_MODES,
@@ -26,6 +29,14 @@ __all__ = [
     "Client",
     "AsyncClient",
     "local_client",
+    "Runs",
+    "RunWatch",
+    "AsyncRuns",
+    "AsyncRunWatch",
+    "parse_run_event",
+    "SseParser",
+    "SseMessage",
+    "LAST_EVENT_ID_HEADER",
     "WigoloError",
     "WigoloAPIError",
     "WigoloConnectionError",
