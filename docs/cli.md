@@ -244,7 +244,7 @@ wigolo cache stats | cache search <query> | cache clear [--query=Q] [--url-patte
 wigolo find-similar <url-or-concept>  [--max-results=N] [--mode=...] ...
 wigolo research <question>  [--depth=quick|standard|comprehensive] [--max-sources=N] ...
 wigolo agent <prompt>       [--urls=u1,u2] [--schema=JSON|@file] [--max-pages=N] ...
-wigolo diff <url> | diff --old="text" --new="text"  [--output=...] [--granularity=...]
+wigolo diff <url> | diff --old="text" --new="text"  [--old-hash=<sha256>] [--output=...] [--granularity=...]
 wigolo watch add <url> --interval=SECONDS | watch list | watch rm <id> | watch run <id>
 ```
 
@@ -274,7 +274,7 @@ wigolo> help
   find-similar <url-or-concept> [--limit=N]
   research <question> [--depth=...]
   agent <prompt> [--urls=u1,u2]
-  diff <url> [--output=...] [--granularity=...]
+  diff <url> [--old-hash=<sha256>] [--output=...] [--granularity=...]
   watch add <url> [--interval=SECONDS] | watch list | watch rm <id>
 
   help          Show this help

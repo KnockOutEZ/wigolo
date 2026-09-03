@@ -89,8 +89,8 @@ export async function executeDiff(args: ParsedArgs, deps: ReplDeps): Promise<Dif
       const contentHash = normalizeContentHash(oldHashFlag);
       if (contentHash === null) {
         return errEnvelope(
-          `--old-hash takes a 64-character hex content hash, as printed by \`fetch\` and ` +
-            `\`cache --versions\`; got ${JSON.stringify(oldHashFlag)}.`,
+          `--old-hash takes a 64-character hex content hash, the \`content_hash\` an ` +
+            `earlier \`fetch <url> --json\` printed; got ${JSON.stringify(oldHashFlag)}.`,
         );
       }
       input.old = { content_hash: contentHash };
