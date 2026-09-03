@@ -71,6 +71,7 @@ interface StatusJson {
   browserTier: { desktopComponent: string };
   browserSession?: {
     signedInBudget: number;
+    signedInWindowMs: number;
     anonymousBudget: number;
     bridgeAttempted: number;
     bridgeServed: number;
