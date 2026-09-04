@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -28,6 +29,41 @@ import { parseCommand } from '../../../src/cli/index.js';
  */
 
 const APP_NAME = 'Wigolo Studio.app';
+
+/**
+ * The loopback opt-out, spelled out at every call site that uses a fixture host.
+ *
+ * `studio setup` refuses a cleartext release address before it opens a socket, and these fixtures
+ * ARE cleartext — a loopback server with no certificate. Passing the opt-out explicitly rather
+ * than ambiently is deliberate: an arm that installs from a fixture is stating that it needed a
+ * hole in the transport rule, and an arm that forgets to state it fails the way a real user's
+ * plain-http host would.
+ */
+const ALLOW_HTTP: NodeJS.ProcessEnv = { WIGOLO_COMPANION_ALLOW_HTTP: '1' };
+
+/**
+ * The shell-out the post-install security step goes through, recorded.
+ *
+ * `signed` is what a real `codesign --verify` would answer. A fixture bundle is a directory with
+ * a marker file in it, so the honest default is UNSIGNED — which is exactly the case that must
+ * still be quarantined and must NOT be assessed.
+ */
+function recordingRun(opts: { xattrCode?: number; signed?: boolean; assessCode?: number } = {}): {
+  run: NonNullable<CompanionSetupDeps['run']>;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run: async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (cmd === 'xattr') return { code: opts.xattrCode ?? 0, stderr: opts.xattrCode ? 'Operation not permitted' : '' };
+      if (cmd === 'codesign') return { code: opts.signed ? 0 : 1, stderr: opts.signed ? '' : 'code object is not signed at all' };
+      if (cmd === 'spctl') return { code: opts.assessCode ?? 0, stderr: opts.assessCode ? 'rejected source=no usable signature' : '' };
+      return { code: 0, stderr: '' };
+    },
+  };
+}
 
 function getPort(server: http.Server): number {
   return (server.address() as AddressInfo).port;
@@ -191,15 +227,18 @@ describe('setupCompanion', () => {
     const installRoot = join(root, 'Applications');
     mkdirSync(installRoot, { recursive: true });
     const installer = recordingInstaller(installRoot);
+    const shell = recordingRun();
     const launched: string[] = [];
 
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: shell.run,
       launch: async (p: string) => {
         launched.push(p);
         return true;
@@ -209,6 +248,14 @@ describe('setupCompanion', () => {
     expect(result.outcome).toBe('installed');
     expect(result.version).toBe('1.4.0');
     expect(installer.calls).toHaveLength(1);
+    // The bundle we downloaded ourselves carries no quarantine flag unless we write one, and
+    // without it this system never evaluates the application at first launch.
+    const marked = shell.calls.find((c) => c[0] === 'xattr');
+    expect(marked?.slice(0, 3)).toEqual(['xattr', '-w', 'com.apple.quarantine']);
+    expect(marked?.[3]).toMatch(/^0081;[0-9a-f]+;wigolo;$/);
+    expect(marked?.[4]).toBe(join(installRoot, APP_NAME));
+    // Unsigned fixture: the assessment would refuse it by definition, so it must not be asked.
+    expect(shell.calls.map((c) => c[0])).toEqual(['xattr', 'codesign']);
     expect(existsSync(join(installRoot, APP_NAME, 'marker'))).toBe(true);
     expect(readFileSync(join(installRoot, APP_NAME, 'marker')).equals(payload)).toBe(true);
     expect(launched).toEqual([join(installRoot, APP_NAME)]);
@@ -230,11 +277,13 @@ describe('setupCompanion', () => {
 
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -267,11 +316,13 @@ describe('setupCompanion', () => {
     const installer = recordingInstaller(installRoot);
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir,
       platform: 'darwin',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -318,6 +369,7 @@ describe('setupCompanion', () => {
     const installer = recordingInstaller(installRoot);
     const result = await setupCompanion({
       releaseHost: origin,
+      env: ALLOW_HTTP,
       dataDir,
       platform: 'darwin',
       arch: 'arm64',
@@ -345,6 +397,7 @@ describe('setupCompanion', () => {
 
     const result = await setupCompanion({
       releaseHost: `http://127.0.0.1:${getPort(server)}`,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'linux',
       arch: 'x64',
@@ -381,6 +434,7 @@ describe('setupCompanion', () => {
 
     const result = await setupCompanion({
       releaseHost: `http://127.0.0.1:${getPort(server)}`,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
@@ -404,11 +458,13 @@ describe('setupCompanion', () => {
     const installer = recordingInstaller(installRoot);
     const base: CompanionSetupDeps = {
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir,
       platform: 'darwin',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     };
 
@@ -452,6 +508,10 @@ describe('setupCompanion — disk-image install path', () => {
       calls,
       run: async (cmd: string, args: string[]) => {
         calls.push([cmd, ...args]);
+        // The post-install security step shells out through this same injection point; a fixture
+        // bundle is unsigned, so `codesign` refuses it and the assessment is correctly skipped.
+        if (cmd === 'codesign') return { code: 1, stderr: 'code object is not signed at all' };
+        if (cmd !== 'hdiutil') return { code: 0, stderr: '' };
         if (args[0] === 'attach') {
           if (opts.attachCode) return { code: opts.attachCode, stderr: 'no mountable file systems' };
           const mount = args[args.indexOf('-mountpoint') + 1];
@@ -478,6 +538,7 @@ describe('setupCompanion — disk-image install path', () => {
 
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
@@ -489,7 +550,7 @@ describe('setupCompanion — disk-image install path', () => {
     expect(result.outcome).toBe('installed');
     expect(result.installedPath).toBe(join(installRoot, APP_NAME));
     expect(existsSync(join(installRoot, APP_NAME, 'Contents', 'MacOS', 'Wigolo Studio'))).toBe(true);
-    expect(hdi.calls.map((c) => c[1])).toEqual(['attach', 'detach']);
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach', 'detach']);
   });
 
   it('unmounts even when the image holds no application bundle', async () => {
@@ -501,6 +562,7 @@ describe('setupCompanion — disk-image install path', () => {
 
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
@@ -510,7 +572,7 @@ describe('setupCompanion — disk-image install path', () => {
 
     expect(result.outcome).toBe('install_failed');
     // A mounted volume left behind by a failed install is debris the user has to clear by hand.
-    expect(hdi.calls.map((c) => c[1])).toEqual(['attach', 'detach']);
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach', 'detach']);
   });
 
   it('reports a refused attach as a typed install failure with the host copy to fall back on', async () => {
@@ -522,6 +584,7 @@ describe('setupCompanion — disk-image install path', () => {
 
     const result = await setupCompanion({
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
@@ -532,8 +595,242 @@ describe('setupCompanion — disk-image install path', () => {
     expect(result.outcome).toBe('install_failed');
     expect(result.error).toContain('no mountable file systems');
     expect(result.manualFallback).toContain(host.origin);
-    expect(hdi.calls.map((c) => c[1])).toEqual(['attach']);
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach']);
   });
+});
+
+/**
+ * The two security properties of the install, both stated as behaviour rather than as code shape.
+ *
+ * WHY THIS BLOCK EXISTS: `setup` is the one verb that fetches an executable and starts it. Two
+ * things carry that: the transport, which is the ONLY thing that says who wrote the bytes (the
+ * manifest's digest is published by the same host it claims to vouch for, so it proves transfer
+ * and never authorship), and the quarantine flag, which is what makes this system evaluate the
+ * bundle at first launch. Neither is visible in a passing install, so each is pinned by an
+ * outside signal: a server that records whether it was reached at all, and the real attribute on
+ * a real directory.
+ */
+describe('setupCompanion — transport and first-launch security', () => {
+  const hosts: http.Server[] = [];
+  afterEach(async () => {
+    while (hosts.length > 0) {
+      const s = hosts.pop();
+      if (s) await closeServer(s);
+    }
+  });
+
+  it('refuses a cleartext release host BEFORE it opens a socket', async () => {
+    const root = tempRoot();
+    const asked: string[] = [];
+    const result = await setupCompanion({
+      releaseHost: 'http://releases.example.com',
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      // Not a stub that answers — a stub that records. The claim is "nothing was requested",
+      // and only a call count can carry it.
+      fetchImpl: (async (url: string | URL | Request) => {
+        asked.push(String(url));
+        throw new Error('the transport check let a cleartext request through');
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    expect(result.outcome).toBe('insecure_transport');
+    expect(asked).toEqual([]);
+    // The opt-out above is set and still does not help: it unlocks this machine, not the network.
+    expect(result.detail).toContain('http://releases.example.com');
+    expect(result.manualFallback).toBeTruthy();
+  });
+
+  it('refuses a cleartext loopback host until the opt-out is set, and the server sees nothing', async () => {
+    const root = tempRoot();
+    let hit = false;
+    const server = await startServer((_req, res) => {
+      hit = true;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    hosts.push(server);
+
+    const result = await setupCompanion({
+      releaseHost: `http://127.0.0.1:${getPort(server)}`,
+      env: {},
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+    });
+
+    expect(result.outcome).toBe('insecure_transport');
+    expect(hit).toBe(false);
+  });
+
+  it('refuses a cleartext artifact address even when the manifest itself was allowed', async () => {
+    const payload = artifactBytes();
+    const root = tempRoot();
+    const requested: string[] = [];
+    const server = await startServer((req, res) => {
+      requested.push(req.url ?? '');
+      if (req.url === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            // A manifest is data from the network. An allowed host handing out a cleartext
+            // artifact address is the same attack one hop further along.
+            artifacts: { 'darwin-arm64': { url: 'http://cdn.example.com/companion.dmg', sha256: sha256(payload) } },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    hosts.push(server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+
+    const result = await setupCompanion({
+      releaseHost: `http://127.0.0.1:${getPort(server)}`,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+    });
+
+    expect(result.outcome).toBe('insecure_transport');
+    expect(result.detail).toContain('http://cdn.example.com/companion.dmg');
+    expect(requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(installer.calls).toEqual([]);
+  });
+
+  it('assesses a SIGNED bundle, and installs it when this system accepts it', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    const shell = recordingRun({ signed: true });
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      install: recordingInstaller(installRoot).install,
+      run: shell.run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('installed');
+    expect(shell.calls.map((c) => c[0])).toEqual(['xattr', 'codesign', 'spctl']);
+    expect(shell.calls[2]).toEqual(['spctl', '--assess', '--type', 'execute', join(installRoot, APP_NAME)]);
+  });
+
+  it('removes a signed bundle this system refuses, and records nothing', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    const dataDir = join(root, 'data');
+    const launched: string[] = [];
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      install: recordingInstaller(installRoot).install,
+      run: recordingRun({ signed: true, assessCode: 3 }).run,
+      launch: async (p: string) => {
+        launched.push(p);
+        return true;
+      },
+    });
+
+    expect(result.outcome).toBe('gatekeeper_rejected');
+    // Leaving a refused bundle in /Applications and only printing a warning would be the finding
+    // this issue exists for, one step later: an unassessed application on the machine.
+    expect(existsSync(join(installRoot, APP_NAME))).toBe(false);
+    expect(launched).toEqual([]);
+    expect(existsSync(join(dataDir, 'studio', 'companion-install.json'))).toBe(false);
+    expect(result.manualFallback).toMatch(/manually/i);
+  });
+
+  it('removes the bundle and refuses to launch when the quarantine flag cannot be written', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    const dataDir = join(root, 'data');
+    const shell = recordingRun({ xattrCode: 1 });
+    const launched: string[] = [];
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      install: recordingInstaller(installRoot).install,
+      run: shell.run,
+      launch: async (p: string) => {
+        launched.push(p);
+        return true;
+      },
+    });
+
+    expect(result.outcome).toBe('quarantine_failed');
+    expect(result.error).toContain('Operation not permitted');
+    // An unmarked bundle is one this system will never evaluate, so it must not survive, must not
+    // be recorded as the current install, and must certainly not be started.
+    expect(existsSync(join(installRoot, APP_NAME))).toBe(false);
+    expect(existsSync(join(dataDir, 'studio', 'companion-install.json'))).toBe(false);
+    expect(launched).toEqual([]);
+    // Nothing is assessed once the flag failed: the decision is already made.
+    expect(shell.calls.map((c) => c[0])).toEqual(['xattr']);
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'leaves the real quarantine attribute on the installed bundle, through the real shell-out',
+    async () => {
+      const payload = artifactBytes();
+      const host = await startHost(payload, sha256(payload));
+      hosts.push(host.server);
+      const root = tempRoot();
+      const installRoot = join(root, 'Applications');
+      mkdirSync(installRoot, { recursive: true });
+
+      // No `run` injection: this arm is the outside signal. Everything above asserts on a
+      // recorded argv, which is green even if the argv is one this system rejects.
+      const result = await setupCompanion({
+        releaseHost: host.origin,
+        env: ALLOW_HTTP,
+        dataDir: join(root, 'data'),
+        platform: 'darwin',
+        arch: 'arm64',
+        installRoot,
+        install: recordingInstaller(installRoot).install,
+        noLaunch: true,
+      });
+
+      expect(result.outcome).toBe('installed');
+      const attr = execFileSync('xattr', ['-p', 'com.apple.quarantine', join(installRoot, APP_NAME)], {
+        encoding: 'utf8',
+      }).trim();
+      expect(attr).toMatch(/^0081;[0-9a-f]+;wigolo;$/);
+    },
+  );
 });
 
 describe('runStudioSetup', () => {
@@ -559,11 +856,13 @@ describe('runStudioSetup', () => {
       stdout: out.stream,
       stderr: err.stream,
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
       installRoot,
       install: recordingInstaller(installRoot).install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -586,6 +885,7 @@ describe('runStudioSetup', () => {
       stdout: out.stream,
       stderr: err.stream,
       releaseHost: host.origin,
+      env: ALLOW_HTTP,
       dataDir: join(root, 'data'),
       platform: 'darwin',
       arch: 'arm64',
