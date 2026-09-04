@@ -379,9 +379,17 @@ describe('visit store — retention bounds', () => {
   it('evicts the oldest visits once the row bound binds', () => {
     const bounds = { ...TINY, maxVisits: 3 };
     for (let i = 1; i <= 5; i += 1) {
-      visit({ url: `https://example.com/p${i}`, ts: `2026-09-0${i} 10:00:00`, title: `P${i}`, retention: bounds });
+      visit({
+        url: `https://example.com/p${i}`,
+        ts: `2026-09-0${i} 10:00:00`,
+        title: `P${i}`,
+        markdown: `body-${i}`,
+        retention: bounds,
+      });
     }
     expect(listVisits({}).rows.map((r) => r.title)).toEqual(['P5', 'P4', 'P3']);
+    // Deleting visit rows must still run the orphan sweep for their distinct bodies.
+    expect(bodyCount()).toBe(3);
   });
 
   it('evicts visits past the age bound', () => {
@@ -396,9 +404,9 @@ describe('visit store — retention bounds', () => {
     expect(listVisits({}).rows.map((r) => r.title)).toEqual(['NEW']);
   });
 
-  it('spends the byte bound on BODIES and keeps the visit rows they served', async () => {
-    const bounds = { ...TINY, maxBytes: 3000 };
-    for (let i = 1; i <= 4; i += 1) {
+  it('enforces the byte bound even while the store remains below the row bound', async () => {
+    const bounds = { ...TINY, maxVisits: 100, maxBytes: 1500 };
+    for (let i = 1; i <= 2; i += 1) {
       visit({
         url: `https://example.com/p${i}`,
         ts: `2026-09-0${i} 10:00:00`,
@@ -412,13 +420,41 @@ describe('visit store — retention bounds', () => {
         total: number;
       }
     ).total;
-    // Asserted after EVERY write, not once at the end: a bound that only holds at the end of a
-    // run is not a bound.
-    expect(bytes).toBeLessThanOrEqual(3000);
+    // Neither the age nor row delete changes anything, so this fails if the unconditional SUM
+    // is incorrectly gated on their `.changes` counts.
+    expect(bytes).toBeLessThanOrEqual(bounds.maxBytes);
+    expect(bodyCount()).toBe(1);
     // The history itself survives the loss of its bodies.
-    expect(listVisits({}).rows.map((r) => r.title)).toEqual(['P4', 'P3', 'P2', 'P1']);
+    expect(listVisits({}).rows.map((r) => r.title)).toEqual(['P2', 'P1']);
     expect((await searchVisits({ query: 'body1' })).results).toEqual([]);
-    expect((await searchVisits({ query: 'body4' })).results).toHaveLength(1);
+    expect((await searchVisits({ query: 'body2' })).results).toHaveLength(1);
+  });
+
+  it('does not prepare a body delete while age, row and byte bounds are all idle', () => {
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO studio_visit_pages (content_hash, markdown, byte_len, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run('orphan', 'small orphan', 12, new Date().toISOString());
+
+    const prepare = vi.spyOn(db, 'prepare');
+    const out = visit({
+      ts: new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
+      markdown: null,
+      retention: TINY,
+    });
+
+    expect(out.stored).toBe(true);
+    const sql = prepare.mock.calls.map(([statement]) => String(statement));
+    expect(sql.filter((statement) => /^\s*DELETE FROM studio_visit_pages\b/i.test(statement))).toEqual([]);
+    expect(bodyCount()).toBe(1);
+
+    const rowCapDelete = sql.find(
+      (statement) => /^\s*DELETE FROM studio_visits\b/i.test(statement) && /ORDER BY ts DESC/i.test(statement),
+    );
+    expect(rowCapDelete).toBeDefined();
+    expect(rowCapDelete).not.toMatch(/\bNOT IN\b/i);
+    expect(rowCapDelete).toMatch(/\bLIMIT -1 OFFSET \?/i);
   });
 
   it('stops recording when a bound is disabled, and purges nothing already stored', () => {

@@ -65,6 +65,7 @@ const POST_MERGE_ADDED = [
   '019-studio-memories',
   '020-clearance-reuse-counters',
   '021-studio-visits',
+  '022-studio-visit-pages-byte-len-index',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */

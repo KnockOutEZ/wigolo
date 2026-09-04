@@ -40,7 +40,8 @@ function freshDb(): Database.Database {
 function seedThroughPrior(db: Database.Database): void {
   db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
   for (const m of MIGRATIONS) {
-    if (m.name === NAME || m.requiresVec) continue;
+    if (m.name === NAME) break;
+    if (m.requiresVec) continue;
     db.transaction(() => {
       db.exec(m.sql);
       m.postStep?.(db);
