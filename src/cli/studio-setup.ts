@@ -44,6 +44,7 @@ import { Readable } from 'node:stream';
 import { studioStateDir } from '../companion/paths.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { companionTransportRefusal } from './companion-transport-policy.js';
 
 const log = createLogger('studio');
 
@@ -85,6 +86,8 @@ export interface CompanionRelease {
 export type CompanionSetupOutcome =
   /** Downloaded, verified, installed and handed its first run by this call. */
   | 'installed'
+  /** The release host or the artifact it names is not reachable over an encrypted connection. */
+  | 'insecure_transport'
   /** A record already covers this version at a path that still exists — nothing was fetched. */
   | 'already_current'
   /** No artifact is published for this platform/architecture. */
@@ -98,7 +101,11 @@ export type CompanionSetupOutcome =
   /** The bytes arrived and are not the bytes the manifest claims. Nothing is installed. */
   | 'checksum_mismatch'
   /** Verified bytes that could not be put in place. */
-  | 'install_failed';
+  | 'install_failed'
+  /** The copied bundle could not be marked for this system's first-launch security check. */
+  | 'quarantine_failed'
+  /** This system's security check refused the signed bundle. Nothing was left behind. */
+  | 'gatekeeper_rejected';
 
 export interface CompanionSetupResult {
   outcome: CompanionSetupOutcome;
@@ -137,6 +144,8 @@ export interface CompanionSetupDeps {
   launch?: (appPath: string) => Promise<boolean>;
   /** Shells out; injected so the disk-image path is testable without a real image. */
   run?: (cmd: string, args: string[]) => Promise<{ code: number; stderr: string }>;
+  /** Read for the loopback transport opt-out only. Defaults to this process's environment. */
+  env?: NodeJS.ProcessEnv;
   stdout?: Writable;
   stderr?: Writable;
 }
@@ -353,6 +362,69 @@ async function installDiskImage(
   }
 }
 
+/**
+ * The quarantine flag value macOS writes for a downloaded application.
+ *
+ * `0081` is "downloaded, and the user has not yet approved it" — the state that makes the system
+ * evaluate the bundle at first launch instead of trusting it silently. The agent field is us,
+ * because the attribution is what the first-launch prompt shows the person deciding.
+ */
+function quarantineValue(now: number = Date.now()): string {
+  return `0081;${Math.floor(now / 1000).toString(16)};wigolo;`;
+}
+
+interface GuardFailure {
+  outcome: Extract<CompanionSetupOutcome, 'quarantine_failed' | 'gatekeeper_rejected'>;
+  detail: string;
+  error?: string;
+}
+
+/**
+ * Hands the installed bundle to the operating system's own judgement.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL: a bundle we fetched with our own HTTP client carries no quarantine
+ * flag — the flag is written by the downloader, and we are the downloader. Without it the system
+ * never assesses the application, so a signature that was revoked, a notarization that was
+ * withdrawn or a bundle that was never signed all launch exactly like a trusted one. The digest
+ * from the manifest cannot cover that: it says these are the bytes the host published, not that
+ * the host may run code here.
+ *
+ * The assessment runs ONLY on a signed bundle. An unsigned one is refused by `spctl` by
+ * definition, so assessing it would turn "we cannot judge this" into "we judged it bad" and would
+ * make every unsigned build — every local one — unusable while proving nothing. The quarantine
+ * flag is what carries the decision to first launch in that case, which is precisely its job.
+ */
+async function quarantineInstalledBundle(
+  appPath: string,
+  run: NonNullable<CompanionSetupDeps['run']>,
+): Promise<GuardFailure | null> {
+  const marked = await run('xattr', ['-w', 'com.apple.quarantine', quarantineValue(), appPath]);
+  if (marked.code !== 0) {
+    return {
+      outcome: 'quarantine_failed',
+      detail:
+        'The browser companion was copied into place but could not be marked for this system\'s '
+        + 'first-launch security check, so it was removed rather than left unchecked.',
+      error: marked.stderr.trim() || `exit ${marked.code}`,
+    };
+  }
+
+  const signed = await run('codesign', ['--verify', '--strict', appPath]);
+  if (signed.code !== 0) return null;
+
+  const assessed = await run('spctl', ['--assess', '--type', 'execute', appPath]);
+  if (assessed.code !== 0) {
+    return {
+      outcome: 'gatekeeper_rejected',
+      detail:
+        'This system\'s security check refused the browser companion, so it was removed instead '
+        + 'of installed.',
+      error: assessed.stderr.trim() || `exit ${assessed.code}`,
+    };
+  }
+  return null;
+}
+
 function defaultRun(cmd: string, args: string[]): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -405,10 +477,19 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
   const dataDir = deps.dataDir ?? getConfig().dataDir;
   const installRoot = deps.installRoot ?? defaultInstallRoot(platform);
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const env = deps.env ?? process.env;
+
+  const manifestUrl = `${host.replace(/\/+$/, '')}${COMPANION_MANIFEST_PATH}`;
+  // ⚠ BEFORE THE SOCKET, NOT AFTER THE ANSWER. A cleartext manifest is written by whoever is on
+  // the path, digest included, so there is nothing downstream that can recover from having asked.
+  const hostRefusal = companionTransportRefusal(manifestUrl, env);
+  if (hostRefusal) {
+    return fail('insecure_transport', hostRefusal, host);
+  }
 
   let release: CompanionRelease;
   try {
-    const res = await fetchImpl(`${host.replace(/\/+$/, '')}${COMPANION_MANIFEST_PATH}`, {
+    const res = await fetchImpl(manifestUrl, {
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
@@ -428,6 +509,13 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
       `The release manifest names no verified artifact for ${target.key}.`,
       host,
     );
+  }
+
+  // The manifest is data from the network, so the address it names gets the same check the host
+  // did — an https manifest that points its artifact at http buys back nothing.
+  const artifactRefusal = companionTransportRefusal(artifact.url, env);
+  if (artifactRefusal) {
+    return fail('insecure_transport', artifactRefusal, host, { version: release.version });
   }
 
   const record = readRecord(dataDir);
@@ -493,6 +581,23 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
       artifactPath: finalPath,
       resumedFromBytes: moved.resumedFromBytes,
       error: e instanceof Error ? e.message : String(e),
+    });
+  }
+
+  // Between the copy and the record: a bundle that is on disk but not yet quarantined is exactly
+  // the state this must not be recorded — or launched — in.
+  const guard = await quarantineInstalledBundle(installedPath, deps.run ?? defaultRun);
+  if (guard) {
+    rmSync(installedPath, { recursive: true, force: true });
+    log.warn('companion bundle removed after a failed first-launch security check', {
+      version: release.version,
+      outcome: guard.outcome,
+    });
+    return fail(guard.outcome, guard.detail, host, {
+      version: release.version,
+      artifactPath: finalPath,
+      resumedFromBytes: moved.resumedFromBytes,
+      error: guard.error,
     });
   }
 

@@ -211,7 +211,19 @@ describe('capability language — the copy PX2 added', () => {
       [
         'unreachable host',
         ['setup'],
-        { platform: 'darwin', arch: 'arm64', releaseHost: 'http://127.0.0.1:1' },
+        {
+          platform: 'darwin',
+          arch: 'arm64',
+          releaseHost: 'http://127.0.0.1:1',
+          // The opt-out keeps this arm about an unreachable host. Without it the verb refuses the
+          // cleartext address first and this arm would quietly stop exercising the transport error.
+          env: { WIGOLO_COMPANION_ALLOW_HTTP: '1' },
+        },
+      ],
+      [
+        'insecure release host',
+        ['setup'],
+        { platform: 'darwin', arch: 'arm64', releaseHost: 'http://releases.example.com' },
       ],
     ];
 
