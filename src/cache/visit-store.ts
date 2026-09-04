@@ -280,23 +280,28 @@ export function listSiteCapturePrefs(): Array<{ host: string; captureEnabled: bo
  * bounds left referenced.
  */
 function evict(db: ReturnType<typeof getDatabase>, bounds: VisitRetentionBounds): void {
-  db.prepare(`DELETE FROM studio_visits WHERE ts < datetime('now', ?)`).run(`-${bounds.maxAgeDays} days`);
+  const ageDeleted = db
+    .prepare(`DELETE FROM studio_visits WHERE ts < datetime('now', ?)`)
+    .run(`-${bounds.maxAgeDays} days`).changes;
 
-  db.prepare(
+  const rowsDeleted = db.prepare(
     `DELETE FROM studio_visits
-     WHERE id NOT IN (
-       SELECT id FROM studio_visits ORDER BY ts DESC, id DESC LIMIT ?
+     WHERE id IN (
+       SELECT id FROM studio_visits ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
      )`,
   ).run(bounds.maxVisits);
 
   // Bodies nothing points at any more. A body is shared by every visit to the same unchanged
-  // page, so it can only go once the LAST of them has.
-  dropBodies(
-    db,
-    `SELECT content_hash FROM studio_visit_pages
-     WHERE content_hash NOT IN (SELECT content_hash FROM studio_visits WHERE content_hash IS NOT NULL)`,
-    [],
-  );
+  // page, so it can only go once the LAST of them has. If neither visit delete changed a row,
+  // this transaction cannot have created an orphan and the anti-join is pure wasted work.
+  if (ageDeleted > 0 || rowsDeleted.changes > 0) {
+    dropBodies(
+      db,
+      `SELECT content_hash FROM studio_visit_pages
+       WHERE content_hash NOT IN (SELECT content_hash FROM studio_visits WHERE content_hash IS NOT NULL)`,
+      [],
+    );
+  }
 
   // The byte bound is spent on bodies and NOT on visit rows: the record of having read a page
   // is history in its own right, and it costs a few hundred bytes against a body's kilobytes.

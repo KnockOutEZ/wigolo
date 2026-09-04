@@ -605,6 +605,15 @@ CREATE TABLE IF NOT EXISTS studio_visit_site_prefs (
 );
 `;
 
+// POLISH #407 — `recordVisit` checks the retained body-byte total on every navigation.
+// `byte_len` follows the large markdown TEXT column in the table, so a table scan walks every
+// body's overflow pages. This single-column index is a covering source for SUM(byte_len), keeping
+// the disk bound unconditional without making navigation latency grow with stored page content.
+const MIGRATION_022_STUDIO_VISIT_PAGES_BYTE_LEN_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_studio_visit_pages_byte_len
+  ON studio_visit_pages(byte_len);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -905,6 +914,10 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   { name: '021-studio-visits', sql: MIGRATION_021_STUDIO_VISITS },
+  {
+    name: '022-studio-visit-pages-byte-len-index',
+    sql: MIGRATION_022_STUDIO_VISIT_PAGES_BYTE_LEN_INDEX,
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
