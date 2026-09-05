@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -961,5 +961,488 @@ describe('wigolo studio setup — route and usage', () => {
     const parsed = parseCommand(['studio', 'setup']);
     expect(parsed.command).toBe('studio');
     expect(parsed.args).toEqual(['setup']);
+  });
+});
+
+/**
+ * Every path under `root`, relative and sorted, entries stat'd WITHOUT following links.
+ *
+ * ⚠ THE CLAIM IS "NOTHING WAS WRITTEN", AND ONLY A DIFF CAN CARRY IT. A refusal outcome proves the
+ * function returned early; it says nothing about what the function did before it returned, and the
+ * bug this file guards is precisely a write that happens on the way to an answer. So the arms
+ * below compare the whole sandbox before and after — a stray file lands in the diff whether or not
+ * anything reported it, and an arm that only asserted `outcome === 'artifact_path_refused'` would
+ * stay green against a build that refused loudly and traversed anyway.
+ *
+ * `lstat` rather than `stat` so a link is recorded as a link: the containment arm plants one, and
+ * following it would make the plant and its target indistinguishable in the snapshot.
+ */
+function snapshotTree(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) {
+        out.push(`link ${rel}`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        out.push(`dir  ${rel}`);
+        walk(join(dir, entry.name), rel);
+        continue;
+      }
+      out.push(`file ${rel}`);
+    }
+  };
+  walk(root, '');
+  return out;
+}
+
+/**
+ * A release host under the fixture's control: it chooses the manifest's `version` and the artifact
+ * URL's spelling, which is exactly the pair a compromised release host owns in the real attack.
+ *
+ * The artifact route answers on ANY path it has not already handled, so an arm that bends the
+ * URL's extension still gets bytes served if the install ever asks for them. That matters: "the
+ * artifact was never requested" has to be a fact about a server that WOULD have answered, not
+ * about a 404.
+ */
+async function startChosenPathHost(opts: {
+  version?: string;
+  artifactPath?: string;
+  payload?: Buffer;
+}): Promise<{ server: http.Server; origin: string; requested: string[] }> {
+  const payload = opts.payload ?? artifactBytes();
+  const version = opts.version ?? '1.4.0';
+  const artifactPath = opts.artifactPath ?? '/companion/wigolo-studio.dmg';
+  const requested: string[] = [];
+  let origin = '';
+
+  const server = await startServer((req, res) => {
+    requested.push(req.url ?? '');
+    if (req.url === COMPANION_MANIFEST_PATH) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          version,
+          artifacts: {
+            'darwin-arm64': { url: `${origin}${artifactPath}`, sha256: sha256(payload), size: payload.length },
+          },
+        } satisfies CompanionRelease),
+      );
+      return;
+    }
+    res.writeHead(200, { 'content-length': String(payload.length) });
+    res.end(payload);
+  });
+
+  origin = `http://127.0.0.1:${getPort(server)}`;
+  return { server, origin, requested };
+}
+
+describe('setupCompanion — the release manifest does not choose a local path', () => {
+  const hosts: http.Server[] = [];
+  afterEach(async () => {
+    while (hosts.length > 0) {
+      const s = hosts.pop();
+      if (s) await closeServer(s);
+    }
+  });
+
+  /**
+   * `<sandbox>/data/studio/downloads` is three levels under the sandbox root, so a version
+   * carrying four `..` segments lands the artifact at the sandbox root — OUTSIDE the download
+   * directory and INSIDE the tree the snapshot covers. That placement is the point: an escape has
+   * to be somewhere the diff can see it, or the arm proves nothing when the guard is removed.
+   * (The first `..` is spent leaving the literal `wigolo-studio-..` segment the name template
+   * builds; `..` only traverses when it is a whole segment.)
+   */
+  const ESCAPING_VERSION = '../../../../hijacked';
+
+  it('refuses a version that walks out of the download folder, and creates nothing at all', async () => {
+    const root = tempRoot();
+    const host = await startChosenPathHost({ version: ESCAPING_VERSION });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+    const before = snapshotTree(root);
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('artifact_path_refused');
+    // DELIBERATELY SILENT ABOUT WHICH LAYER ANSWERED. Both cover this fixture — the name check
+    // sees the separators, containment sees the escape — so pinning either message here would
+    // make this arm go red when the OTHER layer was removed, and a red that moves with an
+    // unrelated edit stops being evidence about anything. Each layer is pinned once, alone, in
+    // the two arms below; this one carries the property the issue is actually about.
+    // The refusal lands BEFORE the socket for the bytes — the manifest is the only thing fetched.
+    expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(installer.calls).toEqual([]);
+    expect(snapshotTree(root)).toEqual(before);
+    // Named explicitly as well as by diff, because this is the file the real attack is trying for.
+    expect(existsSync(join(root, 'hijacked-darwin-arm64.dmg'))).toBe(false);
+    expect(existsSync(join(root, 'hijacked-darwin-arm64.dmg.part'))).toBe(false);
+  });
+
+  it('refuses an artifact format the URL spells with a separator in it', async () => {
+    const root = tempRoot();
+    // `%2F` SURVIVES `new URL().pathname` VERBATIM — the parser normalises `..` segments and
+    // decodes nothing, so this is the spelling a hostile host reaches for once literal `..` in a
+    // URL path stops working. `extname()` hands the encoded separator straight into the filename.
+    const host = await startChosenPathHost({ artifactPath: '/companion/app.%2F..%2F..%2F..%2F..%2Fhijacked' });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+    const before = snapshotTree(root);
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('artifact_path_refused');
+    expect(result.detail).toContain('format this install does not write');
+    expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(installer.calls).toEqual([]);
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  /**
+   * THE GAP THE NAME CHECK COVERS ALONE.
+   *
+   * `1.4.0/nested` never leaves the download directory — containment has no complaint about it and
+   * would wave it through — so this arm goes red if and only if the version allowlist is removed.
+   * A version carrying four `..` would go red for either guard and so could not tell them apart.
+   */
+  it('refuses a version that nests INSIDE the download folder, which containment would allow', async () => {
+    const root = tempRoot();
+    const host = await startChosenPathHost({ version: '1.4.0/nested' });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+    const before = snapshotTree(root);
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('artifact_path_refused');
+    expect(result.detail).toContain('cannot be part of a filename');
+    expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  /**
+   * THE GAP CONTAINMENT COVERS ALONE.
+   *
+   * The version is `1.4.0` and the URL ends `.dmg`: every string the manifest supplied is spelt
+   * correctly, so the allowlist sees nothing wrong and this arm goes red if and only if the
+   * containment assert is removed. What is wrong is on the DISK — the part file's name is already
+   * taken by a link pointing out of the download directory, and `createWriteStream` follows it.
+   */
+  it('refuses when the part file is already a link out of the download folder', async () => {
+    const root = tempRoot();
+    const host = await startChosenPathHost({});
+    hosts.push(host.server);
+    const downloadDir = join(root, 'data', 'studio', 'downloads');
+    mkdirSync(downloadDir, { recursive: true });
+    const stolen = join(root, 'stolen.dmg');
+    symlinkSync(stolen, join(downloadDir, 'wigolo-studio-1.4.0-darwin-arm64.dmg.part'));
+    const installer = recordingInstaller(join(root, 'Applications'));
+    const before = snapshotTree(root);
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('artifact_path_refused');
+    // The refusal names the link, not "outside the download folder": the PATH is inside it, and
+    // copy that pointed at the containing folder would send the reader to the wrong half.
+    expect(result.detail).toContain('already a link pointing somewhere else');
+    expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(installer.calls).toEqual([]);
+    expect(existsSync(stolen)).toBe(false);
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  it('still installs when the manifest names an ordinary version and format', async () => {
+    const payload = artifactBytes();
+    const root = tempRoot();
+    const host = await startChosenPathHost({ payload });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    // The guards are two refusals standing beside the happy path, not in it. Without this arm a
+    // version allowlist one character too strict would look exactly like a working control.
+    expect(result.outcome).toBe('installed');
+    expect(installer.calls).toHaveLength(1);
+    expect(installer.calls[0]).toContain('wigolo-studio-1.4.0-darwin-arm64.dmg');
+  });
+});
+
+/**
+ * A host that answers `hops` redirects before serving, and can be told to point one of them
+ * somewhere the transport policy refuses.
+ */
+async function startRedirectingHost(opts: {
+  manifestRedirectTo?: string;
+  artifactRedirectTo?: string;
+  hops?: number;
+  payload?: Buffer;
+}): Promise<{ server: http.Server; origin: string; requested: string[] }> {
+  const payload = opts.payload ?? artifactBytes();
+  const hops = opts.hops ?? 0;
+  const requested: string[] = [];
+  let origin = '';
+
+  const server = await startServer((req, res) => {
+    const url = req.url ?? '';
+    requested.push(url);
+
+    if (url === COMPANION_MANIFEST_PATH) {
+      if (opts.manifestRedirectTo) {
+        res.writeHead(302, { location: opts.manifestRedirectTo });
+        res.end();
+        return;
+      }
+      if (hops > 0) {
+        res.writeHead(302, { location: `${origin}/mirror/1${COMPANION_MANIFEST_PATH}` });
+        res.end();
+        return;
+      }
+    }
+
+    const mirrored = url.match(/^\/mirror\/(\d+)(\/.*)$/);
+    if (mirrored) {
+      const n = Number(mirrored[1]);
+      const rest = mirrored[2] as string;
+      if (n < hops) {
+        res.writeHead(302, { location: `${origin}/mirror/${n + 1}${rest}` });
+        res.end();
+        return;
+      }
+      if (rest === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            artifacts: {
+              'darwin-arm64': { url: `${origin}/companion/app.dmg`, sha256: sha256(payload), size: payload.length },
+            },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      res.writeHead(200, { 'content-length': String(payload.length) });
+      res.end(payload);
+      return;
+    }
+
+    if (url === COMPANION_MANIFEST_PATH) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          version: '1.4.0',
+          artifacts: {
+            'darwin-arm64': { url: `${origin}/companion/app.dmg`, sha256: sha256(payload), size: payload.length },
+          },
+        } satisfies CompanionRelease),
+      );
+      return;
+    }
+
+    if (url === '/companion/app.dmg') {
+      if (opts.artifactRedirectTo) {
+        res.writeHead(302, { location: opts.artifactRedirectTo });
+        res.end();
+        return;
+      }
+      if (hops > 0) {
+        res.writeHead(302, { location: `${origin}/mirror/1/companion/app.dmg` });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-length': String(payload.length) });
+      res.end(payload);
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  origin = `http://127.0.0.1:${getPort(server)}`;
+  return { server, origin, requested };
+}
+
+/**
+ * The address a policy-passing host redirects TO in the hostile arms.
+ *
+ * ⚠ THIS IS THE STAND-IN FOR `https → http`, AND IT IS THE SAME RULE. `companionTransportRefusal`
+ * has two arms: cleartext to a REMOTE host is refused outright, and cleartext to this machine is
+ * refused unless the fixture opt-out is set. The fixtures here are loopback http — there is no
+ * certificate authority in a unit test to make them https — so the pair that can be exercised is
+ * "an address the policy allowed" redirecting to "an address the policy refuses under any
+ * environment". A downgrade to remote cleartext is that, and it is refused for the same reason and
+ * by the same call the https→http downgrade would be.
+ *
+ * Nothing dials it: the refusal lands before the socket, which the request log then proves.
+ */
+const REFUSED_HOP = 'http://cdn.example.com/companion.dmg';
+
+describe('setupCompanion — a redirect is a second address, and gets judged like one', () => {
+  const hosts: http.Server[] = [];
+  afterEach(async () => {
+    while (hosts.length > 0) {
+      const s = hosts.pop();
+      if (s) await closeServer(s);
+    }
+  });
+
+  it('refuses a manifest hop the transport policy would not have allowed as an address', async () => {
+    const root = tempRoot();
+    const host = await startRedirectingHost({ manifestRedirectTo: REFUSED_HOP });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+    });
+
+    // Typed as the transport refusal it is, NOT as an unreadable manifest: the manifest was never
+    // read, and "the host is broken" would send the user looking in the wrong place entirely.
+    expect(result.outcome).toBe('insecure_transport');
+    expect(result.detail).toContain(REFUSED_HOP);
+    expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
+    expect(installer.calls).toEqual([]);
+  });
+
+  it('refuses a download hop the transport policy would not have allowed as an address', async () => {
+    const root = tempRoot();
+    const host = await startRedirectingHost({ artifactRedirectTo: REFUSED_HOP });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    // The address in the manifest passed the pre-check. The bytes still never left this machine's
+    // encrypted-or-loopback set, because the ANSWER's address was checked too.
+    expect(result.outcome).toBe('insecure_transport');
+    expect(result.detail).toContain(REFUSED_HOP);
+    expect(installer.calls).toEqual([]);
+    expect(existsSync(join(root, 'data', 'studio', 'downloads', 'wigolo-studio-1.4.0-darwin-arm64.dmg'))).toBe(false);
+  });
+
+  /**
+   * THE ARM THAT CATCHES THE OVERCORRECTION.
+   *
+   * `redirect: 'error'` would pass both hostile arms above while declining every real download —
+   * release CDNs 302 on the happy path, so a blanket refusal is a regression that only shows up
+   * after merge, in the one code path no hostile fixture exercises. Both hops redirect here.
+   */
+  it('follows a redirect chain the policy allows, on both hops, and installs', async () => {
+    const payload = artifactBytes();
+    const root = tempRoot();
+    const host = await startRedirectingHost({ hops: 2, payload });
+    hosts.push(host.server);
+    const installer = recordingInstaller(join(root, 'Applications'));
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('installed');
+    expect(result.version).toBe('1.4.0');
+    expect(installer.calls).toHaveLength(1);
+    // Every hop was actually taken rather than the final address being guessed at.
+    expect(host.requested).toContain(`/mirror/2${COMPANION_MANIFEST_PATH}`);
+    expect(host.requested).toContain('/mirror/2/companion/app.dmg');
+  });
+
+  it('gives up on a redirect loop instead of following it forever', async () => {
+    const root = tempRoot();
+    const server = await startServer((req, res) => {
+      res.writeHead(302, { location: req.url ?? '/' });
+      res.end();
+    });
+    hosts.push(server);
+
+    const result = await setupCompanion({
+      releaseHost: `http://127.0.0.1:${getPort(server)}`,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot: join(root, 'Applications'),
+    });
+
+    expect(result.outcome).toBe('manifest_unreadable');
+    expect(result.error).toContain('redirected more than');
   });
 });
