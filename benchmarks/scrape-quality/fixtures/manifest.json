@@ -380,5 +380,86 @@
         { "kind": "absent", "category": "boilerplate_noise", "value": "You signed out in another tab", "why": "GitHub session chrome." }
       ]
     }
+,
+    {
+      "id": "schema-github-repo",
+      "url": "https://github.com/sindresorhus/got",
+      "pageClass": "schema_mode",
+      "htmlPath": "github-repo.html",
+      "capturedAt": "2026-08-03",
+      "licence": "Repo content MIT (sindresorhus/got); page chrome © GitHub, snapshot used for regression testing only",
+      "schema": {"type": "object", "properties": {"name": {"type": "string"}, "author": {"type": "string"}, "licence_holder": {"type": "string"}}},
+      "assertions": [
+        {"kind": "schema_value", "category": "schema_extract", "field": "name", "value": "got", "exact": true, "why": "The repo name carried by the page's microdata SoftwareSourceCode block. Exact, not containment: \"got\" is three letters and would match half the prose on the page if the field ever resolved to a body-text run."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "author", "value": "sindresorhus", "exact": true, "why": "The other microdata field. A schema-mode answer that keeps the name but loses the author is the shape a cross-tab synthesis silently attributes to nobody."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "name", "expect": ["microdata"], "why": "Microdata is the highest-trust source this page offers. If the same text one day arrives via the fuzzy structure limb instead, the value looks identical and is worth much less — provenance is the only place that shows."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "author", "expect": ["microdata"], "why": "Same claim for the second field, so a partial collapse of the microdata path cannot hide behind the first row."},
+        {"kind": "schema_absent", "category": "schema_extract", "field": "licence_holder", "why": "The page never states a licence holder. The fuzzy structure limb folds snake/space/camel and matches on token overlap, so it could plausibly attach a file-listing cell to this field; a schema-mode baseline made only of positive rows would score that invention as perfect."}
+      ]
+    },
+    {
+      "id": "schema-nasa-global-temperature",
+      "url": "https://climate.nasa.gov/vital-signs/global-temperature/",
+      "pageClass": "schema_mode",
+      "htmlPath": "nasa-global-temperature.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — NASA",
+      "schema": {"type": "object", "properties": {"headline": {"type": "string"}, "datePublished": {"type": "string"}, "author": {"type": "string"}, "ticker_symbol": {"type": "string"}}},
+      "assertions": [
+        {"kind": "schema_value", "category": "schema_extract", "field": "headline", "value": "Global Temperature", "why": "The JSON-LD Article headline. Containment rather than exact: the site appends its own suffix to the headline and that suffix is the site's to change."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "datePublished", "value": "2025-09-25", "why": "A date is the field a cross-tab synthesis orders on. The frozen snapshot fixes it, so any drift here is the extractor reading a different node, never the page moving."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "author", "value": "Kalina Velev", "why": "This JSON-LD author is an OBJECT, not a string. The row exists to pin that a nested value survives to the caller intact instead of being flattened to \"[object Object]\" or dropped for not being a scalar."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "headline", "expect": ["json-ld"], "why": "json-ld is the declared-data path. Falling back to the fuzzy limb for a page that publishes JSON-LD is a real quality regression that leaves the text unchanged."},
+        {"kind": "schema_absent", "category": "schema_extract", "field": "ticker_symbol", "why": "NASA has no ticker symbol. The negative row for the JSON-LD path, mirroring licence_holder on the microdata one."}
+      ]
+    },
+    {
+      "id": "schema-mdn-http-status",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status",
+      "pageClass": "schema_mode",
+      "htmlPath": "mdn-status.html",
+      "capturedAt": "2026-08-03",
+      "licence": "CC BY-SA 2.5 (MDN)",
+      "schema": {"type": "object", "properties": {"itemListElement": {"type": "string"}, "headline": {"type": "string"}}},
+      "assertions": [
+        {"kind": "schema_rows", "category": "schema_extract", "field": "itemListElement", "min": 3, "why": "The RDFa BreadcrumbList resolves to a list of items. Floor of 3 against a measured 4 — the corpus keeps headroom rather than pinning the exact count of a frozen page."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "itemListElement", "expect": ["rdfa"], "why": "RDFa is the third declared-data path, and the only fixture in the corpus that exercises it. Without this row a silent collapse of the RDFa reader would be invisible."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "itemListElement", "value": "HTTP response status codes", "why": "The deepest breadcrumb. Proves the list is the real one and not a truncated stub that still satisfies the row floor."},
+        {"kind": "schema_absent", "category": "schema_extract", "field": "headline", "why": "This page publishes no headline in any declared block. The negative row for the RDFa path."}
+      ]
+    },
+    {
+      "id": "schema-epa-air-quality",
+      "url": "https://www.epa.gov/air-trends/air-quality-national-summary",
+      "pageClass": "schema_mode",
+      "htmlPath": "epa-air-quality.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — EPA",
+      "schema": {"type": "object", "properties": {"pollutants": {"type": "array", "items": {"type": "object", "properties": {"pollutant": {"type": "string"}, "1980 vs 2024": {"type": "string"}, "2010 vs 2024": {"type": "string"}}}}}},
+      "assertions": [
+        {"kind": "schema_rows", "category": "schema_extract", "field": "pollutants", "min": 6, "why": "An array-of-objects field resolved from an extracted grid — the exact shape SD9's cross-tab structured synthesis consumes. Floor of 6 against a measured 9."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "pollutants", "expect": ["structured"], "why": "A grid-matched field is expected to come from the structure limb, not from a declared block. Pinning it means a page that later grows JSON-LD does not silently change what this row measures."},
+        {"kind": "schema_row_field", "category": "schema_extract", "field": "pollutants", "column": "pollutant", "minFilled": 6, "why": "Row count alone does not make a grid joinable: the join key has to be filled. This is the density claim cross-tab synthesis actually stands on."},
+        {"kind": "schema_row_field", "category": "schema_extract", "field": "pollutants", "column": "1980 vs 2024", "minFilled": 6, "why": "A header containing spaces and digits, matched to a schema property of the same name. Pins that fuzzy header folding does not quietly drop the awkward columns and keep the tidy ones."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "pollutants", "value": "Carbon Monoxide", "why": "A known cell inside the grid. Row counts and fill rates can all hold while the cells themselves come out empty or shifted by one column."}
+      ]
+    },
+    {
+      "id": "schema-wikipedia-browser-comparison",
+      "url": "https://en.wikipedia.org/wiki/Comparison_of_web_browsers",
+      "pageClass": "schema_mode",
+      "htmlPath": "wikipedia-browser-comparison.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "schema": {"type": "object", "properties": {"browsers": {"type": "array", "items": {"type": "object", "properties": {"browser": {"type": "string"}, "developer": {"type": "string"}, "layout_engine": {"type": "string"}, "license": {"type": "string"}}}}}},
+      "assertions": [
+        {"kind": "schema_rows", "category": "schema_extract", "field": "browsers", "min": 150, "why": "The corpus's large grid (measured 206 rows). A big grid is where a windowing or truncation change shows first, and where a cross-tab join has something to join."},
+        {"kind": "schema_provenance", "category": "schema_extract", "field": "browsers", "expect": ["structured"], "why": "Same claim as the EPA grid, on the page where several competing tables exist: the field must still resolve through the structure limb rather than from a declared block."},
+        {"kind": "schema_row_field", "category": "schema_extract", "field": "browsers", "column": "browser", "minFilled": 150, "why": "The join key, filled on every measured row (206/206). A grid whose key thins out joins to nothing while still reporting its row count."},
+        {"kind": "schema_row_field", "category": "schema_extract", "field": "browsers", "column": "developer", "minFilled": 80, "why": "A partially-filled column, measured at 108 of 206. Recorded as MEASURED rather than as an aspiration: the page itself leaves this cell empty for many rows, and a floor above the real density would gate on the page, not on the extractor."},
+        {"kind": "schema_row_field", "category": "schema_extract", "field": "browsers", "column": "layout_engine", "minFilled": 80, "why": "The second partially-filled column (measured 106 of 206), so a single column collapsing cannot hide behind the other."},
+        {"kind": "schema_value", "category": "schema_extract", "field": "browsers", "value": "W3C, INRIA", "why": "A known cell from a row whose other columns are also populated. Pins that the grid holds real cells and not just a header-shaped skeleton."}
+      ]
+    }
   ]
 }
