@@ -256,6 +256,23 @@ const SUBPATHS: Subpath[] = [
     types: ['BriefStage', 'FindSimilarStage', 'FindSimilarStageOptions'],
   },
   {
+    // A9, scope 5. The fixture set is contract-adjacent DATA on its own deep key, not a wildcard and
+    // not part of the runtime barrel above: the app ships that barrel and must not carry test
+    // descriptors, while both repositories' contract tests need ONE pinned set to agree through.
+    spec: 'wigolo/companion-contract/fixtures',
+    target: './dist/companion-contract/fixtures.js',
+    runtime: [
+      'BROKER_FIXTURES',
+      'CONTRACT_VERSIONS',
+      'ESCALATION_FIXTURES',
+      'HANDSHAKE_CASES',
+      'PINNED_CONTRACT_VERSION',
+      'SCHEMA_HEADS',
+      'SESSION_TARGET_FIXTURES',
+    ],
+    types: ['HandshakeCase'],
+  },
+  {
     spec: 'wigolo/companion-contract',
     target: './dist/companion-contract/index.js',
     runtime: [

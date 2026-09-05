@@ -39,6 +39,12 @@ import type {
   BrokerRevocation,
   BrokerResult,
 } from '../../../src/companion-contract/broker.js';
+import {
+  BROKER_FIXTURES,
+  ESCALATION_FIXTURES,
+  SCHEMA_HEADS,
+  SESSION_TARGET_FIXTURES,
+} from '../../../src/companion-contract/fixtures.js';
 
 const repoRoot = process.cwd();
 
@@ -130,13 +136,10 @@ describe('escalation wire', () => {
   });
 
   it('round-trips a served response as JSON with a stable shape', () => {
-    const request: EscalationRequest = { capability: STUDIO_FETCH_CAPABILITY, url: 'https://example.com/walled' };
-    const served: EscalationResponse = {
-      ok: true,
-      url: 'https://example.com/walled',
-      html: '<html></html>',
-      session_id: 'sess-1',
-    };
+    // Descriptors come from the published fixture set, so the bytes this asserts on are the same
+    // bytes the app's contract test asserts on rather than a second, drifting transcription.
+    const request: EscalationRequest = ESCALATION_FIXTURES.request;
+    const served: EscalationResponse = ESCALATION_FIXTURES.served;
     expect(JSON.parse(JSON.stringify(request))).toEqual({
       capability: 'studio_fetch',
       url: 'https://example.com/walled',
@@ -152,12 +155,7 @@ describe('escalation wire', () => {
   });
 
   it('round-trips a decline as a discriminated union arm', () => {
-    const declined: EscalationResponse = {
-      ok: false,
-      error_reason: 'capture_refused',
-      error: 'The live session page is a login/credential context.',
-      hint: 'Do not retry; hand the login off to the human.',
-    };
+    const declined: EscalationResponse = ESCALATION_FIXTURES.decline;
     expect(JSON.parse(JSON.stringify(declined))).toEqual({
       ok: false,
       error_reason: 'capture_refused',
@@ -216,13 +214,7 @@ describe('session-target wire', () => {
   });
 
   it('keeps the producer orientation the composition already publishes (error = code, error_reason = prose)', () => {
-    const refusal: SessionTargetResult<never> = {
-      ok: false,
-      error: 'no_such_session',
-      error_reason: 'No live studio session with id sess-9.',
-      stage: 'fetch',
-      hint: 'Call studio_list for live ids.',
-    };
+    const refusal: SessionTargetResult<never> = SESSION_TARGET_FIXTURES.refusal;
     expect(JSON.parse(JSON.stringify(refusal))).toEqual({
       ok: false,
       error: 'no_such_session',
@@ -234,17 +226,13 @@ describe('session-target wire', () => {
   });
 
   it('round-trips a request and an ok result', () => {
-    const request: SessionTargetRequest<{ url: string }> = {
-      op: 'fetch',
-      session_id: 'sess-1',
-      input: { url: 'https://example.com' },
-    };
+    const request: SessionTargetRequest<{ url: string }> = SESSION_TARGET_FIXTURES.request;
     expect(JSON.parse(JSON.stringify(request))).toEqual({
       op: 'fetch',
       session_id: 'sess-1',
       input: { url: 'https://example.com' },
     });
-    const ok: SessionTargetResult<{ url: string }> = { ok: true, data: { url: 'https://example.com' } };
+    const ok: SessionTargetResult<{ url: string }> = SESSION_TARGET_FIXTURES.okResult;
     expect(isSessionTargetRefusal(ok)).toBe(false);
   });
 
@@ -312,56 +300,25 @@ describe('broker wire', () => {
   });
 
   it('round-trips a grant, a read op, a write op and a revocation as JSON', () => {
-    const grant: BrokerGrant = {
-      token: 'grant-abc',
-      issuedAt: 1_700_000_000_000,
-      expiresAt: 1_700_000_060_000,
-      mode: 'readwrite',
-      tables: ['studio_artifacts', 'studio_runs'],
-      schemaHead: 18,
-    };
-    const read: BrokerReadOp = {
-      grant: 'grant-abc',
-      kind: 'read',
-      table: 'studio_runs',
-      where: { run_id: 'run-1' },
-      limit: 100,
-    };
-    const write: BrokerWriteOp = {
-      grant: 'grant-abc',
-      kind: 'insert',
-      table: 'studio_run_events',
-      row: { run_id: 'run-1', seq: 4, payload: null },
-    };
-    const revocation: BrokerRevocation = {
-      token: 'grant-abc',
-      revokedAt: 1_700_000_120_000,
-      reason: 'unpaired',
-    };
+    const grant: BrokerGrant = BROKER_FIXTURES.grant;
+    const read: BrokerReadOp = BROKER_FIXTURES.read;
+    const write: BrokerWriteOp = BROKER_FIXTURES.write;
+    const revocation: BrokerRevocation = BROKER_FIXTURES.revocation;
+    expect(grant.schemaHead).toBe(SCHEMA_HEADS.current);
     for (const value of [grant, read, write, revocation]) {
       expect(JSON.parse(JSON.stringify(value))).toEqual(value);
     }
   });
 
   it('refuses with a discriminated arm the guard recognises', () => {
-    const refusal: BrokerResult<never> = {
-      ok: false,
-      reason: 'table_not_granted',
-      table: 'studio_audit',
-    };
+    const refusal: BrokerResult<never> = BROKER_FIXTURES.refusal;
     expect(isBrokerRefusal(refusal)).toBe(true);
     expect(isBrokerRefusal({ ok: true, rows: [] })).toBe(false);
     expect(isBrokerRefusal({ ok: false, reason: 'made_up' })).toBe(false);
   });
 
   it('scopes a grant to its tables and its mode', () => {
-    const readOnly: BrokerGrant = {
-      token: 't',
-      issuedAt: 0,
-      mode: 'read',
-      tables: ['studio_artifacts'],
-      schemaHead: 18,
-    };
+    const readOnly: BrokerGrant = BROKER_FIXTURES.readOnlyGrant;
     expect(grantCovers(readOnly, 'studio_artifacts', 'read')).toBe(true);
     expect(grantCovers(readOnly, 'studio_artifacts', 'write')).toBe(false);
     expect(grantCovers(readOnly, 'studio_runs', 'read')).toBe(false);
@@ -370,16 +327,10 @@ describe('broker wire', () => {
   });
 
   it('treats an expired grant as not covering anything, at the shared clock the wire carries', () => {
-    const expired: BrokerGrant = {
-      token: 't',
-      issuedAt: 0,
-      expiresAt: 10,
-      mode: 'readwrite',
-      tables: ['studio_runs'],
-      schemaHead: 18,
-    };
-    expect(grantCovers(expired, 'studio_runs', 'write', 9)).toBe(true);
-    expect(grantCovers(expired, 'studio_runs', 'write', 10)).toBe(false);
-    expect(grantCovers(expired, 'studio_runs', 'write', 11)).toBe(false);
+    const expired: BrokerGrant = BROKER_FIXTURES.expiredGrant;
+    const deadline = expired.expiresAt!;
+    expect(grantCovers(expired, 'studio_runs', 'write', deadline - 1)).toBe(true);
+    expect(grantCovers(expired, 'studio_runs', 'write', deadline)).toBe(false);
+    expect(grantCovers(expired, 'studio_runs', 'write', deadline + 1)).toBe(false);
   });
 });

@@ -39,6 +39,10 @@
       "import": "./dist/companion-contract/index.js",
       "types": "./dist/companion-contract/index.d.ts"
     },
+    "./companion-contract/fixtures": {
+      "import": "./dist/companion-contract/fixtures.js",
+      "types": "./dist/companion-contract/fixtures.d.ts"
+    },
     "./security": {
       "import": "./dist/security/index.js",
       "types": "./dist/security/index.d.ts"
