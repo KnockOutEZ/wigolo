@@ -30,8 +30,18 @@
  * writes a new row and archives the old, expired rows drop out of active listings — are the companion's,
  * expressed as ordinary insert/update ops on this table. The broker stays dumb; it does not learn what a
  * memory is.
+ *
+ * `studio_annotations` (SD4 §4.1) is here on the same terms and also needs BOTH modes. It is where a
+ * mark, note, ink stroke, label, fence, redaction, scope or assertion durably lives, and both authors
+ * write it: a person marking a page, and an agent creating a restrictive row. A read-only entry would
+ * ship the annotation layer as a display of rows nothing could add to. Its semantics — a revise writes
+ * a new row carrying `supersedes` and archives the old, policy-kind rows may be archived only by a
+ * human — are the companion's, expressed here as ordinary insert/update ops on one table. The broker
+ * stays dumb; it does not learn what an annotation is, and it is not where the human-only archival
+ * asymmetry is enforced (a table-scoped wire cannot see an actor).
  */
 export const BROKER_TABLES = Object.freeze([
+  'studio_annotations',
   'studio_artifacts',
   'studio_audit',
   'studio_flow_steps',
