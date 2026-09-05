@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { FindSimilarOutput, ResearchBrief, ResearchSource } from '../../../src/types.js';
 
 /**
- * The two injected broker stages (`wigolo/companion-stages`).
+ * The corpus + brief injected broker stages (`wigolo/companion-stages`). The SERP's `search` stage is
+ * the sibling `stages-search.test.ts`, split off because it mocks a different handler and asserts the
+ * no-database claim against the REAL `cache/db` module.
  *
  * What is worth pinning here is the ADAPTATION, not the pipelines underneath — those have their own
  * suites. Three things can silently break the rail and none of them is visible from the pipeline side:
