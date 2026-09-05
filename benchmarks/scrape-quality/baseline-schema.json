@@ -1,0 +1,44 @@
+{
+  "takenAt": "2026-09-05T18:30:31.034Z",
+  "commit": "ba78aacc",
+  "note": "SD9-Q1 schema-mode baseline. MEASURED, never chosen: the 25 rows are the verdicts extractWithSchemaDetailed produced over the frozen snapshots at ba78aacc, whose src/ is untouched by this PR. Held in a SECOND file so the C0 snapshot in baseline.json keeps its pre-S9 date; the runner merges both maps into one gate verdict. Supersedes C2 spec 13.1's warning that structured_extract 7/7 is not a schema-mode baseline.",
+  "overall": {
+    "passed": 25,
+    "total": 25,
+    "score": 1
+  },
+  "byCategory": {
+    "schema_extract": {
+      "passed": 25,
+      "total": 25,
+      "score": 1
+    }
+  },
+  "assertions": {
+    "schema-github-repo#0:schema.name == \"got\"": true,
+    "schema-github-repo#1:schema.author == \"sindresorhus\"": true,
+    "schema-github-repo#2:schema.name provenance in [microdata]": true,
+    "schema-github-repo#3:schema.author provenance in [microdata]": true,
+    "schema-github-repo#4:schema.licence_holder stays unpopulated": true,
+    "schema-nasa-global-temperature#0:schema.headline contains \"Global Temperature\"": true,
+    "schema-nasa-global-temperature#1:schema.datePublished contains \"2025-09-25\"": true,
+    "schema-nasa-global-temperature#2:schema.author contains \"Kalina Velev\"": true,
+    "schema-nasa-global-temperature#3:schema.headline provenance in [json-ld]": true,
+    "schema-nasa-global-temperature#4:schema.ticker_symbol stays unpopulated": true,
+    "schema-mdn-http-status#0:schema.itemListElement rows >= 3": true,
+    "schema-mdn-http-status#1:schema.itemListElement provenance in [rdfa]": true,
+    "schema-mdn-http-status#2:schema.itemListElement contains \"HTTP response status codes\"": true,
+    "schema-mdn-http-status#3:schema.headline stays unpopulated": true,
+    "schema-epa-air-quality#0:schema.pollutants rows >= 6": true,
+    "schema-epa-air-quality#1:schema.pollutants provenance in [structured]": true,
+    "schema-epa-air-quality#2:schema.pollutants[].pollutant filled on >= 6 rows": true,
+    "schema-epa-air-quality#3:schema.pollutants[].1980 vs 2024 filled on >= 6 rows": true,
+    "schema-epa-air-quality#4:schema.pollutants contains \"Carbon Monoxide\"": true,
+    "schema-wikipedia-browser-comparison#0:schema.browsers rows >= 150": true,
+    "schema-wikipedia-browser-comparison#1:schema.browsers provenance in [structured]": true,
+    "schema-wikipedia-browser-comparison#2:schema.browsers[].browser filled on >= 150 rows": true,
+    "schema-wikipedia-browser-comparison#3:schema.browsers[].developer filled on >= 80 rows": true,
+    "schema-wikipedia-browser-comparison#4:schema.browsers[].layout_engine filled on >= 80 rows": true,
+    "schema-wikipedia-browser-comparison#5:schema.browsers contains \"W3C, INRIA\"": true
+  }
+}
