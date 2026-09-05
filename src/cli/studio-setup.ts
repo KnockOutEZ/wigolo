@@ -109,6 +109,15 @@ export type CompanionSetupOutcome =
   /** This system's security check refused the signed bundle. Nothing was left behind. */
   | 'gatekeeper_rejected'
   /**
+   * The disk image's own contents are not what this install puts in place, or the destination
+   * holds something this install did not put there. Nothing was deleted and nothing was copied.
+   *
+   * Separate from `install_failed` because the two ask different things of the reader. A failure
+   * is "this did not work, try again"; this is "the release host handed us something we will not
+   * act on", which is a report-it-upstream event and never a retry.
+   */
+  | 'install_refused'
+  /**
    * The manifest named a local path this install will not write. Nothing was fetched or created.
    *
    * Separate from `manifest_unreadable` on purpose: the manifest parsed and named an artifact, so
@@ -260,6 +269,73 @@ const SAFE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
  * is a rule that does not have to enumerate the encodings of the thing it forbids.
  */
 const SAFE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set(['.dmg', '.zip', '.bin']);
+
+/** The product this install installs. The bundle allowlist below is derived from it. */
+const COMPANION_PRODUCT_NAME = 'Wigolo Studio';
+
+/**
+ * Application bundles this install will copy out of a disk image.
+ *
+ * ⚠ THE BUNDLE NAME IS HOST DATA, AND IT NAMES A PATH THIS STEP DELETES. It is read out of the
+ * image the release host published, and the destination is `installRoot/<that name>` — so an image
+ * whose bundle is called `Google Chrome.app` aims the pre-copy removal at the user's own browser.
+ * The digest cannot object: the host published it for its own bytes. That is the same threat model
+ * {@link SAFE_VERSION} exists for, and it gets the same answer — an ALLOWLIST of the names this
+ * install actually publishes, not a ban on the spellings of the names it does not.
+ *
+ * Stated as a set of full basenames rather than a pattern because there is exactly one product
+ * here; a pattern would be a rule with more room in it than the thing it describes.
+ */
+const COMPANION_BUNDLE_NAMES: ReadonlySet<string> = new Set([`${COMPANION_PRODUCT_NAME}.app`]);
+
+/**
+ * The image, or where it would land, is not something this install will act on.
+ *
+ * Thrown rather than returned because the install step is an injected dependency with a
+ * `Promise<string>` shape — a refusal has to travel out the same channel a failure does. The
+ * class is what lets {@link setupCompanion} tell the two apart and type them differently.
+ */
+class CompanionInstallRefusal extends Error {
+  constructor(readonly detail: string, message: string) {
+    super(message);
+    this.name = 'CompanionInstallRefusal';
+  }
+}
+
+/**
+ * Why this install may NOT remove what is already at `dest` — or `null` when it may.
+ *
+ * THE PRE-COPY REMOVAL IS THE DESTRUCTIVE ACT IN THIS WHOLE COMMAND, and until this rule existed
+ * it ran on a path assembled from host data with `force: true`. Re-installing over our own
+ * companion has to keep working, so the rule cannot be "never delete" — it is "delete only what we
+ * recorded installing", with the record written by {@link writeRecord} after every install.
+ *
+ * `lstat`, not `existsSync`: a DANGLING link at the destination is invisible to a resolve-based
+ * check and is the cheapest thing to plant, and `cpSync` would follow it. A link is refused
+ * outright rather than compared, because this install only ever creates a directory there — a link
+ * found at that path did not come from here whatever it points at.
+ *
+ * The comparison is lexical on purpose. Both sides are built by the same `join(installRoot, …)`,
+ * and resolving them would mean following a link to decide whether a link may be deleted.
+ */
+function priorInstallRefusal(dest: string, recordedPath: string | null): string | null {
+  let entry;
+  try {
+    entry = lstatSync(dest);
+  } catch {
+    return null; // Nothing is there, so there is nothing to remove.
+  }
+  if (entry.isSymbolicLink()) {
+    return `${dest} is a link, and this install only ever puts a folder there`;
+  }
+  if (recordedPath === null) {
+    return `${dest} already exists and no browser companion install is recorded at it`;
+  }
+  if (resolve(recordedPath) !== resolve(dest)) {
+    return `${dest} already exists and is not the browser companion recorded at ${recordedPath}`;
+  }
+  return null;
+}
 
 type ArtifactNaming = { ok: true; fileName: string } | { ok: false; reason: string };
 
@@ -518,16 +594,25 @@ async function transfer(
 }
 
 /**
- * macOS disk-image install: attach, copy the bundle out, detach.
+ * macOS disk-image install: attach, judge the image's contents, copy the bundle out, detach.
  *
  * The detach is in a `finally` because an attached image that outlives a failed copy is a mounted
  * volume the user has to clean up by hand — a failure that leaves debris is worse than the failure.
+ * A refusal detaches through the same path, so nothing is left mounted by a rejected image either.
+ *
+ * ⚠ EVERY JUDGEMENT HERE HAPPENS BEFORE THE FIRST DESTRUCTIVE CALL. The order is the point: the
+ * removal at the destination used to be the first thing that ran after the bundle was named, so a
+ * hostile name had already destroyed something by the time the post-install security assessment
+ * could object — and that assessment removes only the copy it just made, never restores what the
+ * copy replaced. `recordedPath` is the prior install this command wrote down, threaded in so the
+ * removal can tell "our last companion" from "the user's own application".
  */
 async function installDiskImage(
   artifactPath: string,
   dataDir: string,
   installRoot: string,
   run: NonNullable<CompanionSetupDeps['run']>,
+  recordedPath: string | null,
 ): Promise<string> {
   const mountPoint = studioStateDir(dataDir, 'mount');
   rmSync(mountPoint, { recursive: true, force: true });
@@ -537,14 +622,49 @@ async function installDiskImage(
   if (attach.code !== 0) throw new Error(`could not open the disk image: ${attach.stderr.trim() || `exit ${attach.code}`}`);
 
   try {
-    const bundle = readdirSync(mountPoint).find((e) => e.endsWith('.app'));
-    if (!bundle) throw new Error('the disk image contains no application bundle');
+    const bundles = readdirSync(mountPoint).filter((e) => e.endsWith('.app'));
+    // EVERY top-level bundle is judged, not just the one that would be picked. Picking the
+    // allowlisted entry out of an image that also carries `Google Chrome.app` would install
+    // cleanly from an image we have already decided is hostile, and readdir order is not a
+    // security boundary.
+    const unexpected = bundles.filter((e) => !COMPANION_BUNDLE_NAMES.has(e));
+    if (unexpected.length > 0) {
+      throw new CompanionInstallRefusal(
+        `The disk image the release host published holds an application this install does not `
+        + `publish (${unexpected.join(', ')}), so nothing was copied and nothing at your `
+        + `applications folder was touched.`,
+        `unexpected application bundle in the disk image: ${unexpected.join(', ')}`,
+      );
+    }
+    const bundle = bundles[0];
+    if (bundle === undefined) throw new Error('the disk image contains no application bundle');
+
+    const source = join(mountPoint, bundle);
+    // The image's own entry, judged without following it. A link here is copied verbatim below,
+    // and every check after the copy — the quarantine attribute, the signature, the assessment —
+    // would then be answering about whatever it points at rather than about what got installed.
+    if (isLinkEntry(source)) {
+      throw new CompanionInstallRefusal(
+        'The disk image the release host published names its application with a link rather than '
+        + 'the application itself, so nothing was copied.',
+        `the disk image's ${bundle} entry is a link`,
+      );
+    }
+
     mkdirSync(installRoot, { recursive: true });
     const dest = join(installRoot, bundle);
+    const removalRefusal = priorInstallRefusal(dest, recordedPath);
+    if (removalRefusal !== null) {
+      throw new CompanionInstallRefusal(
+        `The browser companion was not installed because ${removalRefusal}. Nothing was removed; `
+        + 'move it aside yourself if you want this install to take that name.',
+        `refused to remove ${dest}: ${removalRefusal}`,
+      );
+    }
     rmSync(dest, { recursive: true, force: true });
     // `verbatimSymlinks` keeps the bundle's internal relative links as links. Dereferencing them
     // copies each framework once per link and produces a bundle that no longer launches.
-    cpSync(join(mountPoint, bundle), dest, { recursive: true, verbatimSymlinks: true });
+    cpSync(source, dest, { recursive: true, verbatimSymlinks: true });
     return dest;
   } finally {
     await run('hdiutil', ['detach', mountPoint]).catch(() => undefined);
@@ -798,12 +918,29 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
 
   const install =
     deps.install ??
-    ((a: string, _t: CompanionTarget, root: string) => installDiskImage(a, dataDir, root, deps.run ?? defaultRun));
+    ((a: string, _t: CompanionTarget, root: string) =>
+      // The record read above is what the removal rule compares against: what THIS command last
+      // installed, not whatever happens to be sitting at the destination.
+      installDiskImage(a, dataDir, root, deps.run ?? defaultRun, record?.path ?? null));
 
   let installedPath: string;
   try {
     installedPath = await install(finalPath, target, installRoot);
   } catch (e) {
+    // A refusal carries its own sentence because the reader's next move differs: a failure is
+    // worth retrying, a refusal never is.
+    if (e instanceof CompanionInstallRefusal) {
+      log.warn('companion disk image refused before anything was written', {
+        version: release.version,
+        target: target.key,
+      });
+      return fail('install_refused', e.detail, host, {
+        version: release.version,
+        artifactPath: finalPath,
+        resumedFromBytes: moved.resumedFromBytes,
+        error: e.message,
+      });
+    }
     return fail('install_failed', 'The browser companion could not be installed.', host, {
       version: release.version,
       artifactPath: finalPath,

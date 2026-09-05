@@ -499,7 +499,7 @@ describe('setupCompanion — disk-image install path', () => {
     }
   });
 
-  function fakeHdiutil(opts: { bundle?: string; attachCode?: number } = {}): {
+  function fakeHdiutil(opts: { bundle?: string; attachCode?: number; bundleLinkTo?: string } = {}): {
     run: NonNullable<CompanionSetupDeps['run']>;
     calls: string[][];
   } {
@@ -515,7 +515,11 @@ describe('setupCompanion — disk-image install path', () => {
         if (args[0] === 'attach') {
           if (opts.attachCode) return { code: opts.attachCode, stderr: 'no mountable file systems' };
           const mount = args[args.indexOf('-mountpoint') + 1];
-          if (opts.bundle !== undefined && opts.bundle === '') {
+          if (opts.bundleLinkTo !== undefined) {
+            // The image's own top-level entry is a link. A real image can hold one; `cpSync` with
+            // `verbatimSymlinks` would copy the link and every later check would judge its target.
+            symlinkSync(opts.bundleLinkTo, join(mount, opts.bundle ?? APP_NAME));
+          } else if (opts.bundle !== undefined && opts.bundle === '') {
             mkdirSync(join(mount, 'README'), { recursive: true });
           } else {
             const app = join(mount, opts.bundle ?? APP_NAME, 'Contents', 'MacOS');
@@ -525,6 +529,17 @@ describe('setupCompanion — disk-image install path', () => {
         }
         return { code: 0, stderr: '' };
       },
+    };
+  }
+
+  /** A pre-existing application in the install folder, and the bytes that prove it survived. */
+  function decoy(installRoot: string, name: string): { path: string; digest: () => string } {
+    const path = join(installRoot, name);
+    mkdirSync(join(path, 'Contents', 'MacOS'), { recursive: true });
+    writeFileSync(join(path, 'Contents', 'MacOS', 'launcher'), 'the user\'s own application');
+    return {
+      path,
+      digest: () => sha256(readFileSync(join(path, 'Contents', 'MacOS', 'launcher'))),
     };
   }
 
@@ -596,6 +611,137 @@ describe('setupCompanion — disk-image install path', () => {
     expect(result.error).toContain('no mountable file systems');
     expect(result.manualFallback).toContain(host.origin);
     expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach']);
+  });
+
+  /**
+   * THE IMAGE NAMES THE PATH THIS STEP DELETES, AND THE HOST OWNS THE IMAGE.
+   *
+   * Each of the three arms below is aimed at ONE of the three rules, with the other two deliberately
+   * satisfied, because an image that trips all three proves only that something refused it:
+   *
+   *  - the hostile NAME arm plants its decoy at the name the image asks for, so the prior-install
+   *    rule would refuse that deletion too — the arm therefore asserts WHICH rule spoke, because
+   *    "the decoy survived" alone stays green with the name allowlist deleted;
+   *  - the FOREIGN DEST arm uses the companion's own name and a bundle that is a real directory, so
+   *    the name allowlist and the link check both pass and only the prior-install record refuses;
+   *  - the LINK arm uses the companion's own name with nothing at the destination at all, so both
+   *    other rules pass and only `lstat` on the image's entry can catch it.
+   *
+   * The digest is taken from the decoy's bytes rather than from `existsSync`, because "deleted and
+   * replaced by a hostile bundle of the same name" also leaves something at that path.
+   */
+  it('refuses a bundle the release host named itself, and deletes nothing', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    const victim = decoy(installRoot, 'Google Chrome.app');
+    const before = victim.digest();
+    const hdi = fakeHdiutil({ bundle: 'Google Chrome.app' });
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      run: hdi.run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('install_refused');
+    expect(result.detail).toContain('Google Chrome.app');
+    // The name rule, named. Without this the arm passes on the removal rule alone.
+    expect(result.error).toContain('unexpected application bundle');
+    expect(victim.digest()).toBe(before);
+    // Refused, not abandoned: the volume still comes back down.
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach', 'detach']);
+  });
+
+  it('refuses to delete an application at its own name that this install did not put there', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    const victim = decoy(installRoot, APP_NAME);
+    const before = victim.digest();
+    const hdi = fakeHdiutil();
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      run: hdi.run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('install_refused');
+    expect(victim.digest()).toBe(before);
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach', 'detach']);
+  });
+
+  it('refuses an image whose bundle entry is itself a link, before anything is copied', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    const elsewhere = join(root, 'elsewhere');
+    mkdirSync(join(elsewhere, 'Contents', 'MacOS'), { recursive: true });
+    writeFileSync(join(elsewhere, 'Contents', 'MacOS', 'launcher'), 'somewhere else entirely');
+    const hdi = fakeHdiutil({ bundleLinkTo: elsewhere });
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      run: hdi.run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('install_refused');
+    expect(existsSync(join(installRoot, APP_NAME))).toBe(false);
+    // Nothing was marked or assessed either — the refusal is before the copy, not after it.
+    expect(hdi.calls.map((c) => c[0])).not.toContain('xattr');
+    expect(hdi.calls.filter((c) => c[0] === 'hdiutil').map((c) => c[1])).toEqual(['attach', 'detach']);
+  });
+
+  it('installs, and installs again over the companion it recorded last time', async () => {
+    const payload = artifactBytes();
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    const base: CompanionSetupDeps = {
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      run: fakeHdiutil().run,
+      launch: async () => true,
+    };
+
+    const first = await setupCompanion(base);
+    expect(first.outcome).toBe('installed');
+
+    // Same version, so only `--force` gets past the record — which is the re-install this covers.
+    const again = await setupCompanion({ ...base, force: true, run: fakeHdiutil().run });
+    expect(again.outcome).toBe('installed');
+    expect(again.installedPath).toBe(join(installRoot, APP_NAME));
+    expect(existsSync(join(installRoot, APP_NAME, 'Contents', 'MacOS', 'Wigolo Studio'))).toBe(true);
   });
 });
 
