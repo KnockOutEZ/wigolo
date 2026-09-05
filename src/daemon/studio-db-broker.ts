@@ -22,6 +22,7 @@
 import type Database from 'better-sqlite3';
 import {
   BROKER_TABLES,
+  BROKER_WRITE_KINDS,
   MAX_BROKER_ROWS,
   grantCovers,
 } from '../companion-contract/broker.js';
@@ -48,6 +49,18 @@ const TABLE_SET: ReadonlySet<string> = new Set(BROKER_TABLES);
 /** True for a name in the contract's CLOSED table set — the only source of a table identifier. */
 export function isBrokerTable(name: unknown): name is BrokerTable {
   return typeof name === 'string' && TABLE_SET.has(name);
+}
+
+const KIND_SET: ReadonlySet<string> = new Set<string>(['read', ...BROKER_WRITE_KINDS]);
+
+/**
+ * True for a kind in the contract's CLOSED op set.
+ *
+ * Derived from the contract rather than spelled out here, so a kind added there is dispatchable here in
+ * the same commit and cannot be silently accepted by a guard that lists yesterday's four.
+ */
+export function isBrokerKind(kind: unknown): kind is BrokerOp['kind'] {
+  return typeof kind === 'string' && KIND_SET.has(kind);
 }
 
 /**
@@ -295,6 +308,14 @@ export function executeBrokerOp(
   if (!isBrokerTable(op.table)) {
     return { ok: false, reason: 'unknown_table' };
   }
+  // Decided here, not by the dispatch below. The dispatch is a chain of `if`s whose LAST arm is a
+  // delete, so an unrecognised kind used to fall through into a destructive write — schema tolerance
+  // degrading into a DIFFERENT mutation, which is exactly what spec §6 says it must never do. A kind
+  // this build does not know is a protocol error and has to refuse; the detail names the closed set
+  // rather than echoing what arrived, because the wire's own string is not ours to repeat.
+  if (!isBrokerKind(op.kind)) {
+    throw new BrokerOpError(`op.kind must be one of: read, ${BROKER_WRITE_KINDS.join(', ')}`);
+  }
   const table = op.table;
   const access: BrokerAccess = op.kind === 'read' ? 'read' : 'write';
 
@@ -371,6 +392,10 @@ export function executeBrokerOp(
     return { ok: true, rows: [{ changes: changed.changes }] };
   }
 
+  // The last arm, reached only by `delete`: the guard at the top closed `op.kind` to the contract's
+  // four, and the three arms above returned. A SECOND check here would be a second mechanism keyed on
+  // the same predicate — it would keep this arm safe while the guard was reverted, which is exactly the
+  // proof the guard's own test needs to be able to make.
   const params: Array<string | number | null> = [];
   const clauses = equalityClause(op.where, params);
   // Same reason as update, one step worse: an unfiltered DELETE empties the table.
