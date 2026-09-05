@@ -325,7 +325,7 @@ function withinRoot(candidate: string, root: string): boolean {
 }
 
 /**
- * Is this a path the download step may create, write and rename inside the download directory?
+ * Why the download step may NOT create, write and rename this path — or `null` when it may.
  *
  * THE SECOND LAYER, AND IT IS NOT THE NAME CHECK WEARING A SECOND HAT. {@link SAFE_VERSION} and
  * {@link SAFE_ARTIFACT_EXTENSIONS} judge the STRINGS the manifest supplied; this judges the PATH
@@ -347,23 +347,34 @@ function withinRoot(candidate: string, root: string): boolean {
  * resolved root would refuse every legitimate download. The lexical target is judged against the
  * lexical root, and anything the filesystem resolved is judged against the resolved root.
  */
-function staysInsideDownloadDir(candidate: string, downloadDir: string): boolean {
+function downloadPathRefusal(candidate: string, downloadDir: string): string | null {
   const lexicalRoot = resolve(downloadDir);
   const target = resolve(candidate);
-  if (target === lexicalRoot || !withinRoot(target, lexicalRoot)) return false;
+  if (target === lexicalRoot || !withinRoot(target, lexicalRoot)) {
+    return `it names ${target}, which is outside the download folder`;
+  }
 
   // FIRST, because it is the case the resolve below cannot see: an unresolvable link reads as an
   // empty slot to `realpathSync` and as a redirection to `open()`.
-  if (isLinkEntry(target)) return false;
+  if (isLinkEntry(target)) {
+    // Spelt as what it is. "Outside the download folder" would print a path that is INSIDE it and
+    // send the reader looking at the wrong half of the problem — the name is contained, the bytes
+    // would not have been.
+    return `${target} is already a link pointing somewhere else`;
+  }
 
   const realRoot = realpathIfPossible(downloadDir);
   // Nothing is on disk yet, so there is no link for anything to be pointing through.
-  if (realRoot === null) return true;
+  if (realRoot === null) return null;
   const existing = realpathIfPossible(target);
-  if (existing !== null && !withinRoot(existing, realRoot)) return false;
+  if (existing !== null && !withinRoot(existing, realRoot)) {
+    return `${target} really resolves to ${existing}, outside the download folder`;
+  }
   const parent = realpathIfPossible(dirname(target));
-  if (parent !== null && !withinRoot(parent, realRoot)) return false;
-  return true;
+  if (parent !== null && !withinRoot(parent, realRoot)) {
+    return `the folder ${dirname(target)} really resolves to ${parent}, outside the download folder`;
+  }
+  return null;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -735,11 +746,13 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
   }
   const partPath = join(downloadDir, `${naming.fileName}.part`);
   const finalPath = join(downloadDir, naming.fileName);
-  const escaping = [partPath, finalPath].find((p) => !staysInsideDownloadDir(p, downloadDir));
-  if (escaping !== undefined) {
+  const containment = [partPath, finalPath]
+    .map((p) => downloadPathRefusal(p, downloadDir))
+    .find((reason) => reason !== null);
+  if (containment !== undefined && containment !== null) {
     return fail(
       'artifact_path_refused',
-      `The release host asked for the download to be saved outside the download folder, at ${escaping}. Nothing was fetched.`,
+      `The release host asked for the download to be saved somewhere this install will not write it: ${containment}. Nothing was fetched.`,
       host,
       { version: release.version },
     );

@@ -1186,6 +1186,9 @@ describe('setupCompanion — the release manifest does not choose a local path',
     });
 
     expect(result.outcome).toBe('artifact_path_refused');
+    // The refusal names the link, not "outside the download folder": the PATH is inside it, and
+    // copy that pointed at the containing folder would send the reader to the wrong half.
+    expect(result.detail).toContain('already a link pointing somewhere else');
     expect(host.requested).toEqual([COMPANION_MANIFEST_PATH]);
     expect(installer.calls).toEqual([]);
     expect(existsSync(stolen)).toBe(false);
