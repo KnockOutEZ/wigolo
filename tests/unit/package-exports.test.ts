@@ -115,6 +115,7 @@ const SUBPATHS: Subpath[] = [
       'runHybridSearch',
       'searchVisits',
       'setSiteCapture',
+      'toVersionTimestamp',
       'versionAt',
       'versionByHash',
     ],
