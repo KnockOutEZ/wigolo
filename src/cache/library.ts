@@ -14,9 +14,17 @@ export type {
   HybridSearchResult,
 } from './hybrid-search.js';
 
+/**
+ * `versionAt` shapes nothing: it string-compares its `atUtc` against the zone-less UTC
+ * `fetched_at` column directly. `toVersionTimestamp` is therefore part of the same surface,
+ * not a detail behind it — without it every consumer writes its own answer to "what instant
+ * does this string mean" against one column, and two such answers drift invisibly until
+ * they disagree.
+ */
 export {
   listVersionMeta,
   listVersionedUrls,
+  toVersionTimestamp,
   versionAt,
   versionByHash,
 } from './version-read.js';
