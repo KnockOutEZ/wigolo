@@ -40,6 +40,15 @@
  * stays dumb; it does not learn what an annotation is, and it is not where the human-only archival
  * asymmetry is enforced (a table-scoped wire cannot see an actor).
  *
+ * `studio_voice_profiles` (SD9 §3, 3ac, A-420-4) is here on the same terms and needs BOTH modes: a
+ * voice profile is created by an explicit human act on a page ("+ learn from this field") and
+ * deleted from the privacy dashboard, so a read-only entry would ship the compose surface's two
+ * write affordances dead. These are WRITING-tone profiles, not speech — brief §0a.4 defers the
+ * voice/audio frame (3ba) post-done and nothing on this wire touches audio. Its semantics — that a
+ * profile is learned ONLY from text the user actually wrote on that site, and that the learning is
+ * a human act — are the companion's; the second is a law-12 control the broker structurally cannot
+ * hold, because a table-scoped op carries no actor to test.
+ *
  * The three `studio_site_*` tables (SD6 §3, A-17-3) are here on the same terms and all three need
  * BOTH modes. `studio_site_profiles` is the per-domain row a person edits from the profile card
  * (visibility, view rules, flags) and whose `run_count` fold the app maintains; `studio_site_grants`
@@ -62,6 +71,7 @@ export const BROKER_TABLES = Object.freeze([
   'studio_site_grants',
   'studio_site_memories',
   'studio_site_profiles',
+  'studio_voice_profiles',
 ] as const);
 
 export type BrokerTable = (typeof BROKER_TABLES)[number];
