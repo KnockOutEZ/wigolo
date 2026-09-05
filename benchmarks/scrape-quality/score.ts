@@ -1,7 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { stripHiddenDom, type VisibilityDocument } from '../../src/extraction/visibility.js';
 import type { StructuredData } from '../../src/types.js';
-import type { Assertion, AssertionContext, AssertionResult, Category, FixtureResult, HealTier, MarkdownFeature, ScrapeReport, CategorySummary } from './types.js';
+import type { Assertion, AssertionContext, AssertionResult, Category, FixtureResult, HealTier, MarkdownFeature, ScrapeReport, CategorySummary, SchemaProbe } from './types.js';
 
 /** Count a markdown feature. Deliberately simple and line-based: the point is to
  *  detect a feature DISAPPEARING (a table flattened to prose, code fences dropped),
@@ -136,6 +136,48 @@ function reachableText(html: string): { all: string; visible: string } {
   return { all, visible: scopeText(scope) };
 }
 
+/**
+ * SD9-Q1 — the shared preamble of every schema-mode row.
+ *
+ * Two refusals, both loud, both before the property is looked at:
+ *  1. no `SchemaProbe` at all — the lane could not run schema mode, so the row is unevaluated
+ *     rather than satisfied. (`firecrawl.ts` drops these kinds instead of reaching here.)
+ *  2. the field is not in the schema the fixture declared — nothing asked for it, so neither a
+ *     value nor an absence means anything. This is the check that keeps `schema_absent` from
+ *     being a free point: an undeclared field is unpopulated forever.
+ */
+function schemaPreamble(
+  probe: SchemaProbe | undefined,
+  field: string,
+  describe: string,
+  category: Category,
+): { fail: AssertionResult } | { probe: SchemaProbe } {
+  if (!probe) {
+    return { fail: { category, passed: false, describe, detail: 'not evaluated: schema kinds need a schema-mode probe' } };
+  }
+  if (!probe.declared.properties || !(field in probe.declared.properties)) {
+    return {
+      fail: {
+        category,
+        passed: false,
+        describe,
+        detail: `VACUOUS: "${field}" is not a property of the fixture's schema, so nothing asked for it`,
+      },
+    };
+  }
+  return { probe };
+}
+
+/** Stringify a schema value for substring/equality checks. Nested objects and grids are
+ *  compared through their JSON form, which is the only shape that holds for every field. */
+function schemaText(v: unknown): string {
+  return typeof v === 'string' ? v : JSON.stringify(v ?? null);
+}
+
+function schemaRows(v: unknown): Array<Record<string, unknown>> | undefined {
+  return Array.isArray(v) ? (v as Array<Record<string, unknown>>) : undefined;
+}
+
 export function evaluateAssertion(
   a: Assertion,
   markdown: string,
@@ -232,6 +274,73 @@ export function evaluateAssertion(
           : `invisible content leaked into extracted markdown: ${inMarkdown} occurrence(s) in markdown vs ${inVisible} visible in source (${inAll} total)`,
       };
     }
+    case 'schema_value': {
+      const describe = `schema.${a.field} ${a.exact ? '==' : 'contains'} "${a.value}"`;
+      const pre = schemaPreamble(ctx.schema, a.field, describe, a.category);
+      if ('fail' in pre) return pre.fail;
+      const raw = pre.probe.result.values[a.field];
+      if (raw === undefined) {
+        return { category: a.category, passed: false, describe, detail: 'field is unpopulated' };
+      }
+      const got = norm(schemaText(raw));
+      const want = norm(a.value);
+      const passed = a.exact ? got === want : got.includes(want);
+      return { category: a.category, passed, describe, detail: passed ? undefined : `actual "${schemaText(raw).slice(0, 120)}"` };
+    }
+    case 'schema_rows': {
+      const describe = `schema.${a.field} rows >= ${a.min}`;
+      const pre = schemaPreamble(ctx.schema, a.field, describe, a.category);
+      if ('fail' in pre) return pre.fail;
+      const rows = schemaRows(pre.probe.result.values[a.field]);
+      if (!rows) return { category: a.category, passed: false, describe, detail: 'field did not resolve to an array' };
+      return { category: a.category, passed: rows.length >= a.min, describe, detail: `actual ${rows.length}` };
+    }
+    case 'schema_row_field': {
+      const describe = `schema.${a.field}[].${a.column} filled on >= ${a.minFilled} rows`;
+      const pre = schemaPreamble(ctx.schema, a.field, describe, a.category);
+      if ('fail' in pre) return pre.fail;
+      const rows = schemaRows(pre.probe.result.values[a.field]);
+      if (!rows) return { category: a.category, passed: false, describe, detail: 'field did not resolve to an array' };
+      const filled = rows.filter((r) => r && r[a.column] !== undefined && String(r[a.column]).trim() !== '').length;
+      return { category: a.category, passed: filled >= a.minFilled, describe, detail: `actual ${filled} of ${rows.length}` };
+    }
+    case 'schema_provenance': {
+      const describe = `schema.${a.field} provenance in [${a.expect.join(', ')}]`;
+      const pre = schemaPreamble(ctx.schema, a.field, describe, a.category);
+      if ('fail' in pre) return pre.fail;
+      const got = pre.probe.result.provenance[a.field];
+      if (got === undefined) return { category: a.category, passed: false, describe, detail: 'field is unpopulated, so it has no provenance' };
+      return { category: a.category, passed: a.expect.includes(got), describe, detail: `actual ${got}` };
+    }
+    case 'schema_absent': {
+      const describe = `schema.${a.field} stays unpopulated`;
+      const pre = schemaPreamble(ctx.schema, a.field, describe, a.category);
+      if ('fail' in pre) return pre.fail;
+      const { declared, result } = pre.probe;
+      // NON-VACUITY, and the reason this kind is NOT satisfied by an empty extraction: a dead
+      // extractor populates nothing, which would make "this one field stayed empty" true for
+      // the wrong reason. The claim only means something when schema mode demonstrably worked
+      // on the same page, so at least one OTHER declared field must have come back populated.
+      const siblingsFilled = Object.keys(declared.properties ?? {})
+        .filter((k) => k !== a.field)
+        .filter((k) => result.values[k] !== undefined);
+      if (siblingsFilled.length === 0) {
+        return {
+          category: a.category,
+          passed: false,
+          describe,
+          detail: 'VACUOUS: no other declared field was populated, so schema mode answered nothing and this absence proves nothing',
+        };
+      }
+      const raw = result.values[a.field];
+      const passed = raw === undefined;
+      return {
+        category: a.category,
+        passed,
+        describe,
+        detail: passed ? undefined : `INVENTED: "${schemaText(raw).slice(0, 120)}" (provenance ${result.provenance[a.field] ?? 'unknown'})`,
+      };
+    }
     case 'row_columns': {
       const describe = `replay columns == [${a.expect.join(', ')}]`;
       if (!ctx.replay) return { category: a.category, passed: false, describe, detail: 'not evaluated: no replay outcome' };
@@ -272,7 +381,7 @@ export function scoreFixture(assertions: AssertionResult[]): Partial<Record<Cate
   return out;
 }
 
-const CATEGORIES: Category[] = ['markdown_fidelity', 'table_preservation', 'boilerplate_noise', 'structured_extract'];
+const CATEGORIES: Category[] = ['markdown_fidelity', 'table_preservation', 'boilerplate_noise', 'structured_extract', 'schema_extract'];
 
 export function summarise(fixtures: FixtureResult[], durationMs: number, runDate: string): ScrapeReport {
   const byCategory = Object.fromEntries(

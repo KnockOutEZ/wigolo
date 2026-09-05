@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { createLogger } from '../../src/logger.js';
 import { extractContent } from '../../src/extraction/pipeline.js';
 import { extractStructured } from '../../src/extraction/structured.js';
+import { extractWithSchemaDetailed } from '../../src/extraction/schema.js';
 import { assertionKey, compareToBaseline, evaluateAssertion, renderMarkdown, scoreFixture, summarise } from './score.js';
-import type { AssertionResult, Baseline, FixtureResult, ScrapeManifest, ScrapeReport } from './types.js';
+import type { AssertionResult, Baseline, FixtureResult, ScrapeManifest, ScrapeReport, SchemaProbe } from './types.js';
 
 const log = createLogger('extract');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,48 @@ const MANIFEST = join(here, 'fixtures', 'manifest.json');
 const HTML_DIR = join(here, 'fixtures', 'html');
 const OUTPUT_DIR = join(here, 'output');
 const BASELINE = join(here, 'baseline.json');
+/**
+ * SD9-Q1 — the schema-mode half of the frozen baseline, in the same `Baseline` shape.
+ *
+ * A SECOND FILE rather than more rows in `baseline.json`, because that file is the frozen C0
+ * snapshot taken at commit `5047f84a` BEFORE any bridge work, and its whole value is that
+ * nobody has rewritten it since. Appending to it would re-date it and destroy the one property
+ * the S9 comparison rests on. The two maps are merged at gate time, so the runner still emits
+ * ONE verdict in ONE lane output — which is what the SD9 exit gate's 3ab arm reads.
+ */
+const SCHEMA_BASELINE = join(here, 'baseline-schema.json');
+
+/** SD9-Q1 — the fixtures whose rows belong to the schema-mode snapshot: exactly those that
+ *  declare a schema. Derived from the manifest, never a hand-kept id list that could drift. */
+export function schemaFixtureIds(manifest: ScrapeManifest): Set<string> {
+  return new Set(manifest.fixtures.filter((f) => f.schema !== undefined).map((f) => f.id));
+}
+
+/**
+ * SD9-Q1 — the frozen verdicts the gate compares against: the C0 snapshot plus the schema-mode
+ * extension, merged into the one per-assertion map `compareToBaseline` reads.
+ *
+ * Merged rather than compared twice on purpose. The SD9 exit gate's 3ab arm reads ONE lane
+ * output; two verdicts would mean the arm could be satisfied by the half someone remembered to
+ * look at. The keys are `fixtureId#index:describe` and the two files cover disjoint fixtures,
+ * so the merge cannot silently overwrite a C0 row — but the collision is checked anyway,
+ * because "cannot happen" is how a frozen number gets quietly replaced.
+ */
+export function loadFrozenAssertions(
+  baselinePath = BASELINE,
+  schemaPath = SCHEMA_BASELINE,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const path of [baselinePath, schemaPath]) {
+    if (!existsSync(path)) continue;
+    const b = JSON.parse(readFileSync(path, 'utf-8')) as Baseline;
+    for (const [k, v] of Object.entries(b.assertions)) {
+      if (k in out && out[k] !== v) throw new Error(`baseline collision on "${k}" between ${baselinePath} and ${schemaPath}`);
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 export function loadManifest(path = MANIFEST): ScrapeManifest {
   const parsed = JSON.parse(readFileSync(path, 'utf-8')) as ScrapeManifest;
@@ -31,12 +74,19 @@ export async function runFixture(
   try {
     const extracted = await extractContent(html, fixture.url);
     const structured = extractStructured(html);
+    // SD9-Q1 — schema mode runs only when the fixture declares a schema, and the probe carries
+    // that schema alongside the result so every schema row can check it was actually asked
+    // for. A fixture with no schema hands `undefined` through, and its schema rows (if anyone
+    // adds one) fail loudly instead of scoring nothing.
+    const schema: SchemaProbe | undefined = fixture.schema
+      ? { declared: fixture.schema, result: extractWithSchemaDetailed(html, fixture.schema) }
+      : undefined;
     // `sourceHtml` is the HTML THIS run extracted from — the live lane's rendered DOM on the
     // live lane, the frozen bytes on the frozen lane. `visible_only` checks non-vacuity
     // against it, so handing it the frozen bytes during a live run would let a node the
     // renderer removed still count as "present in the HTML".
     const assertions: AssertionResult[] = fixture.assertions.map((a) =>
-      evaluateAssertion(a, extracted.markdown, structured, { sourceHtml: html }),
+      evaluateAssertion(a, extracted.markdown, structured, { sourceHtml: html, schema }),
     );
     return {
       id: fixture.id,
@@ -90,17 +140,34 @@ export async function runBenchmark(opts: { manifestPath?: string; htmlDir?: stri
   return summarise(results, Date.now() - t0, new Date().toISOString());
 }
 
-export function writeBaseline(report: ScrapeReport, commit: string, note: string, path = BASELINE): Baseline {
+export function writeBaseline(
+  report: ScrapeReport,
+  commit: string,
+  note: string,
+  path = BASELINE,
+  /** SD9-Q1 — restrict the snapshot to one slice of the report (the schema-mode fixtures). */
+  keep: (f: ScrapeReport['fixtures'][number]) => boolean = () => true,
+): Baseline {
   const assertions: Record<string, boolean> = {};
-  for (const f of report.fixtures) {
+  const fixtures = report.fixtures.filter(keep);
+  if (fixtures.length === 0) throw new Error('refusing to write a baseline with no fixtures');
+  for (const f of fixtures) {
     f.assertions.forEach((a, i) => { assertions[assertionKey(f.id, i, a.describe)] = a.passed; });
   }
+  // Recomputed over the kept fixtures only: a schema-mode snapshot whose `overall` counted the
+  // whole corpus would read as a schema number and be one. With the default `keep` this is the
+  // same arithmetic over the same rows, so the full-baseline path is unchanged.
+  const scoped = summarise(fixtures, report.durationMs, report.runDate);
   const baseline: Baseline = {
     takenAt: report.runDate,
     commit,
     note,
-    overall: report.overall,
-    byCategory: report.byCategory,
+    overall: scoped.overall,
+    // Empty categories are DROPPED rather than written as 0/0. `summarise` scores an empty
+    // bucket 1 so that an absent category cannot drag the report down, which is right for a
+    // live report and wrong for a frozen artifact: a schema-mode snapshot listing
+    // `markdown_fidelity: 100%` over zero assertions is a number someone will eventually quote.
+    byCategory: Object.fromEntries(Object.entries(scoped.byCategory).filter(([, v]) => v.total > 0)),
     assertions,
   };
   writeFileSync(path, `${JSON.stringify(baseline, null, 2)}\n`, 'utf-8');
@@ -149,6 +216,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (has('write-schema-baseline')) {
+    // SD9-Q1 — the number is MEASURED here and frozen; it is never chosen. Re-running this
+    // rewrites the snapshot, so it is a deliberate, separately-named flag rather than a
+    // side effect of the ordinary `--write-baseline` path.
+    const b = writeBaseline(
+      report,
+      flag('commit') ?? 'unknown',
+      flag('note') ?? 'schema-mode baseline (SD9-Q1)',
+      SCHEMA_BASELINE,
+      (f) => schemaFixtureIds(loadManifest()).has(f.id),
+    );
+    writeFileSync(join(OUTPUT_DIR, 'scrape-quality.md'), renderMarkdown(report), 'utf-8');
+    log.info('schema baseline written', { assertions: Object.keys(b.assertions).length, score: b.overall.score });
+    process.stderr.write(renderMarkdown(report));
+    return;
+  }
+
   if (has('write-baseline')) {
     const b = writeBaseline(report, flag('commit') ?? 'unknown', flag('note') ?? 'pre-S9 baseline');
     writeFileSync(join(OUTPUT_DIR, 'scrape-quality.md'), renderMarkdown(report), 'utf-8');
@@ -158,10 +242,8 @@ async function main(): Promise<void> {
   }
 
   let verdict;
-  if (existsSync(BASELINE)) {
-    const baseline = JSON.parse(readFileSync(BASELINE, 'utf-8')) as Baseline;
-    verdict = compareToBaseline(report, baseline.assertions);
-  }
+  const frozen = loadFrozenAssertions();
+  if (Object.keys(frozen).length > 0) verdict = compareToBaseline(report, frozen);
   writeFileSync(join(OUTPUT_DIR, 'scrape-quality.md'), renderMarkdown(report, verdict), 'utf-8');
   // The report goes to stderr: this is a CLI, and stdout stays free for piping the
   // JSON when a caller wants it.
