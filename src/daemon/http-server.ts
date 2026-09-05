@@ -69,6 +69,20 @@ const COMPANION_BODY_CAP_BYTES = 1024 * 1024;
  */
 const BROKER_FAILED_REASON = 'The broker could not complete this op. The daemon log has the detail.';
 
+/**
+ * The same claim as `BROKER_FAILED_REASON`, for the transport and health arms (SD-406 closed this class
+ * for the broker route only).
+ *
+ * The messages that reach these arms are written by the storage layer, the transport SDK and the browser
+ * engine, and they name absolute file paths, ports and session identifiers. All four arms answer a caller
+ * the daemon has not authenticated — `/health` and the MCP transports are open on loopback — so echoing a
+ * thrown message turns an ordinary 500 into a disclosure of where the machine keeps its data. The detail
+ * is not lost: every one of these arms logs it in full to the daemon's structured stderr first.
+ */
+const MCP_TRANSPORT_FAILED_REASON =
+  'The MCP transport could not complete this request. The daemon log has the detail.';
+const HEALTH_FAILED_REASON = 'The health check could not complete. The daemon log has the detail.';
+
 const log = createLogger('server');
 
 export interface DaemonAuthConfig {
@@ -510,7 +524,7 @@ export class DaemonHttpServer {
     } catch (err) {
       log.error('Health check failed', { error: String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'down', error: String(err) }));
+      res.end(JSON.stringify({ status: 'down', error: HEALTH_FAILED_REASON }));
     }
   }
 
@@ -770,7 +784,7 @@ export class DaemonHttpServer {
       log.error('StreamableHTTP request failed', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(err) }));
+        res.end(JSON.stringify({ error: MCP_TRANSPORT_FAILED_REASON }));
       }
     }
   }
@@ -823,7 +837,7 @@ export class DaemonHttpServer {
       log.error('SSE connection failed', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(err) }));
+        res.end(JSON.stringify({ error: MCP_TRANSPORT_FAILED_REASON }));
       }
     }
   }
@@ -846,7 +860,7 @@ export class DaemonHttpServer {
       log.error('SSE message handling failed', { error: String(err) });
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(err) }));
+        res.end(JSON.stringify({ error: MCP_TRANSPORT_FAILED_REASON }));
       }
     }
   }
