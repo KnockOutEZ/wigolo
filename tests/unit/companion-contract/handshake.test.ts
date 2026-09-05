@@ -7,143 +7,55 @@ import {
   COMPANION_CONTRACT_VERSION,
   evaluateHandshake,
 } from '../../../src/companion-contract/index.js';
-import type {
-  CompanionHello,
-  CompanionHelloApp,
-  HandshakeResult,
-} from '../../../src/companion-contract/index.js';
+import {
+  CONTRACT_VERSIONS,
+  HANDSHAKE_CASES,
+  PINNED_CONTRACT_VERSION,
+  SCHEMA_HEADS,
+} from '../../../src/companion-contract/fixtures.js';
 
-function handshake(
-  external: CompanionHello,
-  app: CompanionHelloApp,
-): HandshakeResult {
-  return evaluateHandshake(external, app);
-}
-
+/**
+ * The arms below are NOT written here. They come from the published fixture set
+ * (`wigolo/companion-contract/fixtures`), which the app's own contract tests import from the same
+ * tarball — that shared set is the mechanism, and a locally-typed hello would put this file back to
+ * proving only that core agrees with itself. What stays local is the CALL and the assertion; what is
+ * pinned centrally is every input and every §6 verdict.
+ */
 describe('companion handshake', () => {
-  it.each([
-    {
-      externalVersion: '2.0.0',
-      appVersion: '1.4.0',
-      hint: 'update_studio',
-    },
-    {
-      externalVersion: '1.4.0',
-      appVersion: '2.0.0',
-      hint: 'update_wigolo',
-    },
-  ] as const)(
-    'refuses on contract MAJOR mismatch and returns $hint for the older side',
-    ({ externalVersion, appVersion, hint }) => {
-      const result = handshake(
-        { contractVersion: externalVersion, schemaHead: 18, capabilities: [] },
-        {
-          contractVersion: appVersion,
-          schemaHead: 18,
-          minSchemaHead: 16,
-          capabilities: [],
-        },
-      );
-
-      expect(result).toEqual({
-        ok: false,
-        reason: 'contract_major_mismatch',
-        hint,
-      });
-    },
-  );
-
-  it.each([
-    ['1.9.0', '1.4.0'],
-    ['1.4.0', '1.9.0'],
-  ])(
-    'accepts MINOR skew (%s vs %s) and ignores unknown capability flags',
-    (externalVersion, appVersion) => {
-      const result = handshake(
-        {
-          contractVersion: externalVersion,
-          schemaHead: 18,
-          capabilities: ['future-external-flag'],
-        },
-        {
-          contractVersion: appVersion,
-          schemaHead: 18,
-          minSchemaHead: 16,
-          capabilities: ['future-app-flag'],
-        },
-      );
-
-      expect(result).toEqual({ ok: true });
-    },
-  );
-
-  it('refuses when the external schema head is below the app minimum', () => {
-    const result = handshake(
-      { contractVersion: '1.0.0', schemaHead: 15, capabilities: [] },
-      {
-        contractVersion: '1.0.0',
-        schemaHead: 18,
-        minSchemaHead: 16,
-        capabilities: [],
-      },
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'schema_too_old',
-      hint: 'update_wigolo',
-    });
+  it.each(HANDSHAKE_CASES)('$id — $rule', ({ external, app, expected }) => {
+    expect(evaluateHandshake(external, app)).toEqual(expected);
   });
 
-  it('accepts an external schema head newer than the app knows when contract MAJOR matches', () => {
-    const result = handshake(
-      { contractVersion: '1.7.0', schemaHead: 20, capabilities: [] },
-      {
-        contractVersion: '1.4.0',
-        schemaHead: 18,
-        minSchemaHead: 16,
-        capabilities: [],
-      },
-    );
-
-    expect(result).toEqual({ ok: true });
+  it('covers both directions of every §6 rule, so a dropped arm is visible', () => {
+    expect(HANDSHAKE_CASES.map((c) => c.id)).toEqual([
+      'major-mismatch-external-ahead',
+      'major-mismatch-app-ahead',
+      'minor-skew-external-ahead',
+      'minor-skew-app-ahead',
+      'schema-below-app-minimum',
+      'schema-exactly-app-minimum',
+      'schema-ahead-of-app-major-matches',
+      'schema-ahead-of-app-major-differs',
+    ]);
   });
 
-  it('accepts an external schema head exactly at the app minimum', () => {
-    const result = handshake(
-      { contractVersion: '1.0.0', schemaHead: 16, capabilities: [] },
-      {
-        contractVersion: '1.0.0',
-        schemaHead: 18,
-        minSchemaHead: 16,
-        capabilities: [],
-      },
+  it('keeps the fixture skew constants ordered the way §6 reads them', () => {
+    // The arms are only meaningful if the four heads sit in this order; an edit that reshuffles them
+    // would leave every arm above still green while testing nothing §6 says.
+    expect(SCHEMA_HEADS.belowAppMinimum).toBeLessThan(SCHEMA_HEADS.appMinimum);
+    expect(SCHEMA_HEADS.appMinimum).toBeLessThan(SCHEMA_HEADS.current);
+    expect(SCHEMA_HEADS.current).toBeLessThan(SCHEMA_HEADS.aheadOfApp);
+    expect(CONTRACT_VERSIONS.major2.split('.')[0]).not.toBe(
+      CONTRACT_VERSIONS.major1Low.split('.')[0],
     );
-
-    expect(result).toEqual({ ok: true });
   });
 
-  it('refuses a newer external schema when the contract MAJOR differs', () => {
-    const result = handshake(
-      { contractVersion: '2.0.0', schemaHead: 20, capabilities: [] },
-      {
-        contractVersion: '1.9.0',
-        schemaHead: 18,
-        minSchemaHead: 16,
-        capabilities: [],
-      },
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'contract_major_mismatch',
-      hint: 'update_studio',
-    });
-  });
-
-  it('exports the pinned semver contract version', () => {
+  it('exports the pinned semver contract version, and the fixture set states the same pin', () => {
     expect(COMPANION_CONTRACT_VERSION).toBe('1.0.0');
     expect(COMPANION_CONTRACT_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    // The app pins the version core speaks from the fixture set, not from the runtime barrel. A bump
+    // that moves one and not the other reds here rather than at a real pairing.
+    expect(PINNED_CONTRACT_VERSION).toBe(COMPANION_CONTRACT_VERSION);
   });
 });
 

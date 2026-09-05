@@ -136,3 +136,19 @@ describe('studio/auth', () => {
     });
   });
 });
+
+/**
+ * The barrel is the only legal door: `exports` carries no wildcard, so a consumer outside core
+ * cannot reach `src/companion/auth.js` deeply. Identity, not equivalence — a barrel that re-declared
+ * a wrapper would pass a behavioural check while drifting from the daemon's own enforcement, which is
+ * the single reason the trio is published rather than copied.
+ */
+describe('companion barrel publishes the daemon-route auth trio', () => {
+  it('re-exports the same function objects the daemon imports directly', async () => {
+    const barrel = await import('../../../src/companion/index.js');
+    const direct = await import('../../../src/companion/auth.js');
+    expect(barrel.checkAuth).toBe(direct.checkAuth);
+    expect(barrel.checkAuthSubprotocol).toBe(direct.checkAuthSubprotocol);
+    expect(barrel.checkOriginHost).toBe(direct.checkOriginHost);
+  });
+});

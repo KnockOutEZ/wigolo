@@ -11,8 +11,14 @@
  * router — which import the module directly and do not need a subpath at all.
  *
  * The ceiling rule holds: a symbol goes in only with a named import site outside core. Daemon-route
- * auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately absent — it is spec
- * §2.1 seam 2, core imports it directly, and nothing outside core was measured reaching for it.
+ * auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) was deliberately absent through A8 on
+ * exactly that rule — spec §2.1 seam 2, core imports it directly, and nothing outside core had been
+ * MEASURED reaching for it. That measurement is what changed, not the rule: `StudioHostServer` in the
+ * extracted app validates the bearer token, the WebSocket subprotocol and the Origin/Host pair on its
+ * own loopback surface, and the deleted `wigolo/studio` barrel was its only door. The trio therefore
+ * enters by the ceiling rule rather than in spite of it, and it enters HERE rather than on a subpath of
+ * its own because `auth.ts` already reaches this barrel (`mintHostToken`, `resolveHostToken`) and a
+ * second door onto one module is a second thing to keep in step.
  */
 
 // `run-store.ts`, `profile-store.ts`, `perception/spill.ts` — on-disk state resolution.
@@ -23,6 +29,17 @@ export { normalizeOrigin, type AuthenticatedOriginOverrides } from './origin.js'
 
 // `session.ts` mints the host token; the app resolves the configured one (D1 switch table).
 export { mintHostToken, resolveHostToken } from './auth.js';
+
+// `studio-host.ts` — spec §2.1 seam 2. The app's own loopback HTTP/WS surface runs the same
+// DNS-rebinding defence core's daemon runs, from the same implementation: a re-derived copy on the
+// app side would drift from the one the daemon enforces, and the two surfaces answer the same token.
+export {
+  checkAuth,
+  checkAuthSubprotocol,
+  checkOriginHost,
+  type AuthCheck,
+  type AuthRequestLike,
+} from './auth.js';
 
 // `agent-drive-gate.ts` — per-origin escalation budget. The two defaults are the library
 // constants the gate's own spec asserts against: a test that hardcodes `20` mirrors a number
