@@ -61,6 +61,14 @@ export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer
  */
 const COMPANION_BODY_CAP_BYTES = 1024 * 1024;
 
+/**
+ * What a broker 500 tells the caller. Fixed, because the alternative — the thrown message — is written
+ * by the storage layer, and those messages name absolute file paths and column layouts. A caller that
+ * reached an unexpected throw can do nothing with that detail anyway; the operator can, so the detail
+ * goes to the daemon log instead.
+ */
+const BROKER_FAILED_REASON = 'The broker could not complete this op. The daemon log has the detail.';
+
 const log = createLogger('server');
 
 export interface DaemonAuthConfig {
@@ -680,7 +688,7 @@ export class DaemonHttpServer {
       return this.writeJson(res, 500, {
         ok: false,
         error: 'broker_failed',
-        error_reason: err instanceof Error ? err.message : String(err),
+        error_reason: BROKER_FAILED_REASON,
         stage: 'companion',
       });
     }
