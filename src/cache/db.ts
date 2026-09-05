@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sv from 'sqlite-vec';
@@ -11,7 +11,7 @@ import {
   recordVecFailure,
   recordVecLoaded,
 } from './vec-availability.js';
-import { applyMigrations } from './migrations/runner.js';
+import { applyMigrations, MIGRATIONS } from './migrations/runner.js';
 
 const log = createLogger('cache');
 
@@ -170,7 +170,31 @@ function ensureExitHookRegistered(): void {
   });
 }
 
-export function initDatabase(dbPath: string): Database.Database {
+export interface InitDatabaseOptions {
+  /**
+   * Whether this process OWNS the schema of the file it is opening.
+   *
+   * `true` (default) is the historic behaviour: create the inline schema and
+   * run the migration registry, so the caller's build defines the file's shape.
+   *
+   * `false` opens the SAME file for data reads and writes but applies NO schema
+   * statements at all — no inline `CREATE TABLE`, no embedding-column
+   * `ALTER TABLE`, no migration runner, and no `journal_mode` change. It is for
+   * an EMBEDDED core opening a cache file another core owns: the extraction
+   * design pins "only the external core runs migrations on the shared cache;
+   * the app NEVER migrates a DB it paired into", and until this option existed
+   * every embedded consumer violated that pin by construction, because
+   * `initDatabase` was the only way in.
+   *
+   * A non-owning caller is expected to probe {@link readSchemaHead} first and
+   * refuse to pair on skew, rather than repair the file it found.
+   */
+  migrate?: boolean;
+}
+
+export function initDatabase(dbPath: string, opts: InitDatabaseOptions = {}): Database.Database {
+  const migrate = opts.migrate !== false;
+
   if (instance) {
     instance.close();
     instance = null;
@@ -179,10 +203,27 @@ export function initDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
 
   // Lock the DB file down before any write. In-memory DBs have no file.
+  //
+  // Done on the non-owning path too: this only ever TIGHTENS the mode, changes
+  // no byte of the file's content, and the file holds session-bearing clearance
+  // tokens whichever core opened it. It is a permission floor, not schema.
   const isFileBacked = dbPath !== ':memory:' && dbPath !== '';
   if (isFileBacked) restrictMode(dbPath);
 
-  db.pragma('journal_mode = WAL');
+  if (migrate) {
+    db.pragma('journal_mode = WAL');
+  } else {
+    // `journal_mode = WAL` REWRITES the database header when the file is not
+    // already in WAL, which is a structural write to a file we do not own. Read
+    // the mode instead and let the owner decide; a non-WAL shared cache is
+    // slower and more contended, not broken.
+    const mode = String((db.pragma('journal_mode', { simple: true }) as unknown) ?? '').toLowerCase();
+    if (mode !== 'wal') {
+      log.warn('paired cache DB is not in WAL mode — leaving it alone (owner core sets journal mode)', {
+        journalMode: mode,
+      });
+    }
+  }
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   // Cross-process write contention (the stdio CLI and the Studio host can both
@@ -219,6 +260,18 @@ export function initDatabase(dbPath: string): Database.Database {
       extensionPath,
       insideAppArchive: extensionPath ? isInsideAppArchive(extensionPath) : undefined,
     });
+  }
+
+  // Non-owning open: everything below this point writes schema. Stop here so
+  // the file is returned exactly as it was found — see InitDatabaseOptions.
+  if (!migrate) {
+    if (isFileBacked) {
+      restrictMode(`${dbPath}-wal`);
+      restrictMode(`${dbPath}-shm`);
+    }
+    instance = db;
+    ensureExitHookRegistered();
+    return db;
   }
 
   db.exec(`
@@ -377,5 +430,81 @@ export function probeCacheDb(): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * A cache DB's migration state, read WITHOUT opening the file for write.
+ *
+ * The migration registry is not name-ordered (`010-studio-audit` is registered
+ * before `008-antibot-clearance`, and two migrations share number 013), so
+ * "head" is not a number two builds can compare with `<`. The decidable
+ * comparison is set containment, which is what {@link pending} and
+ * {@link unknown} carry:
+ *
+ *   - `pending` non-empty  → the file is BEHIND this build. An owner core would
+ *                            write to it; a paired non-owner must refuse
+ *                            ("update wigolo") rather than repair it.
+ *   - `unknown` non-empty  → the file is AHEAD of this build; something newer
+ *                            owns it.
+ *   - both empty           → the schemas agree.
+ */
+export interface SchemaHead {
+  /** Applied migration names: registry order first, then names this build does not know. */
+  applied: string[];
+  /** Last applied migration in registry order — a label for logs, not an ordinal. */
+  head: string | null;
+  /** Registry entries the file does not have. */
+  pending: string[];
+  /** Names in the file that this build's registry does not contain. */
+  unknown: string[];
+  /** True when the file has no `schema_migrations` table at all. */
+  uninitialized: boolean;
+}
+
+/**
+ * Read a cache DB's schema state before deciding who owns it.
+ *
+ * Opens read-only, so no schema statement can run even by accident — the
+ * connection would reject the write rather than rely on this module's own
+ * branching. Pair this with `initDatabase(path, { migrate: false })`: probe
+ * first, refuse on skew, and only then open the file you did not create.
+ *
+ * SQLite may still create a `-shm` sidecar next to a WAL database to read it,
+ * which needs a writable DIRECTORY. That touches no byte of the database file.
+ */
+export function readSchemaHead(dbPath: string): SchemaHead {
+  if (!existsSync(dbPath)) {
+    throw new Error(`no cache database at ${dbPath} — nothing to read a schema head from`);
+  }
+
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const registry = MIGRATIONS.map(m => m.name);
+
+    const hasTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'")
+      .get() as { name: string } | undefined;
+    if (!hasTable) {
+      return { applied: [], head: null, pending: registry, unknown: [], uninitialized: true };
+    }
+
+    const rows = db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>;
+    const found = new Set(rows.map(r => r.name));
+    const known = new Set(registry);
+
+    const applied = registry.filter(name => found.has(name));
+    const pending = registry.filter(name => !found.has(name));
+    const unknown = [...found].filter(name => !known.has(name)).sort();
+
+    return {
+      applied: [...applied, ...unknown],
+      head: applied.length > 0 ? (applied[applied.length - 1] ?? null) : null,
+      pending,
+      unknown,
+      uninitialized: false,
+    };
+  } finally {
+    db.close();
   }
 }
