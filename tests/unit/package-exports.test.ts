@@ -245,16 +245,29 @@ const SUBPATHS: Subpath[] = [
     ],
   },
   {
-    // A9, the knowledge-rail half. `packages/studio-core` injects `findSimilar` and `buildBrief` as
-    // stages because neither was on a legal specifier; this subpath is what lets those two `undefined`
-    // arms go away. FACTORIES, not re-exports: `findSimilar` takes three constructed collaborators
-    // core does not export, so a bare re-export would push `initSubsystems`'s construction into the
-    // consumer, where it drifts. `FindSimilarStageError` is runtime because a refusal has to be
-    // catchable by code, not by string-matching a message.
+    // A9, the knowledge-rail half, plus SD7's SERP backend. `packages/studio-core` injects
+    // `findSimilar`, `search` and `buildBrief` as stages because none was on a legal specifier; this
+    // subpath is what lets those three `undefined` arms go away. FACTORIES, not re-exports: both
+    // `findSimilar` and `search` take constructed collaborators core does not export, so a bare
+    // re-export would push `initSubsystems`'s construction into the consumer, where it drifts. The two
+    // `*StageError` classes are runtime because a refusal has to be catchable by code, not by
+    // string-matching a message — and they are two classes so the SERP can tell which rail refused.
     spec: 'wigolo/companion-stages',
     target: './dist/companion/stages.js',
-    runtime: ['FindSimilarStageError', 'createBriefStage', 'createFindSimilarStage'],
-    types: ['BriefStage', 'FindSimilarStage', 'FindSimilarStageOptions'],
+    runtime: [
+      'FindSimilarStageError',
+      'SearchStageError',
+      'createBriefStage',
+      'createFindSimilarStage',
+      'createSearchStage',
+    ],
+    types: [
+      'BriefStage',
+      'FindSimilarStage',
+      'FindSimilarStageOptions',
+      'SearchStage',
+      'SearchStageOptions',
+    ],
   },
   {
     // A9, scope 5. The fixture set is contract-adjacent DATA on its own deep key, not a wildcard and
