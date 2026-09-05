@@ -27,6 +27,7 @@ import {
   createReadStream,
   createWriteStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -297,6 +298,28 @@ function realpathIfPossible(p: string): string | null {
   }
 }
 
+/**
+ * Is this entry ITSELF a link, judged without following it?
+ *
+ * ⚠ `realpathSync` CANNOT ANSWER THIS, AND THAT IS THE WHOLE REASON THIS EXISTS. A link pointing
+ * at something that does not exist yet fails to resolve, so a resolve-based check reads it as
+ * "nothing is there" — the most permissive answer available — while `createWriteStream` follows it
+ * and creates the target. Planting a DANGLING link at the artifact's name is therefore strictly
+ * easier than planting a live one, and the resolve-based half of {@link staysInsideDownloadDir}
+ * was blind to exactly the cheaper attack. Measured 2026-09-05: the containment arm installed
+ * cleanly and wrote outside the download directory until this landed.
+ *
+ * `lstat` stats the entry rather than what it points at, so a dangling link and a live one answer
+ * the same. A junction answers `true` here too, which is what keeps the rule on Windows.
+ */
+function isLinkEntry(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 function withinRoot(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : root + sep);
 }
@@ -312,7 +335,12 @@ function withinRoot(candidate: string, root: string): boolean {
  *    complaint about it, and only the name check refuses it;
  *  - an entry that ALREADY EXISTS under the expected name as a SYMLINK out of the directory is
  *    spelt correctly in every character, so the name check sees nothing wrong — and
- *    `createWriteStream` follows it. Only resolving the path against the filesystem catches that.
+ *    `createWriteStream` follows it. Only asking the filesystem about the path catches that.
+ *
+ * The download step writes and renames its own two paths and never creates a link at either, so a
+ * link found at one did not come from here: it is refused outright rather than followed to see
+ * where it lands. That is also the only rule that holds for a link whose target does not exist
+ * yet, which is the shape an attacker can plant without a race.
  *
  * Both roots are computed because they differ on the platform this install targets: on macOS a
  * data dir under `/var` really lives at `/private/var`, so comparing a lexical path against a
@@ -323,6 +351,10 @@ function staysInsideDownloadDir(candidate: string, downloadDir: string): boolean
   const lexicalRoot = resolve(downloadDir);
   const target = resolve(candidate);
   if (target === lexicalRoot || !withinRoot(target, lexicalRoot)) return false;
+
+  // FIRST, because it is the case the resolve below cannot see: an unresolvable link reads as an
+  // empty slot to `realpathSync` and as a redirection to `open()`.
+  if (isLinkEntry(target)) return false;
 
   const realRoot = realpathIfPossible(downloadDir);
   // Nothing is on disk yet, so there is no link for anything to be pointing through.
