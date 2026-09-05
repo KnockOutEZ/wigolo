@@ -170,6 +170,26 @@ const SUBPATHS: Subpath[] = [
     runtime: ['countTokens'],
   },
   {
+    // SD9-C2. Core's local-model ladder shipped with no `exports` entry reaching it, so the
+    // extracted layer's `LlmPort` had no local rung to resolve at all — the "local model ·
+    // free" claim had nothing behind it. This subpath is the ONE-SHOT seam and nothing else:
+    // one function, prompt -> text or a typed unavailability. The pinned key set is what
+    // keeps that narrow — `runLlmText`, `resolveLocalModelTier` and the provider adapters are
+    // deliberately absent, because a consumer holding those could make the very cloud call a
+    // `backend: 'local'` answer promises did not happen. The type set is pinned too: the
+    // discriminated result is the honesty contract, and the runtime probe cannot see it.
+    spec: 'wigolo/llm',
+    target: './dist/integrations/cloud/llm/index.js',
+    runtime: ['runLocalLlmText'],
+    types: [
+      'LocalCompletionOk',
+      'LocalCompletionRequest',
+      'LocalCompletionResult',
+      'LocalCompletionUnavailable',
+      'LocalCompletionUnavailableReason',
+    ],
+  },
+  {
     // A single module, exported directly like `./config` and `./cache/db` — the same
     // shape core already ships for a one-file surface. The key set is pinned anyway, so
     // a new export in `logger.ts` forces the barrel question rather than leaking.

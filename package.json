@@ -71,6 +71,10 @@
       "import": "./dist/search/index.js",
       "types": "./dist/search/index.d.ts"
     },
+    "./llm": {
+      "import": "./dist/integrations/cloud/llm/index.js",
+      "types": "./dist/integrations/cloud/llm/index.d.ts"
+    },
     "./logger": {
       "import": "./dist/logger.js",
       "types": "./dist/logger.d.ts"
