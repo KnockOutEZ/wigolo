@@ -40,6 +40,13 @@
  * stays dumb; it does not learn what an annotation is, and it is not where the human-only archival
  * asymmetry is enforced (a table-scoped wire cannot see an actor).
  *
+ * `studio_site_widgets` (SD9 §3, 3af, A-420-3/A-420-4) is here on the same terms and needs BOTH
+ * modes: a widget is authored through an element-anchored approval card and toggled or deleted from
+ * the site profile, so a read-only entry would ship an overlay that renders widgets nobody can
+ * create. A widget is DECLARATIVE — a selector, a set of extract-expressions and a template — and
+ * the broker carries it as opaque cells: core does not own that grammar, and law 12 holds
+ * structurally, since a row of those cells can neither click, type, navigate nor grant.
+ *
  * `studio_voice_profiles` (SD9 §3, 3ac, A-420-4) is here on the same terms and needs BOTH modes: a
  * voice profile is created by an explicit human act on a page ("+ learn from this field") and
  * deleted from the privacy dashboard, so a read-only entry would ship the compose surface's two
@@ -71,6 +78,7 @@ export const BROKER_TABLES = Object.freeze([
   'studio_site_grants',
   'studio_site_memories',
   'studio_site_profiles',
+  'studio_site_widgets',
   'studio_voice_profiles',
 ] as const);
 
