@@ -197,9 +197,11 @@ const SUBPATHS: Subpath[] = [
     // A8 adds the auth-origin ledger (8 names) and `bumpEscalationCounter`: both modules stay
     // in core, ship in `dist/`, and are reachable by NO subpath — `exports` carries no wildcard,
     // so there is no deep path a consumer could legally take instead of the barrel.
-    // Still a ceiling: each name below has a named import site outside core. Daemon-route
-    // auth (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`) is deliberately out —
-    // core imports it directly and nothing outside core reaches for it.
+    // A9 adds the daemon-route auth trio (`checkAuth`, `checkAuthSubprotocol`, `checkOriginHost`)
+    // plus its two types. It was out through A8 by the same ceiling rule that lets it in now: the
+    // extracted `StudioHostServer` runs the identical rebinding defence on its own loopback surface,
+    // and the `wigolo/studio` barrel it used to reach was deleted at C4.
+    // Still a ceiling: each name below has a named import site outside core.
     spec: 'wigolo/companion',
     target: './dist/companion/index.js',
     runtime: [
@@ -213,6 +215,9 @@ const SUBPATHS: Subpath[] = [
       'budgetOrigin',
       'budgetRefusal',
       'bumpEscalationCounter',
+      'checkAuth',
+      'checkAuthSubprotocol',
+      'checkOriginHost',
       'getMyInstanceId',
       'mintHostToken',
       'normalizeOrigin',
@@ -229,6 +234,8 @@ const SUBPATHS: Subpath[] = [
       'writeHandle',
     ],
     types: [
+      'AuthCheck',
+      'AuthRequestLike',
       'AuthenticatedOriginOverrides',
       'EscalationCounterKey',
       'OriginBudgetVerdict',
