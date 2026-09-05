@@ -57,7 +57,14 @@ describe('the studio_site_* tables over the companion broker', () => {
   });
 
   /** Each table with the row that exercises it, its key column, and a cell an update may change. */
-  const ROUND_TRIPS = [
+  interface RoundTrip {
+    table: BrokerTable;
+    row: BrokerRow;
+    where: BrokerRow;
+    update: BrokerRow;
+  }
+
+  const ROUND_TRIPS: readonly RoundTrip[] = [
     {
       table: 'studio_site_profiles' as const,
       row: PROFILE,
@@ -133,10 +140,11 @@ describe('the studio_site_* tables over the companion broker', () => {
 
     it('refuses both a read and a write with no grant, before the table is touched', () => {
       for (const { table, row } of ROUND_TRIPS) {
-        for (const op of [
+        const ops: readonly BrokerOp[] = [
           { grant: 'nobody', kind: 'read', table, limit: 10 },
           { grant: 'nobody', kind: 'insert', table, row: { ...row } },
-        ] as const) {
+        ];
+        for (const op of ops) {
           expect(refusalOf(run(op))).toEqual({ ok: false, reason: 'no_grant', table });
         }
         expect(stored(table), table).toEqual([]);
@@ -177,11 +185,12 @@ describe('the studio_site_* tables over the companion broker', () => {
 
         // All three write kinds, because the profile surface uses all three: adding a row, editing
         // visibility or a scope, and a person deleting any of it from the privacy dashboard.
-        for (const op of [
+        const writes: readonly BrokerOp[] = [
           { grant: readOnly, kind: 'insert', table, row: { ...row, ...nextKey(table) } },
           { grant: readOnly, kind: 'update', table, row: update, where },
           { grant: readOnly, kind: 'delete', table, where },
-        ] as const) {
+        ];
+        for (const op of writes) {
           expect(refusalOf(run(op)), `${table}/${op.kind}`).toEqual({
             ok: false,
             reason: 'write_not_granted',
@@ -198,10 +207,11 @@ describe('the studio_site_* tables over the companion broker', () => {
       grants.revoke(grant, 'unpaired');
 
       for (const { table, row } of ROUND_TRIPS) {
-        for (const op of [
+        const ops: readonly BrokerOp[] = [
           { grant, kind: 'read', table, limit: 10 },
           { grant, kind: 'insert', table, row: { ...row, ...nextKey(table) } },
-        ] as const) {
+        ];
+        for (const op of ops) {
           expect(refusalOf(run(op)), table).toEqual({ ok: false, reason: 'grant_revoked', table });
         }
         expect(stored(table), table).toHaveLength(1);
