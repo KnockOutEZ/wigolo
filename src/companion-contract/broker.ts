@@ -47,6 +47,13 @@
  * the broker carries it as opaque cells: core does not own that grammar, and law 12 holds
  * structurally, since a row of those cells can neither click, type, navigate nor grant.
  *
+ * `studio_reading_queue` (SD9 §3, 3ag, A-420-4/A-420-5) is here on the same terms and needs BOTH
+ * modes: a person saves and archives queue items, and so does an agent, whose rows carry the id of
+ * the run that saved them. It is the QUEUE only — notes are the merged `clip` artifact, which
+ * already keeps each snippet's source URL, element and frame, so no second notes store exists to
+ * put on this wire (law 1). It is also the one SD9 table this wire can offer a cursor over: it
+ * grows without bound in append order, and an INTEGER key is what `since`/`before` range on.
+ *
  * `studio_voice_profiles` (SD9 §3, 3ac, A-420-4) is here on the same terms and needs BOTH modes: a
  * voice profile is created by an explicit human act on a page ("+ learn from this field") and
  * deleted from the privacy dashboard, so a read-only entry would ship the compose surface's two
@@ -73,6 +80,7 @@ export const BROKER_TABLES = Object.freeze([
   'studio_flow_steps',
   'studio_memories',
   'studio_run_events',
+  'studio_reading_queue',
   'studio_runs',
   'studio_sessions',
   'studio_site_grants',

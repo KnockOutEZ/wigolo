@@ -70,6 +70,7 @@ const POST_MERGE_ADDED = [
   '024-studio-site-profiles',
   '025-studio-voice-profiles',
   '026-studio-site-widgets',
+  '027-studio-reading-queue',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */
