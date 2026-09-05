@@ -46,6 +46,18 @@ const log = createLogger('companion-broker');
 
 const TABLE_SET: ReadonlySet<string> = new Set(BROKER_TABLES);
 
+/**
+ * How many revoked tokens the ledger remembers.
+ *
+ * The ledger exists so a token whose pairing ended answers `grant_revoked` — "your pairing ended,
+ * re-pair" — instead of the bare `no_grant` it would get once forgotten. That is a courtesy with a
+ * shelf life, and the map holding it is memory an unauthenticated loopback route lets a caller append
+ * to: every `POST /companion/pair` supersedes the live grants, and each supersession used to add a row
+ * nothing ever removed. Capping it trades the diagnosis for a bounded daemon, and only for tokens
+ * revoked more than this many revocations ago — long past when their holder had a reason to retry.
+ */
+export const MAX_BROKER_REVOCATIONS = 1024;
+
 /** True for a name in the contract's CLOSED table set — the only source of a table identifier. */
 export function isBrokerTable(name: unknown): name is BrokerTable {
   return typeof name === 'string' && TABLE_SET.has(name);
@@ -183,6 +195,8 @@ export interface GrantStoreOptions {
   ttlMs?: number;
   /** Token minting, injected so a test can pin a token without reaching into crypto. */
   mintToken?: () => string;
+  /** Size of the revocation ledger. Defaults to {@link MAX_BROKER_REVOCATIONS}; 0 or less is that default. */
+  maxRevocations?: number;
 }
 
 export interface IssueGrantInput {
@@ -205,11 +219,14 @@ export class BrokerGrantStore {
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly mintToken: () => string;
+  private readonly maxRevocations: number;
 
   constructor(options: GrantStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now());
     this.ttlMs = options.ttlMs ?? 0;
     this.mintToken = options.mintToken ?? (() => globalThis.crypto.randomUUID());
+    const cap = options.maxRevocations ?? MAX_BROKER_REVOCATIONS;
+    this.maxRevocations = cap > 0 ? cap : MAX_BROKER_REVOCATIONS;
   }
 
   issue(input: IssueGrantInput): BrokerGrant {
@@ -243,6 +260,15 @@ export class BrokerGrantStore {
     if (!this.grants.delete(token)) return null;
     const revocation: BrokerRevocation = { token, revokedAt: this.now(), reason };
     this.revocations.set(token, revocation);
+    // Insertion order is revocation order, and the OLDEST revocation is the one to forget: a token dead
+    // for a thousand pairings has had every chance to learn it. Eviction is deliberately not keyed on
+    // access, because that would let a caller replaying one dead token keep it resident and push the
+    // genuinely recent revocations out ahead of it.
+    while (this.revocations.size > this.maxRevocations) {
+      const oldest = this.revocations.keys().next();
+      if (oldest.done === true) break;
+      this.revocations.delete(oldest.value);
+    }
     log.info('broker grant revoked', { reason });
     return revocation;
   }
@@ -252,6 +278,11 @@ export class BrokerGrantStore {
     return [...this.grants.keys()]
       .map((token) => this.revoke(token, reason))
       .filter((r): r is BrokerRevocation => r !== null);
+  }
+
+  /** How many revocations the ledger holds — never more than the cap it was constructed with. */
+  revocationCount(): number {
+    return this.revocations.size;
   }
 
   /** Every live grant, expiry not considered — `authorize` is what decides liveness at op time. */
@@ -266,6 +297,9 @@ export class BrokerGrantStore {
    * when it also names an ungranted table, because "your pairing ended" is the actionable answer and
    * "that table is not yours" would send the operator to re-scope a grant that no longer exists), then
    * expiry, then table scope, then write access.
+   *
+   * A token evicted from the bounded ledger falls through to `no_grant`: revocation deletes the grant,
+   * so forgetting WHY a token is dead can only ever make it deader, never authorized again.
    */
   authorize(token: string | undefined, table: BrokerTable, access: BrokerAccess): BrokerGrant | BrokerRefusal {
     if (typeof token !== 'string' || token.length === 0) return { ok: false, reason: 'no_grant', table };
