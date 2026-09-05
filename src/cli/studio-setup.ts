@@ -30,13 +30,14 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import type { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -105,7 +106,15 @@ export type CompanionSetupOutcome =
   /** The copied bundle could not be marked for this system's first-launch security check. */
   | 'quarantine_failed'
   /** This system's security check refused the signed bundle. Nothing was left behind. */
-  | 'gatekeeper_rejected';
+  | 'gatekeeper_rejected'
+  /**
+   * The manifest named a local path this install will not write. Nothing was fetched or created.
+   *
+   * Separate from `manifest_unreadable` on purpose: the manifest parsed and named an artifact, so
+   * "unreadable" would send the user looking for a broken host. What is wrong is where it asked us
+   * to put the bytes, and that is a refusal the user should be able to report as such.
+   */
+  | 'artifact_path_refused';
 
 export interface CompanionSetupResult {
   outcome: CompanionSetupOutcome;
@@ -231,21 +240,98 @@ function writeRecord(dataDir: string, record: CompanionRecord): void {
 }
 
 /**
+ * Versions this install will interpolate into a filename.
+ *
+ * ⚠ THE VERSION IS NETWORK DATA. It arrives in the manifest, and the manifest comes from the
+ * release host — so a hostile or compromised host that spells its version `../../../../Library/
+ * LaunchAgents/com.evil` picks the path the artifact lands at, and the digest it publishes for its
+ * own bytes is no obstacle to that. Dots are allowed because versions have them; separators are
+ * not, because a version is not a path. Bounded, because a filename is.
+ */
+const SAFE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
+
+/**
+ * Artifact formats this install writes.
+ *
+ * An ALLOWLIST rather than a separator ban, because the extension is read out of a URL and a URL
+ * can spell a separator in more than one alphabet — `%2f` survives `new URL().pathname` verbatim
+ * and lands inside `extname()`'s answer. Naming the three formats the release actually publishes
+ * is a rule that does not have to enumerate the encodings of the thing it forbids.
+ */
+const SAFE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set(['.dmg', '.zip', '.bin']);
+
+type ArtifactNaming = { ok: true; fileName: string } | { ok: false; reason: string };
+
+/**
  * The artifact's local name.
  *
  * Derived from the VERSION AND TARGET rather than the URL's basename, so two releases never share
  * a partial file: a `.part` left by 1.3.0 must not become the prefix a 1.4.0 download resumes,
  * which is exactly what a host-chosen constant filename would produce. The extension still comes
- * from the URL, because the host owns the artifact's format.
+ * from the URL, because the host owns the artifact's format — but only from the list of formats
+ * this install knows how to put on disk.
  */
-function artifactFileName(version: string, targetKey: string, url: string): string {
+function artifactFileName(version: string, targetKey: string, url: string): ArtifactNaming {
+  if (!SAFE_VERSION.test(version)) {
+    return { ok: false, reason: `the release manifest names a version that cannot be part of a filename: ${version}` };
+  }
   let ext = '';
   try {
     ext = extname(new URL(url).pathname);
   } catch {
     ext = '';
   }
-  return `wigolo-studio-${version}-${targetKey}${ext || '.bin'}`;
+  const format = (ext || '.bin').toLowerCase();
+  if (!SAFE_ARTIFACT_EXTENSIONS.has(format)) {
+    return { ok: false, reason: `the release manifest names an artifact format this install does not write: ${ext}` };
+  }
+  return { ok: true, fileName: `wigolo-studio-${version}-${targetKey}${format}` };
+}
+
+/** The real location of `p`, or null when it does not resolve to anything on disk. */
+function realpathIfPossible(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+function withinRoot(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/**
+ * Is this a path the download step may create, write and rename inside the download directory?
+ *
+ * THE SECOND LAYER, AND IT IS NOT THE NAME CHECK WEARING A SECOND HAT. {@link SAFE_VERSION} and
+ * {@link SAFE_ARTIFACT_EXTENSIONS} judge the STRINGS the manifest supplied; this judges the PATH
+ * they produced, on the disk it will be produced on. The gap each covers for the other is real:
+ *
+ *  - a version like `1.4.0/nested` never leaves the download directory, so containment has no
+ *    complaint about it, and only the name check refuses it;
+ *  - an entry that ALREADY EXISTS under the expected name as a SYMLINK out of the directory is
+ *    spelt correctly in every character, so the name check sees nothing wrong — and
+ *    `createWriteStream` follows it. Only resolving the path against the filesystem catches that.
+ *
+ * Both roots are computed because they differ on the platform this install targets: on macOS a
+ * data dir under `/var` really lives at `/private/var`, so comparing a lexical path against a
+ * resolved root would refuse every legitimate download. The lexical target is judged against the
+ * lexical root, and anything the filesystem resolved is judged against the resolved root.
+ */
+function staysInsideDownloadDir(candidate: string, downloadDir: string): boolean {
+  const lexicalRoot = resolve(downloadDir);
+  const target = resolve(candidate);
+  if (target === lexicalRoot || !withinRoot(target, lexicalRoot)) return false;
+
+  const realRoot = realpathIfPossible(downloadDir);
+  // Nothing is on disk yet, so there is no link for anything to be pointing through.
+  if (realRoot === null) return true;
+  const existing = realpathIfPossible(target);
+  if (existing !== null && !withinRoot(existing, realRoot)) return false;
+  const parent = realpathIfPossible(dirname(target));
+  if (parent !== null && !withinRoot(parent, realRoot)) return false;
+  return true;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -272,6 +358,63 @@ interface TransferResult {
   resumedFromBytes: number;
   status?: number;
   error?: string;
+  /** The transport policy refused a hop. Distinct from a failed transfer: nothing was fetched. */
+  refusal?: string;
+}
+
+/** How many hops a release CDN may take us through before we call it a loop. */
+const MAX_REDIRECT_HOPS = 5;
+
+interface PolicyFetchResult {
+  res?: Response;
+  refusal?: string;
+  error?: string;
+}
+
+/**
+ * Fetch `url`, following redirects ONLY to addresses the transport policy would have allowed.
+ *
+ * ⚠ A REDIRECT IS A SECOND ADDRESS, AND THE DEFAULT POLICY HANDS IT TO THE NETWORK UNCHECKED.
+ * {@link companionTransportRefusal} runs before the socket opens — and then `fetch`'s own
+ * `redirect: 'follow'` opens as many more sockets as the answer asks for, to addresses nothing
+ * checked. An https host that answers `302 Location: http://…` therefore gets exactly the
+ * cleartext hop the pre-check exists to prevent, one status code later.
+ *
+ * The fix is NOT `redirect: 'error'`. Real release CDNs 302 on the happy path — a blanket refusal
+ * would decline every genuine download while looking, in tests that only exercise the hostile arm,
+ * like a working control. So each hop is taken manually and re-judged by the same policy, and a
+ * hop that passes is followed like any other.
+ */
+async function fetchFollowingPolicy(
+  url: string,
+  init: RequestInit,
+  fetchImpl: typeof globalThis.fetch,
+  env: NodeJS.ProcessEnv,
+): Promise<PolicyFetchResult> {
+  let current = url;
+  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+    const refusal = companionTransportRefusal(current, env);
+    if (refusal) return { refusal };
+
+    let res: Response;
+    try {
+      res = await fetchImpl(current, { ...init, redirect: 'manual' });
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+    // A 3xx with no `Location` (a 304, a bare 300) is an answer, not a hop. Handing it back lets
+    // the caller's own status rules decide, rather than inventing a redirect that was not offered.
+    if (location === null) return { res };
+
+    try {
+      current = new URL(location, current).toString();
+    } catch {
+      return { error: `the release host redirected to an address that is not usable: ${location}` };
+    }
+  }
+  return { error: `the release host redirected more than ${MAX_REDIRECT_HOPS} times` };
 }
 
 /**
@@ -288,17 +431,20 @@ async function transfer(
   url: string,
   partPath: string,
   fetchImpl: typeof globalThis.fetch,
+  env: NodeJS.ProcessEnv,
 ): Promise<TransferResult> {
   const existing = sizeOf(partPath);
   const headers: Record<string, string> = {};
   if (existing > 0) headers.Range = `bytes=${existing}-`;
 
-  let res: Response;
-  try {
-    res = await fetchImpl(url, { headers });
-  } catch (e) {
-    return { ok: false, resumedFromBytes: 0, error: e instanceof Error ? e.message : String(e) };
+  // The artifact address passed the policy before this call; every address the ANSWER names has
+  // to pass it too, or the download hop is the one that leaves the encrypted connection.
+  const hopped = await fetchFollowingPolicy(url, { headers }, fetchImpl, env);
+  if (hopped.refusal) return { ok: false, resumedFromBytes: 0, refusal: hopped.refusal };
+  if (!hopped.res) {
+    return { ok: false, resumedFromBytes: 0, error: hopped.error ?? 'unknown transport error' };
   }
+  const res = hopped.res;
 
   // The prefix already covers the whole artifact (or is longer than it). Either it is the finished
   // file under a `.part` name, in which case the digest check downstream accepts it, or it is
@@ -488,14 +634,28 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
   }
 
   let release: CompanionRelease;
-  try {
-    const res = await fetchImpl(manifestUrl, {
-      signal: AbortSignal.timeout(15_000),
+  const answered = await fetchFollowingPolicy(
+    manifestUrl,
+    { signal: AbortSignal.timeout(15_000) },
+    fetchImpl,
+    env,
+  );
+  // A hop the policy refused is not an unreadable manifest — the manifest was never read. Typing
+  // it as the transport refusal it is keeps the user's next move ("this host is not encrypted")
+  // right, and keeps the redirect hole from hiding behind a generic parse failure.
+  if (answered.refusal) {
+    return fail('insecure_transport', answered.refusal, host);
+  }
+  if (!answered.res) {
+    return fail('manifest_unreadable', 'Could not read the companion release manifest.', host, {
+      error: answered.error ?? 'unknown transport error',
     });
-    if (!res.ok) {
-      return fail('manifest_unreadable', `The release host answered ${res.status}.`, host);
+  }
+  try {
+    if (!answered.res.ok) {
+      return fail('manifest_unreadable', `The release host answered ${answered.res.status}.`, host);
     }
-    release = (await res.json()) as CompanionRelease;
+    release = (await answered.res.json()) as CompanionRelease;
   } catch (e) {
     return fail('manifest_unreadable', 'Could not read the companion release manifest.', host, {
       error: e instanceof Error ? e.message : String(e),
@@ -529,12 +689,35 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
   }
 
   const downloadDir = studioStateDir(dataDir, 'downloads');
+  // ⚠ BOTH GUARDS RUN BEFORE THE FIRST `mkdir`. The transfer path creates whatever directories
+  // the part file's parent needs, so a path that has already escaped is a path whose escape has
+  // already been built by the time anything downstream could object.
+  const naming = artifactFileName(release.version, target.key, artifact.url);
+  if (!naming.ok) {
+    return fail(
+      'artifact_path_refused',
+      `The release host asked for the download to be saved under a name this install will not write: ${naming.reason}. Nothing was fetched.`,
+      host,
+      { version: release.version },
+    );
+  }
+  const partPath = join(downloadDir, `${naming.fileName}.part`);
+  const finalPath = join(downloadDir, naming.fileName);
+  const escaping = [partPath, finalPath].find((p) => !staysInsideDownloadDir(p, downloadDir));
+  if (escaping !== undefined) {
+    return fail(
+      'artifact_path_refused',
+      `The release host asked for the download to be saved outside the download folder, at ${escaping}. Nothing was fetched.`,
+      host,
+      { version: release.version },
+    );
+  }
   mkdirSync(downloadDir, { recursive: true });
-  const fileName = artifactFileName(release.version, target.key, artifact.url);
-  const partPath = join(downloadDir, `${fileName}.part`);
-  const finalPath = join(downloadDir, fileName);
 
-  const moved = await transfer(artifact.url, partPath, fetchImpl);
+  const moved = await transfer(artifact.url, partPath, fetchImpl, env);
+  if (moved.refusal) {
+    return fail('insecure_transport', moved.refusal, host, { version: release.version });
+  }
   if (!moved.ok) {
     return fail('download_failed', `The download did not finish: ${moved.error ?? 'unknown transport error'}`, host, {
       version: release.version,
