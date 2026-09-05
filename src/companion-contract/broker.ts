@@ -39,6 +39,16 @@
  * human — are the companion's, expressed here as ordinary insert/update ops on one table. The broker
  * stays dumb; it does not learn what an annotation is, and it is not where the human-only archival
  * asymmetry is enforced (a table-scoped wire cannot see an actor).
+ *
+ * The three `studio_site_*` tables (SD6 §3, A-17-3) are here on the same terms and all three need
+ * BOTH modes. `studio_site_profiles` is the per-domain row a person edits from the profile card
+ * (visibility, view rules, flags) and whose `run_count` fold the app maintains; `studio_site_grants`
+ * is the persistent "remember for this site" layer a person writes through the grant card; and
+ * `studio_site_memories` is the domain→memory junction the app is the only writer of. A read-only
+ * entry on any of them would ship a profile surface that nothing can populate. As with the two
+ * above, the semantics — the closed visibility set, the human-only grant writer, the serialised
+ * read-modify-write of `run_count` — belong to the companion and are expressed here as ordinary
+ * insert/update/delete ops. The broker does not learn what a site profile is.
  */
 export const BROKER_TABLES = Object.freeze([
   'studio_annotations',
@@ -49,6 +59,9 @@ export const BROKER_TABLES = Object.freeze([
   'studio_run_events',
   'studio_runs',
   'studio_sessions',
+  'studio_site_grants',
+  'studio_site_memories',
+  'studio_site_profiles',
 ] as const);
 
 export type BrokerTable = (typeof BROKER_TABLES)[number];
