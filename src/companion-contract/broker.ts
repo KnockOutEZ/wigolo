@@ -40,6 +40,29 @@
  * stays dumb; it does not learn what an annotation is, and it is not where the human-only archival
  * asymmetry is enforced (a table-scoped wire cannot see an actor).
  *
+ * `studio_site_widgets` (SD9 §3, 3af, A-420-3/A-420-4) is here on the same terms and needs BOTH
+ * modes: a widget is authored through an element-anchored approval card and toggled or deleted from
+ * the site profile, so a read-only entry would ship an overlay that renders widgets nobody can
+ * create. A widget is DECLARATIVE — a selector, a set of extract-expressions and a template — and
+ * the broker carries it as opaque cells: core does not own that grammar, and law 12 holds
+ * structurally, since a row of those cells can neither click, type, navigate nor grant.
+ *
+ * `studio_reading_queue` (SD9 §3, 3ag, A-420-4/A-420-5) is here on the same terms and needs BOTH
+ * modes: a person saves and archives queue items, and so does an agent, whose rows carry the id of
+ * the run that saved them. It is the QUEUE only — notes are the merged `clip` artifact, which
+ * already keeps each snippet's source URL, element and frame, so no second notes store exists to
+ * put on this wire (law 1). It is also the one SD9 table this wire can offer a cursor over: it
+ * grows without bound in append order, and an INTEGER key is what `since`/`before` range on.
+ *
+ * `studio_voice_profiles` (SD9 §3, 3ac, A-420-4) is here on the same terms and needs BOTH modes: a
+ * voice profile is created by an explicit human act on a page ("+ learn from this field") and
+ * deleted from the privacy dashboard, so a read-only entry would ship the compose surface's two
+ * write affordances dead. These are WRITING-tone profiles, not speech — brief §0a.4 defers the
+ * voice/audio frame (3ba) post-done and nothing on this wire touches audio. Its semantics — that a
+ * profile is learned ONLY from text the user actually wrote on that site, and that the learning is
+ * a human act — are the companion's; the second is a law-12 control the broker structurally cannot
+ * hold, because a table-scoped op carries no actor to test.
+ *
  * The three `studio_site_*` tables (SD6 §3, A-17-3) are here on the same terms and all three need
  * BOTH modes. `studio_site_profiles` is the per-domain row a person edits from the profile card
  * (visibility, view rules, flags) and whose `run_count` fold the app maintains; `studio_site_grants`
@@ -57,11 +80,14 @@ export const BROKER_TABLES = Object.freeze([
   'studio_flow_steps',
   'studio_memories',
   'studio_run_events',
+  'studio_reading_queue',
   'studio_runs',
   'studio_sessions',
   'studio_site_grants',
   'studio_site_memories',
   'studio_site_profiles',
+  'studio_site_widgets',
+  'studio_voice_profiles',
 ] as const);
 
 export type BrokerTable = (typeof BROKER_TABLES)[number];

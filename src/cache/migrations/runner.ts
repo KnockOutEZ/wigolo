@@ -765,6 +765,178 @@ CREATE INDEX IF NOT EXISTS idx_studio_visit_pages_byte_len
   ON studio_visit_pages(byte_len);
 `;
 
+// SD9 §3 (3ac, A-420-4) — the voice-profile store's schema half: one table, no domain code.
+// WRITING-tone profiles, not speech (§0a.4 defers 3ba). Full rationale (why exemplars is NOT NULL,
+// why the key is the triple and not the pair, why no CHECK on surface, why the table takes no wire
+// cursor) is in the mirrored 025-studio-voice-profiles.sql, which a test holds byte-identical to
+// this constant.
+const MIGRATION_025_STUDIO_VOICE_PROFILES = `
+-- SD9 §3 (3ac, A-420-4) — writing-tone voice profiles.
+--
+-- NOT speech. §0a.4 defers the voice/audio frame (3ba) post-done and the SD9 mini-spec's §0 rules
+-- 3ac distinct from it: these are the profiles behind the LinkedIn · measured / Slack · terse /
+-- email · formal chips and the "Match my voice" button. No audio, no capture and no synthesis is
+-- implied by any column here; one that implied a stored utterance would be the deferred frame
+-- arriving through the schema.
+--
+-- A profile is learned ONLY from text the user actually wrote on that site — never a generic
+-- "professional tone" — so exemplars is NOT NULL: a row with no exemplars IS that generic profile
+-- wearing a site's name, and there is no state in which one is wanted. That the learning is an
+-- explicit human act ("+ learn from this field", nothing learned silently) is a law-12 control and
+-- is NOT here: a table-scoped wire has no actor to test, so it lives in the domain module (SD9-B3).
+--
+-- domain is eTLD+1, keyed exactly as deriveDomain keys a pre-grant, so a profile spans the same
+-- slice of the web as the grant card that authorised reading the text it learned from. surface is
+-- the composing surface within that site — a post composer, a DM, an email reply.
+--
+-- The key is the TRIPLE, not the (domain, surface) pair. compose takes voice_profile?: text, so
+-- a NAME is the handle a caller resolves a profile by, and a surface must therefore be able to
+-- carry more than one named tone; re-learning the same name on the same surface is that profile
+-- arriving again rather than a second one beside it. A pair key would make the second named tone
+-- unstorable, and D15 makes that unfixable without a table rebuild on every existing database.
+--
+-- No CHECK on surface, for migration 023/024's stated reason: D15 makes a released migration's
+-- text history, and the broker is dumb by design (D8) — an app one migration ahead of the core it
+-- paired into must still be able to write a surface this core has never heard of.
+--
+-- No column here can carry a credential, structurally rather than by convention: exemplars are text
+-- the user typed into a visible field, and a masked input's value never enters a snapshot in the
+-- first place (the pinned same-origin stance), so no path reaches this table with a secret on it.
+--
+-- The key is TEXT throughout, so this table has NO wire cursor: the broker ranges since/before over
+-- an INTEGER seq or id, and a caller paging by an opaque TEXT key would walk an order nothing
+-- wrote in. Deliberate — a profile set is bounded by the surfaces a person composes on, so it pages
+-- by a narrowing where plus a client-side slice, exactly as the site-profile listing does.
+CREATE TABLE IF NOT EXISTS studio_voice_profiles (
+  domain      TEXT NOT NULL,
+  surface     TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  exemplars   TEXT NOT NULL,
+  learned_at  INTEGER NOT NULL,
+  PRIMARY KEY (domain, surface, name)
+);
+
+-- "Every profile this site has, newest last" — what the profile picker and the privacy dashboard
+-- both open with. The primary key's own index seeks by domain but orders by surface, so ordering by
+-- recency over it costs a sort on every open; this one ends in learned_at, so the listing is the
+-- same traversal as the seek and no sort step survives.
+CREATE INDEX IF NOT EXISTS idx_studio_voice_profiles_domain
+  ON studio_voice_profiles(domain, learned_at);
+`;
+
+// SD9 §3 (3af, A-420-3/A-420-4) — the site-widget store's schema half: one table, no domain
+// code. Full rationale (why a widget is declarative and what the absent columns prevent, why the
+// key is (domain, name), why enabled defaults to 1, why there is no second index and no wire
+// cursor) is in the mirrored 026-studio-site-widgets.sql, which a test holds byte-identical to
+// this constant.
+const MIGRATION_026_STUDIO_SITE_WIDGETS = `
+-- SD9 §3 (3af, A-420-3/A-420-4) — declarative site widgets.
+--
+-- v1 is DECLARATIVE, never script: a widget is a selector to bind to, a set of extract-expressions,
+-- and a template that renders the computed values as overlay chips beside each bound element (a
+-- unit price per kg, say). Page data is never executed (pin 7), and law 12 holds structurally here
+-- rather than by convention — a widget computes from page data and renders chrome-side, so it can
+-- neither click, type, navigate nor grant, and there is no column through which it could. That
+-- absence is load-bearing because a stored widget is exportable (A-17-4: edit/share is the
+-- site-profile export path), so a column that could carry an instruction would carry it off-machine.
+--
+-- binds and fields are opaque cells because core does not own the extract-expression grammar: the
+-- recipe class lives in the domain module (SD9-P1), and a core that parsed it here would owe a new
+-- migration every time that grammar gained a form (D8).
+--
+-- The key is (domain, name): a widget is named within a site, and "authored once" then edited means
+-- the same name arriving again is an EDIT of that widget rather than a second one beside it. A
+-- surrogate id would let a re-author silently double the chips on every bound element.
+--
+-- enabled defaults to 1 because authoring passes an element-anchored approval card before anything
+-- is stored (§7 approvals): a widget that exists was approved, so a row that arrived without an
+-- explicit flag is a live widget, not a dormant one. INTEGER because SQLite has no boolean, and no
+-- CHECK on it, for migration 023/024's stated D15/D8 reason.
+--
+-- No index beyond the primary key's own, deliberately. The read every page load pays is "the
+-- enabled widgets for this domain", and the key's index already makes the domain half a seek;
+-- enabled is a residual over a range holding one site's widgets, which is a handful of rows. An
+-- index bought for that filter would be paid for by every authoring write to save a scan nobody runs.
+--
+-- The key is TEXT throughout, so this table has NO wire cursor: the broker ranges since/before over
+-- an INTEGER seq or id, and a site's widget set is small and read whole on load, so it needs none.
+CREATE TABLE IF NOT EXISTS studio_site_widgets (
+  domain      TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  binds       TEXT NOT NULL,
+  fields      TEXT NOT NULL,
+  template    TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (domain, name)
+);
+`;
+
+// SD9 §3 (3ag, A-420-4/A-420-5) — the reading queue's schema half: one table, no domain code.
+// The queue only — notes ride the merged clip artifact (A-420-5). Full rationale (why this is the
+// one SD9 table with a wire cursor, why there is no UNIQUE on url, why summary is nullable, why
+// claims_flagged is a count) is in the mirrored 027-studio-reading-queue.sql, which a test holds
+// byte-identical to this constant.
+const MIGRATION_027_STUDIO_READING_QUEUE = `
+-- SD9 §3 (3ag, A-420-4/A-420-5) — the reading queue.
+--
+-- The QUEUE only. Notes are NOT here: "17 snippets, every one keeps its source URL, element and
+-- frame" is exactly the merged clip artifact, which already stores all three, so a note or snippet
+-- column here would be the second home for them that law 1 forbids (A-420-5). summary is not that
+-- — it is a derived line ABOUT a queued page, never captured text from it.
+--
+-- id is an INTEGER PRIMARY KEY — a rowid alias — and it is the one deliberate difference from the
+-- site-profile and widget tables, which take no wire cursor at all. The broker ranges since/before
+-- over seq, else an INTEGER id, and offers no cursor to a table without one; a reading queue is the
+-- single SD9 store that grows without bound in append order, so paging it by a narrowing where plus
+-- a client-side slice — the way those TEXT-keyed listings page — would eventually ask for a whole
+-- reading history in one frame and meet MAX_BROKER_ROWS. A rowid alias makes that cursor the
+-- insertion order itself and costs no extra column.
+--
+-- No UNIQUE on url, deliberately. Whether re-saving a page a run already queued is the same item
+-- resurfacing or a second entry is a queue SEMANTIC, and semantics belong to the domain module
+-- (D8); a constraint here would decide it for every future build and turn the archived-then-re-added
+-- case into a wire error rather than a choice.
+--
+-- added_by carries either the literal human or the id of the run that saved the row — the
+-- attribution the surface reads back as "3 more from run 9k1x". One TEXT column rather than a
+-- kind/id pair because a run id is already unambiguous against that literal, and core never learns
+-- which run ids exist: law 1 keeps the run itself in the run store. No CHECK on it, or on state,
+-- for migration 023/024's stated D15/D8 reason.
+--
+-- summary is NULLABLE and that is load-bearing: the summary is produced locally on save and the
+-- local model may simply not be there, in which case the save must still succeed (SD9-B4). A NOT
+-- NULL would make summarise-on-save a precondition of saving at all, so an unavailable model would
+-- silently cost the user the item. Which shape the absent-with-reason cell takes is the domain
+-- module's to choose; core owes the column that can be empty.
+--
+-- claims_flagged is a COUNT, not the claims. Claim bodies and their verdicts belong to the
+-- claim-check layer (3aa) keyed by url, and copying them here would be a second home for them
+-- again; the queue listing needs only the badge, which a count renders without parsing anything.
+CREATE TABLE IF NOT EXISTS studio_reading_queue (
+  id              INTEGER PRIMARY KEY,
+  url             TEXT NOT NULL,
+  title           TEXT,
+  added_by        TEXT NOT NULL,
+  summary         TEXT,
+  claims_flagged  INTEGER NOT NULL DEFAULT 0,
+  state           TEXT NOT NULL DEFAULT 'queued',
+  added_at        INTEGER NOT NULL
+);
+
+-- The queue as the reading rail opens it: what is still queued, in the order it arrived. Ends in
+-- added_at so the listing is the same traversal as the seek and no sort step survives — the trade
+-- migrations 019 and 023 make for their own status-scoped listings.
+CREATE INDEX IF NOT EXISTS idx_studio_reading_queue_state
+  ON studio_reading_queue(state, added_at);
+
+-- The attribution walk: what did this run add, which is the line rendered under an agent-saved row
+-- and the question archiving a run's contributions has to ask first. The state index cannot serve
+-- it — that index leads on state, and a run's rows are spread across every state.
+CREATE INDEX IF NOT EXISTS idx_studio_reading_queue_added_by
+  ON studio_reading_queue(added_by, added_at);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -1071,6 +1243,9 @@ export const MIGRATIONS: Migration[] = [
   },
   { name: '023-studio-annotations', sql: MIGRATION_023_STUDIO_ANNOTATIONS },
   { name: '024-studio-site-profiles', sql: MIGRATION_024_STUDIO_SITE_PROFILES },
+  { name: '025-studio-voice-profiles', sql: MIGRATION_025_STUDIO_VOICE_PROFILES },
+  { name: '026-studio-site-widgets', sql: MIGRATION_026_STUDIO_SITE_WIDGETS },
+  { name: '027-studio-reading-queue', sql: MIGRATION_027_STUDIO_READING_QUEUE },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
