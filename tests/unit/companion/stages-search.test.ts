@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import type { SearchOutput } from '../../../src/types.js';
+import type { SearchInput, SearchOutput } from '../../../src/types.js';
 import { isDatabaseInitialized } from '../../../src/cache/db.js';
 
 /**
@@ -96,12 +96,12 @@ describe('createSearchStage', () => {
   it('crosses the input unreshaped, so search_depth reaches the provider that spends it', async () => {
     handleSearch.mockResolvedValue({ ok: true, data: OUTPUT });
 
-    const input = {
+    const input: SearchInput = {
       query: 'local first search',
       search_depth: 'deep',
       max_results: 5,
       include_domains: ['example.dev'],
-    } as const;
+    };
     await createSearchStage()({ ...input });
 
     // Whole-object equality, deliberately: the depth tier changes reranking and content-fetch budgets
