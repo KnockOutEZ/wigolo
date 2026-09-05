@@ -244,6 +244,18 @@ const SUBPATHS: Subpath[] = [
     ],
   },
   {
+    // A9, the knowledge-rail half. `packages/studio-core` injects `findSimilar` and `buildBrief` as
+    // stages because neither was on a legal specifier; this subpath is what lets those two `undefined`
+    // arms go away. FACTORIES, not re-exports: `findSimilar` takes three constructed collaborators
+    // core does not export, so a bare re-export would push `initSubsystems`'s construction into the
+    // consumer, where it drifts. `FindSimilarStageError` is runtime because a refusal has to be
+    // catchable by code, not by string-matching a message.
+    spec: 'wigolo/companion-stages',
+    target: './dist/companion/stages.js',
+    runtime: ['FindSimilarStageError', 'createBriefStage', 'createFindSimilarStage'],
+    types: ['BriefStage', 'FindSimilarStage', 'FindSimilarStageOptions'],
+  },
+  {
     spec: 'wigolo/companion-contract',
     target: './dist/companion-contract/index.js',
     runtime: [
