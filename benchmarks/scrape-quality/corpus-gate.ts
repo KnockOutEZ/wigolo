@@ -16,7 +16,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '../../src/logger.js';
-import { REPLAY_ASSERTION_KINDS } from './types.js';
+import { REPLAY_ASSERTION_KINDS, SCHEMA_ASSERTION_KINDS } from './types.js';
 import type { Assertion, Category, ScrapeManifest } from './types.js';
 
 const log = createLogger('extract');
@@ -71,7 +71,7 @@ export const CORPUS_TARGETS = {
   } as Record<string, number>,
 };
 
-const CATEGORIES: Category[] = ['markdown_fidelity', 'table_preservation', 'boilerplate_noise', 'structured_extract'];
+const CATEGORIES: Category[] = ['markdown_fidelity', 'table_preservation', 'boilerplate_noise', 'structured_extract', 'schema_extract'];
 
 /**
  * K22 — §8-A's go/no-go thresholds, held as RATES and printed as COUNTS derived from the
@@ -185,6 +185,18 @@ export function satisfiedByEmptyExtraction(a: Assertion): boolean {
       return a.min <= 0;
     case 'structured':
       return a.min <= 0;
+    case 'schema_rows':
+      return a.min <= 0;
+    case 'schema_row_field':
+      return a.minFilled <= 0;
+    // SD9-Q1 — every other schema kind needs schema mode to have ANSWERED, so an empty
+    // extraction fails them. `schema_absent` is the one that looks satisfiable by emptiness and
+    // is not: its scorer refuses the row as VACUOUS unless some OTHER declared field on the
+    // same fixture came back populated, i.e. unless schema mode demonstrably worked.
+    case 'schema_value':
+    case 'schema_provenance':
+    case 'schema_absent':
+      return false;
     // Replay kinds are never in the C0 manifest (enforced above) and are scored against a
     // replay outcome rather than an extraction, so the question does not arise.
     default:
@@ -233,6 +245,18 @@ export function validateCorpus(manifest: ScrapeManifest, htmlDir?: string): Corp
     for (const a of f.assertions) {
       if ((REPLAY_ASSERTION_KINDS as readonly string[]).includes(a.kind)) {
         violations.push(`${f.id}: '${a.kind}' is a replay assertion and belongs to the drift corpus, not the C0 manifest`);
+      }
+    }
+  }
+
+  // SD9-Q1 — a schema row on a fixture that declares no schema is unevaluable, and unevaluable
+  // is exactly how the replay kinds got their own separation rule above. Caught here so it
+  // shows in the gate a reviewer reads, not only as a red row deep in the report.
+  for (const f of fixtures) {
+    if (f.schema !== undefined) continue;
+    for (const a of f.assertions) {
+      if ((SCHEMA_ASSERTION_KINDS as readonly string[]).includes(a.kind)) {
+        violations.push(`${f.id}: '${a.kind}' is a schema-mode assertion but the fixture declares no schema`);
       }
     }
   }

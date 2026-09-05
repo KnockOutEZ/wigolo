@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { createLogger } from '../../src/logger.js';
 import { extractStructured } from '../../src/extraction/structured.js';
 import { evaluateAssertion } from './score.js';
+import { SCHEMA_ASSERTION_KINDS } from './types.js';
 import type { AssertionResult, ScrapeManifest } from './types.js';
 import type { StructuredData } from '../../src/types.js';
 
@@ -173,7 +174,11 @@ export function scoreMarkdown(
   // Structured-shape assertions are dropped: Firecrawl's scrape returns markdown only, so
   // scoring them would compare wigolo against an absent capability rather than against
   // Firecrawl's extraction quality. They are covered by the frozen-fixture gate instead.
-  const applicable = assertions.filter((a) => a.kind !== 'structured' && a.kind !== 'table_cell');
+  // SD9-Q1 — schema-mode rows are dropped for the same reason: they score
+  // `extractWithSchemaDetailed` over HTML, and this lane has a competitor's markdown.
+  const applicable = assertions.filter(
+    (a) => a.kind !== 'structured' && a.kind !== 'table_cell' && !(SCHEMA_ASSERTION_KINDS as readonly string[]).includes(a.kind),
+  );
   const results: AssertionResult[] = applicable.map((a) => evaluateAssertion(a, markdown, structured));
   return {
     passed: results.filter((r) => r.passed).length,
@@ -194,7 +199,11 @@ async function main(): Promise<void> {
 
   const manifest = JSON.parse(readFileSync(MANIFEST, 'utf-8')) as ScrapeManifest;
   const filter = flag('filter');
-  const fixtures = filter ? manifest.fixtures.filter((f) => f.id.includes(filter)) : manifest.fixtures;
+  const named = filter ? manifest.fixtures.filter((f) => f.id.includes(filter)) : manifest.fixtures;
+  // SD9-Q1 — a schema-mode fixture carries schema rows only, all of which this lane drops, so
+  // fetching it would score 0/0 for both engines while spending a live fetch and a competitor
+  // API credit on a URL another fixture already covers.
+  const fixtures = named.filter((f) => f.assertions.some((a) => !(SCHEMA_ASSERTION_KINDS as readonly string[]).includes(a.kind)));
 
   const rows: string[] = [];
   const antibot: string[] = [];
