@@ -5,6 +5,7 @@ import { initDatabase, getDatabase, closeDatabase } from '../../../src/cache/db.
 import {
   BrokerGrantStore,
   BrokerOpError,
+  MAX_BROKER_REVOCATIONS,
   executeBrokerOp,
   schemaHead,
 } from '../../../src/daemon/studio-db-broker.js';
@@ -133,6 +134,57 @@ describe('companion broker — grant-scoped table access', () => {
 
       expect(revocations.map((r) => r.token).sort()).toEqual(['t1', 't2']);
       expect(store.list()).toEqual([]);
+    });
+
+    /**
+     * The ledger is memory the pair route lets a caller grow. Every `POST /companion/pair` revokes the
+     * live grants it supersedes, so a re-pair loop — hostile or merely long-lived — appends a row per
+     * pairing to a map that nothing used to remove. The pair/unpair churn itself is accepted risk
+     * (DECISIONS-AUTO A-EXTRACTEXIT-1, same-user loopback), so the cap is the whole mitigation and its
+     * two halves are pinned here: the size stops growing, and a token that falls out of the window is
+     * refused harder rather than restored.
+     */
+    it('bounds the revocation ledger under a re-pair loop at the shipped default', () => {
+      let n = 0;
+      const store = new BrokerGrantStore({ now: () => clock, mintToken: () => `pair-${++n}` });
+
+      for (let i = 0; i < MAX_BROKER_REVOCATIONS + 50; i += 1) {
+        store.issue({ mode: 'readwrite', tables: ['studio_runs'], schemaHead: 1 });
+        store.revokeAll('superseded');
+        clock += 1;
+      }
+
+      expect(store.revocationCount()).toBe(MAX_BROKER_REVOCATIONS);
+      // The newest revocations are the ones kept: the last pairing's token still answers `grant_revoked`.
+      expect(store.revocationOf(`pair-${n}`)?.reason).toBe('superseded');
+    });
+
+    it('evicts the OLDEST revocations first, and an evicted token fails closed as no_grant', () => {
+      let n = 0;
+      const store = new BrokerGrantStore({
+        now: () => clock,
+        mintToken: () => `pair-${++n}`,
+        maxRevocations: 2,
+      });
+
+      const first = store.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 });
+      store.revokeAll('superseded');
+      clock += 1;
+      for (let i = 0; i < 2; i += 1) {
+        store.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 });
+        store.revokeAll('superseded');
+        clock += 1;
+      }
+
+      expect(store.revocationCount()).toBe(2);
+      expect(store.revocationOf(first.token)).toBeUndefined();
+      // Falling out of the window can only ever make a token deader: the grant was deleted when it was
+      // revoked, so the answer degrades from `grant_revoked` to `no_grant`, never back to authorized.
+      expect(store.authorize(first.token, 'studio_runs', 'write')).toEqual({
+        ok: false,
+        reason: 'no_grant',
+        table: 'studio_runs',
+      });
     });
   });
 
