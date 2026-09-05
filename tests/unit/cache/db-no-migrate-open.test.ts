@@ -21,7 +21,10 @@ import { closeDatabase, initDatabase, readSchemaHead } from '../../../src/cache/
 
 // Rolled back so the fixture sits at a genuinely older head than this build's
 // registry. Chosen as the newest migration, so a default open has real work to do.
-const ROLLED_BACK = '023-studio-annotations';
+// Its tables are listed because rolling a migration back means undoing everything it
+// created: leaving one behind would let a default open find its work already done.
+const ROLLED_BACK = '024-studio-site-profiles';
+const ROLLED_BACK_TABLES = ['studio_site_profiles', 'studio_site_grants', 'studio_site_memories'];
 
 function hashFile(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -37,7 +40,7 @@ describe('initDatabase({ migrate: false }) — non-owning open', () => {
 
     // Build a current-head DB the normal way, then walk it back one migration.
     const db: Database.Database = initDatabase(dbPath);
-    db.exec('DROP TABLE IF EXISTS studio_annotations');
+    for (const table of ROLLED_BACK_TABLES) db.exec(`DROP TABLE IF EXISTS ${table}`);
     db.prepare('DELETE FROM schema_migrations WHERE name = ?').run(ROLLED_BACK);
     // Fold the WAL into the main file so the hash covers the whole database and
     // a later close cannot move bytes that were already committed.
@@ -58,9 +61,9 @@ describe('initDatabase({ migrate: false }) — non-owning open', () => {
     expect(db.prepare('SELECT count(*) AS n FROM url_cache').get()).toEqual({ n: 0 });
     // The rolled-back migration is still absent — nothing repaired it behind us.
     const table = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='studio_annotations'")
-      .get();
-    expect(table).toBeUndefined();
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('studio_site_profiles', 'studio_site_grants', 'studio_site_memories')")
+      .all();
+    expect(table).toEqual([]);
     const row = db.prepare('SELECT name FROM schema_migrations WHERE name = ?').get(ROLLED_BACK);
     expect(row).toBeUndefined();
     closeDatabase();
