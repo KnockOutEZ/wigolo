@@ -114,6 +114,7 @@
     "agent-tools"
   ],
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsup && tsc -p tsconfig.build.json",
     "postinstall": "node scripts/prune/run.mjs",
     "prepare": "node scripts/prepare-build.mjs",

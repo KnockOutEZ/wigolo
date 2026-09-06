@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const STALE_OUTPUT = join(ROOT, 'dist', 'zzz-stale');
 
 // File-level: both suites below assert over `dist/`, so the build has to precede either of
 // them, not just the first. This test is in the `spawn-serial` project on purpose — see the
@@ -20,10 +21,29 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // ceiling's only job is to distinguish "slow" from "hung": 15 minutes is the latter, and it
 // still lands inside CI's 30-minute job ceiling.
 beforeAll(() => {
-  execSync('npm run build', { stdio: 'pipe' });
+  mkdirSync(STALE_OUTPUT, { recursive: true });
+  execSync('npm run build', { cwd: ROOT, stdio: 'pipe' });
 }, 900_000);
 
 describe('build output (tsup)', () => {
+  it('removes stale directories before emitting the build', () => {
+    expect(existsSync(STALE_OUTPUT)).toBe(false);
+  });
+
+  it('contains no top-level directory without a corresponding source directory', () => {
+    const sourceDirectories = new Set(
+      readdirSync(join(ROOT, 'src'), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+    );
+    const staleDirectories = readdirSync(join(ROOT, 'dist'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !sourceDirectories.has(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(staleDirectories).toEqual([]);
+  });
+
   it('emits dist/index.js', () => {
     expect(existsSync('dist/index.js')).toBe(true);
   });
