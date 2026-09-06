@@ -1041,6 +1041,17 @@ CREATE TABLE IF NOT EXISTS studio_collection_rows (
 );
 `;
 
+// SD10 / D11: make the shared studio_artifacts FTS lifecycle recipe-aware. A recipe artifact is a
+// canonical extraction definition (title populated, canonical JSON in metadata, markdown NULL), not
+// prose an agent can cite, so it must stay out of studio_artifacts_fts and every similarity-class
+// read over it. 009's triggers index every title, and deleting a recipe's entry after insert makes
+// the later title-UPDATE / base-DELETE trigger issue a second external-content 'delete' for a rowid
+// the index no longer holds — SQLITE_CORRUPT_VTAB. So the exclusion lives in the triggers.
+// D15: 009 is released and stays untouched; its triggers are DROPped and recreated here under the
+// same names. SQL is empty — the whole effect is in the postStep, guarded on studio_artifacts
+// existing (mirrors 009). Mirrored in 034-studio-artifacts-recipe-fts.sql.
+const MIGRATION_034_STUDIO_ARTIFACTS_RECIPE_FTS = '';
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -1356,6 +1367,67 @@ export const MIGRATIONS: Migration[] = [
   { name: '031-studio-watchers', sql: MIGRATION_031_STUDIO_WATCHERS },
   { name: '032-studio-collections', sql: MIGRATION_032_STUDIO_COLLECTIONS },
   { name: '033-studio-collection-rows', sql: MIGRATION_033_STUDIO_COLLECTION_ROWS },
+  {
+    name: '034-studio-artifacts-recipe-fts',
+    sql: MIGRATION_034_STUDIO_ARTIFACTS_RECIPE_FTS,
+    /**
+     * Replaces 009's three FTS sync triggers with recipe-excluding ones and rebuilds the index
+     * from the non-recipe rows. Guarded on studio_artifacts for 009's reason: a runner-only
+     * harness skips initDatabase's inline schema, and an unguarded DDL here would abort every
+     * migration queued behind it. studio_artifacts_fts is checked separately because 009's own
+     * postStep no-ops when the table was absent, so the vtable can legitimately not exist.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(studio_artifacts)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const fts = db
+        .prepare("SELECT name FROM sqlite_master WHERE name = 'studio_artifacts_fts'")
+        .all() as unknown[];
+      if (fts.length === 0) return;
+      // The AFTER UPDATE trigger uses INSERT ... SELECT ... WHERE because SQLite allows one WHEN
+      // per trigger and the four transitions need different halves of the delete/insert pair:
+      // ordinary->ordinary both, ordinary->recipe delete only, recipe->ordinary insert only,
+      // recipe->recipe neither. `IS NOT` keeps the comparison NULL-safe. The WHEN clause keeps
+      // 009's curate-only skip and adds artifact_type, without which a pure type transition
+      // would never fire.
+      db.exec(`
+        DROP TRIGGER IF EXISTS studio_artifacts_ai;
+        DROP TRIGGER IF EXISTS studio_artifacts_ad;
+        DROP TRIGGER IF EXISTS studio_artifacts_au;
+
+        CREATE TRIGGER studio_artifacts_ai AFTER INSERT ON studio_artifacts
+          WHEN new.artifact_type IS NOT 'recipe'
+        BEGIN
+          INSERT INTO studio_artifacts_fts(rowid, title, markdown) VALUES (new.id, new.title, new.markdown);
+        END;
+
+        CREATE TRIGGER studio_artifacts_ad AFTER DELETE ON studio_artifacts
+          WHEN old.artifact_type IS NOT 'recipe'
+        BEGIN
+          INSERT INTO studio_artifacts_fts(studio_artifacts_fts, rowid, title, markdown) VALUES('delete', old.id, old.title, old.markdown);
+        END;
+
+        CREATE TRIGGER studio_artifacts_au AFTER UPDATE ON studio_artifacts
+          WHEN old.title IS NOT new.title
+            OR old.markdown IS NOT new.markdown
+            OR old.artifact_type IS NOT new.artifact_type
+        BEGIN
+          INSERT INTO studio_artifacts_fts(studio_artifacts_fts, rowid, title, markdown)
+            SELECT 'delete', old.id, old.title, old.markdown WHERE old.artifact_type IS NOT 'recipe';
+          INSERT INTO studio_artifacts_fts(rowid, title, markdown)
+            SELECT new.id, new.title, new.markdown WHERE new.artifact_type IS NOT 'recipe';
+        END;
+      `);
+      // FTS5's 'rebuild' reindexes EVERY content row and takes no filter, so an existing database
+      // holding recipe rows is emptied and repopulated by SELECT instead. Writing straight into
+      // the FTS table fires no trigger on studio_artifacts.
+      db.exec(`INSERT INTO studio_artifacts_fts(studio_artifacts_fts) VALUES('delete-all')`);
+      db.exec(`
+        INSERT INTO studio_artifacts_fts(rowid, title, markdown)
+          SELECT id, title, markdown FROM studio_artifacts WHERE artifact_type IS NOT 'recipe'
+      `);
+    },
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
