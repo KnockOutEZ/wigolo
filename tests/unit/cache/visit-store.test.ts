@@ -68,6 +68,19 @@ function bodyCount(): number {
   return (getDatabase().prepare('SELECT COUNT(*) AS n FROM studio_visit_pages').get() as { n: number }).n;
 }
 
+/**
+ * The query plan SQLite actually chose for a statement, as one line.
+ *
+ * Used to hold the retention guards to their COST rather than to their call count: a spy can
+ * only say a statement ran, and every defect this file pins is a statement that ran cheaply
+ * in the fixture and walked 100k index entries in the field.
+ */
+function planOf(db: ReturnType<typeof getDatabase>, sql: string, params: unknown[] = []): string {
+  return (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>)
+    .map((step) => step.detail)
+    .join(' | ');
+}
+
 describe('visit store — recordVisit', () => {
   beforeEach(() => {
     initDatabase(':memory:');
@@ -430,7 +443,7 @@ describe('visit store — retention bounds', () => {
     expect((await searchVisits({ query: 'body2' })).results).toHaveLength(1);
   });
 
-  it('does not prepare a body delete while age, row and byte bounds are all idle', () => {
+  it('does not prepare a body delete, an OFFSET walk or an anti-join while every bound is idle', () => {
     const db = getDatabase();
     db.prepare(
       `INSERT INTO studio_visit_pages (content_hash, markdown, byte_len, created_at)
@@ -443,18 +456,88 @@ describe('visit store — retention bounds', () => {
       markdown: null,
       retention: TINY,
     });
+    const sql = prepare.mock.calls.map(([statement]) => String(statement));
+    prepare.mockRestore();
 
     expect(out.stored).toBe(true);
-    const sql = prepare.mock.calls.map(([statement]) => String(statement));
     expect(sql.filter((statement) => /^\s*DELETE FROM studio_visit_pages\b/i.test(statement))).toEqual([]);
     expect(bodyCount()).toBe(1);
 
-    const rowCapDelete = sql.find(
-      (statement) => /^\s*DELETE FROM studio_visits\b/i.test(statement) && /ORDER BY ts DESC/i.test(statement),
+    // The row-cap arm, held to the same standard the byte arm has been held to since #407:
+    // below its bound it is not merely a delete that removes nothing, it is never compiled.
+    // "It changed no rows" and "it cost nothing" are different claims — the OFFSET walk
+    // traverses min(rows, cap) index entries every time it runs, on every navigation settle.
+    expect(sql.filter((statement) => /LIMIT -1 OFFSET/i.test(statement))).toEqual([]);
+    expect(
+      sql.filter(
+        (statement) => /^\s*DELETE FROM studio_visits\b/i.test(statement) && /ORDER BY ts DESC/i.test(statement),
+      ),
+    ).toEqual([]);
+
+    // Nor the orphan probe in any form, and never in the global one: a `NOT IN` over the whole
+    // visits table materialises every stored hash and then passes over every body.
+    expect(sql.filter((statement) => /studio_visit_pages\s+p\b/i.test(statement))).toEqual([]);
+    expect(sql.filter((statement) => /NOT IN \(SELECT content_hash FROM studio_visits/i.test(statement))).toEqual([]);
+
+    // What replaces the walk is two seeks — and asserting they were CALLED would prove nothing
+    // about their cost, so the plan is read off the module's own SQL rather than a copy of it.
+    const guards = sql.filter((statement) => /SELECT M(IN|AX)\(id\)/i.test(statement));
+    expect(guards).toHaveLength(2);
+    for (const guard of guards) {
+      expect(planOf(db, guard)).toMatch(/^SEARCH studio_visits/);
+    }
+    // Asking for both aggregates in one statement forfeits SQLite's min/max optimisation and
+    // degrades to exactly the full index walk the guard exists to remove. The split is
+    // load-bearing, and this is the outside signal that says so.
+    expect(planOf(db, 'SELECT MIN(id) AS lo, MAX(id) AS hi FROM studio_visits')).toMatch(/SCAN/);
+  });
+
+  it('pays the walk once and bounds the orphan sweep to what it evicted when the row cap binds', () => {
+    const bounds = { ...TINY, maxVisits: 3 };
+    for (let i = 1; i <= 3; i += 1) {
+      visit({
+        url: `https://example.com/p${i}`,
+        ts: `2026-09-0${i} 10:00:00`,
+        title: `P${i}`,
+        markdown: `body-${i}`,
+        retention: bounds,
+      });
+    }
+
+    const db = getDatabase();
+    const prepare = vi.spyOn(db, 'prepare');
+    visit({
+      url: 'https://example.com/p4',
+      ts: '2026-09-04 10:00:00',
+      title: 'P4',
+      markdown: 'body-4',
+      retention: bounds,
+    });
+    const sql = prepare.mock.calls.map(([statement]) => String(statement));
+    prepare.mockRestore();
+
+    // Over the cap the walk is unavoidable, but it is paid ONCE: read the doomed rows, then
+    // delete them by id. Deleting through a second copy of the same OFFSET subquery would walk
+    // the index twice for one eviction.
+    expect(sql.filter((statement) => /LIMIT -1 OFFSET/i.test(statement))).toHaveLength(1);
+    expect(
+      sql.filter((statement) => /^\s*DELETE FROM studio_visits\b/i.test(statement) && /OFFSET/i.test(statement)),
+    ).toEqual([]);
+
+    // Deleting a visit can only orphan a body that visit pointed at, so the sweep asks about
+    // that hash and no other — settled through idx_studio_visits_hash in O(log n) instead of
+    // materialising the whole visits hash set for a NOT IN.
+    const probe = sql.find((statement) => /studio_visit_pages\s+p\b/i.test(statement));
+    expect(probe).toBeDefined();
+    expect(probe).not.toMatch(/NOT IN \(SELECT content_hash FROM studio_visits/i);
+    expect(planOf(db, probe!, (probe!.match(/\?/g) ?? []).map(() => 'x'))).toMatch(
+      /idx_studio_visits_hash \(content_hash=\?\)/,
     );
-    expect(rowCapDelete).toBeDefined();
-    expect(rowCapDelete).not.toMatch(/\bNOT IN\b/i);
-    expect(rowCapDelete).toMatch(/\bLIMIT -1 OFFSET \?/i);
+
+    // The cap and the orphan drop are still what they were before the guard went in.
+    expect(listVisits({}).rows.map((r) => r.title)).toEqual(['P4', 'P3', 'P2']);
+    expect(bodyCount()).toBe(3);
+    expect(readVisitPage('body-1')).toBeNull();
   });
 
   it('stops recording when a bound is disabled, and purges nothing already stored', () => {

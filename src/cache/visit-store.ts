@@ -272,35 +272,122 @@ export function listSiteCapturePrefs(): Array<{ host: string; captureEnabled: bo
 }
 
 /**
+ * Hashes bound per statement. SQLite refuses a statement past 32766 parameters, and
+ * `version-store.ts` measured that ceiling on this repo's better-sqlite3; 900 is the same
+ * batch size it settled on, chosen to stay under even the old 999-parameter default without
+ * making the statement count meaningful.
+ */
+const EVICT_CHUNK_SIZE = 900;
+
+/**
+ * Whether the row cap CAN bind, answered in two O(log n) seeks instead of a walk.
+ *
+ * `studio_visits.id` is AUTOINCREMENT, so ids are distinct and monotone and the live row
+ * count is at most `MAX(id) - MIN(id) + 1`. When that span fits under the cap the count
+ * does too, and the sweep below — whose OFFSET walk traverses min(rows, cap) index entries
+ * every single time it runs — provably has nothing to delete. The test is one-sided by
+ * construction: holes punched by `deleteVisits` make the span an OVER-estimate, so the
+ * guard can only ever say "maybe" when the truth is "no", never the reverse.
+ *
+ * MIN and MAX are asked as two single-aggregate statements rather than one two-aggregate
+ * one deliberately: SQLite's min/max optimisation applies to a lone aggregate, and
+ * `SELECT MIN(id), MAX(id)` measurably degrades to a full covering-index SCAN — the exact
+ * walk this guard exists to avoid.
+ */
+function rowCapMayBind(db: ReturnType<typeof getDatabase>, maxVisits: number): boolean {
+  const lo = (db.prepare('SELECT MIN(id) AS v FROM studio_visits').get() as { v: number | null }).v;
+  if (lo === null) return false;
+  const hi = (db.prepare('SELECT MAX(id) AS v FROM studio_visits').get() as { v: number }).v;
+  return hi - lo + 1 > maxVisits;
+}
+
+/**
+ * Sweep the bodies that THESE deleted visits may have orphaned.
+ *
+ * The predecessor asked the global question — "which of every stored body is referenced by
+ * no visit at all?" — which materialises the whole visits hash set for a `NOT IN` and then
+ * passes over every row of `studio_visit_pages`, ~O(rows + bodies) for a delete that
+ * typically orphaned one body. Deleting a visit can only orphan a body that visit pointed
+ * at, so the candidate set is exactly the hashes of the rows just removed, and each one is
+ * settled by a `NOT EXISTS` probe through `idx_studio_visits_hash` in O(log n).
+ *
+ * Narrowing it costs no cleanup: nothing else leaves an orphan for this sweep to find later.
+ * `recordVisit` writes a body and its visit in one transaction, and `deleteVisits` already
+ * runs this same candidate-bounded probe over the hashes IT removed.
+ *
+ * Chunked for the same reason `deleteVersionsForUrls` is: this runs INSIDE the caller's
+ * transaction, so a `too many SQL variables` throw would roll the visit deletes back with it
+ * and leave the store above its bound.
+ */
+function dropOrphanedBodies(db: ReturnType<typeof getDatabase>, candidates: string[]): number {
+  let removed = 0;
+  for (let start = 0; start < candidates.length; start += EVICT_CHUNK_SIZE) {
+    const chunk = candidates.slice(start, start + EVICT_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(',');
+    removed += dropBodies(
+      db,
+      `SELECT p.content_hash FROM studio_visit_pages p
+       WHERE p.content_hash IN (${placeholders})
+         AND NOT EXISTS (SELECT 1 FROM studio_visits v WHERE v.content_hash = p.content_hash)`,
+      chunk,
+    );
+  }
+  return removed;
+}
+
+/**
  * Evict until every bound holds, inside the caller's transaction so no observer ever sees the
  * store above a bound.
  *
  * Ordered age → rows → bodies because the cheap global bound frees rows the other two would
  * otherwise have to account for, and because the body sweep's input is whatever the row
  * bounds left referenced.
+ *
+ * Every arm here rides the capture path on EVERY navigation settle, so each one is gated on
+ * a seek rather than a walk: the age arm on a range seek that returns nothing at steady
+ * state, the row arm on `rowCapMayBind`, the byte arm on a plain SUM.
  */
 function evict(db: ReturnType<typeof getDatabase>, bounds: VisitRetentionBounds): void {
-  const ageDeleted = db
-    .prepare(`DELETE FROM studio_visits WHERE ts < datetime('now', ?)`)
-    .run(`-${bounds.maxAgeDays} days`).changes;
+  // Pinned once and passed to both statements rather than evaluated twice: a second boundary
+  // crossing between the read and the delete would remove a row whose hash the sweep below
+  // never saw, leaking its body until some later delete happened to re-orphan it.
+  const cutoff = (
+    db.prepare(`SELECT datetime('now', ?) AS cutoff`).get(`-${bounds.maxAgeDays} days`) as { cutoff: string }
+  ).cutoff;
 
-  const rowsDeleted = db.prepare(
-    `DELETE FROM studio_visits
-     WHERE id IN (
-       SELECT id FROM studio_visits ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?
-     )`,
-  ).run(bounds.maxVisits);
+  // No DISTINCT: measured, it flips the plan from the `ts` range seek to a full scan of
+  // `idx_studio_visits_hash`, because SQLite would rather get the dedup free from an index
+  // than the range free. Dedup in JS instead — the set is bounded by what was deleted.
+  const orphanCandidates = new Set<string>();
+  for (const row of db
+    .prepare('SELECT content_hash FROM studio_visits WHERE ts < ?')
+    .all(cutoff) as Array<{ content_hash: string | null }>) {
+    if (row.content_hash !== null) orphanCandidates.add(row.content_hash);
+  }
+  db.prepare('DELETE FROM studio_visits WHERE ts < ?').run(cutoff);
+
+  if (rowCapMayBind(db, bounds.maxVisits)) {
+    // Read the doomed rows once and delete them by id, rather than deleting through a second
+    // copy of the same OFFSET subquery: the walk is what costs, and this pays for it once
+    // while also yielding the hashes the sweep needs.
+    const doomed = db
+      .prepare('SELECT id, content_hash FROM studio_visits ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?')
+      .all(bounds.maxVisits) as Array<{ id: number; content_hash: string | null }>;
+    for (const row of doomed) {
+      if (row.content_hash !== null) orphanCandidates.add(row.content_hash);
+    }
+    for (let start = 0; start < doomed.length; start += EVICT_CHUNK_SIZE) {
+      const chunk = doomed.slice(start, start + EVICT_CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      db.prepare(`DELETE FROM studio_visits WHERE id IN (${placeholders})`).run(...chunk.map((r) => r.id));
+    }
+  }
 
   // Bodies nothing points at any more. A body is shared by every visit to the same unchanged
-  // page, so it can only go once the LAST of them has. If neither visit delete changed a row,
-  // this transaction cannot have created an orphan and the anti-join is pure wasted work.
-  if (ageDeleted > 0 || rowsDeleted.changes > 0) {
-    dropBodies(
-      db,
-      `SELECT content_hash FROM studio_visit_pages
-       WHERE content_hash NOT IN (SELECT content_hash FROM studio_visits WHERE content_hash IS NOT NULL)`,
-      [],
-    );
+  // page, so it can only go once the LAST of them has. An empty candidate set means this
+  // transaction deleted no visit that carried a body, so it cannot have created an orphan.
+  if (orphanCandidates.size > 0) {
+    dropOrphanedBodies(db, [...orphanCandidates]);
   }
 
   // The byte bound is spent on bodies and NOT on visit rows: the record of having read a page
