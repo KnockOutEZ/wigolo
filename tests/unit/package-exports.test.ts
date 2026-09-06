@@ -83,7 +83,9 @@ const SUBPATHS: Subpath[] = [
     spec: 'wigolo/cache',
     target: './dist/cache/index.js',
     runtime: [
+      'deleteDomainClearance',
       'getAuthenticatedCorpusStats',
+      'listDomainClearances',
       'normalizeUrl',
       'purgeAuthenticatedCorpus',
       'sanitizeFtsQuery',
@@ -94,6 +96,7 @@ const SUBPATHS: Subpath[] = [
       'AuthenticatedCorpusStats',
       'ArtifactProvider',
       'ArtifactRecord',
+      'DomainClearanceRecord',
     ],
   },
   {
