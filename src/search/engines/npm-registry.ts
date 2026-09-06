@@ -44,6 +44,9 @@ export class NpmRegistryEngine implements SearchEngine {
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
     const maxResults = options.maxResults ?? 10;
+    // Nonpositive limit can never yield results — return immediately instead
+    // of building a size<=0 request and hitting the registry.
+    if (maxResults <= 0) return [];
 
     const params = new URLSearchParams({
       text: query,
@@ -63,10 +66,10 @@ export class NpmRegistryEngine implements SearchEngine {
 
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
-    const data = (await response.json()) as NpmSearchResponse;
-    // Guard against non-array payloads (objects: {} or a string) so the
-    // engine returns [] instead of throwing on .slice.
-    const objects = Array.isArray(data.objects) ? data.objects : [];
+    const data = (await response.json()) as NpmSearchResponse | null;
+    // Guard against malformed payloads — a null body, or a non-array objects
+    // (objects: {} or a string) — so the engine returns [] instead of throwing.
+    const objects = Array.isArray(data?.objects) ? data.objects : [];
     return this.parseObjects(objects, maxResults);
   }
 
@@ -76,7 +79,8 @@ export class NpmRegistryEngine implements SearchEngine {
     const total = objects.length;
 
     for (let i = 0; i < total; i++) {
-      const pkg = objects[i].package;
+      // Tolerate null entries in the objects array (untrusted JSON).
+      const pkg = objects[i]?.package;
       const name = asString(pkg?.name);
       if (!name) continue;
 

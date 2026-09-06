@@ -191,9 +191,37 @@ describe('NpmRegistryEngine', () => {
     const body = {
       objects: [{ package: { name: 'foo', description: 'a thing' } }],
     };
-    captureFetch(body);
+    const { calls } = captureFetch(body);
     const results = await new NpmRegistryEngine().search('q', { maxResults: 0 });
     expect(results).toEqual([]);
+    // Short-circuits before the HTTP request — no size<=0 call hits the registry.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns empty array when maxResults is negative', async () => {
+    const { calls } = captureFetch({ objects: [] });
+    const results = await new NpmRegistryEngine().search('q', { maxResults: -5 });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns empty array when the JSON body is null', async () => {
+    captureFetch(null);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toEqual([]);
+  });
+
+  it('tolerates null entries in the objects array', async () => {
+    const body = {
+      objects: [
+        null,
+        { package: { name: 'valid', description: 'ok' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('valid');
   });
 
   it('returns empty array when objects field is absent', async () => {
