@@ -8,6 +8,7 @@
   "include": [
     "src",
     "tests/unit/tools/session-target.test.ts",
+    "tests/integration/session-target-dispatch.test.ts",
     "tests/unit/companion/handle.test.ts",
     "tests/unit/companion/paths.test.ts",
     "tests/unit/companion/audit-retention.test.ts",
