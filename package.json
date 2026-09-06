@@ -55,6 +55,10 @@
       "import": "./dist/extraction/index.js",
       "types": "./dist/extraction/index.d.ts"
     },
+    "./crawl": {
+      "import": "./dist/crawl/index.js",
+      "types": "./dist/crawl/index.d.ts"
+    },
     "./cache": {
       "import": "./dist/cache/index.js",
       "types": "./dist/cache/index.d.ts"
