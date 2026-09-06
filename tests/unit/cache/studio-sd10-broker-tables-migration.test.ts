@@ -21,6 +21,32 @@ const TABLES = [
   'studio_collection_rows',
 ] as const;
 
+const TABLE_COLUMNS = {
+  studio_shortcuts: ['id', 'slug', 'name', 'body', 'source', 'used_count', 'created_at', 'updated_at'],
+  studio_schedules: [
+    'id', 'name', 'cadence', 'wake', 'target', 'approval_required', 'status', 'next_due_at', 'last_run_id', 'created_at',
+    'updated_at',
+  ],
+  studio_workflows: ['slug', 'version', 'definition', 'status', 'published_at'],
+  studio_watchers: [
+    'id', 'kind', 'target', 'cadence_seconds', 'alert_rules', 'status', 'run_id', 'last_check_at', 'last_state',
+    'created_at', 'updated_at',
+  ],
+  studio_collections: ['id', 'name', 'criteria', 'recipe_id', 'watcher_id', 'export_prefs', 'created_at', 'updated_at'],
+  studio_collection_rows: [
+    'collection_id', 'entity_key', 'fields', 'content_hash', 'first_seen_at', 'last_seen_at', 'changed_at', 'status',
+  ],
+} as const;
+
+const TIMESTAMP_COLUMNS = {
+  studio_shortcuts: ['created_at', 'updated_at'],
+  studio_schedules: ['next_due_at', 'created_at', 'updated_at'],
+  studio_workflows: ['published_at'],
+  studio_watchers: ['last_check_at', 'created_at', 'updated_at'],
+  studio_collections: ['created_at', 'updated_at'],
+  studio_collection_rows: ['first_seen_at', 'last_seen_at', 'changed_at'],
+} as const;
+
 describe('SD10 broker-table migrations', () => {
   it('adds all six tables to a fresh database and records each migration once on re-run', () => {
     _resetMigrationGuard();
@@ -72,6 +98,26 @@ describe('SD10 broker-table migrations', () => {
     expect(() => db.prepare(
       'INSERT INTO studio_workflows (slug, version, definition, status, published_at) VALUES (@slug, @version, @definition, @status, @published_at)',
     ).run(workflow)).toThrow(/UNIQUE|PRIMARY KEY/i);
+    expect(() => db.prepare('UPDATE studio_workflows SET status = ? WHERE slug = ? AND version = ?')
+      .run('archived', workflow.slug, workflow.version)).toThrow(/append-only/i);
+    expect(() => db.prepare('DELETE FROM studio_workflows WHERE slug = ? AND version = ?')
+      .run(workflow.slug, workflow.version)).toThrow(/append-only/i);
+    expect(db.prepare('SELECT * FROM studio_workflows').get()).toMatchObject(workflow);
+    db.close();
+  });
+
+  it('keeps every SD10 table column and timestamp affinity exact', () => {
+    _resetMigrationGuard();
+    const db = new Database(':memory:');
+    applyMigrations(db, { vecLoaded: false });
+
+    for (const table of TABLES) {
+      const columns = db.pragma(`table_info(${table})`) as Array<{ name: string; type: string }>;
+      expect(columns.map((column) => column.name), table).toEqual(TABLE_COLUMNS[table]);
+      for (const timestamp of TIMESTAMP_COLUMNS[table]) {
+        expect(columns.find((column) => column.name === timestamp)?.type, `${table}.${timestamp}`).toBe('INTEGER');
+      }
+    }
     db.close();
   });
 

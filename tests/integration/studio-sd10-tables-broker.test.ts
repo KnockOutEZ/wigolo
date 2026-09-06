@@ -20,6 +20,7 @@ interface RoundTrip {
   row: BrokerRow;
   where: BrokerRow;
   update: BrokerRow;
+  appendOnly?: boolean;
 }
 
 describe('the SD10 tables over the companion broker', () => {
@@ -44,6 +45,7 @@ describe('the SD10 tables over the companion broker', () => {
       row: { slug: 'daily-digest', version: 1, definition: '{"steps":[]}', status: 'published', published_at: 1 },
       where: { slug: 'daily-digest', version: 1 },
       update: { status: 'archived' },
+      appendOnly: true,
     },
     {
       table: 'studio_watchers' as BrokerTable,
@@ -97,10 +99,16 @@ describe('the SD10 tables over the companion broker', () => {
   }
 
   it('round-trips every SD10 table under a grant scoped to that table', () => {
-    for (const { table, row, where, update } of ROUND_TRIPS) {
+    for (const { table, row, where, update, appendOnly } of ROUND_TRIPS) {
       const grant = token([table]);
       expect(run({ grant, kind: 'insert', table, row }).ok, table).toBe(true);
       expect(rowsOf(run({ grant, kind: 'read', table, where, limit: 10 }))[0], table).toMatchObject(row);
+      if (appendOnly) {
+        expect(() => run({ grant, kind: 'update', table, row: update, where }), table).toThrow(/append-only/i);
+        expect(() => run({ grant, kind: 'delete', table, where }), table).toThrow(/append-only/i);
+        expect(rowsOf(run({ grant, kind: 'read', table, where, limit: 10 }))[0], table).toMatchObject(row);
+        continue;
+      }
       expect(run({ grant, kind: 'update', table, row: update, where }).ok, table).toBe(true);
       expect(rowsOf(run({ grant, kind: 'read', table, where, limit: 10 }))[0], table).toMatchObject(update);
       expect(run({ grant, kind: 'delete', table, where }).ok, table).toBe(true);
