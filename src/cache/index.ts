@@ -5,7 +5,9 @@
  * the store helpers and the artifact-provider contract the extracted layer registers against.
  */
 export {
+  deleteDomainClearance,
   getAuthenticatedCorpusStats,
+  listDomainClearances,
   normalizeUrl,
   purgeAuthenticatedCorpus,
   sanitizeFtsQuery,
@@ -14,5 +16,6 @@ export type {
   AuthenticatedCorpusPurgeOptions,
   AuthenticatedCorpusPurgeResult,
   AuthenticatedCorpusStats,
+  DomainClearanceRecord,
 } from './store.js';
 export type { ArtifactProvider, ArtifactRecord } from './artifact-registry.js';
