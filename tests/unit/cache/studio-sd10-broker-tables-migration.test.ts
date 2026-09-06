@@ -126,7 +126,12 @@ describe('SD10 broker-table migrations', () => {
 
   it('registers the six new migration names without changing existing duplicate-number lanes', () => {
     const names = MIGRATIONS.map((migration) => migration.name);
-    expect(names.slice(-MIGRATION_NAMES.length)).toEqual(MIGRATION_NAMES);
+    // Contiguous and in order — NOT anchored to the end of the array. What matters is that these
+    // six arrive together, after everything they depend on; a later slice appending its own
+    // migration behind them is normal and must not red here.
+    const start = names.indexOf(MIGRATION_NAMES[0]);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(names.slice(start, start + MIGRATION_NAMES.length)).toEqual(MIGRATION_NAMES);
     expect(names.filter((name) => name.startsWith('008-'))).toHaveLength(2);
     expect(names.filter((name) => name.startsWith('009-'))).toHaveLength(2);
     expect(names.filter((name) => name.startsWith('010-'))).toHaveLength(2);
