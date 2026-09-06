@@ -1,11 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { rmSync } from 'node:fs';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { createMcpServer, type Subsystems } from '../../src/server.js';
-import { resetConfig } from '../../src/config.js';
 import { writeHandle, removeHandle } from '../../src/companion/handle.js';
 import { SESSION_TARGET_ROUTE } from '../../src/companion-contract/session-target.js';
 
@@ -32,6 +29,39 @@ import { SESSION_TARGET_ROUTE } from '../../src/companion-contract/session-targe
 const EPHEMERAL_MARKER = 'EPHEMERAL-RAN';
 const SESSION_MARKER = 'SESSION-COMPANION-RAN';
 
+/**
+ * A PRIVATE data dir, because the pairing state under test is a FILE: writing the companion handle
+ * into the shared suite data dir would make a sibling file's "no companion paired" read this one's
+ * handle. It is reached through a `getConfig` override rather than `process.env.WIGOLO_DATA_DIR`,
+ * because this lane runs every integration file in ONE process and every CLI it spawns inherits that
+ * variable — repointing it here reddened `repl-e2e.test.ts`'s one-shot spawns in the full suite while
+ * this file's own rows stayed green. A module-scoped override cannot leave this file's graph.
+ *
+ * The activation gate is the FIRST statement in the CallTool handler and reads
+ * `<dataDir>/account/state.json` through the same `getConfig`, so a bare temp dir refuses every call
+ * before dispatch is reached. The suite's seeded state is COPIED across rather than bypassed — the
+ * gate still runs all six of its steps, exactly as tests/setup.ts intends.
+ */
+const H = await vi.hoisted(async () => {
+  const { copyFileSync, existsSync, mkdirSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dataDir = mkdtempSync(join(tmpdir(), 'wigolo-sd480-'));
+  const suiteDataDir = process.env.WIGOLO_DATA_DIR;
+  const seeded = join(suiteDataDir ?? '', 'account', 'state.json');
+  if (!suiteDataDir || !existsSync(seeded)) {
+    throw new Error(`expected an activated suite install at ${seeded} (tests/setup.ts seeds it)`);
+  }
+  mkdirSync(join(dataDir, 'account'), { recursive: true, mode: 0o700 });
+  copyFileSync(seeded, join(dataDir, 'account', 'state.json'));
+  return { dataDir };
+});
+
+vi.mock('../../src/config.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/config.js')>();
+  return { ...actual, getConfig: () => ({ ...actual.getConfig(), dataDir: H.dataDir }) };
+});
+
 const handleFetchMock = vi.hoisted(() => vi.fn());
 const handleExtractMock = vi.hoisted(() => vi.fn());
 const handleCrawlMock = vi.hoisted(() => vi.fn());
@@ -47,8 +77,6 @@ interface WireCall {
   body: { op: string; session_id: string; input: Record<string, unknown> };
 }
 
-let dataDir: string;
-let prevDataDir: string | undefined;
 let wireCalls: WireCall[] = [];
 let wireReply: { httpOk: boolean; body: unknown } = { httpOk: true, body: null };
 
@@ -81,33 +109,8 @@ async function callTool(
   return { text, isError: res.isError === true, parsed: JSON.parse(text) as Record<string, unknown> };
 }
 
-beforeAll(() => {
-  // A PRIVATE data dir, because the pairing state under test is a FILE: writing the companion handle
-  // into the shared suite data dir would make a sibling file's "no companion paired" read this one's
-  // handle. Under $TMPDIR, never in the tree.
-  prevDataDir = process.env.WIGOLO_DATA_DIR;
-  dataDir = mkdtempSync(join(tmpdir(), 'wigolo-sd480-'));
-
-  // The activation gate is the FIRST statement in the CallTool handler and reads
-  // `<dataDir>/account/state.json`, so a fresh dataDir refuses every tool call before dispatch is
-  // reached. The suite's seeded state is copied across rather than bypassed — the gate still runs
-  // all six of its steps, exactly as tests/setup.ts intends.
-  const seeded = join(prevDataDir ?? '', 'account', 'state.json');
-  if (!prevDataDir || !existsSync(seeded)) {
-    throw new Error(`expected an activated suite install at ${seeded} (tests/setup.ts seeds it)`);
-  }
-  mkdirSync(join(dataDir, 'account'), { recursive: true, mode: 0o700 });
-  copyFileSync(seeded, join(dataDir, 'account', 'state.json'));
-
-  process.env.WIGOLO_DATA_DIR = dataDir;
-  resetConfig();
-});
-
 afterAll(() => {
-  if (prevDataDir === undefined) delete process.env.WIGOLO_DATA_DIR;
-  else process.env.WIGOLO_DATA_DIR = prevDataDir;
-  resetConfig();
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(H.dataDir, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -138,12 +141,12 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  removeHandle(dataDir);
+  removeHandle(H.dataDir);
 });
 
 describe('EXTRACT seam 5 — a paired companion: session_id forwards over the companion wire', () => {
   beforeEach(() => {
-    writeHandle(HANDLE, dataDir);
+    writeHandle(HANDLE, H.dataDir);
   });
 
   it('SEAM-FETCH: fetch with session_id reaches the companion, never the ephemeral fetch', async () => {
@@ -284,7 +287,7 @@ describe('EXTRACT seam 5 — the predicate is a router, not a switch that is alw
   // would send every ordinary call at a companion. These two rows fail on that mutation and pass on
   // the deletion, so together with the rows above no single edit to the seam leaves the suite green.
   beforeEach(() => {
-    writeHandle(HANDLE, dataDir);
+    writeHandle(HANDLE, H.dataDir);
   });
 
   it('SEAM-NO-ID: no session_id runs the ephemeral path even with a companion paired', async () => {
