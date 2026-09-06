@@ -1592,3 +1592,258 @@ describe('setupCompanion — a redirect is a second address, and gets judged lik
     expect(result.error).toContain('redirected more than');
   });
 });
+
+/**
+ * The transfer is bounded in BOTH directions the release host controls.
+ *
+ * The manifest fetch has always carried a deadline; the artifact body carried neither a byte cap
+ * nor one. That asymmetry is the whole defect: the same host that publishes the digest also
+ * streams the bytes, so a compromised or simply broken release host could fill the disk (a body
+ * that never ends) or wedge an unattended CLI forever (a body that stops mid-flight and never
+ * closes). Neither is caught by the checksum — the checksum only runs on a transfer that FINISHED.
+ *
+ * The two arms retain the partial differently on purpose, and the difference is the point:
+ *  - oversize DROPS it, because a prefix longer than the artifact can never verify and keeping it
+ *    is precisely the disk fill the cap exists to prevent;
+ *  - a stall KEEPS it, because a body that stopped is exactly what resume is for.
+ */
+describe('setupCompanion — the artifact body is bounded in bytes and in time', () => {
+  const hosts: http.Server[] = [];
+  afterEach(async () => {
+    while (hosts.length > 0) {
+      const s = hosts.pop();
+      if (s) await closeServer(s);
+    }
+  });
+
+  /**
+   * A host whose manifest declares `size` honestly and whose body then ignores it, streaming
+   * `overshoot` bytes past the declaration and staying open. Without a cap this never returns.
+   */
+  async function startOversizeHost(declared: number, overshoot: number): Promise<{ server: http.Server; origin: string }> {
+    let origin = '';
+    const chunk = Buffer.alloc(64 * 1024, 0x5a);
+    const server = await startServer((req, res) => {
+      if (req.url === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            artifacts: {
+              'darwin-arm64': { url: `${origin}/art.dmg`, sha256: sha256(artifactBytes()), size: declared },
+            },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      // No content-length: the body is open-ended, which is exactly how an unbounded stream
+      // reaches us in the wild. It is the METER that has to stop this, not the framing.
+      res.writeHead(200);
+      let sent = 0;
+      const pump = (): void => {
+        while (sent < declared + overshoot) {
+          sent += chunk.length;
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        res.end();
+      };
+      pump();
+    });
+    hosts.push(server);
+    origin = `http://127.0.0.1:${getPort(server)}`;
+    return { server, origin };
+  }
+
+  it('aborts a body that streams past the size the manifest declared, and drops the oversize part', async () => {
+    const declared = 128 * 1024;
+    const { origin } = await startOversizeHost(declared, 8 * 1024 * 1024);
+
+    const root = tempRoot();
+    const dataDir = join(root, 'data');
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    const installer = recordingInstaller(installRoot);
+
+    const result = await setupCompanion({
+      releaseHost: origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      install: installer.install,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('download_failed');
+    // Typed, not a stack trace: the reader has to be able to tell "this host sent more than it
+    // said it would" from a dropped connection, because only one of them is worth retrying.
+    expect(result.detail).toContain('more bytes than');
+    expect(result.manualFallback).toContain(origin);
+    expect(installer.calls).toEqual([]);
+    // The oversize prefix is REMOVED, not retained: keeping it is the disk fill, and it could
+    // never verify anyway.
+    expect(result.partialRetained).toBe(false);
+    expect(existsSync(join(dataDir, 'studio', 'downloads', 'wigolo-studio-1.4.0-darwin-arm64.dmg.part'))).toBe(false);
+  });
+
+  it('caps a manifest that declares no size at all rather than streaming forever', async () => {
+    // Same open-ended body, but the manifest omits `size` — the field is optional, so the cap
+    // cannot depend on it being there.
+    let origin = '';
+    const chunk = Buffer.alloc(64 * 1024, 0x5a);
+    let closed = false;
+    const server = await startServer((req, res) => {
+      if (req.url === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            artifacts: { 'darwin-arm64': { url: `${origin}/art.dmg`, sha256: sha256(artifactBytes()) } },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      res.writeHead(200);
+      res.on('close', () => {
+        closed = true;
+      });
+      const pump = (): void => {
+        while (!closed) {
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+      };
+      pump();
+    });
+    hosts.push(server);
+    origin = `http://127.0.0.1:${getPort(server)}`;
+
+    const root = tempRoot();
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+
+    const result = await setupCompanion({
+      releaseHost: origin,
+      env: ALLOW_HTTP,
+      dataDir: join(root, 'data'),
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      // A ceiling this low is not the shipped one; it is the shipped one made observable in a
+      // test that must not write two gigabytes to prove the guard exists.
+      downloadCeilingBytes: 256 * 1024,
+      install: recordingInstaller(installRoot).install,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('download_failed');
+    expect(result.detail).toContain('more bytes than');
+    expect(result.partialRetained).toBe(false);
+  });
+
+  it('aborts a body that stalls mid-transfer instead of hanging, and keeps the prefix to resume from', async () => {
+    const payload = artifactBytes();
+    const head = payload.subarray(0, 1500);
+    let origin = '';
+    // Sends a prefix, then never another byte and never a FIN. Left alone this hangs forever;
+    // the CLI is unattended, so "forever" is a wedged machine, not a slow download.
+    const server = await startServer((req, res) => {
+      if (req.url === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            artifacts: {
+              'darwin-arm64': { url: `${origin}/art.dmg`, sha256: sha256(payload), size: payload.length },
+            },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      res.writeHead(200, { 'content-length': String(payload.length) });
+      res.write(head);
+      // deliberately never ended
+    });
+    hosts.push(server);
+    origin = `http://127.0.0.1:${getPort(server)}`;
+
+    const root = tempRoot();
+    const dataDir = join(root, 'data');
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    const installer = recordingInstaller(installRoot);
+
+    const started = Date.now();
+    const result = await setupCompanion({
+      releaseHost: origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      // The shipped window is measured in tens of seconds. A test that waited it out would be a
+      // test nobody runs, so the window is injected — the behaviour under test is the watchdog,
+      // not the number.
+      downloadIdleTimeoutMs: 250,
+      install: installer.install,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('download_failed');
+    expect(result.detail).toContain('stopped sending');
+    expect(result.manualFallback).toContain(origin);
+    expect(installer.calls).toEqual([]);
+    // Returned in well under the wall-clock a hang would have cost: the assertion is that it
+    // returned at all, and the bound keeps a regression from passing by being merely slow.
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // A stall is exactly what resume exists for, so the prefix STAYS.
+    expect(result.partialRetained).toBe(true);
+    const partPath = join(dataDir, 'studio', 'downloads', 'wigolo-studio-1.4.0-darwin-arm64.dmg.part');
+    expect(existsSync(partPath)).toBe(true);
+    expect(readFileSync(partPath).equals(head)).toBe(true);
+  });
+
+  it('resumes onto the prefix a stall left behind and still verifies the whole artifact', async () => {
+    const payload = artifactBytes();
+    const head = payload.subarray(0, 1500);
+
+    const root = tempRoot();
+    const dataDir = join(root, 'data');
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    // Precisely what the arm above leaves on disk.
+    const downloads = join(dataDir, 'studio', 'downloads');
+    mkdirSync(downloads, { recursive: true });
+    writeFileSync(join(downloads, 'wigolo-studio-1.4.0-darwin-arm64.dmg.part'), head);
+
+    const host = await startHost(payload, sha256(payload));
+    hosts.push(host.server);
+
+    const installer = recordingInstaller(installRoot);
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      downloadIdleTimeoutMs: 5_000,
+      install: installer.install,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('installed');
+    expect(result.resumedFromBytes).toBe(head.length);
+    expect(host.served).toEqual([payload.length - head.length]);
+    // The digest is taken over the WHOLE file, prefix included — the guard must not have turned
+    // resume into "verify only the tail we fetched this time".
+    expect(readFileSync(join(installRoot, APP_NAME, 'marker')).equals(payload)).toBe(true);
+  });
+});

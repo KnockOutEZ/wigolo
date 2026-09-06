@@ -41,7 +41,7 @@ import { homedir } from 'node:os';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import type { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 
 import { studioStateDir } from '../companion/paths.js';
 import { getConfig } from '../config.js';
@@ -163,6 +163,17 @@ export interface CompanionSetupDeps {
   launch?: (appPath: string) => Promise<boolean>;
   /** Shells out; injected so the disk-image path is testable without a real image. */
   run?: (cmd: string, args: string[]) => Promise<{ code: number; stderr: string }>;
+  /**
+   * How long the artifact body may send NOTHING before the transfer is abandoned. Injected only
+   * so the stall arm is testable: a test that waited out the shipped window is a test nobody runs.
+   */
+  downloadIdleTimeoutMs?: number;
+  /**
+   * The byte ceiling applied when the manifest declares no `size`, and the upper bound on the one
+   * it does declare. Injected for the same reason: the guard must be provable without writing
+   * gigabytes to a temp directory.
+   */
+  downloadCeilingBytes?: number;
   /** Read for the loopback transport opt-out only. Defaults to this process's environment. */
   env?: NodeJS.ProcessEnv;
   stdout?: Writable;
@@ -472,6 +483,12 @@ function sizeOf(path: string): number {
   }
 }
 
+/**
+ * Why a bounded transfer gave up. `undefined` means the transfer failed for an ordinary reason —
+ * a dropped socket, a write error — and the caller's generic sentence is the right one.
+ */
+type TransferBoundBreach = 'oversize' | 'stalled';
+
 interface TransferResult {
   ok: boolean;
   resumedFromBytes: number;
@@ -479,6 +496,80 @@ interface TransferResult {
   error?: string;
   /** The transport policy refused a hop. Distinct from a failed transfer: nothing was fetched. */
   refusal?: string;
+  /** A bound stopped the body. Typed so the caller can say WHICH, and whether to retry. */
+  breach?: TransferBoundBreach;
+}
+
+/**
+ * The ceiling on an artifact whose manifest declares no `size`, and the upper bound on one that
+ * does. Our published disk image is an order of magnitude under this; a body that passes it is
+ * not an artifact regardless of what the manifest said.
+ */
+const COMPANION_ARTIFACT_CEILING_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * Slack over a declared size before the cap fires.
+ *
+ * Zero would be correct — an artifact that is one byte longer than declared can never match the
+ * digest — but it would answer the user with "this host is streaming without end" for what is
+ * really a stale manifest, and `checksum_mismatch` is the truer sentence for that. The slack is
+ * therefore small enough that no disk-fill fits inside it and wide enough that a few bytes of
+ * framing drift reaches the checksum instead of the cap.
+ */
+const COMPANION_SIZE_SLACK_BYTES = 64 * 1024;
+
+/**
+ * The largest the finished file may be.
+ *
+ * ⚠ THE DECLARED SIZE IS NOT A TRUSTED BOUND ON ITS OWN. `size` comes from the same manifest, on
+ * the same host, as the bytes it describes — a host willing to stream forever is equally willing
+ * to declare a terabyte. So a declared size only ever TIGHTENS the ceiling, never lifts it, and a
+ * missing, negative or non-finite one falls back to the ceiling rather than to no bound at all.
+ */
+function artifactCap(declared: number | undefined, ceiling: number): number {
+  if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) return ceiling;
+  return Math.min(declared + COMPANION_SIZE_SLACK_BYTES, ceiling);
+}
+
+/**
+ * How long the artifact body may send nothing before the transfer is abandoned.
+ *
+ * Sized against a slow link, not a fast one: this is silence, not slowness, so a download
+ * trickling in at a few bytes a second never trips it. The manifest fetch next to it carries a
+ * TOTAL deadline instead, because a manifest is one small answer and a disk image is not.
+ */
+const COMPANION_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * The sentence a failed transfer gets.
+ *
+ * The two bounds read differently on purpose. A stall is "this did not work, try again" and the
+ * prefix is still there to continue from; an oversize body is "the release host sent us something
+ * we will not keep", which is a report-it-upstream event and starts over from zero.
+ */
+function downloadFailureDetail(moved: TransferResult): string {
+  if (moved.breach === 'oversize') {
+    return (
+      'The release host sent more bytes than it published for this build, so the download was ' +
+      'stopped and the partial file discarded. Nothing was installed.'
+    );
+  }
+  if (moved.breach === 'stalled') {
+    return (
+      'The release host stopped sending and the download was abandoned. What arrived was kept, ' +
+      'so running setup again continues from where it stopped.'
+    );
+  }
+  return `The download did not finish: ${moved.error ?? 'unknown transport error'}`;
+}
+
+interface TransferLimits {
+  /** The manifest's `size` for this artifact, if it published one. */
+  declaredSize?: number;
+  /** Ceiling for an undeclared size, and the upper bound on a declared one. */
+  ceilingBytes: number;
+  /** How long the body may send nothing before the transfer is abandoned. */
+  idleMs: number;
 }
 
 /** How many hops a release CDN may take us through before we call it a loop. */
@@ -551,7 +642,14 @@ async function transfer(
   partPath: string,
   fetchImpl: typeof globalThis.fetch,
   env: NodeJS.ProcessEnv,
+  limits: TransferLimits,
 ): Promise<TransferResult> {
+  const cap = artifactCap(limits.declaredSize, limits.ceilingBytes);
+  // A prefix already past the cap is debris from a run that had no cap, or from a manifest that
+  // has since shrunk. Asking to resume onto it would spend a round trip to reach a digest check
+  // that must fail, and would leave the oversize file sitting there in the meantime.
+  if (sizeOf(partPath) > cap) rmSync(partPath, { force: true });
+
   const existing = sizeOf(partPath);
   const headers: Record<string, string> = {};
   if (existing > 0) headers.Range = `bytes=${existing}-`;
@@ -581,14 +679,56 @@ async function transfer(
 
   const append = res.status === 206 && existing > 0;
   mkdirSync(dirname(partPath), { recursive: true });
+
+  // ⚠ NEITHER BOUND CAN BE THE RESPONSE'S OWN FRAMING. `content-length` is written by the same
+  // host as the body, and a chunked body carries no length at all — so the count is taken off the
+  // bytes as they pass, and the deadline is rearmed by their arrival. Both live between the socket
+  // and the file so that a breach stops the write rather than being noticed after it.
+  const source = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  let breach: TransferBoundBreach | undefined;
+  let onDisk = append ? existing : 0;
+  let idle: NodeJS.Timeout | undefined;
+
+  const rearm = (): void => {
+    if (idle) clearTimeout(idle);
+    idle = setTimeout(() => {
+      breach = 'stalled';
+      source.destroy(new Error(`the release host stopped sending for ${limits.idleMs}ms`));
+    }, limits.idleMs);
+    idle.unref();
+  };
+
+  const meter = new Transform({
+    transform(chunk: Buffer, _enc, cb): void {
+      onDisk += chunk.length;
+      if (onDisk > cap) {
+        breach = 'oversize';
+        cb(new Error(`the release host sent more bytes than the ${cap}-byte limit for this artifact`));
+        return;
+      }
+      rearm();
+      cb(null, chunk);
+    },
+  });
+
+  // Armed before the first byte, not after it: a host that answers with headers and then goes
+  // silent never reaches the transform, and is the exact shape that wedges an unattended CLI.
+  rearm();
   try {
-    await pipeline(
-      Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
-      createWriteStream(partPath, { flags: append ? 'a' : 'w' }),
-    );
+    await pipeline(source, meter, createWriteStream(partPath, { flags: append ? 'a' : 'w' }));
   } catch (e) {
-    // The bytes written so far stay: a dropped connection is precisely the case resume exists for.
-    return { ok: false, resumedFromBytes: append ? existing : 0, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    if (breach === 'oversize') {
+      // ⚠ THE PARTIAL IS DROPPED. A prefix past the cap is longer than the artifact can be, so no
+      // later run could ever verify it — and leaving it is the disk fill the cap exists to stop.
+      rmSync(partPath, { force: true });
+      return { ok: false, resumedFromBytes: 0, breach, error };
+    }
+    // The bytes written so far stay: a dropped connection is precisely the case resume exists for,
+    // and a stall is a dropped connection the host has not admitted to yet.
+    return { ok: false, resumedFromBytes: append ? existing : 0, breach, error };
+  } finally {
+    if (idle) clearTimeout(idle);
   }
   return { ok: true, resumedFromBytes: append ? existing : 0, status: res.status };
 }
@@ -879,12 +1019,16 @@ export async function setupCompanion(deps: CompanionSetupDeps = {}): Promise<Com
   }
   mkdirSync(downloadDir, { recursive: true });
 
-  const moved = await transfer(artifact.url, partPath, fetchImpl, env);
+  const moved = await transfer(artifact.url, partPath, fetchImpl, env, {
+    declaredSize: typeof artifact.size === 'number' ? artifact.size : undefined,
+    ceilingBytes: deps.downloadCeilingBytes ?? COMPANION_ARTIFACT_CEILING_BYTES,
+    idleMs: deps.downloadIdleTimeoutMs ?? COMPANION_IDLE_TIMEOUT_MS,
+  });
   if (moved.refusal) {
     return fail('insecure_transport', moved.refusal, host, { version: release.version });
   }
   if (!moved.ok) {
-    return fail('download_failed', `The download did not finish: ${moved.error ?? 'unknown transport error'}`, host, {
+    return fail('download_failed', downloadFailureDetail(moved), host, {
       version: release.version,
       artifactPath: partPath,
       resumedFromBytes: moved.resumedFromBytes,
