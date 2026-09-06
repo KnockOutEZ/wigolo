@@ -17,6 +17,43 @@ import { DaemonHttpServer } from '../../../src/daemon/http-server.js';
 
 const TOOLS = ['search', 'fetch', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch'];
 
+/**
+ * The COMPLETE served path surface, sorted, hand-maintained. Adding a REST route without
+ * adding it here is a deliberate stop: a new public path is a contract change, and the
+ * positive per-tool rows below cannot see one because they only ask "is /v1/search there?".
+ * `/v1/runs*` left core with the run layer (spec §10(d)) — its absence is pinned separately
+ * and independently of this array, so re-adding a runs entry here does NOT buy silence.
+ */
+const GOLDEN_REST_PATHS = [
+  '/openapi.json',
+  '/v1/agent',
+  '/v1/cache',
+  '/v1/crawl',
+  '/v1/diff',
+  '/v1/extract',
+  '/v1/fetch',
+  '/v1/find_similar',
+  '/v1/openapi.json',
+  '/v1/research',
+  '/v1/search',
+  '/v1/tools',
+  '/v1/watch',
+];
+
+/** The exhaustive pin, as a function so a fixture can prove it actually reds. */
+function assertExhaustivePathSurface(paths: string[]): void {
+  expect([...paths].sort()).toEqual(GOLDEN_REST_PATHS);
+}
+
+/**
+ * The run-surface pin. Reads the LIVE path list, never the golden array — that is what
+ * makes it survive a careless golden update: someone who pastes `/v1/runs` into
+ * GOLDEN_REST_PATHS to green the exhaustive row still reds here.
+ */
+function assertNoRunSurface(paths: string[]): void {
+  expect(paths.filter((p) => p.startsWith('/v1/runs'))).toEqual([]);
+}
+
 // The imported schema objects also serve MCP ListTools; assembly must not mutate
 // them. Snapshot BEFORE any buildOpenApi() call.
 const PRE_ASSEMBLY_SNAPSHOT: Record<string, string> = {
@@ -62,6 +99,38 @@ describe('OpenAPI document assembly', () => {
     expect(doc.paths['/v1/tools']).toBeDefined();
     expect(doc.paths['/openapi.json']).toBeDefined();
     expect(doc.paths['/v1/openapi.json']).toBeDefined();
+  });
+
+  it('pins the COMPLETE sorted path surface — an added route must be declared in the golden', () => {
+    // The positive row above is existential: it cannot see a path nobody asked about. This one
+    // is exhaustive, so a route reintroduced anywhere in buildPaths() lands here as a red diff.
+    const doc = buildOpenApi() as { paths: Record<string, unknown> };
+    assertExhaustivePathSurface(Object.keys(doc.paths));
+  });
+
+  it('the exhaustive pin actually reds when a path appears (fixture)', () => {
+    // Proof the guard can fail. buildOpenApi() is memoized and shared, so the fixture is a
+    // copy of the key list, never a mutation of the served document.
+    const doc = buildOpenApi() as { paths: Record<string, unknown> };
+    const withExtra = [...Object.keys(doc.paths), '/v1/dummy_route'];
+    expect(() => assertExhaustivePathSurface(withExtra)).toThrow();
+    // ...and equally when a documented path is REMOVED.
+    expect(() => assertExhaustivePathSurface(Object.keys(doc.paths).slice(1))).toThrow();
+  });
+
+  it('documents no /v1/runs* path — the run surface is not core\'s any more', () => {
+    // Second, independent assert (spec §10(d)): computed from the served document, not from
+    // GOLDEN_REST_PATHS, so it cannot be silenced by editing the golden array.
+    const doc = buildOpenApi() as { paths: Record<string, unknown> };
+    assertNoRunSurface(Object.keys(doc.paths));
+    // The golden array itself must also stay clean, so a careless paste is caught at review.
+    assertNoRunSurface(GOLDEN_REST_PATHS);
+  });
+
+  it('the /v1/runs negative actually reds on any runs path (fixture)', () => {
+    expect(() => assertNoRunSurface(['/v1/search', '/v1/runs'])).toThrow();
+    expect(() => assertNoRunSurface(['/v1/search', '/v1/runs/{id}/driver'])).toThrow();
+    expect(() => assertNoRunSurface(['/v1/search', '/v1/runs/{id}/events'])).toThrow();
   });
 
   it('documents the untrusted-content representation header on EVERY tool route, defaulting to inline', () => {
@@ -167,8 +236,9 @@ describe('OpenAPI document assembly', () => {
 /**
  * The run surface's own describe block lived here: the vocabularies, the SSE lifetime description
  * and the driver-gesture shapes. `/v1/runs*` left core with the run layer, so the document no
- * longer describes it and there is nothing here to pin; the companion documents its own. What
- * stays is the tool loop above and the index below, which are what core serves.
+ * longer describes it; the companion documents its own. What is pinned in its place is the
+ * ABSENCE — `assertNoRunSurface` above, plus the exhaustive path golden — because a
+ * reintroduced runs route is a silent re-entry of a surface this repo deliberately shed.
  */
 
 describe('/v1/tools index', () => {
