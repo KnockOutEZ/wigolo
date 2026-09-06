@@ -92,12 +92,15 @@ describe('SD10 broker-table migrations', () => {
       status: 'published',
       published_at: 1,
     };
-    db.prepare(
-      'INSERT INTO studio_workflows (slug, version, definition, status, published_at) VALUES (@slug, @version, @definition, @status, @published_at)',
-    ).run(workflow);
     expect(() => db.prepare(
       'INSERT INTO studio_workflows (slug, version, definition, status, published_at) VALUES (@slug, @version, @definition, @status, @published_at)',
-    ).run(workflow)).toThrow(/UNIQUE|PRIMARY KEY/i);
+    ).run(workflow)).not.toThrow();
+    expect(() => db.prepare(
+      'INSERT INTO studio_workflows (slug, version, definition, status, published_at) VALUES (@slug, @version, @definition, @status, @published_at)',
+    ).run(workflow)).toThrow(/append-only/i);
+    expect(() => db.prepare(
+      'INSERT OR REPLACE INTO studio_workflows (slug, version, definition, status, published_at) VALUES (@slug, @version, @definition, @status, @published_at)',
+    ).run({ ...workflow, definition: '{"steps":["replaced"]}', published_at: 2 })).toThrow(/append-only/i);
     expect(() => db.prepare('UPDATE studio_workflows SET status = ? WHERE slug = ? AND version = ?')
       .run('archived', workflow.slug, workflow.version)).toThrow(/append-only/i);
     expect(() => db.prepare('DELETE FROM studio_workflows WHERE slug = ? AND version = ?')
