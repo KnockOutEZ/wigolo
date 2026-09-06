@@ -204,6 +204,60 @@ describe('companion/artifact-provider — reads studio_artifacts directly, keyed
     });
   });
 
+  describe('recipe artifacts (SD10 / D11)', () => {
+    /**
+     * A recipe is a canonical extraction definition, not a document: it persists with a title, its
+     * canonical JSON in `metadata` and `markdown` NULL. Migration 034 keeps it out of the FTS index,
+     * so a post-migration database cannot produce one here — which is exactly why these cases forge
+     * the index entry by hand. The provider is the LAST public reader of this table; if the only
+     * exclusion lived in the triggers, a database written before 034, or one whose index was rebuilt
+     * by some other path, would hand `cache` / `find_similar` / `research` a recipe as if it were
+     * captured prose. Defence in depth, and each layer is pinned where it lives.
+     */
+    function forgeStaleIndexEntry(id: number, title: string, markdown: string | null): void {
+      db.prepare('INSERT INTO studio_artifacts_fts(rowid, title, markdown) VALUES (?, ?, ?)')
+        .run(id, title, markdown);
+    }
+
+    it('never returns a recipe key from search, even against a stale pre-migration index', () => {
+      const recipe = seed({ type: 'recipe', title: 'Zebrafish pricing rows', markdown: null, contentTrusted: 0 });
+      const clip = seed({ type: 'clip', title: 'Zebrafish pricing page', markdown: 'zebrafish body', url: 'https://example.com/z', contentTrusted: 0 });
+
+      // Forcing pin: without the forged entry the assertion below would hold vacuously, satisfied by
+      // the trigger rather than by anything in this file's subject.
+      forgeStaleIndexEntry(recipe.id, 'Zebrafish pricing rows', null);
+      expect(
+        (db.prepare('SELECT rowid FROM studio_artifacts_fts WHERE studio_artifacts_fts MATCH ?').all('zebrafish') as Array<{ rowid: number }>)
+          .map((r) => r.rowid),
+      ).toContain(recipe.id);
+
+      const keys = studioArtifactProvider.searchKeys('zebrafish', 10);
+      expect(keys).toContain(clip.key);
+      expect(keys).not.toContain(recipe.key);
+    });
+
+    it('never hydrates a recipe key, however it was obtained', () => {
+      const recipe = seed({ type: 'recipe', title: 'Canonical rows', markdown: null, contentTrusted: 0 });
+      // The row is real and its key is well-formed, so null here is the type exclusion and not a
+      // miss — a forged or stale key must not become a readable record.
+      expect(db.prepare('SELECT id FROM studio_artifacts WHERE id = ?').get(recipe.id)).toBeTruthy();
+      expect(studioArtifactProvider.hydrate(recipe.key)).toBeNull();
+    });
+
+    it('leaves non-recipe artifacts untouched', () => {
+      // The exclusion is keyed on the type string alone; nothing about ordinary artifact semantics
+      // changes, including the types that merely start with the same letters.
+      const clip = seed({ type: 'clip', title: 'Recipes for pricing', markdown: 'recipes body', url: 'https://example.com/r', contentTrusted: 0 });
+      const other = seed({ type: 'recipes', title: 'Recipes plural type', markdown: 'recipes body two', contentTrusted: 0 });
+
+      const keys = studioArtifactProvider.searchKeys('recipes', 10);
+      expect(keys).toContain(clip.key);
+      expect(keys).toContain(other.key);
+      expect(studioArtifactProvider.hydrate(clip.key)?.type).toBe('clip');
+      expect(studioArtifactProvider.hydrate(other.key)?.type).toBe('recipes');
+    });
+  });
+
   it('names the surface, not the implementation', () => {
     expect(studioArtifactProvider.name).toBe('studio');
   });

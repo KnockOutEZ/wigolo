@@ -36,6 +36,20 @@ import type { ArtifactProvider, ArtifactRecord } from '../cache/artifact-registr
  */
 export const STUDIO_ARTIFACT_PROVIDER = 'studio';
 
+/**
+ * The one artifact type this provider never surfaces. A recipe is a canonical extraction definition
+ * — title populated, canonical JSON in `metadata`, `markdown` NULL — so it carries no prose to cite,
+ * and reading it back as a captured document would put an empty source in front of an agent.
+ *
+ * Migration 034 already excludes recipes from `studio_artifacts_fts`, so on a migrated database the
+ * predicates below match nothing. They exist because this file is the LAST public reader of the
+ * table and the trigger is not the only way that index can be written: a database created before
+ * 034, or one whose index was rebuilt by another path, would otherwise hand `cache`, `find_similar`
+ * and `research` a recipe. The literal is duplicated in the migration deliberately — one copy lives
+ * in SQL and one in TypeScript, and neither half may depend on the other's runtime.
+ */
+const RECIPE_ARTIFACT_TYPE = 'recipe';
+
 interface ArtifactRow {
   id: number;
   artifact_type: string;
@@ -62,6 +76,8 @@ function selectArtifact(key: string): ArtifactRow | null {
     )
     .get(parts.id) as ArtifactRow | undefined;
   if (!row || row.artifact_type !== parts.type) return null;
+  // A well-formed key addressing a real recipe row is still a clean miss — see RECIPE_ARTIFACT_TYPE.
+  if (row.artifact_type === RECIPE_ARTIFACT_TYPE) return null;
   return row;
 }
 
@@ -74,6 +90,9 @@ export const studioArtifactProvider: ArtifactProvider = {
    * Full-text search over the artifact index, returning contract keys in BM25 rank order. Mirrors
    * the url_cache search's sanitize-then-MATCH so caller text can never reach FTS5 as syntax: this
    * read path's contract is "no artifacts", never "the query threw".
+   *
+   * The recipe exclusion is applied to the BASE table rather than the index, so it holds against a
+   * stale or pre-034 index that still carries recipe rowids.
    */
   searchKeys: (query, limit) => {
     if (!query.trim() || limit <= 0) return [];
@@ -83,10 +102,11 @@ export const studioArtifactProvider: ArtifactProvider = {
          FROM studio_artifacts
          JOIN studio_artifacts_fts ON studio_artifacts.id = studio_artifacts_fts.rowid
          WHERE studio_artifacts_fts MATCH ?
+           AND studio_artifacts.artifact_type <> ?
          ORDER BY studio_artifacts_fts.rank
          LIMIT ?`,
       )
-      .all(sanitizeFtsQuery(query), limit) as Array<{ id: number; type: string }>;
+      .all(sanitizeFtsQuery(query), RECIPE_ARTIFACT_TYPE, limit) as Array<{ id: number; type: string }>;
     return rows.map((r) => makeStudioEmbedKey(r.type, r.id));
   },
 
