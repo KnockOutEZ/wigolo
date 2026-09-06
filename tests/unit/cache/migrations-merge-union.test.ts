@@ -77,6 +77,7 @@ const POST_MERGE_ADDED = [
   '031-studio-watchers',
   '032-studio-collections',
   '033-studio-collection-rows',
+  '034-studio-artifacts-recipe-fts',
 ];
 
 /** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */
