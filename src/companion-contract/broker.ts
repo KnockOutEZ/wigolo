@@ -77,17 +77,23 @@ export const BROKER_TABLES = Object.freeze([
   'studio_annotations',
   'studio_artifacts',
   'studio_audit',
+  'studio_collection_rows',
+  'studio_collections',
   'studio_flow_steps',
   'studio_memories',
   'studio_run_events',
   'studio_reading_queue',
   'studio_runs',
+  'studio_schedules',
   'studio_sessions',
+  'studio_shortcuts',
   'studio_site_grants',
   'studio_site_memories',
   'studio_site_profiles',
   'studio_site_widgets',
   'studio_voice_profiles',
+  'studio_watchers',
+  'studio_workflows',
 ] as const);
 
 export type BrokerTable = (typeof BROKER_TABLES)[number];

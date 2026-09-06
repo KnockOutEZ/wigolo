@@ -937,6 +937,110 @@ CREATE INDEX IF NOT EXISTS idx_studio_reading_queue_added_by
   ON studio_reading_queue(added_by, added_at);
 `;
 
+const MIGRATION_028_STUDIO_SHORTCUTS = `
+CREATE TABLE IF NOT EXISTS studio_shortcuts (
+  id          TEXT PRIMARY KEY,
+  slug        TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  used_count  INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+`;
+
+const MIGRATION_029_STUDIO_SCHEDULES = `
+CREATE TABLE IF NOT EXISTS studio_schedules (
+  id                 TEXT PRIMARY KEY,
+  name               TEXT NOT NULL,
+  cadence            TEXT NOT NULL,
+  wake               TEXT NOT NULL,
+  target             TEXT NOT NULL,
+  approval_required  INTEGER NOT NULL DEFAULT 1,
+  status             TEXT NOT NULL,
+  next_due_at        INTEGER,
+  last_run_id        TEXT,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+`;
+
+const MIGRATION_030_STUDIO_WORKFLOWS = `
+CREATE TABLE IF NOT EXISTS studio_workflows (
+  slug          TEXT NOT NULL,
+  version       INTEGER NOT NULL,
+  definition    TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  published_at  INTEGER,
+  PRIMARY KEY (slug, version)
+);
+
+CREATE TRIGGER IF NOT EXISTS studio_workflows_append_only_insert
+BEFORE INSERT ON studio_workflows
+WHEN EXISTS (
+  SELECT 1 FROM studio_workflows WHERE slug = NEW.slug AND version = NEW.version
+)
+BEGIN
+  SELECT RAISE(ABORT, 'studio_workflows is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS studio_workflows_append_only_update
+BEFORE UPDATE ON studio_workflows
+BEGIN
+  SELECT RAISE(ABORT, 'studio_workflows is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS studio_workflows_append_only_delete
+BEFORE DELETE ON studio_workflows
+BEGIN
+  SELECT RAISE(ABORT, 'studio_workflows is append-only');
+END;
+`;
+
+const MIGRATION_031_STUDIO_WATCHERS = `
+CREATE TABLE IF NOT EXISTS studio_watchers (
+  id               TEXT PRIMARY KEY,
+  kind             TEXT NOT NULL,
+  target           TEXT NOT NULL,
+  cadence_seconds  INTEGER NOT NULL,
+  alert_rules      TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  run_id           TEXT,
+  last_check_at    INTEGER,
+  last_state       TEXT,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+`;
+
+const MIGRATION_032_STUDIO_COLLECTIONS = `
+CREATE TABLE IF NOT EXISTS studio_collections (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  criteria      TEXT NOT NULL,
+  recipe_id     TEXT,
+  watcher_id    TEXT,
+  export_prefs  TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+`;
+
+const MIGRATION_033_STUDIO_COLLECTION_ROWS = `
+CREATE TABLE IF NOT EXISTS studio_collection_rows (
+  collection_id  TEXT NOT NULL,
+  entity_key     TEXT NOT NULL,
+  fields         TEXT NOT NULL,
+  content_hash   TEXT,
+  first_seen_at  INTEGER NOT NULL,
+  last_seen_at   INTEGER NOT NULL,
+  changed_at     INTEGER,
+  status         TEXT NOT NULL,
+  UNIQUE (collection_id, entity_key)
+);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -1246,6 +1350,12 @@ export const MIGRATIONS: Migration[] = [
   { name: '025-studio-voice-profiles', sql: MIGRATION_025_STUDIO_VOICE_PROFILES },
   { name: '026-studio-site-widgets', sql: MIGRATION_026_STUDIO_SITE_WIDGETS },
   { name: '027-studio-reading-queue', sql: MIGRATION_027_STUDIO_READING_QUEUE },
+  { name: '028-studio-shortcuts', sql: MIGRATION_028_STUDIO_SHORTCUTS },
+  { name: '029-studio-schedules', sql: MIGRATION_029_STUDIO_SCHEDULES },
+  { name: '030-studio-workflows', sql: MIGRATION_030_STUDIO_WORKFLOWS },
+  { name: '031-studio-watchers', sql: MIGRATION_031_STUDIO_WATCHERS },
+  { name: '032-studio-collections', sql: MIGRATION_032_STUDIO_COLLECTIONS },
+  { name: '033-studio-collection-rows', sql: MIGRATION_033_STUDIO_COLLECTION_ROWS },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
