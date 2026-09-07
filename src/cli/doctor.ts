@@ -50,7 +50,8 @@ import { buildAccountDoctorLines } from './account.js';
 import { accountsUrlOverride } from './accounts-url-notice.js';
 import { AccountStateStore } from '../account/state.js';
 import { resolvePinnedKeys } from '../account/pinned-keys.js';
-import { AccountsClient } from '../account/client.js';
+import { AccountsClient, type FetchLike } from '../account/client.js';
+import { anySignal } from '../util/abort.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -552,6 +553,23 @@ export interface DoctorOptions {
   fix?: boolean;
   /** Emit a machine-readable JSON report on stdout (logs still go to stderr). */
   json?: boolean;
+  /**
+   * Stops the run. Doctor is a sequence of short independent probes, so an
+   * abort takes effect at the next probe boundary rather than unwinding the
+   * one in flight — with one exception: the account probe is a live request
+   * that can outlive its caller by seconds, so it carries the signal into its
+   * own transport. A caller that goes away (an unmounted screen, a closed
+   * terminal) must be able to stop the work, not merely stop reading it.
+   */
+  signal?: AbortSignal;
+  /**
+   * Account transport for the Account section. Injected so any surface can run
+   * the diagnostic without a live socket; defaults to a client built from
+   * `getConfig().accountsUrl`.
+   */
+  accountsClient?: AccountsClient;
+  /** Transport under the default account client. Defaults to global `fetch`. */
+  fetchImpl?: FetchLike;
 }
 
 /** One diagnosable component in the doctor report. `fixable` marks checks that
@@ -823,6 +841,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   if (searxngConfigured(getConfig()) && !py.ok && !dk.ok) { degraded = true; nonFixableDegraded = true; }
 
   out('');
+  opts?.signal?.throwIfAborted();
   const pw = await checkPlaywright();
   out('[wigolo doctor] Browser engine:');
   out(`  Installation:  ${pw.installed ? `installed${pw.version ? ` (v${pw.version})` : ''}` : 'not installed'}`);
@@ -953,6 +972,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     // Skip the network probe when ollama isn't active and an LLM is already
     // configured — there's nothing to hint at, so don't spend the round-trip.
     const needProbe = ollamaActive || !llmConfigured;
+    opts?.signal?.throwIfAborted();
     const probe = needProbe ? await probeOllama(baseUrl) : { reachable: false };
     let model: string | undefined;
     if (ollamaActive && probe.reachable && !process.env.WIGOLO_LLM_MODEL) {
@@ -979,6 +999,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   // negative-cached probe) is only invoked when the flag is on.
   {
     const localLlm = cfg.localLlm;
+    opts?.signal?.throwIfAborted();
     const tier = localLlm === 'off' ? null : await resolveLocalModelTier({ localLlm, localLlmModel: cfg.localLlmModel });
     for (const line of buildLocalTierDoctorLines({ localLlm, tier })) {
       out(line);
@@ -1023,6 +1044,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   // Opt-in live probe of every registered engine. Off by default —
   // doctor stays network-free unless the user explicitly asks.
   try {
+    opts?.signal?.throwIfAborted();
     await runEngineProbeSection(opts?.probeEngines ?? false, getRegisteredEngineEntries());
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1084,12 +1106,18 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   }
 
   checkCoreEmbeddings(dataDir);
+  opts?.signal?.throwIfAborted();
   await checkSqliteVec(dataDir);
   checkCacheStats(dataDir);
   checkBackgroundQueue(dataDir);
   checkRssFeeds(dataDir);
   checkAuthenticatedOrigins(dataDir);
-  await checkAccount(dataDir);
+  opts?.signal?.throwIfAborted();
+  await checkAccount(dataDir, {
+    client: opts?.accountsClient,
+    fetchImpl: opts?.fetchImpl,
+    signal: opts?.signal,
+  });
   checkTelemetryStatus();
   checkTuiEnv();
 
@@ -1108,6 +1136,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   // --fix the original `degraded` verdict is authoritative (preserves the
   // report-only exit-code contract).
   let fixes: DoctorFix[] = [];
+  opts?.signal?.throwIfAborted();
   let fixableChecks = await runDoctorColdChecks(dataDir);
   if (opts?.fix) {
     out('');
@@ -1317,6 +1346,41 @@ function checkRssFeeds(dataDir: string): void {
   }
 }
 
+/** What the Account section needs from outside itself. Mirrors the seam
+ *  `runAccountCommand` already has, so both account call sites are injectable
+ *  the same way and neither can only be exercised against a live service. */
+export interface AccountProbeDeps {
+  /** Pre-built client. Wins over `fetchImpl`. */
+  client?: AccountsClient;
+  /** Transport for the default client. Defaults to global `fetch`. */
+  fetchImpl?: FetchLike;
+  /** Cancels the probe in flight — see `DoctorOptions.signal`. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Merge the caller's cancellation into the account client's own request signal.
+ *
+ * The client sets a per-request timeout signal of its own, so the caller's is
+ * combined with it rather than replacing it: a probe must still time out when
+ * nobody aborts, and must still stop when somebody does. Returns `fetchImpl`
+ * untouched when there is nothing to merge, so the no-signal path adds no
+ * wrapper at all.
+ */
+function abortableFetch(fetchImpl: FetchLike | undefined, signal: AbortSignal | undefined): FetchLike | undefined {
+  if (signal === undefined) return fetchImpl;
+  const base: FetchLike = fetchImpl ?? ((input, init) => fetch(input, init));
+  return async (input, init) => {
+    const inner = init?.signal;
+    const combined = anySignal(inner instanceof AbortSignal ? [inner, signal] : [signal]);
+    try {
+      return await base(input, { ...init, signal: combined.signal });
+    } finally {
+      combined.cleanup();
+    }
+  };
+}
+
 /**
  * The account section (PX2 mini-spec §5).
  *
@@ -1327,7 +1391,7 @@ function checkRssFeeds(dataDir: string): void {
  * diagnosis either way — pinning stays the trust root and nothing fetched here
  * is ever promoted to a verification key.
  */
-async function checkAccount(dataDir: string): Promise<void> {
+export async function checkAccount(dataDir: string, deps: AccountProbeDeps = {}): Promise<void> {
   out('');
   out('[wigolo doctor] Account:');
   try {
@@ -1338,7 +1402,16 @@ async function checkAccount(dataDir: string): Promise<void> {
     const accountsUrl = getConfig().accountsUrl;
     let serviceKids: string[] | null = null;
     if (state.account_id !== null) {
-      const res = await new AccountsClient({ baseUrl: accountsUrl }).entitlementsKeys();
+      const client = deps.client ?? new AccountsClient({
+        baseUrl: accountsUrl,
+        fetchImpl: abortableFetch(deps.fetchImpl, deps.signal),
+      });
+      const res = await client.entitlementsKeys();
+      // The client turns a transport failure into a result envelope, so a
+      // cancelled request would otherwise read as a service that declined to
+      // answer — and doctor would print a verdict about an account nobody is
+      // still waiting to hear about.
+      deps.signal?.throwIfAborted();
       if (res.ok) serviceKids = res.data.keys.map((k) => k.kid);
     }
     for (const line of buildAccountDoctorLines({
@@ -1349,6 +1422,10 @@ async function checkAccount(dataDir: string): Promise<void> {
       accountsUrl: accountsUrlOverride(accountsUrl),
     })) out(line);
   } catch (err) {
+    // An abort is the caller leaving, not a diagnosis. Reporting it as a failed
+    // check would print a verdict about the account into a run nobody asked to
+    // finish, and would swallow the signal the caller is waiting on.
+    if (deps.signal?.aborted === true) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     out(`  (check failed: ${msg.slice(0, 80)})`);
   }
