@@ -183,8 +183,8 @@ export default function HowItWorks() {
 
         <Reveal className={styles.closer} as="div" delay={80}>
           Models and cache live under <code>~/.wigolo</code> on your machine —
-          no keys, nothing metered, and nothing leaves unless you opt into an
-          LLM.
+          no keys, no account, nothing metered. No page content, URLs, or
+          credentials leave your machine; usage stats do, off with one flag.
         </Reveal>
       </div>
     </section>

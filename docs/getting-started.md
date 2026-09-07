@@ -25,16 +25,27 @@ Useful variants:
 - `npx wigolo init --wizard` — the rich guided setup TUI.
 - `npx wigolo init --json` — machine-readable summary on stdout.
 
-When setup finishes on a machine that has no wigolo account yet, `init` closes with the
-next step:
+When setup finishes on a machine that has no wigolo account yet, `init` closes by saying so
+— and by saying it changes nothing about whether the tools work:
 
 ```text
-  Next step: run `wigolo register` to activate this install (already have an account? `wigolo login`).
+  wigolo runs fully without an account — registering only adds to it.
+  Optional — `wigolo register` unlocks:
+    · sync — your cache, settings and watches across machines
+    · marketplace — publish and install skills and plugins
+    · higher pacing and watch limits
+    · managed cloud runs, when they land
+  Telemetry: no page content, URLs, or credentials leave your machine; usage stats do, off with one flag (WIGOLO_TELEMETRY=off).
 ```
 
-## 2. Activate this install
+## 2. An account, if and when you want one — optional
 
-The ten tools need an account. Create one — it takes an email address and a sign-in code,
+**Skip this section and everything still works.** All ten tools, on every surface, run on a
+machine that has never registered, and so do `doctor`, `verify` and `warmup`. Nothing is
+gated.
+
+A free account unlocks sync across machines, the marketplace, higher pacing and watch
+limits, and managed cloud runs when they land. It takes an email address and a sign-in code,
 no password:
 
 ```bash
@@ -43,19 +54,16 @@ npx wigolo register
 
 `register` asks for your email, mails a sign-in code, and waits for you to type it back.
 Before the account is actually created it shows what usage and reliability telemetry
-covers and asks whether you want occasional product-update emails — then activates this
-machine. Already have an account? `npx wigolo login` signs this machine in instead.
+covers and asks whether you want occasional product-update emails — that question is
+unticked by default. Already have an account? `npx wigolo login` signs this machine in
+instead. Inside an agent loop, `npx wigolo register --headless --email you@example.com`
+mails the code without ever waiting on a prompt; the human reads it from their own inbox and
+finishes with `--code`.
 
-Until then every tool refuses with the same line, whichever surface it was called from:
-
-```text
-wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).
-```
-
-Diagnostics stay available while unactivated — `doctor`, `verify` and `warmup` run on a
-machine that has never registered, so a broken install can still be diagnosed. See
-[Account & telemetry](../README.md#account--telemetry) for what is collected and how to
-turn telemetry off.
+An unregistered install says all of this exactly once — in a footer under a tool result that
+already worked — and then never again. See
+[Account & telemetry](../README.md#account--telemetry) for what telemetry collects and how
+to turn it off.
 
 ## 3. First search — through your agent
 

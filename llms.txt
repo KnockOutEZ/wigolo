@@ -17,7 +17,7 @@ Repository: https://github.com/KnockOutEZ/wigolo
 - [Docs index](docs/README.md): map of all documentation pages
 - [Getting started](docs/getting-started.md): npx wigolo init, first search, doctor/verify
 - [Installation](docs/installation.md): npm, Docker (ghcr.io/knockoutez/wigolo), MCP bundle/registries, agent auto-wire matrix, uninstall
-- [Configuration](docs/configuration.md): env vars and config.json — search backends (core|searxng|hybrid), fetch/browser knobs, on-device models, optional LLM providers, cache TTLs, serve policy, telemetry (off by default)
+- [Configuration](docs/configuration.md): env vars and config.json — search backends (core|searxng|hybrid), fetch/browser knobs, on-device models, optional LLM providers, cache TTLs, serve policy, telemetry (on by default for a registered install, one flag to turn off)
 - [Tools](docs/tools.md): the 10 tools — search, fetch, crawl, cache, extract, find_similar, research, agent, diff, watch — with params and response fields
 - [CLI](docs/cli.md): management commands, one-shot tools, interactive shell, --json contract
 - [REST API](docs/rest-api.md): wigolo serve, POST /v1/{tool}, /openapi.json, remote MCP endpoints, fail-closed auth, resource limits

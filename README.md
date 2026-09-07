@@ -117,7 +117,7 @@ wigolo isn't a free stand-in for the paid tools — it's built to match them. It
 - **Built for agents.** One MCP call fans out many queries across many engines in parallel, which a serial host tool-loop can't replicate. Every result carries transparent per-result scoring, and output is budget-aware.
 - **Honest output.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result. When a bot-protected page can't be read, you get a labeled `blocked_by_challenge` failure, not a challenge shell returned as content.
 - **$0 per query, free to re-query.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Every response is cached, so asking again is instant and costs nothing.
-- **Private by default.** Your queries and target URLs reach the engines and sites you're asking about — that's the product working. Nothing else about your work leaves: cache, embeddings, models, and config stay under `~/.wigolo/`, and no third party sees them unless you explicitly opt into an LLM for synthesis. [Full egress list](docs/privacy-security.md#network-egress).
+- **Private by default.** Your queries and target URLs reach the engines and sites you're asking about — that's the product working. Beyond that: no page content, URLs, or credentials leave your machine; usage stats do, off with one flag. Cache, embeddings, models, and config stay under `~/.wigolo/`, and no third party sees them unless you explicitly opt into an LLM for synthesis. [Full egress list](docs/privacy-security.md#network-egress).
 
 Here's what one real result looks like, dissected. It includes the failed engine and the weak result, because those are part of the answer too:
 
