@@ -34,6 +34,8 @@ import { getConfig } from '../config.js';
 import { AccountStateStore, type AccountState } from '../account/state.js';
 import { resolvePinnedKeys, type PinnedKey } from '../account/pinned-keys.js';
 import { requireActivation, type ActivationDecision } from '../account/gate.js';
+import { recordSuccessfulRun, takeRegistrationNudge } from '../account/nudge.js';
+import { registrationNudgeText } from '../account/unlocks.js';
 
 /** Mini-spec §3: in-memory activation state is re-read from disk at most this often. */
 export const ACTIVATION_RELOAD_MS = 60_000;
@@ -136,14 +138,68 @@ export function checkActivation(): ActivationDecision {
   return activationChecker().check();
 }
 
+// ---------------------------------------------------------------------------
+// The unlock footer (PX brief §0a.1-3, CEO consulting pass 2026-09-03)
+// ---------------------------------------------------------------------------
+//
+// PX2 turned a refusal into the only thing an unregistered install ever heard
+// from this file. The amendment deleted the refusal from every core surface, so
+// what is left is the opposite job: an unregistered install runs everything, and
+// exactly once — after it has seen wigolo work N times — it is told what an
+// account would ADD. Nothing below can refuse anything; the widest failure any
+// of it has is printing nothing.
+
+/** Count one successful tool run toward the single nudge. Never throws. */
+export function noteSuccessfulToolRun(): void {
+  try {
+    // A registered install has nothing to be nudged about, and asking here keeps
+    // the disk counter from growing for the rest of an activated install's life.
+    if (checkActivation().ok) return;
+    recordSuccessfulRun(getConfig().dataDir);
+  } catch {
+    // Best-effort by contract: a footer never fails a result.
+  }
+}
+
 /**
- * The MCP rendering of a refusal: a designed tool error, not a transport failure
- * (product law 9 — the text we return IS the interface). `isError: true` so a
- * harness renders it as a failed call rather than as a result.
+ * Claim the one registration nudge if it is due, as rendered text.
+ *
+ * Returns non-null AT MOST ONCE per install, across every surface and every
+ * process — the once-only flag lives on disk (`account/nudge.ts`), not here.
  */
-export function activationToolError(decision: Extract<ActivationDecision, { ok: false }>): {
+export function claimRegistrationNudge(): string | null {
+  try {
+    if (checkActivation().ok) return null;
+    if (!takeRegistrationNudge(getConfig().dataDir)) return null;
+    return registrationNudgeText();
+  } catch {
+    return null;
+  }
+}
+
+interface ToolResultShape {
   content: { type: 'text'; text: string }[];
-  isError: true;
-} {
-  return { content: [{ type: 'text', text: decision.message }], isError: true };
+  isError: boolean;
+}
+
+/**
+ * The MCP seam: count the run, and append the nudge as its own text block when
+ * this is the call it is due on.
+ *
+ * A FAILED call counts for nothing and is never footed. Two reasons, both about
+ * honesty rather than tidiness: a footer under an error reads as part of the
+ * error ("did registering fail?"), and "after N successful runs" is the brief's
+ * wording — a user whose five calls all errored has not seen wigolo work and is
+ * owed a working tool, not a sign-up prompt.
+ *
+ * The nudge is a SEPARATE content block, never appended into the result's own
+ * text: every core tool returns JSON in that first block, and concatenating
+ * prose onto it would break every caller that parses it.
+ */
+export function appendRegistrationFooter<T extends ToolResultShape>(result: T): T {
+  if (result.isError) return result;
+  noteSuccessfulToolRun();
+  const nudge = claimRegistrationNudge();
+  if (nudge === null) return result;
+  return { ...result, content: [...result.content, { type: 'text' as const, text: nudge }] };
 }

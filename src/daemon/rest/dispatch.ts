@@ -23,6 +23,7 @@ import { handleDiff, type DiffInput } from '../../tools/diff.js';
 import { handleWatch } from '../../tools/watch.js';
 import { scheduleOverdueCheck } from '../../watch/scheduler.js';
 import { recordToolTelemetry } from '../../telemetry/instrumentation.js';
+import { noteSuccessfulToolRun } from '../../server/activation.js';
 import { guardServeTarget } from './target-guard.js';
 import { guardResolvedServeTarget, type SsrfResult, type SsrfRejection } from '../../watch/ssrf.js';
 import { getConfig } from '../../config.js';
@@ -406,12 +407,16 @@ function shapeUntrusted(tool: string, input: unknown, body: unknown, mode: Untru
 export async function dispatchTool(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {
   const startedAt = Date.now();
   const result = await dispatchToolInner(tool, input, ctx);
-  // Reported here rather than in `routeRequest`, for the same reason the MCP seam reports
-  // from the audit block: this is the wrapper every REST tool call passes through, and it
-  // sits BELOW the activation gate (`routeRequest`), so a refused request returns without
-  // ever reaching this function and emits nothing at all.
+  // Reported here rather than in `routeRequest`: this is the wrapper every REST tool
+  // call passes through. Since §0a.1 removed the route-level activation gate there is
+  // no longer anything above it to filter what arrives — telemetry's own activation
+  // check (`telemetry/client.ts`) is what keeps an unregistered install silent.
   const ok = result.status >= 200 && result.status < 300;
   recordToolTelemetry(tool, 'rest', ok, Date.now() - startedAt, ok ? undefined : restFailure(result));
+  // COUNT ONLY, never claim (PX brief §0a.2). A REST response has no channel for a
+  // prose nudge — the body is a typed envelope somebody parses — so these runs push
+  // the counter and the nudge is rendered by whichever CLI or MCP call crosses N.
+  if (ok) noteSuccessfulToolRun();
   if (result.status !== 200) return result;
   return { ...result, body: shapeUntrusted(tool, input, result.body, ctx.untrustedMode) };
 }

@@ -58,7 +58,7 @@ import {
   TOOL_DESCRIPTIONS,
   serverInstructions,
 } from './instructions.js';
-import { checkActivation, activationToolError } from './server/activation.js';
+import { checkActivation, appendRegistrationFooter } from './server/activation.js';
 import { startTelemetry } from './telemetry/index.js';
 import { recordToolTelemetry } from './telemetry/instrumentation.js';
 import {
@@ -487,22 +487,12 @@ export function createMcpServer(subsystems: Subsystems): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
 
-    // THE ACTIVATION GATE (PX2 mini-spec §3, A-212-2). It is the FIRST statement in
-    // this handler and that position is load-bearing, not tidiness: the watch
-    // scheduler below re-fetches overdue URLs and posts webhooks, so a gate placed
-    // under it would refuse the call and still egress on behalf of an install that
-    // has no account. One check covers stdio, the daemon's per-session HTTP MCP
-    // (both build their servers from this factory) and any hosted surface, because
-    // every one of them arrives here.
-    //
-    // `initialize` and `tools/list` are untouched — the protocol still works, and
-    // the refusal is a designed tool error rather than a dead connection.
-    const activation = checkActivation();
-    if (!activation.ok) {
-      log.info('tool call refused — install not activated', { tool: name, step: activation.step });
-      return activationToolError(activation);
-    }
-
+    // NO ACTIVATION GATE HERE (PX brief §0a.1, 2026-09-03). PX2 refused every
+    // `tools/call` from an unregistered install at exactly this line; the CEO
+    // consulting pass made the hard gate Studio-only, so core dispatches all ten
+    // tools whether or not an account exists. Registration became an UNLOCK, and
+    // the only thing this surface now derives from activation is the footer that
+    // says so — appended once, below, after the result is computed.
     // Lazy-execution hook for the `watch` tool. Every non-watch tool call
     // gives us a chance to run overdue watch jobs in the background. This
     // is intentional: wigolo has no daemon — checks only fire when the
@@ -749,7 +739,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
     // produces no account, no queue write and no event — the absence is structural,
     // not a condition anyone has to remember to write.
     recordToolTelemetry(name, 'mcp', !result.isError, Date.now() - auditStartedAt, errorReason);
-    return result;
+    // §0a.2/3: registration is an unlock, so the ONE thing an unregistered install
+    // is told is what an account would add — once, in a footer, on a call that
+    // already succeeded. Product law 9: the text we return IS the interface, so it
+    // rides the result rather than a channel a terminal user cannot see.
+    return appendRegistrationFooter(result);
   });
 
   return server;

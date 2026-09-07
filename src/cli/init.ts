@@ -222,33 +222,44 @@ async function reportSetupAndDoctor(
  *
  * Fail-safe: any read/parse failure returns `null`. A hint is never worth failing setup.
  */
-export async function activationNextStepLine(
+export async function activationNextStepLines(
   dataDir: string,
   env: NodeJS.ProcessEnv = process.env,
   nowMs: number = Date.now(),
-): Promise<string | null> {
+): Promise<readonly string[]> {
   try {
     const { AccountStateStore } = await import('../account/state.js');
     const { resolvePinnedKeys } = await import('../account/pinned-keys.js');
     const { evaluateActivation } = await import('../account/gate.js');
+    const { unlockLines, UNREGISTERED_RUNS_LINE, TELEMETRY_CLAIM } = await import('../account/unlocks.js');
     const state = new AccountStateStore(dataDir).read();
     const keys = resolvePinnedKeys(env);
     const decision = evaluateActivation({ state, keys: keys.keys }, nowMs);
-    if (decision.ok) return null;
+    if (decision.ok) return [];
     switch (decision.reason) {
       case 'never_activated':
-        return 'Next step: run `wigolo register` to activate this install'
-          + ' (already have an account? `wigolo login`).';
+        // NOT a next step, and the wording is the whole point (§0a.1/3). Setup has
+        // just finished; the install is complete and every tool works. Registering
+        // is an offer, so the block leads with what already works and never uses
+        // the imperative the other two arms have earned.
+        return [
+          UNREGISTERED_RUNS_LINE,
+          'Optional — `wigolo register` unlocks:',
+          ...unlockLines().map((l) => `  ${l}`),
+          `Telemetry: ${TELEMETRY_CLAIM} (WIGOLO_TELEMETRY=off).`,
+        ];
       case 'expired':
-        return 'Next step: run `wigolo login` — the sign-in on this machine has expired.';
+        // These two arms DO stay imperative: the user already has an account, so
+        // something they were promised has stopped working and only they can fix it.
+        return ['Next step: run `wigolo login` — the sign-in on this machine has expired.'];
       case 'update_required':
-        return 'Next step: update wigolo, then run `wigolo login` — this build cannot verify'
-          + ' your sign-in.';
+        return ['Next step: update wigolo, then run `wigolo login` — this build cannot verify'
+          + ' your sign-in.'];
     }
   } catch {
     // Best-effort: a hint failure never affects setup or the exit code.
   }
-  return null;
+  return [];
 }
 
 /**
@@ -375,7 +386,7 @@ interface InitJsonSummary {
   components?: ComponentSummary;
   doctor?: DoctorSummaryCheck[];
   /** The first-run activation hint, when this install is not activated yet. Absent when it is. */
-  nextStep?: string;
+  nextSteps?: string[];
   readyCount?: number;
   total?: number;
   requiredFailed?: boolean;
@@ -466,10 +477,10 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
   }
 
   const doctor = await reportSetupAndDoctor(components, dataDir, print);
-  const nextStep = await activationNextStepLine(dataDir);
-  if (nextStep !== null) {
+  const nextSteps = await activationNextStepLines(dataDir);
+  if (nextSteps.length > 0) {
     print('');
-    print(`  ${nextStep}`);
+    for (const line of nextSteps) print(`  ${line}`);
   }
 
   if (flags.json) {
@@ -481,7 +492,7 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
       configPersisted: true,
       components,
       doctor,
-      ...(nextStep !== null ? { nextStep } : {}),
+      ...(nextSteps.length > 0 ? { nextSteps: [...nextSteps] } : {}),
     });
   }
   return 0;
@@ -815,10 +826,10 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   // requiredFailed. The exit code stays driven by the honest setup summary: a
   // genuinely-failed REQUESTED agent registration is still an exit-1 failure.
   const doctor = await reportSetupAndDoctor(components, config.dataDir, print);
-  const nextStep = await activationNextStepLine(config.dataDir);
-  if (nextStep !== null) {
+  const nextSteps = await activationNextStepLines(config.dataDir);
+  if (nextSteps.length > 0) {
     print('');
-    print(`  ${nextStep}`);
+    for (const line of nextSteps) print(`  ${line}`);
   }
 
   if (flags.json) {
@@ -833,7 +844,7 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       readyCount: summary.readyCount,
       total: summary.total,
       requiredFailed: summary.requiredFailed,
-      ...(nextStep !== null ? { nextStep } : {}),
+      ...(nextSteps.length > 0 ? { nextSteps: [...nextSteps] } : {}),
     });
   }
   return summary.exitCode;
