@@ -35,17 +35,24 @@ import { artifactName, splitTarget } from './layout.mjs';
 /**
  * The GitHub-hosted runner images this pipeline uses, and what hardware each one IS.
  *
- * Names, not aliases, wherever the alias would hide the arch: `ubuntu-24.04-arm` and `macos-13`
- * are the only images for linux-arm64 and darwin-x64 respectively, and `macos-latest` moving to
- * a newer arm64 image must never silently become darwin-x64's verifier.
+ * Names, not aliases, wherever the alias would hide the arch: `ubuntu-24.04-arm` and
+ * `macos-15-intel` are the only images for linux-arm64 and darwin-x64 respectively, and
+ * `macos-latest` moving to a newer arm64 image must never silently become darwin-x64's verifier.
  *
  * `ubuntu-latest` and `windows-latest` are deliberately the floating aliases: both are x64 today
  * and their next image is x64 too, and pinning them would mean a version bump chore on a lane
  * whose whole job is to be the ordinary platform a user is on.
+ *
+ * `macos-15-intel` REPLACES the spike's `macos-13`, which GitHub retired on 2025-12-04. That was
+ * a dry-run entry in the M6 table and the first live matrix is what executed it: the darwin-x64
+ * verify job sat `queued` with an empty `runner_name` while every other lane finished, because a
+ * label no image answers does not fail — it waits. `macos-15-intel` is the last x86_64 image
+ * Actions will offer (announced through August 2027), so darwin-x64's lane has an end date and
+ * the drop machinery below is what will notice when it arrives.
  */
 export const GITHUB_RUNNERS = Object.freeze({
   'macos-14': Object.freeze({ platform: 'darwin', arch: 'arm64' }),
-  'macos-13': Object.freeze({ platform: 'darwin', arch: 'x64' }),
+  'macos-15-intel': Object.freeze({ platform: 'darwin', arch: 'x64' }),
   'ubuntu-latest': Object.freeze({ platform: 'linux', arch: 'x64' }),
   'ubuntu-24.04-arm': Object.freeze({ platform: 'linux', arch: 'arm64' }),
   'windows-latest': Object.freeze({ platform: 'win32', arch: 'x64' }),

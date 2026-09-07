@@ -80,7 +80,9 @@ describe('the ship matrix — mini-spec §2 M6 + §3', () => {
     const lanes = Object.fromEntries(plan().ship.map((s: { target: string; verifyRunner: string }) => [s.target, s.verifyRunner]));
     expect(lanes).toEqual({
       'darwin-arm64': 'macos-14',
-      'darwin-x64': 'macos-13',
+      // NOT `macos-13`, which the spike's M6 table named as a dry-run: GitHub retired that image
+      // on 2025-12-04 and a job asking for it waits forever rather than failing.
+      'darwin-x64': 'macos-15-intel',
       'linux-x64': 'ubuntu-latest',
       'linux-arm64': 'ubuntu-24.04-arm',
       'win32-x64': 'windows-latest',
