@@ -112,7 +112,7 @@ export const APP_ANCHOR_REL = 'libexec/app/dist/cli/tui/__bundle.cjs';
  * ENUMERATIVE ON PURPOSE, and that is the weakness this list has to be read with: a reader
  * that walks FOUR levels up lands above the app root, finds nothing, and — for the
  * `readFileSync`-in-a-`catch` shape at `src/server.ts` — silently answers `0.0.0`.
- * `tests/unit/binary/version-readers.test.ts` is the guard that reds when an eighth site
+ * `tests/unit/binary/compile-pipeline.test.ts` carries the guard that reds when an eighth site
  * lands at a depth that is not in here.
  */
 export const PACKAGE_JSON_MIRRORS = Object.freeze([
