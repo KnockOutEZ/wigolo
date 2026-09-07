@@ -417,6 +417,97 @@ describe('visit store — retention bounds', () => {
     expect(listVisits({}).rows.map((r) => r.title)).toEqual(['NEW']);
   });
 
+  it('sweeps the body an age eviction orphaned, and keeps one a surviving visit still reads', () => {
+    // The arm above proves the age bound removes VISITS, and can never prove anything about
+    // their bodies: both of its rows carry the same default markdown, so the one body they
+    // share is still referenced by 'NEW' after 'OLD' is gone. Nothing has ever ridden the age
+    // arm's orphan path, which is why deleting the candidate collection that feeds it —
+    // `SELECT content_hash FROM studio_visits WHERE ts < ?` — leaves this whole file green
+    // while every age-evicted body leaks for the life of the database. Bodies are the kilobytes;
+    // a bound that silently stops reclaiming them is the 45 GB disk bill this suite exists for.
+    const stamp = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    // Seeded under a bound that keeps them, so what the last write proves is the age arm binding
+    // on rows and bodies ALREADY stored, not an expired row being refused on arrival.
+    const seed = { ...TINY, maxAgeDays: 365 };
+    visit({
+      url: 'https://example.com/old-solo',
+      ts: stamp(40),
+      title: 'OLD_SOLO',
+      markdown: 'solo body',
+      retention: seed,
+    });
+    visit({
+      url: 'https://example.com/old-shared',
+      ts: stamp(40),
+      title: 'OLD_SHARED',
+      markdown: 'shared body',
+      retention: seed,
+    });
+    visit({
+      url: 'https://example.com/new-shared',
+      ts: stamp(1),
+      title: 'NEW_SHARED',
+      markdown: 'shared body',
+      retention: seed,
+    });
+
+    const hashOf = (title: string) =>
+      (
+        getDatabase().prepare('SELECT content_hash FROM studio_visits WHERE title = ?').get(title) as {
+          content_hash: string;
+        }
+      ).content_hash;
+    const soloHash = hashOf('OLD_SOLO');
+    const sharedHash = hashOf('OLD_SHARED');
+    expect(visitCount()).toBe(3);
+    // Two bodies, not three: the fixture only distinguishes a sole-referent body from a shared
+    // one if the dedup actually collapsed the second pair into one row.
+    expect(bodyCount()).toBe(2);
+    expect(hashOf('NEW_SHARED')).toBe(sharedHash);
+
+    const db = getDatabase();
+    const prepare = vi.spyOn(db, 'prepare');
+    visit({
+      url: 'https://example.com/newest',
+      ts: stamp(0),
+      title: 'NEWEST',
+      markdown: 'newest body',
+      retention: { ...TINY, maxAgeDays: 30 },
+    });
+    const sql = prepare.mock.calls.map(([statement]) => String(statement));
+    prepare.mockRestore();
+
+    expect(listVisits({}).rows.map((r) => r.title)).toEqual(['NEWEST', 'NEW_SHARED']);
+    // The sole referent went, so the body goes with it.
+    expect(readVisitPage(soloHash)).toBeNull();
+    // The shared body outlives the visit that stored it first, because NEW_SHARED still reads
+    // it. A body belongs to every visit that points at it, never to the oldest one.
+    expect(readVisitPage(sharedHash)?.markdown).toBe('shared body');
+    // Asserted as the exact surviving set rather than a count, so a sweep that took the wrong
+    // body while removing the right number of rows cannot pass.
+    expect(
+      (db.prepare('SELECT content_hash FROM studio_visit_pages').all() as Array<{ content_hash: string }>)
+        .map((r) => r.content_hash)
+        .sort(),
+    ).toEqual([sharedHash, hashOf('NEWEST')].sort());
+
+    // Then attribute it, because three arms can delete a body and "a body disappeared" alone
+    // would be satisfied by any of them: the row cap is idle at four rows against a hundred, so
+    // its OFFSET walk never compiled, and the byte arm is idle at a few dozen bytes against a
+    // mebibyte, so the running-total window that is its only route to a body delete never
+    // compiled either. What is left is the age arm.
+    expect(sql.filter((statement) => /LIMIT -1 OFFSET/i.test(statement))).toEqual([]);
+    expect(sql.filter((statement) => /SUM\(byte_len\) OVER/i.test(statement))).toEqual([]);
+    // And name the candidate collection that did it — the statement whose removal is the
+    // deletable green this arm closes. Read once, BEFORE the delete: a boundary crossing between
+    // the two would evict a row whose hash the sweep never saw. Ordered after the outcome
+    // assertions on purpose, so a regression reports the leak rather than a missing statement.
+    expect(
+      sql.filter((statement) => /^\s*SELECT content_hash FROM studio_visits WHERE ts < \?/i.test(statement)),
+    ).toHaveLength(1);
+  });
+
   it('enforces the byte bound even while the store remains below the row bound', async () => {
     const bounds = { ...TINY, maxVisits: 100, maxBytes: 1500 };
     for (let i = 1; i <= 2; i += 1) {
