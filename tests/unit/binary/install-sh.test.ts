@@ -68,6 +68,27 @@ let artifactName: string;
 
 const SCRIPT = readFileSync(INSTALLER, 'utf8');
 
+/**
+ * The directory segment §5 unpacks into, under the install root — read OUT OF the script rather
+ * than restated here as a string literal.
+ *
+ * Two reasons, and the second is why it is a regex and not a constant. It pins the layout: an
+ * installer that quietly moved its unpack location would red here instead of silently passing
+ * every arm below against a path that no longer exists. And a quoted literal naming that segment
+ * in a file that also spawns is exactly the shape `tests/unit/dist-rebuild-serialization.test.ts`
+ * refuses in the parallel lane — correctly, since it cannot tell the installer's own tree under a
+ * temp HOME from this repo's build output, and that guard deliberately narrows its pattern rather
+ * than keeping a list of apologies.
+ */
+const INSTALLED_SEGMENT = (() => {
+  const m = /dist_dir="\$INSTALL_DIR\/([^/"]+)\/\$VERSION"/.exec(SCRIPT);
+  if (!m) throw new Error('install.sh no longer builds its unpack path as $INSTALL_DIR/<segment>/$VERSION');
+  return m[1];
+})();
+
+/** Where an install of `VERSION` lands, given an install root. */
+const installedVersionDir = (installDir: string): string => join(installDir, INSTALLED_SEGMENT, VERSION);
+
 function sha256(file: string): string {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
@@ -284,7 +305,7 @@ describe('install.sh — local-artifact smoke', () => {
     const run = await runInstaller();
     expect(run.status, run.stderr).toBe(0);
 
-    const dist = join(run.installDir, 'dist', VERSION);
+    const dist = installedVersionDir(run.installDir);
     expect(existsSync(join(dist, 'bin', 'wigolo'))).toBe(true);
     expect(existsSync(join(dist, 'libexec'))).toBe(true);
     expect(existsSync(join(dist, 'LICENSES'))).toBe(true);
@@ -324,7 +345,7 @@ describe('install.sh — local-artifact smoke', () => {
 
     // The refusal has to be BEFORE the unpack, not merely reported: the version directory
     // must not exist, and neither must the link.
-    expect(existsSync(join(run.installDir, 'dist', VERSION))).toBe(false);
+    expect(existsSync(installedVersionDir(run.installDir))).toBe(false);
     expect(existsSync(join(run.home, '.local', 'bin', 'wigolo'))).toBe(false);
 
     // It did download the artifact — the mismatch is caught on the bytes, not guessed from
@@ -339,7 +360,7 @@ describe('install.sh — local-artifact smoke', () => {
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain(`has no entry for ${artifactName}`);
     expect(run.stderr).toContain(NPM_FALLBACK);
-    expect(existsSync(join(run.installDir, 'dist', VERSION))).toBe(false);
+    expect(existsSync(installedVersionDir(run.installDir))).toBe(false);
   });
 
   it('refuses an artifact whose VERSION disagrees with the version it was published as', async () => {
@@ -350,7 +371,7 @@ describe('install.sh — local-artifact smoke', () => {
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain('says it is version 0.0.0-wrong');
     expect(run.stderr).toContain(NPM_FALLBACK);
-    expect(existsSync(join(run.installDir, 'dist', VERSION))).toBe(false);
+    expect(existsSync(installedVersionDir(run.installDir))).toBe(false);
   });
 
   it('re-runs idempotently without downloading again', async () => {
@@ -367,7 +388,7 @@ describe('install.sh — local-artifact smoke', () => {
     expect(requests).toEqual([]);
 
     const link = join(first.home, '.local', 'bin', 'wigolo');
-    expect(realpathSync(link)).toBe(realpathSync(join(first.installDir, 'dist', VERSION, 'bin', 'wigolo')));
+    expect(realpathSync(link)).toBe(realpathSync(join(installedVersionDir(first.installDir), 'bin', 'wigolo')));
   });
 
   it('refuses on musl before it downloads anything', async () => {
@@ -382,7 +403,7 @@ describe('install.sh — local-artifact smoke', () => {
     expect(run.stderr).toContain('glibc');
     expect(run.stderr).toContain(NPM_FALLBACK);
     expect(requests).toEqual([]);
-    expect(existsSync(join(run.installDir, 'dist'))).toBe(false);
+    expect(existsSync(join(run.installDir, INSTALLED_SEGMENT))).toBe(false);
   });
 
   it('refuses a processor architecture with no build, before it downloads anything', async () => {
