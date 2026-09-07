@@ -402,3 +402,56 @@ describe('the CLI entry guard — the shape that reports success having produced
     expect(isMainModule(undefined, url)).toBe(false);
   });
 });
+
+describe('DR-3 is an ABSENCE, so it is asserted as one', () => {
+  /*
+   * "Refuse, don't compile" is not a branch that is currently false — the mini-spec's wording
+   * is that no source-build fallback exists in the code AT ALL. A refusal test cannot see the
+   * difference: a pipeline that refuses on a 404 and quietly `npm rebuild`s on a checksum
+   * mismatch passes every arm above. What distinguishes them is whether the tooling can invoke
+   * a compiler at all, and that is a property of the source text.
+   *
+   * Prose is stripped first. Every file here DISCUSSES node-gyp — explaining why it is absent is
+   * most of the header of `harvest.mjs` — so a naive grep would match the documentation and the
+   * guard would be unfalsifiable in the other direction.
+   */
+  const BUILD_TOOLS = [
+    'node-gyp',
+    'prebuild-install',
+    'node-pre-gyp',
+    'cmake-js',
+    'npm rebuild',
+    'npm install',
+    'npm ci',
+  ];
+
+  function code(file: string): string {
+    return readFileSync(join(process.cwd(), 'scripts/binary', file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  }
+
+  it.each(['harvest.mjs', 'cells.mjs', 'manifest.mjs'])(
+    '%s cannot invoke a compiler: no build tool is named outside a comment',
+    (file) => {
+      const source = code(file);
+      for (const tool of BUILD_TOOLS) {
+        expect(source, `${file} names "${tool}" in executable code`).not.toContain(tool);
+      }
+    }
+  );
+
+  it('strips only comments — the guard still sees the code around them', () => {
+    // Without this, a regex that ate the whole file would make every arm above vacuous.
+    expect(code('harvest.mjs')).toContain('REFUSED cell');
+    expect(code('harvest.mjs')).toContain('no source-build fallback exists');
+    expect(code('cells.mjs')).toContain('sqlite-vec-windows-x64');
+  });
+
+  it('spawns nothing but the extractor', () => {
+    const source = code('harvest.mjs');
+    const spawned = [...source.matchAll(/execFileSync\(\s*'([^']+)'/g)].map((m) => m[1]);
+    expect(spawned).toEqual(['tar']);
+    expect(source).not.toMatch(/\bspawn(Sync)?\(|\bexec(Sync)?\(/);
+  });
+});
