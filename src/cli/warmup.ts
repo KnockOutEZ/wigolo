@@ -9,6 +9,7 @@ import { checkVenvModule, venvInstallHint } from '../python-env.js';
 import { isProcessAlive } from '../searxng/process.js';
 import { getRerankProvider } from '../providers/rerank-provider.js';
 import { runCommand } from './tui/run-command.js';
+import { nodeScriptCommand } from '../util/packaged.js';
 import type { WarmupReporter } from './tui/reporter.js';
 import { noopReporter } from './tui/reporter.js';
 import { autoReporter } from './tui/reporter-auto.js';
@@ -94,11 +95,13 @@ async function installLinuxDeps(
   const strategy = await detectDepsStrategy();
   if (strategy === 'skip') return { installed: false, skipped: true };
 
-  const cmd = strategy === 'sudo' ? 'sudo' : process.execPath;
-  const args =
-    strategy === 'sudo'
-      ? ['-n', process.execPath, cli, 'install-deps', browser]
-      : [cli, 'install-deps', browser];
+  // The interpreter invocation is built once and then either run directly or handed to
+  // `sudo -n` as its command vector. Inside a packaged binary `process.execPath` is wigolo,
+  // not node, so the pair carries the re-entry verb — and it has to carry it in the sudo arm
+  // too, which is the arm no non-root linux developer ever exercises locally.
+  const node = nodeScriptCommand(cli, ['install-deps', browser]);
+  const cmd = strategy === 'sudo' ? 'sudo' : node.command;
+  const args = strategy === 'sudo' ? ['-n', node.command, ...node.args] : node.args;
 
   const r = await runCommand(cmd, args, { timeout: 180000 });
   if (r.code !== 0) {
@@ -185,11 +188,16 @@ export async function installBrowser(
   }
 
   const cli = resolveBundledPlaywrightCli();
-  let r = await runCommand(process.execPath, [cli, 'install', browser], {
+  // `process.execPath` is only node on the npm/source path; inside a packaged binary it is
+  // wigolo, and spawning it with a foreign script re-enters wigolo's own main. The measured
+  // failure was not an error — the child printed the help text and this reported it as the
+  // install error, so the browser rung went missing with a plausible-looking message.
+  const install = nodeScriptCommand(cli, ['install', browser]);
+  let r = await runCommand(install.command, install.args, {
     timeout: BROWSER_INSTALL_TIMEOUT_MS,
   });
   for (let attempt = 2; r.code !== 0 && !r.timedOut && attempt <= BROWSER_INSTALL_ATTEMPTS; attempt++) {
-    r = await runCommand(process.execPath, [cli, 'install', browser], {
+    r = await runCommand(install.command, install.args, {
       timeout: BROWSER_INSTALL_TIMEOUT_MS,
     });
   }
