@@ -6,13 +6,15 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { artifactName } from '../../../scripts/binary/layout.mjs';
+import { artifactName } from '../../scripts/binary/layout.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { readManifest } from '../../../scripts/binary/manifest.mjs';
+import { readManifest } from '../../scripts/binary/manifest.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { ALL_TARGETS, assertShipMatrix, BUILD_RUNNER, emitMatrices, GITHUB_RUNNERS, shipMatrix, verifyLane } from '../../../scripts/binary/ship-matrix.mjs';
+import { buildBlob } from '../../scripts/binary/build.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { collectAssets, parseSha256sums, reconcile, sha256sumsText } from '../../../scripts/binary/checksums.mjs';
+import { ALL_TARGETS, assertShipMatrix, BUILD_RUNNER, emitMatrices, GITHUB_RUNNERS, shipMatrix, verifyLane } from '../../scripts/binary/ship-matrix.mjs';
+// @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
+import { collectAssets, parseSha256sums, reconcile, sha256sumsText } from '../../scripts/binary/checksums.mjs';
 
 /*
  * THE OFFLINE HALF OF BIN-4 — everything about the five-target release matrix that can be decided
@@ -29,10 +31,15 @@ import { collectAssets, parseSha256sums, reconcile, sha256sumsText } from '../..
  *
  * The battery that runs ON the artifact is `scripts/binary/verify.mjs`, exercised for real by
  * `tests/integration/binary-artifact.test.ts` (opt-in) and by the verify lanes themselves.
+ *
+ * WHY THIS FILE IS IN `tests/integration/` and not beside `tests/unit/binary/`, which is where
+ * BIN-2's and BIN-3's offline arms live: #505's lane owns `scripts/binary/**` and the workflow
+ * file, and `tests/integration/**` is the shared territory every lane may write. Consolidating the
+ * three files under one directory is a move for whichever slice owns that path next.
  */
 
-const WORKFLOW = new URL('../../../.github/workflows/binary-release.yml', import.meta.url);
-const NPM_RELEASE_WORKFLOW = new URL('../../../.github/workflows/release.yml', import.meta.url);
+const WORKFLOW = new URL('../../.github/workflows/binary-release.yml', import.meta.url);
+const NPM_RELEASE_WORKFLOW = new URL('../../.github/workflows/release.yml', import.meta.url);
 
 const workflowText = () => readFile(WORKFLOW, 'utf8');
 const workflow = async () => parseYaml(await workflowText()) as Record<string, any>;
@@ -384,5 +391,50 @@ describe('reconcile — the bytes that ship are the bytes that were verified', (
     writeFileSync(join(dir, 'a', 'wigolo-1.0.0-linux-x64.tar.gz'), 'one');
     writeFileSync(join(dir, 'b', 'wigolo-1.0.0-linux-x64.tar.gz'), 'two');
     expect(() => collectAssets(dir, ['wigolo-1.0.0-linux-x64.tar.gz'])).toThrow(/two files named/);
+  });
+});
+
+/*
+ * THE DEFECT THE FIRST LIVE MATRIX FOUND, as a gate.
+ *
+ * All five artifacts built, sealed, ad-hoc signed and packed on a `setup-node: 22` host (v22.23.2)
+ * and then aborted on their own platforms before running a line of wigolo:
+ * `FATAL ERROR: v8::ToLocalChecked Empty MaybeLocal` inside
+ * `node::sea::LoadSingleExecutableApplication`. The SEA blob's format is not portable across Node
+ * VERSIONS, and `build.mjs` was writing it with `process.execPath` — which passed on the dev host
+ * only because that host's node happened to be the pinned 22.14.0.
+ *
+ * Pinning the CI runner would have hidden it again for the next person on another machine, so the
+ * blob is now written by the checksum-verified official binary the artifact embeds, and the
+ * version is asserted. These two arms are that assertion's red and its control.
+ */
+describe('the SEA blob is written by the interpreter the artifact embeds', () => {
+  it('refuses an interpreter whose version is not the pinned one', () => {
+    const work = scratchDir();
+    const manifest = readManifest();
+    expect(() =>
+      buildBlob({
+        workDir: work,
+        bundlePath: join(work, 'bundle.cjs'),
+        manifest: { ...manifest, runtime: { ...manifest.runtime, version: '99.99.99' } },
+        interpreter: process.execPath,
+      })
+    ).toThrow(/REFUSED — the blob interpreter reports v[\d.]+, runtime\.json pins v99\.99\.99/);
+  });
+
+  it('does not fire when the interpreter IS that version — the gate keys on nothing else', () => {
+    const work = scratchDir();
+    const manifest = readManifest();
+    // Pinned to whatever THIS interpreter is, so the version check passes and the call goes on to
+    // `--experimental-sea-config`, which fails on the absent bundle. A control that asserted "no
+    // throw" would be asserting a successful build; what matters is that it does not throw THIS.
+    expect(() =>
+      buildBlob({
+        workDir: work,
+        bundlePath: join(work, 'bundle.cjs'),
+        manifest: { ...manifest, runtime: { ...manifest.runtime, version: process.versions.node } },
+        interpreter: process.execPath,
+      })
+    ).toThrow(/^(?!.*blob interpreter reports)/s);
   });
 });
