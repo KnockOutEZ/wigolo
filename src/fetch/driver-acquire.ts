@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { runCommand } from '../cli/tui/run-command.js';
+import { nodeScriptCommand } from '../util/packaged.js';
 import { createLogger } from '../logger.js';
 import {
   BROWSER_DRIVER_VERSION,
@@ -117,12 +118,17 @@ export async function acquireBrowserDriver(
   const spec = `playwright@${BROWSER_DRIVER_VERSION}`;
   let r;
   try {
-    r = await run(process.execPath, [
-      npmCli,
+    // ⚠ The `process.execPath`-as-node property documented above holds only where execPath IS
+    // node. Inside a packaged binary it is wigolo, and this spawn would re-enter wigolo with
+    // `npm-cli.js` as an unknown subcommand. `nodeScriptCommand` keeps the no-shell,
+    // no-`.cmd`, vector-argument property intact on both paths — which is the property this
+    // whole call site exists to preserve, and the reason `--prefix <root>` can contain spaces.
+    const npmRun = nodeScriptCommand(npmCli, [
       'install', spec,
       '--prefix', root,
       '--no-save', '--no-audit', '--no-fund', '--omit=dev', '--omit=optional',
-    ], {
+    ]);
+    r = await run(npmRun.command, npmRun.args, {
       timeout: DRIVER_INSTALL_TIMEOUT_MS,
       // The binary is `installBrowser`'s job; suppressing the postinstall here is what keeps
       // this from fetching a second copy of it.

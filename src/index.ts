@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { createRequire } from 'node:module';
+import { resolve as resolvePath } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseCommand } from './cli/index.js';
 import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
@@ -25,6 +28,39 @@ import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { runTool } from './cli/tool-run.js';
 import { getConfig } from './config.js';
 import { shutdownCli } from './cli/shutdown.js';
+import { RUN_SCRIPT_FLAG } from './util/packaged.js';
+
+/**
+ * Run a foreign JS entrypoint on this process's runtime, as if it had been `node <script>`.
+ *
+ * The other half of `nodeScriptCommand()` — see `src/util/packaged.ts` for why the verb exists
+ * at all. Handled BEFORE `parseCommand`, and returning rather than falling through, because the
+ * script owns the process from here: it is the browser driver's CLI or npm's, and both read
+ * their own argv, print their own output and set their own exit code.
+ *
+ * ARGV IS RESHAPED, and that is the whole trick. A Node CLI reads `argv[1]` as its own path and
+ * slices its arguments from index 2, so handing it `[execPath, script, ...args]` is what makes
+ * it behave identically to a plain `node script args` invocation. Getting this wrong does not
+ * throw — it silently gives the child one extra leading argument, which is how the unfixed shape
+ * turned `playwright install chromium` into wigolo's own help text.
+ *
+ * `require` first, `import()` second. Both current callers are CommonJS, and `require` keeps the
+ * script synchronous with respect to this frame; the import fallback covers an ESM entrypoint
+ * (which the on-disk absolute-path form resolves fine from inside a packaged binary — the
+ * failing shape is a BARE specifier, not a path).
+ */
+async function runForeignScript(script: string | undefined, args: string[]): Promise<void> {
+  if (!script) throw new Error(`${RUN_SCRIPT_FLAG} requires a script path`);
+  const resolved = resolvePath(script);
+  process.argv = [process.execPath, resolved, ...args];
+  try {
+    createRequire(resolved)(resolved);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ERR_REQUIRE_ESM' && code !== 'ERR_REQUIRE_ASYNC_MODULE') throw err;
+    await import(pathToFileURL(resolved).href);
+  }
+}
 
 async function exitCli(code: number): Promise<void> {
   await shutdownCli();
@@ -77,6 +113,15 @@ process.on('SIGABRT', () => process.exit(process.exitCode ?? 0));
  */
 export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+
+  // Before ANY other parsing: this is not a wigolo command, it is wigolo being used as the
+  // Node interpreter it embeds. Position 0 only — a later occurrence is an argument to a real
+  // subcommand and must reach that subcommand untouched.
+  if (rawArgs[0] === RUN_SCRIPT_FLAG) {
+    await runForeignScript(rawArgs[1], rawArgs.slice(2));
+    return;
+  }
+
   if (rawArgs.includes('--wait-for-index')) {
     process.env.WIGOLO_WAIT_FOR_INDEX = '1';
   }

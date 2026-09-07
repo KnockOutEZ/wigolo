@@ -49,8 +49,8 @@ function packageRoot(specifier: string): string {
  * Repo-relative path with POSIX separators on every platform.
  *
  * `join` yields backslashes on Windows, so the raw slice produced
- * `src\fetch\cdp-direct.ts` there while the exemption list below is keyed by
- * `src/fetch/cdp-direct.ts`. Every documented exemption then missed its key and
+ * `src\plugins\loader.ts` there while the exemption list below is keyed by
+ * `src/plugins/loader.ts`. Every documented exemption then missed its key and
  * reported as an undocumented violation — the test failed on Windows for a path
  * separator rather than for anything about imports.
  */
@@ -111,23 +111,29 @@ describe('cloud LLM SDKs stay off the keyless startup path', () => {
     // passes `npm run dev`, then the module is simply absent from the packaged
     // binary.
     //
-    // The repo has a documented escape hatch for optionalDependencies: a
-    // specifier held as `string` rather than a literal so `tsc --noEmit`
-    // skips resolution on installs where the package is legitimately missing
-    // (`npm install --omit=optional`, no prebuilt binary for the platform).
-    // Those sites already degrade to null or a typed error when the import
-    // throws, so the bundler behaviour is accepted deliberately there.
+    // The repo USED to grant a blanket escape hatch to optionalDependencies: a
+    // specifier held as `string` rather than a literal, so `tsc --noEmit` skips
+    // resolution on installs where the package is legitimately missing. That
+    // hatch is closed. The BINARY milestone measured what it actually cost —
+    // esbuild emitted no import at all for `wreq-js`, `patchright` and
+    // `chrome-remote-interface`, so the TLS-impersonation tier, the stealth
+    // driver and direct CDP were absent from the compiled binary and present in
+    // every test. Degrading to null does not help when the degradation is
+    // unconditional. All three now spell the specifier inline, and the price
+    // (one TS7016 suppression on the untyped package) is paid at the call site.
     //
-    // A REQUIRED dependency has no such excuse: it must resolve, so it must be
-    // a literal. That is the line this test draws.
+    // What remains exempt is the case the rule was never about: a specifier that
+    // is a runtime PATH rather than a package name. There is nothing for a
+    // bundler to resolve at build time and nothing for it to drop — the spike
+    // confirmed an absolute on-disk `import()` works from inside a compiled
+    // binary, as a file URL and as a path.
     const allowed = new Map([
-      ['src/fetch/cdp-direct.ts', 'chrome-remote-interface'],
-      ['src/fetch/stealth.ts', 'patchright'],
-      ['src/fetch/tls-tier.ts', 'wreq-js'],
       ['src/plugins/loader.ts', 'a runtime plugin file URL, not a package'],
+      ['src/index.ts', 'the --run-script re-entry target: a file path the caller supplied'],
     ]);
 
     const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')) as {
+      dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
     };
     const optional = new Set(Object.keys(pkg.optionalDependencies ?? {}));
@@ -153,12 +159,16 @@ describe('cloud LLM SDKs stay off the keyless startup path', () => {
       ).toBe(true);
     }
 
-    // The exemption is only legitimate while those really are optional deps. If
-    // one is promoted to a required dependency, the escape hatch stops being
-    // justified and this fails rather than shipping a module the binary drops.
-    for (const [file, target] of allowed) {
-      if (file === 'src/plugins/loader.ts') continue;
-      expect(optional.has(target), `${file} imports ${target}, which must stay optional`).toBe(true);
+    // The exemption is only legitimate while the specifier really is a runtime
+    // PATH. The moment an exempt site names a PACKAGE — optional or not — the
+    // bundler has something to resolve and something to silently drop, which is
+    // the whole failure this test exists to prevent. Checked by looking for any
+    // declared dependency's name inside the specifier expression, so exempting a
+    // file does not quietly exempt a package import that later lands in it.
+    const declared = new Set([...Object.keys(pkg.dependencies ?? {}), ...optional]);
+    for (const d of dynamicImports.filter((x) => !x.literal && allowed.has(x.file))) {
+      const named = [...declared].filter((name) => d.text.includes(name));
+      expect(named, `${d.file} exempted as a runtime path, but import(${d.text}) names a package`).toEqual([]);
     }
 
     // No vendor SDK may ever use the escape hatch: all four are required deps.

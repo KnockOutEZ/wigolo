@@ -10,6 +10,7 @@ import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js'
 import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
+import { isPackagedBinary } from '../util/packaged.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { getVecExtensionStatus } from '../cache/vec-availability.js';
 import { getCacheStats } from '../cache/store.js';
@@ -206,13 +207,21 @@ function checkDataDirWritable(dataDir: string): { writable: boolean; reason?: st
 }
 
 /**
- * Detect the install channel WITHOUT loading anything heavy. `binary` when
- * running inside a packaged single-executable snapshot (argv[1] / __dirname
- * resolves under a /snapshot path, the @yao-pkg/pkg convention); otherwise the
- * npm-or-source path. Kept deliberately one-line-cheap for support triage.
+ * Detect the install channel WITHOUT loading anything heavy. Kept deliberately
+ * one-line-cheap for support triage.
+ *
+ * FOUR PROBES, AND THE FIRST IS THE ONLY GENERAL ONE. The three `/snapshot`
+ * and `process.pkg` tests are @yao-pkg/pkg conventions and describe exactly one
+ * of the two single-binary builds; inside a Node single-executable application
+ * all three are false, so this reported `npm-or-source` from inside a binary —
+ * the single most misleading thing a support-triage field can say, because it
+ * sends every question about the artifact down the wrong path. The pkg probes
+ * are kept rather than replaced: the pkg channel still exists in
+ * `packaging/binary/`, and a channel detector that only recognises the newest
+ * build is the same bug pointed the other way.
  */
 function detectInstallChannel(): 'binary' | 'npm-or-source' {
-  const snapshot = typeof (process as { pkg?: unknown }).pkg !== 'undefined'
+  const snapshot = isPackagedBinary()
     || process.argv[1]?.includes('/snapshot/')
     || fileURLToPath(import.meta.url).includes('/snapshot/');
   return snapshot ? 'binary' : 'npm-or-source';
@@ -1577,10 +1586,18 @@ export async function runDoctorAsChild(dataDir: string, opts?: DoctorOptions): P
   const sentinelPath = join(sentinelDir, 'exit-code');
   const env = { ...process.env, [DOCTOR_CHILD_ENV]: sentinelPath };
 
-  // Re-invoke the same entrypoint. process.argv[1] is the wigolo dist entry
-  // (or the bin shim) — passing it back gives us argv[0]=node, argv[1]=entry,
-  // argv[2]=doctor.
-  const entry = process.argv[1];
+  // Re-invoke the same entrypoint. On the npm/source path process.argv[1] is
+  // the wigolo dist entry (or the bin shim) — passing it back gives us
+  // argv[0]=node, argv[1]=entry, argv[2]=doctor.
+  //
+  // ⚠ INSIDE A PACKAGED BINARY THE ENTRY MUST NOT BE PASSED. There, the
+  // executable IS the entry: Node sets `process.argv[1]` to the executable's
+  // own path, so echoing it back as the first spawn argument makes the child
+  // read its own path as the SUBCOMMAND and answer `unknown command`. The
+  // symptom is a doctor run that reports a broken doctor. Same inversion as the
+  // `process.execPath`-as-node spawns — see `nodeScriptCommand`.
+  const packaged = isPackagedBinary();
+  const entry = packaged ? process.execPath : process.argv[1];
   if (!entry) {
     // Defensive: no entry to re-invoke. Fall back to in-process.
     return runDoctor(dataDir, opts);
@@ -1591,7 +1608,7 @@ export async function runDoctorAsChild(dataDir: string, opts?: DoctorOptions): P
   // its machine object to the child's stdout, which passes through via the
   // inherited fd — so the JSON survives the child-process isolation path.
   const childArgs = [
-    entry,
+    ...(packaged ? [] : [entry]),
     'doctor',
     ...(opts?.probeEngines ? ['--probe-engines'] : []),
     ...(opts?.fix ? ['--fix'] : []),
