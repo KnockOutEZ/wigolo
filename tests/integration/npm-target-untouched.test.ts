@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { npmInvocation } from './npm-invocation.js';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { REPO_ROOT } from '../../scripts/binary/manifest.mjs';
 
@@ -19,14 +20,29 @@ import { REPO_ROOT } from '../../scripts/binary/manifest.mjs';
 
 describe('the npm target is untouched (issue non-goal, re-asserted per slice)', () => {
   it('publishes exactly the file list it published before this slice', () => {
-    // `--ignore-scripts` so `prepack` does not rebuild dist/ underneath a parallel test, and so
-    // the file list is the one `files` declares rather than one a build happened to leave.
-    const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    // `WIGOLO_SKIP_PREPARE=1`, not `--ignore-scripts`: `npm pack` fires `prepare`, and
+    // `scripts/prepare-build.mjs` documents why this repo suppresses that one build with a
+    // variable it reads itself rather than with a flag that also skips DEPENDENCIES' install
+    // scripts. Without it, tsup rebuilds `dist/` here — underneath every other test in flight.
+    // Through `npmInvocation`, never a bare `npm`: on Windows that is `npm.cmd`, a batch shim
+    // Node has refused to spawn without `shell: true` since the fix for CVE-2024-27980, and it
+    // dies as `spawnSync npm ENOENT` — a setup failure wearing the costume of a test failure.
+    const pack = npmInvocation(['pack', '--dry-run', '--json']);
+    const out = execFileSync(pack.file, pack.args, {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, WIGOLO_SKIP_PREPARE: '1' },
     });
-    const files: string[] = JSON.parse(out)[0].files.map((f: { path: string }) => f.path);
+
+    // The hook still SPEAKS on stdout even when it does not build ("prepare: no build — …"),
+    // and `--json` does not silence it, so the payload has to be found rather than assumed to
+    // start at byte 0. Measured: this arm passed locally and reddened on all three CI legs with
+    // `SyntaxError: Unexpected token 'C', "CLI Buildi"…` — tsup's own banner parsed as JSON.
+    const lines = out.split('\n');
+    const start = lines.findIndex((l) => l.trimStart().startsWith('['));
+    expect(start, `npm pack --json printed no JSON array:\n${out.slice(0, 500)}`).toBeGreaterThanOrEqual(0);
+    const files: string[] = JSON.parse(lines.slice(start).join('\n'))[0].files.map((f: { path: string }) => f.path);
     const nonDist = files.filter((f) => !f.startsWith('dist/')).sort();
 
     // Every non-dist entry, pinned. `scripts/binary/**` and `tests/unit/binary/**` are this
