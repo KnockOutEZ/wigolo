@@ -216,6 +216,30 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     }
   }, 300_000);
 
+  /**
+   * Put the single nudge back to "not yet due, not yet spent".
+   *
+   * The nudge is an install-lifetime resource and the arms share one install, so
+   * an arm that wants to OBSERVE it has to be the arm that spends it. Writing the
+   * file is how: it is the whole of the state (`src/account/nudge.ts`), it lives
+   * in the install's throwaway data dir under the system temp root, and the
+   * alternative — ordering the arms so the nudge happens to land where a test is
+   * looking — makes every future arm's placement load-bearing for a reason nobody
+   * reading it would guess.
+   */
+  async function resetNudgeState(): Promise<void> {
+    await writeFile(
+      join(full.dataDir, 'account', 'nudge.json'),
+      `${JSON.stringify({ successful_runs: 0, nudged: false }, null, 2)}\n`,
+      'utf8',
+    );
+  }
+
+  /** A tool result's FIRST content block — the tool's own JSON, never the footer. */
+  function firstTextBlock(raw: unknown): string {
+    return (raw as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? '';
+  }
+
   it('closes first-run setup by naming the unlocks, not by demanding an account', async () => {
     // §0a.3 on the OTHER surface the unlock list has to reach. The unit suite
     // covers `activationNextStepLines`, which is the function that composes these
@@ -282,25 +306,92 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     // local state alone, so "N successful runs" is reached deterministically and
     // the arm is not measuring the fixture site or the stub engine.
     //
-    // The counter already carries the arms above, so the loop drives a generous
-    // margin past N rather than counting to it exactly — what is being asserted
-    // is "exactly one nudge across many runs", which is stronger than "on run N"
-    // and is the clause §0a.2 actually pins ("never repeated").
-    const seen: string[] = [];
-    for (let i = 0; i < NUDGE_AFTER_RUNS * 2; i += 1) {
+    // THE COUNTER IS RESET FIRST, AND THAT IS NOT TIDINESS. The single nudge is an
+    // install-lifetime resource: whichever surface crosses N spends it, and the
+    // arms above cross N over MCP, where nothing is reading for a footer. Measured
+    // on this fixture — after the ten-tool arm the install sits at exactly
+    // `successful_runs: 5, nudged: true`, so a loop that merely drives "a generous
+    // margin past N" observes zero nudges and reds on a product that is behaving
+    // correctly. Resetting makes THIS arm the one that spends the nudge, which is
+    // also what lets it assert the stronger claim: not just "once across many runs"
+    // but quiet for N-1, loud on N, quiet forever after.
+    await resetNudgeState();
+
+    const quietBefore: string[] = [];
+    for (let i = 0; i < NUDGE_AFTER_RUNS - 1; i += 1) {
       const r = await runCli(full, ['cache', '--stats'], { env });
       expect(r.code, `run ${i + 1} failed:\n${r.combined}`).toBe(0);
-      if (r.combined.includes(NUDGE_LEAD_LINE)) seen.push(r.combined);
+      if (r.combined.includes(NUDGE_LEAD_LINE)) quietBefore.push(`run ${i + 1}`);
     }
+    expect(
+      quietBefore,
+      `the nudge fired early, on ${quietBefore.join(', ')} — N is ${NUDGE_AFTER_RUNS}`,
+    ).toEqual([]);
 
-    expect(seen.length, `the nudge fired ${seen.length} times across ${NUDGE_AFTER_RUNS * 2} runs`).toBe(1);
-    const nudge = seen[0];
-    expect(nudge).toContain('wigolo register');
+    const loud = await runCli(full, ['cache', '--stats'], { env });
+    expect(loud.code, `run ${NUDGE_AFTER_RUNS} failed:\n${loud.combined}`).toBe(0);
+    expect(
+      loud.combined.includes(NUDGE_LEAD_LINE),
+      `run ${NUDGE_AFTER_RUNS} did not nudge:\n${loud.combined}`,
+    ).toBe(true);
+    expect(loud.combined).toContain('wigolo register');
     // §0a.3: the unlock LIST, not merely an invitation to register.
-    for (const unlock of UNLOCK_LINES) expect(nudge).toContain(unlock);
+    for (const unlock of UNLOCK_LINES) expect(loud.combined).toContain(unlock);
     // §0a.4: the claim, in the pinned wording, where the user is deciding.
-    expect(nudge).toContain(TELEMETRY_CLAIM_LINE);
-    record('arm 2b — the single registration nudge', nudge);
+    expect(loud.combined).toContain(TELEMETRY_CLAIM_LINE);
+
+    // "Never repeated" is the half a single observation cannot establish, and it
+    // is the half that fails loudest in the product — a nag.
+    const quietAfter: string[] = [];
+    for (let i = 0; i < NUDGE_AFTER_RUNS; i += 1) {
+      const r = await runCli(full, ['cache', '--stats'], { env });
+      expect(r.code, `run ${NUDGE_AFTER_RUNS + i + 1} failed:\n${r.combined}`).toBe(0);
+      if (r.combined.includes(NUDGE_LEAD_LINE)) quietAfter.push(`run ${NUDGE_AFTER_RUNS + i + 1}`);
+    }
+    expect(quietAfter, `the nudge repeated on ${quietAfter.join(', ')}`).toEqual([]);
+
+    record('arm 2b — the single registration nudge', loud.combined);
+  }, 900_000);
+
+  it('renders the unlock footer on an MCP tool result, once, without breaking its JSON', async () => {
+    // §0a.3 on the surface product law 9 is about: for a terminal user with no
+    // plugin, the text the tool returns IS the interface, so the unlock list has to
+    // arrive INSIDE a result rather than on a channel only a CLI has.
+    //
+    // Reset for the same reason the arm above does, then drive N successful calls
+    // through the protocol. `cache` is the tool that answers from local state, so
+    // the count is the arm's own and not the fixture site's.
+    await resetNudgeState();
+
+    const session = await startMcpSession(full, env);
+    try {
+      const footed: string[] = [];
+      let lastJson = '';
+      for (let i = 0; i < NUDGE_AFTER_RUNS; i += 1) {
+        const outcome = await session.call('cache', { stats: true });
+        expect(outcome.isError, `cache call ${i + 1} errored:\n${outcome.text}`).toBe(false);
+        if (outcome.text.includes(UNREGISTERED_RUNS_LINE)) footed.push(`call ${i + 1}`);
+        lastJson = firstTextBlock(outcome.raw);
+      }
+
+      expect(footed.length, `the footer appeared on ${footed.join(', ')}`).toBe(1);
+      expect(footed[0]).toBe(`call ${NUDGE_AFTER_RUNS}`);
+      const footedText = lastJson;
+      // The footer is a SEPARATE content block. Every core tool returns JSON in the
+      // first one, so prose concatenated onto it would break every caller that
+      // parses a result — which is most of them.
+      expect(() => JSON.parse(footedText) as unknown).not.toThrow();
+      expect(footedText).not.toContain(UNREGISTERED_RUNS_LINE);
+
+      const after = await session.call('cache', { stats: true });
+      expect(
+        after.text.includes(UNREGISTERED_RUNS_LINE),
+        'the footer repeated on the call after the one it was due on',
+      ).toBe(false);
+      record('arm 2c — the unlock footer on an MCP result', `footed on ${footed[0]} of ${NUDGE_AFTER_RUNS}`);
+    } finally {
+      await session.stop();
+    }
   }, 900_000);
 
   it('completes registration through the installed binary, with the code from the dev outbox', async () => {
@@ -452,7 +543,10 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
             url: `${site.url}/changelog`,
             force_refresh: true,
           });
-          expect(refreshed.isError, 're-reading the changed page failed').toBe(false);
+          expect(
+            refreshed.isError,
+            `re-reading the changed page failed:\n${refreshed.text}`,
+          ).toBe(false);
           expect(refreshed.text, 'force_refresh did not move the cache to version two').toContain(
             CHANGELOG_V2,
           );
