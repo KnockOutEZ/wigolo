@@ -74,8 +74,19 @@ if (RC_GATE_DISABLED) console.warn(RC_GATE_SKIP_NOTICE);
 const NEVER_ACTIVATED_LINE =
   'wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).';
 
-/** The first line of the single registration nudge (`src/account/unlocks.ts`). */
-const NUDGE_LEAD_LINE = 'wigolo runs fully without an account — registering only adds to it.';
+/**
+ * The sentence §0a.1 turns on (`src/account/unlocks.ts`).
+ *
+ * It leads BOTH surfaces that carry the offer — the single nudge and the closing
+ * block of first-run setup — which is why it has one name here and two aliases
+ * below: an arm asserting "the nudge has not fired yet" and an arm asserting
+ * "setup said the install works" are reading the same string for opposite reasons,
+ * and the local name is what says which.
+ */
+const UNREGISTERED_RUNS_LINE = 'wigolo runs fully without an account — registering only adds to it.';
+
+/** The first line of the single registration nudge. */
+const NUDGE_LEAD_LINE = UNREGISTERED_RUNS_LINE;
 
 /** The unlock list the footer and first-run output must carry (`src/account/unlocks.ts`). */
 const UNLOCK_LINES = [
@@ -204,6 +215,30 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
       console.info(`\n########## PX2 RC EXIT GATE TRANSCRIPT ##########${transcript.join('\n')}\n`);
     }
   }, 300_000);
+
+  it('closes first-run setup by naming the unlocks, not by demanding an account', async () => {
+    // §0a.3 on the OTHER surface the unlock list has to reach. The unit suite
+    // covers `activationNextStepLines`, which is the function that composes these
+    // lines — but composing them and PRINTING them are two different claims, and
+    // only one of them is what a person installing wigolo actually meets. So this
+    // arm drives the installed binary's real setup path and reads its real stdout.
+    //
+    // `--no-warmup` because the arm is about the closing block, not the component
+    // downloads; the RC install has no network to fetch models over anyway.
+    const result = await runCli(full, ['init', '--no-warmup'], { env, timeoutMs: 600_000 });
+
+    expect(result.code, `init failed on a fresh install:\n${result.combined}`).toBe(0);
+    // The premise first: setup must not tell the user their install is inert.
+    expect(result.combined).not.toContain(NEVER_ACTIVATED_LINE);
+    expect(result.combined).not.toContain('Next step: run `wigolo register`');
+    // Then the offer, in full — the same four lines the MCP footer renders.
+    expect(result.combined).toContain(UNREGISTERED_RUNS_LINE);
+    for (const unlock of UNLOCK_LINES) {
+      expect(result.combined, `first-run output omitted the unlock "${unlock}"`).toContain(unlock);
+    }
+    expect(result.combined).toContain(TELEMETRY_CLAIM_LINE);
+    record('arm 1b — first-run setup output, unregistered', result.combined.slice(-1200));
+  }, 900_000);
 
   it('runs the first tool on a fresh install with no account at all', async () => {
     // THE SENTENCE §0a.1 TURNS ON, measured on a real installed tarball. PX2's

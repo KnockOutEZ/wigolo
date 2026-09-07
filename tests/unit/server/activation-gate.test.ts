@@ -380,14 +380,17 @@ describe('MCP tools/call on an unregistered install', () => {
     return (res as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? '';
   }
 
-  async function callDiff(client: { callTool: (r: unknown) => Promise<unknown> }): Promise<unknown> {
+  // Typed as the real `Client` rather than a structural `{ callTool }`: the SDK's
+  // signature is generic over the request schema, so a hand-written shape is not
+  // assignable to it and every call site paid a type error for the convenience.
+  async function callDiff(client: Client): Promise<unknown> {
     return client.callTool({
       name: 'diff',
       arguments: { old: { markdown: 'a\n' }, new: { markdown: 'b\n' }, output: 'unified' },
     });
   }
 
-  async function runDiff(client: { callTool: (r: unknown) => Promise<unknown> }): Promise<string> {
+  async function runDiff(client: Client): Promise<string> {
     return allText(await callDiff(client));
   }
 
