@@ -194,6 +194,24 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     tarball = await packWigolo();
     full = await installTarball(tarball.path, { omitOptional: false });
 
+    // THE BROWSER ENGINE IS A PREREQUISITE, NOT AN ARM'S PROBLEM.
+    //
+    // `installTarball` is npm alone, so the engine is absent — and the fetch
+    // router pins a host to the tier that last served it. The fixture's short
+    // pages escalate once, the host stays pinned at the browser tier, and a later
+    // `force_refresh` therefore STARTS there with no lower-tier content to fall
+    // back to: `browser_engine_unavailable`, plus a background install racing the
+    // rest of the run. Measured twice on this fixture, red both times in the
+    // registered ten-tool arm's diff seeding.
+    //
+    // Warming it here is what an ordinary install does at setup, and it is the
+    // only fix that does not make an arm's result depend on how far a download
+    // got. Asserted rather than best-effort, for the reason `rc-gate-env.ts`
+    // gives: once the gate says it runs, a missing prerequisite throws instead of
+    // quietly reporting green about something it never exercised.
+    const warmed = await runCli(full, ['warmup', '--browser'], { env, timeoutMs: 900_000 });
+    expect(warmed.code, `warming the browser engine failed:\n${warmed.combined}`).toBe(0);
+
     record(
       'service',
       `accounts service: ${service.url}\nkid: ${service.kid}\n` +
