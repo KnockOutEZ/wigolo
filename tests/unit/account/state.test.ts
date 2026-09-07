@@ -6,12 +6,37 @@
  * rotation" is exactly the property a second PROCESS needs, and the refresh
  * policy's 30-second race branch is built on it. A per-process cache would
  * pass every other arm in this file and break that one.
+ *
+ * WHY THE 0600 ARMS ASSERT TWICE. `statSync(path).mode & 0o777` is the real
+ * custody proof, but it is only expressible on POSIX: Windows has no mode
+ * bits, and Node's `fs` maps `mode` there to the read-only attribute alone, so
+ * a file correctly created with 0o600 reads back 0o666. Asserting the stat
+ * unconditionally asserts the HOST's capability, not the store's behaviour.
+ * So each arm asserts the call the store makes — `writeFileSync(..., { mode:
+ * 0o600 })` and `mkdirSync(..., { mode: 0o700 })`, which holds on every
+ * platform including win32 — and then, off win32 only, that the filesystem
+ * actually honoured it. Windows custody therefore rests on the ACL the data
+ * dir inherits; see DECISIONS-AUTO 2026-09-07.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, statSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { AccountStateStore, accountStatePath, EMPTY_ACCOUNT_STATE } from '../../../src/account/state.js';
+
+/** Pass-through spies, so the mode ARGUMENT is observable on a host that cannot store it. */
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync), mkdirSync: vi.fn(actual.mkdirSync) };
+});
+
+/** Mode the store last asked for, or undefined if it passed none. */
+function requestedMode(call: readonly unknown[] | undefined, argIndex: number): number | undefined {
+  const opts = call?.[argIndex];
+  return typeof opts === 'object' && opts !== null && 'mode' in opts
+    ? (opts as { mode?: number }).mode
+    : undefined;
+}
 
 let dataDir: string;
 
@@ -30,12 +55,22 @@ describe('AccountStateStore', () => {
 
   it('writes state.json under <dataDir>/account with 0600', () => {
     const store = new AccountStateStore(dataDir);
+    vi.mocked(writeFileSync).mockClear();
+    vi.mocked(mkdirSync).mockClear();
     store.write({ account_id: 'acct_1', email: 'a@example.com' });
 
     expect(store.path).toBe(join(dataDir, 'account', 'state.json'));
     expect(store.path).toBe(accountStatePath(dataDir));
-    expect(statSync(store.path).mode & 0o777).toBe(0o600);
-    expect(statSync(dirname(store.path)).mode & 0o777).toBe(0o700);
+
+    // Every platform, win32 included: the store ASKED for 0600/0700.
+    expect(requestedMode(vi.mocked(mkdirSync).mock.lastCall, 1)).toBe(0o700);
+    expect(requestedMode(vi.mocked(writeFileSync).mock.lastCall, 2)).toBe(0o600);
+
+    // POSIX only: win32 cannot store the bits, so the stat would read 0o666.
+    if (process.platform !== 'win32') {
+      expect(statSync(store.path).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(store.path)).mode & 0o777).toBe(0o700);
+    }
   });
 
   it('merge-patches rather than replacing', () => {
@@ -138,8 +173,13 @@ describe('AccountStateStore', () => {
   it('clear() resets to the un-activated state and keeps 0600', () => {
     const store = new AccountStateStore(dataDir);
     store.write({ account_id: 'acct_1', email: 'a@example.com', needs_relogin: true });
+    vi.mocked(writeFileSync).mockClear();
     store.clear();
     expect(store.read()).toEqual(EMPTY_ACCOUNT_STATE);
-    expect(statSync(store.path).mode & 0o777).toBe(0o600);
+
+    expect(requestedMode(vi.mocked(writeFileSync).mock.lastCall, 2)).toBe(0o600);
+    if (process.platform !== 'win32') {
+      expect(statSync(store.path).mode & 0o777).toBe(0o600);
+    }
   });
 });
