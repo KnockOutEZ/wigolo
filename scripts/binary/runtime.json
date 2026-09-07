@@ -1,5 +1,4 @@
 {
-  "$schema": "./runtime.schema.md",
   "$doc": "THE single place the embedded runtime version and the per-native ABI/NAPI expectations live. Bumping the runtime = editing this file; harvest, compile and verify all read it. Package VERSIONS are deliberately absent — they come from package-lock.json, which is exact where package.json floats (sharp ^0.34.5, sqlite-vec ^0.1.9). Values recorded by the BIN-1 spike (single-binary mini-spec 2a, wigolo-studio-run#502).",
 
   "runtime": {
