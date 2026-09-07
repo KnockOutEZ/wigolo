@@ -258,11 +258,14 @@ Subcommands:
                           Write the cached corpus out as dated Markdown + a manifest
   studio setup            Install the browser companion and pair it with this machine
 
-Your wigolo account (\`wigolo auth\` is a different thing — site sign-ins for
-the browser engine):
-  register [--email E] [--json]
-                          Create your wigolo account and activate this install
-  login [--email E] [--json]
+Your wigolo account is OPTIONAL — every tool above runs without one. It unlocks
+sync, the marketplace, higher pacing and watch limits (\`wigolo auth\` is a
+different thing — site sign-ins for the browser engine):
+  register [--email E] [--code C] [--headless] [--marketing-consent] [--json]
+                          Create your wigolo account and unlock the extras.
+                          --headless asks nothing: run it once to mail the
+                          code, then again with --code to finish.
+  login [--email E] [--code C] [--headless] [--json]
                           Sign in to your wigolo account on this machine
   logout [--json]         Sign out on this machine (local credential only)
   whoami [--json]         Show the signed-in account and its activation state
