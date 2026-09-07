@@ -280,6 +280,89 @@ describe('no parallel-lane test can spawn a dist/ path', () => {
   });
 });
 
+/**
+ * Every specifier that resolves through the package's OWN `exports` map: the bare package name
+ * and each declared subpath. Derived from package.json rather than written down here, because
+ * that map IS the set — and every target in it points into `dist/`, asserted below rather than
+ * assumed.
+ *
+ * This is the THIRD shape of the reader half of the race, and neither scan above can see it. The
+ * rebuild scan looks for a build token; the spawn scan needs a `dist` string literal AND a
+ * child-process call. A file that writes `import { getDatabase } from 'wigolo/cache/db'` has
+ * none of those and still reads `dist/` — in its OWN process, at collection time, which is
+ * strictly worse than a spawn: there is no beforeAll to fail, the whole file fails to load.
+ * Measured on this tree (#496): with `dist/cache/db.js` moved aside,
+ * tests/unit/cache/cache-subpath-clearance.test.ts reports
+ * `Cannot find package 'wigolo/cache/db'` and collects zero tests — the same window a tsup
+ * `clean: true` rebuild opens for ~300ms in the serial lane next door.
+ */
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+  name: string;
+  /** An entry is either a bare target or a conditions object — this map uses both shapes. */
+  exports: Record<string, string | Record<string, string>>;
+};
+
+/** Every target in the export map, both entry shapes flattened. */
+const exportTargets = (): { subpath: string; target: string }[] =>
+  Object.entries(pkg.exports).flatMap(([subpath, entry]) =>
+    (typeof entry === 'string' ? [entry] : Object.values(entry)).map((target) => ({
+      subpath,
+      target,
+    }))
+  );
+
+/**
+ * The package name as an actual IMPORT SPECIFIER — `from 'wigolo/cache/db'`, `import('wigolo')`,
+ * `require('wigolo/cache')`. The specifier context is what makes this a scan and not a word
+ * search: the bare name is ordinary data all over this suite (temp-dir segments, logger scopes,
+ * fixture strings), and matching the quoted literal alone reported 53 of 127 parallel-lane files.
+ * `'wigolo-studio'` is not a match either — what follows the name must be `/` or the closing quote.
+ */
+const SELF_SPECIFIER = new RegExp(
+  `(?:\\bfrom\\s*|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*)` +
+    `['"]${pkg.name}(?:/[^'"\\n]*)?['"]`
+);
+
+/**
+ * Source with whole-line comments and type-only imports removed. A `import type … from
+ * 'wigolo/cache'` is erased before the module ever runs, so it cannot read `dist/` and must not
+ * be reported as if it could — the file that motivated this scan has one of those on line 7
+ * alongside the two value imports that DO resolve.
+ */
+const runtimeOnly = (source: string): string =>
+  codeOnly(source).replace(/^\s*import\s+type\s[^;]*;/gm, '');
+
+describe('no parallel-lane test can import through the package export map', () => {
+  const selfImporters = parallelLaneFiles().filter((file) =>
+    SELF_SPECIFIER.test(runtimeOnly(readFileSync(join(ROOT, file), 'utf8')))
+  );
+
+  it('every export target points into dist/ — the premise this scan rests on', () => {
+    // If a subpath were ever re-pointed at `src/`, importing it would stop being a dist/ read and
+    // this whole scan would be quarantining a file for nothing. Stating the premise means the
+    // scan fails loudly on the day it stops holding, instead of quietly over-reporting.
+    expect(exportTargets().filter(({ target }) => !target.startsWith('./dist/'))).toEqual([]);
+    // And the map is non-empty, so the filter above is not vacuously satisfied by a shape change.
+    expect(exportTargets().length).toBeGreaterThan(20);
+  });
+
+  it('the parallel lane imports nothing through the package name', () => {
+    expect(selfImporters).toEqual([]);
+  });
+
+  it('the known self-name importers are in the serial lane', () => {
+    // Must-fire direction, as above: a renamed or deleted importer has to be noticed here rather
+    // than silently dropping out of the scan.
+    const importers = ['tests/unit/cache/cache-subpath-clearance.test.ts'];
+    const present = allTestFiles();
+    const serial = serialLaneFiles();
+    for (const file of importers) {
+      expect(present).toContain(file);
+      expect(serial).toContain(file);
+    }
+  });
+});
+
 describe('the serial lane is actually serial', () => {
   // The guard above is worth nothing if `spawn-serial` stops being one fork with file
   // parallelism off, because then the touchers race EACH OTHER instead.
