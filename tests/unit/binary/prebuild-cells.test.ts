@@ -61,7 +61,7 @@ describe('splitTarget', () => {
 });
 
 describe('every mini-spec §1 target resolves every non-optional cell', () => {
-  it.each(MANIFEST.targets)('%s', (target: string) => {
+  it.each(MANIFEST.targets as string[])('%s', (target) => {
     const cells = cellsFor(target);
     const unresolved = cells.filter((c) => c.unresolvable && !c.optional);
     expect(unresolved.map((c) => `${c.id}: ${c.unresolvable}`)).toEqual([]);

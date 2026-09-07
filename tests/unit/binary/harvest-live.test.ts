@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { allowNetworkInThisFile } from '../../net-fence';
+import { allowNetworkInThisFile } from '../../net-fence.js';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { harvestTarget } from '../../../scripts/binary/harvest.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.

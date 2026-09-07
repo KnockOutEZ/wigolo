@@ -168,7 +168,7 @@ describe('validateManifest refuses a pin it cannot act on', () => {
     expect(() => validateManifest(doc)).toThrow(/lockPath must be a package-lock.json key/);
   });
 
-  it.each(ABI_KINDS)('accepts abiKind %s', (kind: string) => {
+  it.each(ABI_KINDS as string[])('accepts abiKind %s', (kind) => {
     const doc = goodDoc();
     const spec = (doc.natives as Record<string, Record<string, unknown>>)['better-sqlite3'];
     spec.abiKind = kind;
