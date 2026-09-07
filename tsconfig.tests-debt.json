@@ -1,10 +1,11 @@
 {
   "//": "Debt-ratchet config: strict type-check of src + ALL tests. scripts/typecheck-debt-ratchet.mjs counts the errors and FAILS if the count rises above the frozen baseline, so legacy loosely-typed tests can stay (a separate hygiene cleanup) while NEW debt — a loosely-typed or dangling-ref test — is blocked. Lower the baseline as the debt is paid down. The Studio safety surface is held at ZERO separately by tsconfig.test.json.",
+  "//exclude": "A test that imports through the package's OWN published subpaths (`wigolo/cache`, `wigolo/cache/db`) cannot type-resolve here, because every `exports` entry points into `dist/` and this project is run by the `type gate (gate:studio)` CI job, which deliberately has NO build step (.github/workflows/ci.yml:147-149 — 'adding a build would hide a type error behind a build failure'). With a built dist/ the same file costs 0 errors and the omission is invisible; without one it costs exactly 3 (TS2307 on CI where dist/ is absent, TS7016 locally where only the .d.ts files are), which is the whole of the 344-vs-341 ratchet failure. The file is excluded rather than rewritten to relative src/ paths because asserting the published export map IS its purpose, and BASELINE stays at 341 because this is a resolvable cause, not corpus debt to buy headroom for.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
     "rootDir": "."
   },
   "include": ["src", "tests"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "tests/unit/cache/cache-subpath-clearance.test.ts"]
 }
