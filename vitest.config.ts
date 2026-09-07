@@ -10,25 +10,34 @@ import { defineConfig, configDefaults } from 'vitest/config';
 // overlap, no gap), so collected counts are preserved by construction.
 
 /**
- * Parallel-lane test files that hand a `dist/` path to a child process — directly, or through a
- * fixture script they spawn. They are READERS of the artifact the serial lane REBUILDS, and the
- * two halves of that race have to sit in the same lane to take turns: `tests/unit/…` is otherwise
- * in the fully-parallel `unit` project, which vitest runs CONCURRENTLY with `spawn-serial`, so a
- * rebuild there deletes `dist/` (tsup `clean: true`) out from under a spawn that has just started.
+ * Parallel-lane test files that READ `dist/` — by handing a path to a child process (directly or
+ * through a fixture script they spawn), or by importing one of the package's own published
+ * subpaths, every one of which resolves into `dist/`. They are readers of the artifact the serial
+ * lane REBUILDS, and the two halves of that race have to sit in the same lane to take turns:
+ * `tests/unit/…` is otherwise in the fully-parallel `unit` project, which vitest runs CONCURRENTLY
+ * with `spawn-serial`, so a rebuild there deletes `dist/` (tsup `clean: true`) out from under a
+ * reader that has just started.
  * Measured during the PX0 exit review (#176): `dist/daemon/studio-db-broker.js` was gone at t+436ms
  * and back at t+739ms across one `npm pack`-triggered build, and a spawn inside that window exits 1
  * with a module-not-found in a file that has nothing to do with the cause.
  *
- * They also belong here on the lane's own criterion — every one of them spawns a real process.
+ * The list was named for spawning because spawning was the only shape it had. It is not the
+ * criterion — READING `dist/` is (#496). An in-process self-name import is the strictly worse
+ * shape: it resolves at collection time, so the file does not fail a test, it fails to LOAD.
  *
  * This list is the lane split's single source of truth: `tests/unit/dist-rebuild-serialization.test.ts`
  * imports THIS file and derives lane membership from it, so a file added below is audited, and a
- * dist/-spawning file that is NOT below reds that guard.
+ * dist/-reading file that is NOT below reds that guard.
  */
-const DIST_SPAWNING_UNIT_TESTS = [
+const DIST_READING_UNIT_TESTS = [
   // Probes every `wigolo/*` subpath export in a child Node process, so every one of them
   // resolves into `dist/` — the reader half of the same race.
   'tests/unit/package-exports.test.ts',
+  // Imports `wigolo/cache` and `wigolo/cache/db` in THIS process to assert the published
+  // clearance API is reachable through the real export map. `package.json` maps both into
+  // `dist/`, so with the build mid-flight the file reports
+  // `Cannot find package 'wigolo/cache/db'` and collects zero tests.
+  'tests/unit/cache/cache-subpath-clearance.test.ts',
 ];
 
 const shared = {
@@ -86,7 +95,7 @@ export default defineConfig({
             ...configDefaults.exclude,
             'tests/integration/**',
             'tests/e2e/**',
-            ...DIST_SPAWNING_UNIT_TESTS,
+            ...DIST_READING_UNIT_TESTS,
           ],
         },
       },
@@ -114,9 +123,9 @@ export default defineConfig({
             'tests/integration/**/*.test.tsx',
             'tests/e2e/**/*.test.ts',
             'tests/e2e/**/*.test.tsx',
-            // Readers, not rebuilders — see DIST_SPAWNING_UNIT_TESTS above. The lane guarded
+            // Readers, not rebuilders — see DIST_READING_UNIT_TESTS above. The lane guarded
             // rebuilders only, so these raced it from the parallel side.
-            ...DIST_SPAWNING_UNIT_TESTS,
+            ...DIST_READING_UNIT_TESTS,
           ],
           pool: 'forks',
           // `poolOptions: { forks: { singleFork: true } }` used to sit here. Vitest 4 removed
