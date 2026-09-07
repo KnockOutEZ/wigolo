@@ -14,6 +14,7 @@ import {
   type SessionTargetTransport,
 } from '../../../src/tools/session-target.js';
 import { SESSION_TARGET_ROUTE } from '../../../src/companion-contract/session-target.js';
+import { SESSION_TARGET_FIXTURES } from '../../../src/companion-contract/fixtures.js';
 import { writeHandle, type SessionHandle } from '../../../src/companion/handle.js';
 import { TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
 import type { CrawlInput, ExtractInput, FetchInput } from '../../../src/types.js';
@@ -260,5 +261,110 @@ describe('core tool descriptions carry capability language, not companion tool n
         expect(d, `${name} names a companion tool in its parameter text`).not.toMatch(/studio_/);
       }
     }
+  });
+});
+
+/**
+ * Spec §10's OTHER half, mirrored into core's own suite.
+ *
+ * #474 pinned `POST /companion/session` at route level — but both halves of that pin live in the studio
+ * repo, so they only run when that repo bumps its core pin. Until then core's suite can go green on a
+ * forwarding client that no longer speaks the address it posts at. These arms close that: a stub companion
+ * that serves exactly ONE address — {@link SESSION_TARGET_ROUTE}, imported for the same reason the client
+ * imports it, never a literal — answering the SHARED {@link SESSION_TARGET_FIXTURES}, driven through the
+ * real handle file by the real transport. A client that drifts off the constant 404s here, where a 404 is
+ * indistinguishable from an absent companion, instead of in production.
+ */
+describe('the session-target route, end to end against a stub companion', () => {
+  interface StubCompanion {
+    endpoint: string;
+    handle: SessionHandle;
+    requests: { url: string; body: unknown }[];
+    close: () => Promise<void>;
+  }
+
+  /** A companion that answers `servedAt` and 404s every other address — the shape of a one-sided move. */
+  async function startCompanion(servedAt: string, answer: unknown, status = 200): Promise<StubCompanion> {
+    const requests: { url: string; body: unknown }[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        requests.push({ url: req.url ?? '', body: raw === '' ? null : JSON.parse(raw) });
+        const hit = req.url === servedAt;
+        res.writeHead(hit ? status : 404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(hit ? answer : { error: 'no such route' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    return {
+      endpoint,
+      handle: { id: 's1', endpoint, token: 'tok-abc', pid: 1, instanceId: 'other' },
+      requests,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  /** The shared request fixture, expressed as the tool input the forwarding client actually takes. */
+  const sessionInput = {
+    ...SESSION_TARGET_FIXTURES.request.input,
+    session_id: SESSION_TARGET_FIXTURES.request.session_id,
+  } as FetchInput;
+
+  let dir: string;
+  let companion: StubCompanion;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-st-route-'));
+  });
+  afterEach(async () => {
+    await companion.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('forwards the shared request to the contract address and returns the companion data', async () => {
+    companion = await startCompanion(SESSION_TARGET_ROUTE, SESSION_TARGET_FIXTURES.okResult);
+    writeHandle(companion.handle, dir);
+    const r = await runSessionFetch(sessionInput, { dataDir: dir });
+    expect(companion.requests.map((q) => q.url)).toEqual([SESSION_TARGET_ROUTE]);
+    expect(companion.requests[0].body).toMatchObject({
+      op: SESSION_TARGET_FIXTURES.request.op,
+      session_id: SESSION_TARGET_FIXTURES.request.session_id,
+    });
+    expect(r).toEqual(SESSION_TARGET_FIXTURES.okResult);
+  });
+
+  it('passes the shared refusal fixture through verbatim from that same address', async () => {
+    companion = await startCompanion(SESSION_TARGET_ROUTE, SESSION_TARGET_FIXTURES.refusal);
+    writeHandle(companion.handle, dir);
+    expect(await runSessionFetch(sessionInput, { dataDir: dir })).toEqual(SESSION_TARGET_FIXTURES.refusal);
+  });
+
+  it('refuses companion_unavailable when the answer is served at a MOVED address', async () => {
+    // The companion here answers a real result, just not at the address the wire publishes. A 404 at the
+    // client is indistinguishable from an absent companion, which is exactly why the address belongs to the
+    // contract module both sides import rather than to either side's own literal. The refusal is still
+    // typed: never a silent downgrade to the ephemeral path.
+    companion = await startCompanion(`${SESSION_TARGET_ROUTE}-v2`, SESSION_TARGET_FIXTURES.okResult);
+    writeHandle(companion.handle, dir);
+    const r = await runSessionFetch(sessionInput, { dataDir: dir });
+    expect(companion.requests.map((q) => q.url)).toEqual([SESSION_TARGET_ROUTE]);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('companion_unavailable');
+    expect(r.stage).toBe('fetch');
+  });
+
+  it('puts the shared request on the wire unchanged, and returns null from the moved address', async () => {
+    companion = await startCompanion(SESSION_TARGET_ROUTE, SESSION_TARGET_FIXTURES.okResult);
+    expect(await postSessionTarget(companion.handle, SESSION_TARGET_FIXTURES.request)).toEqual(
+      SESSION_TARGET_FIXTURES.okResult,
+    );
+    expect(companion.requests[0].body).toEqual(SESSION_TARGET_FIXTURES.request);
+    await companion.close();
+    companion = await startCompanion(`${SESSION_TARGET_ROUTE}/v2`, SESSION_TARGET_FIXTURES.okResult);
+    expect(await postSessionTarget(companion.handle, SESSION_TARGET_FIXTURES.request)).toBeNull();
   });
 });
