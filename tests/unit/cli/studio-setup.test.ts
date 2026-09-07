@@ -47,6 +47,15 @@ const ALLOW_HTTP: NodeJS.ProcessEnv = { WIGOLO_COMPANION_ALLOW_HTTP: '1' };
  * `signed` is what a real `codesign --verify` would answer. A fixture bundle is a directory with
  * a marker file in it, so the honest default is UNSIGNED — which is exactly the case that must
  * still be quarantined and must NOT be assessed.
+ *
+ * EVERY `platform: 'darwin'` arm must inject this, whatever outcome it asserts. Omitting it falls
+ * back to `defaultRun`, which spawns the real `xattr` — present on macOS, absent on Linux and
+ * Windows, where the spawn `error` becomes code 127 and the install answers `quarantine_failed`.
+ * That makes the arm assert on the host's binaries rather than on the code under test: two arms
+ * were green on macOS and red on both CI runners for exactly that reason. An arm that asserts a
+ * pre-install outcome today is one assertion away from the same trap. The single exception is the
+ * `it.skipIf(process.platform !== 'darwin')` arm below, which omits `run` on purpose because the
+ * real attribute on a real directory is its outside signal.
  */
 function recordingRun(opts: { xattrCode?: number; signed?: boolean; assessCode?: number } = {}): {
   run: NonNullable<CompanionSetupDeps['run']>;
@@ -375,6 +384,7 @@ describe('setupCompanion', () => {
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1675,6 +1685,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1739,6 +1750,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       // test that must not write two gigabytes to prove the guard exists.
       downloadCeilingBytes: 256 * 1024,
       install: recordingInstaller(installRoot).install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1840,6 +1852,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       installRoot,
       downloadCeilingBytes: ceiling,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1904,6 +1917,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       // not the number.
       downloadIdleTimeoutMs: 250,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1948,6 +1962,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       installRoot,
       downloadIdleTimeoutMs: 5_000,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
