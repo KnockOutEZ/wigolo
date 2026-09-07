@@ -154,25 +154,48 @@ $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
 $psi.EnvironmentVariables['WIGOLO_DATA_DIR'] = (Join-Path $work 'data-mcp')
 $proc = [System.Diagnostics.Process]::Start($psi)
+
+# DRAIN STDERR FROM THE FIRST MOMENT. The server logs to stderr, and a redirected pipe
+# nobody reads fills at a few tens of kilobytes and then blocks the WRITER — so the process
+# stops before it answers, the first read times out, and the second one throws "the stream
+# has already been closed". `verify.mjs` avoids this with `child.stderr.resume()`; this is
+# the same act. Measured on windows-latest before the drain existed: 75 s and no handshake.
+$errTask = $proc.StandardError.ReadToEndAsync()
+
+function Read-Reply([System.Diagnostics.Process]$p, [int]$ms) {
+  try {
+    $t = $p.StandardOutput.ReadLineAsync()
+    if ($t.Wait($ms)) { return $t.Result }
+  } catch {
+    return $null
+  }
+  return $null
+}
+
 $lines = New-Object System.Collections.Generic.List[string]
 try {
   $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"consumer-smoke","version":"0"}}}')
   $proc.StandardInput.Flush()
-  $readTask = $proc.StandardOutput.ReadLineAsync()
-  if ($readTask.Wait(60000)) { $lines.Add($readTask.Result) }
-  $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
-  $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
-  $proc.StandardInput.Flush()
-  $readTask = $proc.StandardOutput.ReadLineAsync()
-  if ($readTask.Wait(60000)) { $lines.Add($readTask.Result) }
+  $reply = Read-Reply $proc 60000
+  if ($reply) { $lines.Add($reply) }
+
+  if (-not $proc.HasExited) {
+    $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+    $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+    $proc.StandardInput.Flush()
+    $reply = Read-Reply $proc 60000
+    if ($reply) { $lines.Add($reply) }
+  }
 } finally {
-  $proc.StandardInput.Close()
+  try { $proc.StandardInput.Close() } catch { }
   if (-not $proc.WaitForExit(15000)) { $proc.Kill() }
 }
+$stderrText = if ($errTask.Wait(5000)) { $errTask.Result } else { '(stderr still open)' }
+$stderrOneLine = (($stderrText -split "`r?`n") | Where-Object { $_ } | Select-Object -Last 3) -join ' | '
 
 $joined = ($lines | Where-Object { $_ }) -join "`n"
 if ($joined -notmatch '"serverInfo"' -or $joined -notmatch '"tools"') {
-  Fail 'RUN' 'MCP stdio' "no handshake; stdout was '$joined'; stderr: $($proc.StandardError.ReadToEnd())"
+  Fail 'RUN' 'MCP stdio' "no handshake; stdout was '$joined'; stderr: $stderrOneLine"
 } elseif (($lines | Where-Object { $_ -and -not $_.StartsWith('{"') }).Count -gt 0) {
   Fail 'RUN' 'MCP stdio' 'stdout carried a line that is not JSON-RPC'
 } elseif ($joined -notmatch [regex]::Escape("`"version`":`"$Semver`"")) {

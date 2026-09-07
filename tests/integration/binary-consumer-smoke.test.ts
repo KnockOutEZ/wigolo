@@ -237,6 +237,19 @@ describe('the smoke job is an OUTSIDE signal — mini-spec §4', () => {
     expect(script).toContain('WIGOLO_RELEASE_TAG');
   });
 
+  it('has the Windows leg drain stderr before it waits for a reply', async () => {
+    // A redirected stderr pipe nobody reads fills at a few tens of kilobytes and blocks the
+    // WRITER, so the server stops before it answers and the read times out with nothing to
+    // show for it. Measured on windows-latest: 75 s, no handshake, then "the stream has
+    // already been closed". The unix battery redirects stderr to a file and cannot hit this,
+    // which is exactly why the Windows leg needed its own arm.
+    const ps1 = await readFile(SMOKE_PS1, 'utf8');
+    const drainAt = ps1.indexOf('StandardError.ReadToEndAsync');
+    const firstReadAt = ps1.indexOf('StandardOutput.ReadLineAsync');
+    expect(drainAt).toBeGreaterThan(-1);
+    expect(firstReadAt).toBeGreaterThan(drainAt);
+  });
+
   it('has the Windows leg verify the checksum BEFORE it unpacks', async () => {
     // Comment lines dropped first: the header explains why `Expand-Archive` is the unpacker,
     // and an index into prose would answer a question about ordering with a sentence.
