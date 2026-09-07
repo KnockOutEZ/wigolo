@@ -9,11 +9,36 @@
  *
  * The parallel-store property (A-212-3) is asserted too: the account
  * credential must not be reachable through the LLM key-store's surfaces.
+ *
+ * WHY THE 0600 ARM ASSERTS TWICE. `statSync(path).mode & 0o777` is the real
+ * custody proof, but it is only expressible on POSIX: Windows has no mode
+ * bits, and Node's `fs` maps `mode` there to the read-only attribute alone, so
+ * `account.enc` — correctly created with 0o600 — reads back 0o666. Asserting
+ * the stat unconditionally asserts the HOST's capability, not the store's
+ * behaviour. So the arm asserts the call the store makes, which holds on every
+ * platform including win32, and then, off win32 only, that the filesystem
+ * honoured it. Windows custody rests on the ACL the data dir inherits; see
+ * DECISIONS-AUTO 2026-09-07.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/** Pass-through spy, so the mode ARGUMENT is observable on a host that cannot store it. */
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
+/** Mode `encryptToFile` last asked for, or undefined if it passed none. */
+function requestedMode(call: readonly unknown[] | undefined, argIndex: number): number | undefined {
+  const opts = call?.[argIndex];
+  return typeof opts === 'object' && opts !== null && 'mode' in opts
+    ? (opts as { mode?: number }).mode
+    : undefined;
+}
 
 vi.mock('../../../src/security/keychain.js', () => {
   const store = new Map<string, string>();
@@ -110,13 +135,21 @@ describe('refresh-token custody — forced file-fallback tier', () => {
   });
 
   it('round-trips through <dataDir>/keys/account.enc', async () => {
+    vi.mocked(nodeFs.writeFileSync).mockClear();
     const stored = await storeRefreshToken(TOKEN, { dataDir });
     expect(stored.location).toBe('file');
 
     const path = accountEncFilePath(dataDir);
     expect(path).toBe(join(dataDir, 'keys', 'account.enc'));
     expect(existsSync(path)).toBe(true);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    // Every platform, win32 included: the store ASKED for 0600.
+    expect(requestedMode(vi.mocked(nodeFs.writeFileSync).mock.lastCall, 2)).toBe(0o600);
+
+    // POSIX only: win32 cannot store the bits, so the stat would read 0o666.
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
 
     const read = await readRefreshToken({ dataDir });
     expect(read).toEqual({ value: TOKEN, location: 'file' });
