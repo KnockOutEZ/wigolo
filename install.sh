@@ -25,6 +25,12 @@
 #   WIGOLO_INSTALL_DIR    install root (default: $HOME/.wigolo)
 #   WIGOLO_RELEASE_BASE   where the release assets live (default: the GitHub release
 #                         download base). The one seam the offline smoke drives.
+#   WIGOLO_RELEASE_TAG    the release tag the assets hang under (default: v$VERSION).
+#                         A release whose tag is not the version spelled `v<semver>`
+#                         is otherwise unreachable: the artifact names carry the bare
+#                         semver but the download path carries the tag, and only the
+#                         publisher knows they differ. The binary-only prerelease
+#                         channel (`binary-v*`, mini-spec §4) is exactly that case.
 #   WIGOLO_LATEST_URL     where "latest" is resolved from, when WIGOLO_VERSION is unset
 #   HTTPS_PROXY/https_proxy honoured by the downloader
 #
@@ -182,7 +188,11 @@ resolve_version() {
   # Accept `v0.2.1` and `0.2.1` from either source; the artifact names carry the bare
   # semver and the tag carries the `v`.
   VERSION="${VERSION#v}"
-  TAG="v$VERSION"
+  # The tag is a separate fact from the version, not a rendering of it. They agree for
+  # every `v<semver>` release, which is why one variable looked like enough — but the
+  # asset NAME is built from the version and the asset PATH from the tag, so a release
+  # published under any other tag has assets nothing here could address.
+  TAG="${WIGOLO_RELEASE_TAG:-v$VERSION}"
 }
 
 # ---------------------------------------------------------------------------

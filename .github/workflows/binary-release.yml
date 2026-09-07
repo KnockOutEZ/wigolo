@@ -303,3 +303,118 @@ jobs:
 
           gh release upload "$TAG" "$RUNNER_TEMP"/release-assets/* --clobber
           gh release view "$TAG" --json assets -q '.assets[].name'
+
+  # ---------------------------------------------------------------------------
+  # BIN-8 — the consumer-shaped smoke. This is the outside signal the build cannot be.
+  #
+  # WHAT MAKES IT AN OUTSIDE SIGNAL. `verify` above asks the artifact good questions, but it
+  # asks them with the build's own Node interpreter, from an artifact handed over inside the
+  # run, on a machine carrying the whole dependency tree. Each of those is a way for the host
+  # to answer a question the artifact was supposed to. This job starts from the PUBLIC
+  # CONTRACT instead: the release page, the published asset names, `SHA256SUMS`, and — on
+  # unix — `install.sh` fetched over the same raw URL a user pipes into `sh`. Nothing from
+  # the checkout performs the download; all this repo contributes is the battery the
+  # installed artifact is then put through.
+  #
+  # WHY THERE IS NO NODE. `ci.yml`'s `clean-machine smoke` already covers the npm path, and a
+  # smoke that left Node on PATH would prove nothing about a machine that has never had one.
+  # So the PATH is stripped to the system directories and the strip is PROVEN by the same
+  # script that produces it — a `node` that still resolves is a red before the artifact runs.
+  #
+  # WHY UNIX GOES THROUGH `install.sh` AND WINDOWS DOES NOT. install.sh refuses Windows by
+  # design (§5). On unix it IS the acquisition path, so this job exercises live the three
+  # things its own unit suite has to fake: release resolution over the real API, the `uname`
+  # -> asset-name mapping on real hardware, and the real download URLs.
+  smoke:
+    name: consumer smoke ${{ matrix.label }}
+    needs: [plan, release]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64 via install.sh
+            runner: ubuntu-latest
+          - label: darwin-arm64 via install.sh
+            runner: macos-latest
+          - label: win32-x64 via direct download
+            runner: windows-latest
+    steps:
+      # The battery only. Deliberately NO `actions/setup-node` in this job: the whole point is
+      # a machine that has never installed one, and a setup step would put a fresh Node on
+      # PATH ahead of the strip.
+      - uses: actions/checkout@v7
+
+      # `curl | sh` over raw.githubusercontent.com, at the commit this release was built from
+      # — the published one-liner, aimed at the code under test rather than at whatever the
+      # branch tip happens to be by the time anyone reads the log.
+      #
+      # WHY `WIGOLO_RELEASE_TAG` IS SET. install.sh addresses assets as `<base>/<tag>/<name>`
+      # and defaults the tag to `v$VERSION`. The binary-only channel publishes under
+      # `binary-v*` precisely so it cannot start a package release, so on that channel the tag
+      # and the version genuinely differ and only the publisher knows it. `WIGOLO_VERSION`
+      # names the version; this names the tag. On a `v*.*.*` release both are the release's
+      # own defaults and neither is needed.
+      - name: Install through install.sh, the way a user does
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          WIGOLO_VERSION: ${{ needs.plan.outputs.semver }}
+          WIGOLO_RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PATH="$(sh tests/integration/binary/clean-path.sh)"
+          export PATH
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh" \
+            | sh 2>&1 | tee "$RUNNER_TEMP/install.log"
+          # The transcript is the evidence that the installer ran and that it verified before
+          # it unpacked — grepped rather than inferred from the exit code, which a script that
+          # skipped the check would also produce.
+          grep -q 'Checksum OK.' "$RUNNER_TEMP/install.log"
+          grep -q "wigolo ${{ needs.plan.outputs.semver }} is installed." "$RUNNER_TEMP/install.log"
+
+      - name: Consumer battery against the installed artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH="$(sh tests/integration/binary/clean-path.sh)"
+          export PATH
+          sh tests/integration/binary/consumer-smoke.sh \
+            "$HOME/.local/bin/wigolo" "${{ needs.plan.outputs.semver }}"
+
+      # LAST on the unix legs, and with NOTHING pinned. The step above has to pin the version
+      # and the tag — a prerelease on the binary-only channel is not what the feed's `latest`
+      # points at — so it never runs `resolve_version`'s feed branch. This runs exactly that
+      # branch against the real API, into a temporary root so whatever it resolves cannot
+      # disturb the artifact the battery just finished with.
+      - name: Resolve `latest` from the live release feed
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH="$(sh tests/integration/binary/clean-path.sh)"
+          export PATH
+          sh tests/integration/binary/resolve-latest.sh \
+            "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh"
+
+      # One step, because the ORDER is the assertion: the interpreter has to be gone before
+      # the artifact runs, and two steps would leave that ordering to a `needs`-free list.
+      - name: Download, verify and run the win32 asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $keep = ($env:PATH -split ';') | Where-Object {
+            $_ -and $_ -notmatch 'node' -and $_ -notmatch 'npm' -and $_ -notmatch 'hostedtoolcache'
+          }
+          $env:PATH = ($keep -join ';')
+          if (Get-Command node -ErrorAction SilentlyContinue) {
+            Write-Host "::error::node still resolves — this smoke would not be testing a clean machine"
+            exit 1
+          }
+          Write-Host 'node does not resolve, as required.'
+          ./tests/integration/binary/consumer-smoke.ps1 `
+            -ReleaseBase "https://github.com/${{ github.repository }}/releases/download" `
+            -Tag "${{ github.ref_name }}" `
+            -Semver "${{ needs.plan.outputs.semver }}"
