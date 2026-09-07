@@ -249,6 +249,17 @@ export function runProbe(exe, root, { dataDir } = {}) {
   return JSON.parse(line.slice('PROBE_JSON '.length));
 }
 
+/**
+ * One native's record out of the artifact's own `harvest-manifest.json`, or `null` when there is
+ * no manifest at all — see the embedding arm for why those two answers must stay distinguishable.
+ */
+export function harvestRecord(root, native) {
+  const file = path.join(root, 'libexec', 'harvest-manifest.json');
+  if (!fs.existsSync(file)) return null;
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return (doc.cells ?? []).find((c) => c.native === native) ?? null;
+}
+
 export function sha256File(file) {
   return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -268,7 +279,23 @@ export function unpackArtifact(archive, dest) {
   const staged = path.join(dest, name);
   fs.copyFileSync(archive, staged);
   if (name.endsWith('.zip')) {
-    execFileSync('tar', ['-xf', name], { cwd: dest, stdio: ['ignore', 'ignore', 'inherit'] });
+    // ABSOLUTE PATH TO SYSTEM32'S TAR, and this cost a windows verify lane. Windows ships bsdtar,
+    // which reads zip — but a `shell: bash` step on a GitHub runner resolves `tar` through Git for
+    // Windows first, and GNU tar answers `This does not look like a tar archive` and exits 1. The
+    // same PATH hazard `harvest.mjs` and `build.mjs` already carry a note about, one layer over:
+    // there it is which tar RUNS, here it is which tar is FOUND.
+    const bsdtar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (fs.existsSync(bsdtar)) {
+      execFileSync(bsdtar, ['-xf', name], { cwd: dest, stdio: ['ignore', 'ignore', 'inherit'] });
+    } else {
+      // Every supported Windows has PowerShell; slower on a 400 MB archive, but a verify lane that
+      // cannot unpack is a verify lane that cannot exist.
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${name}' -DestinationPath '.' -Force`],
+        { cwd: dest, stdio: ['ignore', 'ignore', 'inherit'] }
+      );
+    }
   } else {
     execFileSync('tar', ['-xzf', name], { cwd: dest, stdio: ['ignore', 'ignore', 'inherit'] });
   }
@@ -427,6 +454,18 @@ export async function runBattery({ root, target, expectSemver, dataDir, embeddin
 
   if (embeddings) {
     arm('M2 · embedding model through the real CLI route', () => {
+      // WHETHER THIS ARM RUNS IS THE ARTIFACT'S OWN ANSWER, not a target list kept here. The
+      // harvest records every cell it staged and every cell it could not; `@anush008/tokenizers`
+      // publishes no linux-arm64 package at the pinned version, so on that target the artifact
+      // says so and this arm reports the recorded reason. Everywhere else the route must WORK.
+      //
+      // A MISSING manifest is not an absent cell. "We found no record" and "the record says
+      // absent" would otherwise read identically, and the first one is how a broken harvest
+      // excuses itself out of the one arm that would have caught it.
+      const tokenizer = harvestRecord(root, '@anush008/tokenizers');
+      if (tokenizer && tokenizer.status !== 'staged') {
+        return { skipped: tokenizer.absence?.reason ?? 'recorded absent by the harvest', cell: tokenizer.pkg };
+      }
       // The only route that drives onnxruntime-node end to end, and the one that caught the
       // sidecar's flattened-dependency defect: a nested tar@7 shadowing the hoisted tar@6 killed
       // this deep inside a dependency while every other native stayed green.

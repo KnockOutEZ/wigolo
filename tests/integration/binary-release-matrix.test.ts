@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,10 @@ import { artifactName } from '../../scripts/binary/layout.mjs';
 import { readManifest } from '../../scripts/binary/manifest.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { buildBlob } from '../../scripts/binary/build.mjs';
+// @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
+import { resolveCells } from '../../scripts/binary/cells.mjs';
+// @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
+import { harvestRecord } from '../../scripts/binary/verify.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { ALL_TARGETS, assertShipMatrix, BUILD_RUNNER, emitMatrices, GITHUB_RUNNERS, shipMatrix, verifyLane } from '../../scripts/binary/ship-matrix.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
@@ -436,5 +440,92 @@ describe('the SEA blob is written by the interpreter the artifact embeds', () =>
         interpreter: process.execPath,
       })
     ).toThrow(/^(?!.*blob interpreter reports)/s);
+  });
+});
+
+/*
+ * THE SECOND DEFECT THE LIVE MATRIX FOUND: a native the §1 inventory does not list.
+ *
+ * With the blob fixed, four artifacts reached their verify lanes with all six §1 natives loading,
+ * a byte-clean MCP handshake and a dead embedding route:
+ * `Cannot find module '@anush008/tokenizers-linux-x64-gnu'`. It is fastembed's tokenizer addon,
+ * and on darwin it rode in from the BUILD HOST's own dependency closure — the accident that makes
+ * a cross-compiled artifact look complete on the machine that built it, and precisely what a
+ * platform-native verify lane exists to catch.
+ *
+ * The pinned 0.0.0 publishes three platform packages and no linux-arm64 one, so that target's
+ * artifact records the absence with its reason and the battery reads the RECORD rather than
+ * carrying a target list of its own.
+ */
+describe('@anush008/tokenizers — the native §1 omitted', () => {
+  const lock = JSON.parse(readFileSync(new URL('../../package-lock.json', import.meta.url), 'utf8'));
+  const cellFor = (target: string) =>
+    resolveCells({ manifest: readManifest(), lock, target }).find(
+      (c: { native: string }) => c.native === '@anush008/tokenizers'
+    );
+
+  it('gives every target a cell — four resolvable, one recorded absent', () => {
+    expect(
+      Object.fromEntries(
+        ALL_TARGETS.map((t: string) => [t, cellFor(t).unresolvable ? 'absent' : cellFor(t).pkg])
+      )
+    ).toEqual({
+      // One darwin-universal package serves both darwin targets: NOT a napi triple, which is why
+      // the table spells each target instead of interpolating one.
+      'darwin-arm64': '@anush008/tokenizers-darwin-universal',
+      'darwin-x64': '@anush008/tokenizers-darwin-universal',
+      'linux-x64': '@anush008/tokenizers-linux-x64-gnu',
+      'linux-arm64': 'absent',
+      'win32-x64': '@anush008/tokenizers-win32-x64-msvc',
+    });
+  });
+
+  it('says WHY linux-arm64 has none, and says it is upstream`s absence and not ours', () => {
+    // "Upstream publishes none" and "the harvest failed to fetch it" must never read the same —
+    // the first is a platform fact the npm install shares, the second is a broken build.
+    expect(cellFor('linux-arm64').unresolvable).toMatch(
+      /publishes no platform package for linux-arm64.*unavailable on this target under npm too/s
+    );
+  });
+
+  it('is optional in the recorded-absence sense, so the absence cannot fail the build', () => {
+    expect(readManifest().natives['@anush008/tokenizers'].optional).toBe(true);
+    for (const target of ALL_TARGETS) expect(cellFor(target).optional).toBe(true);
+  });
+});
+
+describe('the battery reads the artifact`s own harvest record', () => {
+  function artifactWithManifest(doc: unknown | null): string {
+    const root = join(scratchDir(), 'wigolo');
+    mkdirSync(join(root, 'libexec'), { recursive: true });
+    if (doc !== null) writeFileSync(join(root, 'libexec', 'harvest-manifest.json'), JSON.stringify(doc));
+    return root;
+  }
+
+  it('finds a recorded absence, with the reason the harvest wrote', () => {
+    const root = artifactWithManifest({
+      cells: [
+        { native: '@anush008/tokenizers', pkg: '@anush008/tokenizers', status: 'absent', absence: { reason: 'upstream publishes none' } },
+      ],
+    });
+    expect(harvestRecord(root, '@anush008/tokenizers')).toMatchObject({
+      status: 'absent',
+      absence: { reason: 'upstream publishes none' },
+    });
+  });
+
+  /*
+   * The distinction the embedding arm is built on. A MISSING manifest answers `null`, which the
+   * arm treats as "run the route" — because "we found no record" and "the record says absent" would
+   * otherwise be the same answer, and the first one is how a broken harvest excuses itself out of
+   * the one arm that would have caught it.
+   */
+  it('answers null for an artifact with no manifest at all — not `absent`', () => {
+    expect(harvestRecord(artifactWithManifest(null), '@anush008/tokenizers')).toBeNull();
+  });
+
+  it('answers null for a native the manifest does not mention', () => {
+    const root = artifactWithManifest({ cells: [{ native: 'sharp', status: 'staged' }] });
+    expect(harvestRecord(root, '@anush008/tokenizers')).toBeNull();
   });
 });

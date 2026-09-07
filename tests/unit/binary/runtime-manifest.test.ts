@@ -60,15 +60,23 @@ describe('the pin file on disk', () => {
     }
   });
 
-  it('declares the whole §1 native inventory, with the two optionals marked optional', () => {
+  it('declares the whole §1 native inventory, with the three optionals marked optional', () => {
     const manifest = readManifest();
+    // `@anush008/tokenizers` is NOT in the mini-spec's §1 list and was added by BIN-4: every
+    // non-darwin artifact reached its verify lane with all six §1 natives loading and the
+    // embedding route dead (`Cannot find module '@anush008/tokenizers-linux-x64-gnu'`). It rode
+    // the build host's own closure on darwin — the accident that makes a cross-compiled artifact
+    // look complete on the machine that built it.
     expect(nativeNames(manifest).sort()).toEqual(
-      ['@napi-rs/keyring', 'better-sqlite3', 'onnxruntime-node', 'sharp', 'sqlite-vec', 'wreq-js'].sort()
+      ['@anush008/tokenizers', '@napi-rs/keyring', 'better-sqlite3', 'onnxruntime-node', 'sharp', 'sqlite-vec', 'wreq-js'].sort()
     );
     // The degrade-cleanly rule is a per-native property, and getting it backwards either fails
     // a build over a keychain tier or ships a binary silently missing a database driver.
     expect(manifest.natives['@napi-rs/keyring'].optional).toBe(true);
     expect(manifest.natives['wreq-js'].optional).toBe(true);
+    // Optional in the recorded-absence sense: the pinned 0.0.0 publishes no linux-arm64 package,
+    // and the load-verify battery reads that record rather than letting the absence pass silently.
+    expect(manifest.natives['@anush008/tokenizers'].optional).toBe(true);
     for (const name of ['better-sqlite3', 'sqlite-vec', 'onnxruntime-node', 'sharp']) {
       expect(manifest.natives[name].optional).toBe(false);
     }

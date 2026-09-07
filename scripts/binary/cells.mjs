@@ -67,6 +67,24 @@ const KEYRING_PKG = Object.freeze({
 });
 
 /**
+ * `@anush008/tokenizers` — fastembed's tokenizer addon, and the one native whose per-target
+ * spelling is NOT a napi triple.
+ *
+ * `darwin-universal` covers BOTH darwin targets from one package, and the pinned 0.0.0 publishes
+ * exactly three platform packages: there is no `linux-arm64-gnu` at this version, under npm or
+ * here (upstream's own 0.6.0 has one; fastembed pins 0.0.0). `null` therefore means "upstream
+ * publishes none", which is a recorded absence, and NOT "we have not looked" — the difference is
+ * the whole reason the table spells every target instead of interpolating.
+ */
+const TOKENIZERS_PKG = Object.freeze({
+  'darwin-arm64': '@anush008/tokenizers-darwin-universal',
+  'darwin-x64': '@anush008/tokenizers-darwin-universal',
+  'linux-x64': '@anush008/tokenizers-linux-x64-gnu',
+  'linux-arm64': null,
+  'win32-x64': '@anush008/tokenizers-win32-x64-msvc',
+});
+
+/**
  * The one file `wreq-js` ships per target, in the loader's own spelling.
  *
  * Kept as an allowlist rather than a pattern for the same reason
@@ -332,6 +350,42 @@ export function resolveCells({ manifest, lock, target }) {
           })
         );
         break;
+
+      case '@anush008/tokenizers': {
+        // The embedding route's tokenizer. Staged for the four targets upstream publishes at the
+        // pinned version; on the fifth the absence is recorded with its reason, and
+        // `scripts/binary/verify.mjs` reads that record rather than carrying a target list of its
+        // own — an artifact declares its capability set and the battery holds it to exactly that.
+        const pkg = TOKENIZERS_PKG[target];
+        if (!pkg) {
+          cells.push(
+            unresolvable({
+              native,
+              target,
+              pkg: '@anush008/tokenizers',
+              optional: spec.optional,
+              reason:
+                `@anush008/tokenizers@0.0.0 publishes no platform package for ${target} ` +
+                '(its optionalDependencies are darwin-universal, linux-x64-gnu, win32-x64-msvc), ' +
+                'so the embedding route is unavailable on this target under npm too',
+            })
+          );
+          break;
+        }
+        cells.push(
+          requireNpm({
+            native,
+            target,
+            pkg,
+            optional: spec.optional,
+            lock,
+            spec,
+            extract: { mode: 'package', from: null },
+            stageTo: (name) => `node_modules/${name}`,
+          })
+        );
+        break;
+      }
 
       case 'wreq-js':
         cells.push(
