@@ -7,6 +7,24 @@ import { CATALOG } from '../../../../../src/cli/tui/schema/catalog.js';
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// The DoctorScreen arm asserts one frame — "Running doctor diagnostic…" — and
+// never the diagnostic's result, but mounting the real screen used to start the
+// real `runDoctor`, whose Account section makes a live request. The arm returned
+// after 30ms and the connect landed several tests later, so the net fence blamed
+// whichever unrelated test was running at the time. Stub the module the screen
+// dynamically imports; nothing in this file wants the real checks.
+vi.mock('../../../../../src/cli/doctor.js', () => ({
+  // Stays pending until the screen unmounts, which is what the real diagnostic
+  // does for the ~30ms this arm observes.
+  runDoctor: vi.fn(async (_dataDir: string, opts?: { signal?: AbortSignal }) => {
+    await new Promise<void>((resolve) => {
+      if (opts?.signal === undefined || opts.signal.aborted) return resolve();
+      opts.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+    return 0;
+  }),
+}));
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
