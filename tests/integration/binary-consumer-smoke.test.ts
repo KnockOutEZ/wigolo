@@ -35,6 +35,8 @@ const WORKFLOW = new URL('../../.github/workflows/binary-release.yml', import.me
 const SMOKE_SH = new URL('./binary/consumer-smoke.sh', import.meta.url);
 const SMOKE_PS1 = new URL('./binary/consumer-smoke.ps1', import.meta.url);
 const CLEAN_PATH = new URL('./binary/clean-path.sh', import.meta.url);
+const RESOLVE_LATEST = new URL('./binary/resolve-latest.sh', import.meta.url);
+const INSTALL_SH = new URL('../../install.sh', import.meta.url);
 
 const workflowText = () => readFile(WORKFLOW, 'utf8');
 const workflow = async () => parseYaml(await workflowText()) as Record<string, any>;
@@ -150,6 +152,27 @@ function runScript(args: string[]): { code: number; output: string } {
 const runBattery = (exe: string) => runScript([SMOKE_SH.pathname, exe, SEMVER]);
 const runCleanPath = (base?: string) =>
   runScript([CLEAN_PATH.pathname, ...(base === undefined ? [] : [base])]);
+
+/**
+ * Drive the live-resolution leg with the feed and the asset host swapped for `file://` URLs.
+ * `curl` speaks `file://`, so install.sh runs its real sequence — lookup, parse, name the
+ * version, reach for the assets — against fixtures instead of against GitHub.
+ */
+function runResolveLatest(env: Record<string, string>): { code: number; output: string } {
+  const r = spawnSync('sh', [RESOLVE_LATEST.pathname, `file://${INSTALL_SH.pathname}`], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, ...env },
+  });
+  return { code: r.status ?? -1, output: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+}
+
+function latestFeed(body: string): string {
+  const dir = scratchDir();
+  const file = join(dir, 'latest.json');
+  writeFileSync(file, body);
+  return `file://${file}`;
+}
 
 const posix = process.platform !== 'win32';
 
@@ -353,4 +376,52 @@ describe('consumer-smoke.sh can actually go red — one mutant per guarantee', (
     expect(output).toContain('336');
     expect(output).toContain('consumer smoke green (1 deferred)');
   }, 200_000);
+});
+
+describe('resolve-latest.sh — the feed branch install.sh`s pinned leg never reaches', () => {
+  it('is the step with nothing pinned, or it would not be running that branch', async () => {
+    const job = await smokeJob();
+    const step = (job.steps as { name?: string; env?: Record<string, string>; run?: string }[]).find(
+      (s) => s.name?.includes('Resolve'),
+    );
+    expect(step?.run).toContain('resolve-latest.sh');
+    // The moment either of these appears here, `resolve_version` takes the other branch and
+    // this leg is a second copy of the one above it.
+    expect(step?.env?.WIGOLO_VERSION).toBeUndefined();
+    expect(step?.env?.WIGOLO_RELEASE_TAG).toBeUndefined();
+  });
+
+  it.skipIf(!posix)('passes when the feed names a version whose assets are not published', () => {
+    // The state the live leg is in today, and will stay in until a `v*.*.*` release carries
+    // binary assets: resolution worked, the artifacts for that tag do not exist.
+    const { code, output } = runResolveLatest({
+      WIGOLO_LATEST_URL: latestFeed('{"tag_name": "v9.9.9", "name": "9.9.9"}'),
+      WIGOLO_RELEASE_BASE: 'file:///nonexistent-release-host',
+    });
+    expect(code).toBe(0);
+    expect(output).toContain('latest resolved to 9.9.9 from the live feed');
+    expect(output).toContain('::notice::');
+  }, 130_000);
+
+  it.skipIf(!posix)('reds when the feed answers but names no tag', () => {
+    const { code, output } = runResolveLatest({
+      WIGOLO_LATEST_URL: latestFeed('{"message": "Not Found"}'),
+      WIGOLO_RELEASE_BASE: 'file:///nonexistent-release-host',
+    });
+    expect(code).toBe(1);
+    expect(output).toContain('::error::latest-release resolution broke');
+    expect(output).toContain('no tag_name');
+  }, 130_000);
+
+  it.skipIf(!posix)('reds when the feed cannot be reached at all, after one retry', () => {
+    // A feed outage is NOT the tolerated state. The tolerance is for a resolved version with
+    // no assets; an unreachable feed means the branch under test never ran.
+    const { code, output } = runResolveLatest({
+      WIGOLO_LATEST_URL: 'file:///nonexistent-feed/latest.json',
+      WIGOLO_RELEASE_BASE: 'file:///nonexistent-release-host',
+    });
+    expect(code).toBe(1);
+    expect(output).toContain('retrying once');
+    expect(output).toContain('the release feed did not answer, twice');
+  }, 130_000);
 });

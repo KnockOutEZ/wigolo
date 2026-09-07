@@ -384,6 +384,21 @@ jobs:
           sh tests/integration/binary/consumer-smoke.sh \
             "$HOME/.local/bin/wigolo" "${{ needs.plan.outputs.semver }}"
 
+      # LAST on the unix legs, and with NOTHING pinned. The step above has to pin the version
+      # and the tag — a prerelease on the binary-only channel is not what the feed's `latest`
+      # points at — so it never runs `resolve_version`'s feed branch. This runs exactly that
+      # branch against the real API, into a temporary root so whatever it resolves cannot
+      # disturb the artifact the battery just finished with.
+      - name: Resolve `latest` from the live release feed
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH="$(sh tests/integration/binary/clean-path.sh)"
+          export PATH
+          sh tests/integration/binary/resolve-latest.sh \
+            "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh"
+
       # One step, because the ORDER is the assertion: the interpreter has to be gone before
       # the artifact runs, and two steps would leave that ordering to a `needs`-free list.
       - name: Download, verify and run the win32 asset
