@@ -378,6 +378,11 @@ export function versionDrift(harvest, lock) {
   const drifted = [];
   for (const cell of harvest?.cells ?? []) {
     if (cell.version === null || cell.version === undefined) continue;
+    // Only STAGED cells can drift. An optional cell recorded as absent still carries the
+    // version the lockfile pinned when it was ATTEMPTED, and comparing that would fail a
+    // build over bytes the artifact does not contain — a false red on the degrade path the
+    // optionals exist to take. (Documents with no `status` are pre-staging cell lists.)
+    if (cell.status !== undefined && cell.status !== 'staged') continue;
     const entry = lockEntry(lock, cell.pkg);
     if (!entry) {
       drifted.push(`${cell.pkg}: harvested ${cell.version}, package-lock.json no longer contains "${lockKey(cell.pkg)}"`);
