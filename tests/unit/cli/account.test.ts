@@ -153,9 +153,11 @@ describe('wigolo register', () => {
     const code = await runAccountCommand('register', ['--json'], {
       dataDir,
       client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
-      // email, code, then an EMPTY line for the consent toggle: the default is Y
-      // (§5 pin 8), and "just pressed enter" is the answer that exercises it.
-      input: pipedStdin(['user@example.com', '654321', '']),
+      // email, code, then an explicit `y` for the consent toggle. It cannot be a
+      // bare newline any more: §0a.5 reversed the default to unticked, so Enter
+      // now means NO and this arm asserts `marketing_consent: true` below. The
+      // default itself gets its own arm.
+      input: pipedStdin(['user@example.com', '654321', 'y']),
       stderr: err.stream,
       stdout: out.stream,
       nowMs: now,
@@ -174,7 +176,7 @@ describe('wigolo register', () => {
     const text = err.text();
     expect(text).toContain('Check your email for the sign-in code.');
     expect(text).toContain(DISCLOSURE_TEXT);
-    expect(text).toContain('Send me occasional product updates by email? [Y/n]');
+    expect(text).toContain('Send me occasional product updates by email? [y/N]');
     expect(text).toContain('Account created.');
     expect(text).toContain('WIGOLO_TELEMETRY=off');
 
@@ -190,6 +192,32 @@ describe('wigolo register', () => {
     // --json house contract: exactly one document on stdout.
     const doc = JSON.parse(out.text().trim()) as Record<string, unknown>;
     expect(doc).toMatchObject({ status: 'ok', action: 'created', account_id: 'acct_221', marketing_consent: true });
+  });
+
+  it('treats a BARE ENTER on the consent toggle as NO (§0a.5, GDPR-valid)', async () => {
+    // WHY THIS ARM IS THE ONE THAT MATTERS. §5 pin 8 shipped this default as ON,
+    // and the consulting pass reversed it: consent has to be an affirmative act,
+    // so the answer nobody types is a refusal. A bare newline is exactly the
+    // "user pressed Enter to get past it" case, and it must reach the service as
+    // `false` — asserted on the WIRE, not just in local state, because the
+    // account row is what a marketing send would read.
+    const { fetchImpl, hits } = transport(okRoutes('v1.abcd1234.payload.sig'));
+    const err = sink();
+
+    const code = await runAccountCommand('register', [], {
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+      input: pipedStdin(['user@example.com', '654321', '']),
+      stderr: err.stream,
+      stdout: sink().stream,
+      nowMs: now,
+    });
+
+    expect(code).toBe(0);
+    expect(err.text()).toContain('[y/N]');
+    const verify = hits.find((h) => h.path === '/auth/verify');
+    expect(verify?.body).toMatchObject({ marketing_consent: false });
+    expect(new AccountStateStore(dataDir).read().marketing_consent).toBe(false);
   });
 
   it('carries the toggle ANSWER, not the default, when the user declines', async () => {
@@ -326,6 +354,118 @@ describe('wigolo register', () => {
 // ---------------------------------------------------------------------------
 // login
 // ---------------------------------------------------------------------------
+
+describe('wigolo register --headless (§0a.2)', () => {
+  it('stage one mails a code, prints the finishing command, and CREATES NOTHING', async () => {
+    // The half an unattended agent can do on its own. It must not create an
+    // account: the mailbox owner has not consented to anything yet, and
+    // `request-code` is the only call in the flow that carries no consent.
+    const { fetchImpl, hits } = transport(okRoutes('v1.abcd1234.payload.sig'));
+    const err = sink();
+    const out = sink();
+
+    const code = await runAccountCommand('register', ['--headless', '--email', 'agent@example.com', '--json'], {
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+      // NOTHING on stdin. A surviving prompt reads EOF and takes a failure
+      // branch, so `code === 0` is a real assertion that nothing asked.
+      input: pipedStdin([]),
+      stderr: err.stream,
+      stdout: out.stream,
+      nowMs: now,
+    });
+
+    expect(code).toBe(0);
+    // The disclosure is fetched and shown BEFORE the mail goes out, so the agent
+    // can relay the wording to the human who is about to be asked to consent.
+    expect(hits.map((h) => h.path)).toEqual(['/legal/telemetry-disclosure', '/auth/request-code']);
+    expect(err.text()).toContain(DISCLOSURE_TEXT);
+    // The exact command that finishes the job — an agent cannot guess a flag set.
+    expect(err.text()).toContain('wigolo register --headless --email agent@example.com --code <code>');
+
+    // NOTHING WAS CREATED. No verify, no entitlement, no state on disk.
+    expect(hits.some((h) => h.path === '/auth/verify')).toBe(false);
+    expect(new AccountStateStore(dataDir).read().account_id).toBeNull();
+
+    const doc = JSON.parse(out.text().trim()) as Record<string, unknown>;
+    expect(doc).toMatchObject({ status: 'ok', action: 'claim_pending', email: 'agent@example.com' });
+  });
+
+  it('stage two finishes with --code, asking nothing, and defaults consent to NO', async () => {
+    const { fetchImpl, hits } = transport(okRoutes('v1.abcd1234.payload.sig'));
+    const err = sink();
+
+    const code = await runAccountCommand(
+      'register',
+      ['--headless', '--email', 'user@example.com', '--code', '654321'],
+      {
+        dataDir,
+        client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+        input: pipedStdin([]),
+        stderr: err.stream,
+        stdout: sink().stream,
+        nowMs: now,
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(err.text()).toContain('Account created.');
+    // The code came from a flag, so no second `request-code` was spent on it.
+    expect(hits.map((h) => h.path)).toEqual([
+      '/legal/telemetry-disclosure',
+      '/auth/verify',
+      '/entitlements/token',
+    ]);
+    // §0a.5 in its headless form: an OMITTED flag is a refusal, not an omission.
+    expect(hits.find((h) => h.path === '/auth/verify')?.body).toMatchObject({
+      marketing_consent: false,
+    });
+    expect(new AccountStateStore(dataDir).read().marketing_consent).toBe(false);
+    // And it really did activate, rather than exiting 0 having done half a job.
+    expect(new AccountStateStore(dataDir).read().entitlement_token).toBe('v1.abcd1234.payload.sig');
+  });
+
+  it('sends consent only when --marketing-consent is passed explicitly', async () => {
+    const { fetchImpl, hits } = transport(okRoutes('v1.abcd1234.payload.sig'));
+    const code = await runAccountCommand(
+      'register',
+      ['--headless', '--email', 'user@example.com', '--code', '654321', '--marketing-consent'],
+      {
+        dataDir,
+        client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+        input: pipedStdin([]),
+        stderr: sink().stream,
+        stdout: sink().stream,
+        nowMs: now,
+      },
+    );
+    expect(code).toBe(0);
+    expect(hits.find((h) => h.path === '/auth/verify')?.body).toMatchObject({
+      marketing_consent: true,
+    });
+  });
+
+  it('refuses --headless without --email rather than blocking on a prompt', async () => {
+    // WHY: the whole promise of the flag is that nothing asks. With no address and
+    // no prompt there is no flow to run, and the failure has to name the missing
+    // flag — an agent reading "No email address given" would retry the same
+    // command forever.
+    const { fetchImpl, hits } = transport(okRoutes('v1.abcd1234.payload.sig'));
+    const err = sink();
+    const code = await runAccountCommand('register', ['--headless'], {
+      dataDir,
+      client: new AccountsClient({ baseUrl: BASE, fetchImpl }),
+      input: pipedStdin([]),
+      stderr: err.stream,
+      stdout: sink().stream,
+      nowMs: now,
+    });
+    expect(code).toBe(1);
+    expect(err.text()).toContain('--email');
+    expect(err.text()).toContain('--headless');
+    expect(hits).toEqual([]);
+  });
+});
 
 describe('wigolo login', () => {
   it('NEVER sends marketing_consent, and never fetches the full disclosure', async () => {
