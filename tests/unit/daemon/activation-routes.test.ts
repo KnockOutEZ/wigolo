@@ -1,19 +1,24 @@
 /**
- * The activation gate on the daemon's HTTP routes (PX2 mini-spec §3, issue #222).
+ * The daemon's HTTP routes on an UNREGISTERED install (PX brief §0a.1, issue #336).
  *
- * WHY THE CHECK IS IN `routeRequest` AND NOT IN `rest/dispatch.ts`. The
- * firecrawl-compat handlers do not go through `dispatchTool` — they call
- * `handleFetch` / `handleSearch` / `handleCrawl` directly. A gate inside dispatch
- * would therefore cover `/v1/{tool}` and leave `/compat/firecrawl/*` wide open,
- * with nothing in the diff to show for it. `routeRequest` is the one seam above
- * both, which is why the compat arm below is the load-bearing one: it is the
- * path a check placed one layer lower would silently miss.
+ * WHAT THIS FILE USED TO PIN. PX2 put an activation check in `routeRequest`, above
+ * both REST dispatchers, and every arm here asserted a structured 403 carrying the
+ * `never_activated` line — for `/v1/{tool}`, for the firecrawl-compat family that
+ * bypasses `dispatchTool`, and for `/v1/runs`. §0a.1 made the hard gate
+ * Studio-only, so the check is gone and each of those arms is inverted.
  *
- * The complement matters just as much. `/health` is a liveness probe, and
- * `/openapi.json`, `/v1/openapi.json` and `/v1/tools` execute no tool — gating
- * them would make an un-activated install unable to describe itself, which is the
- * REST equivalent of refusing `tools/list`. `/v1/runs*` was in that column for the
- * same reason until the run surface left core with the companion extraction.
+ * WHY THE COMPAT ARM IS STILL THE LOAD-BEARING ONE, JUST POINTING THE OTHER WAY.
+ * `/compat/firecrawl/*` calls `handleFetch` / `handleSearch` / `handleCrawl`
+ * directly and never passes through `rest/dispatch.ts`. A gate reintroduced in
+ * `routeRequest` — the only seam above both — would be invisible to an arm that
+ * only exercises `/v1/{tool}`, and equally invisible the other way round. Both
+ * families are swept, and the assertion is "not 403, and no refusal text
+ * anywhere in the body".
+ *
+ * The complement is unchanged and still asserted: `/health` is a liveness probe
+ * and the discovery routes describe the surface, so they were open under PX2 and
+ * are open now. Their arms exist to prove the sweep above is about the gate
+ * rather than about the whole server being broken.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
@@ -86,31 +91,37 @@ afterAll(async () => {
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 30000);
 
-describe('daemon routes — un-activated install', () => {
+/** No refusal line, and no `not_activated` code, anywhere in a response. */
+function expectUngated(r: { status: number; body: unknown }, what: string): void {
+  const whole = JSON.stringify(r.body);
+  expect({ what, status: r.status }).not.toEqual({ what, status: 403 });
+  expect(whole, `${what} carried the not_activated code`).not.toContain('not_activated');
+  for (const line of Object.values(ACTIVATION_REFUSALS)) {
+    expect(whole, `${what} rendered a refusal line`).not.toContain(line);
+  }
+}
+
+describe('daemon routes — unregistered install', () => {
   beforeEach(() => {
     // The temp data dir carries no account state, so the shipped disk-backed
-    // checker is the un-activated condition. Dropping any checker a sibling
+    // checker is the unregistered condition. Dropping any checker a sibling
     // file installed is what makes that true rather than assumed.
     setActivationChecker(null);
   });
 
-  it('refuses POST /v1/{tool} with the pinned line and a structured 403', async () => {
-    const r = await request('POST', '/v1/search', { query: 'anything' });
-    expect(r.status).toBe(403);
-    const body = r.body as { ok: boolean; error: string; error_reason: string };
-    expect(body.ok).toBe(false);
-    expect(body.error).toBe('not_activated');
-    expect(body.error_reason).toBe(ACTIVATION_REFUSALS.never_activated);
+  it('lets POST /v1/{tool} through to the tool with no account', async () => {
+    // Reaching the tool's OWN answer — not a 403 — is the whole of §0a.1 on this
+    // transport. Whether that answer is a result or a validation error is the
+    // tool's business; what matters is that the route stopped arbitrating.
+    const r = await request('POST', '/v1/search', {});
+    expectUngated(r, 'POST /v1/search');
   });
 
-  it('refuses the firecrawl-compat family — the handlers that bypass dispatchTool', async () => {
-    // This is the arm a gate inside `rest/dispatch.ts` would fail: /compat
-    // reaches handleScrape/handleSearch directly and never passes through it.
-    const r = await request('POST', '/compat/firecrawl/v1/scrape', {
-      url: 'https://example.invalid/',
-    });
-    expect(r.status).toBe(403);
-    expect((r.body as { error: string }).error).toBe('not_activated');
+  it('lets the firecrawl-compat family through — the handlers that bypass dispatchTool', async () => {
+    // The arm a gate reintroduced in `routeRequest` would fail even if `/v1` were
+    // somehow left alone: /compat reaches handleScrape/handleSearch directly.
+    const r = await request('POST', '/compat/firecrawl/v1/scrape', {});
+    expectUngated(r, 'POST /compat/firecrawl/v1/scrape');
   });
 
   it('leaves /health open — a liveness probe exposes no tool surface', async () => {
@@ -125,25 +136,32 @@ describe('daemon routes — un-activated install', () => {
     }
   });
 
-  it('refuses /v1/runs like any other unknown path — the run surface is not core\'s any more', async () => {
-    // It used to be the second ungated group, exempt because the run store reached no tool handler.
-    // The surface left core with the run layer, so the exemption left with it: what a client gets
-    // is the ordinary un-activated refusal, not a route that half-answers.
+  it('answers /v1/runs as an unknown path, not as a refusal', async () => {
+    // Under PX2 this path returned the activation 403, which made "the run surface
+    // left core" and "you have no account" indistinguishable to a client. With the
+    // gate gone it is simply a route that does not exist, which is the truth.
     const r = await request('POST', '/v1/runs', {});
-    expect(r.status).toBe(403);
+    expectUngated(r, 'POST /v1/runs');
   });
 });
 
-describe('daemon routes — activated install', () => {
+describe('daemon routes — registered install', () => {
   let restore: () => void;
   beforeEach(() => { restore = installActivated(); });
   afterEach(() => { restore(); });
 
-  it('lets a tool route through to its own validation instead of the refusal', async () => {
-    // The proof that the 403s above are the GATE and not the route being broken:
-    // the identical request now reaches the tool's input validation.
-    const r = await request('POST', '/v1/search', {});
-    expect(r.status).not.toBe(403);
-    expect(JSON.stringify(r.body)).not.toContain(ACTIVATION_REFUSALS.never_activated);
+  it('answers a tool route IDENTICALLY to the unregistered one', async () => {
+    // THE OUTSIDE SIGNAL. On its own, "the unregistered call was not a 403" could
+    // mean the route is broken for everybody. Running the identical request with a
+    // real activated fixture and getting the same status is what makes the arms
+    // above a statement about the gate: registration changed nothing here, which
+    // is exactly §0a.1's claim.
+    const registered = await request('POST', '/v1/search', {});
+    expect(registered.status).not.toBe(403);
+    expect(JSON.stringify(registered.body)).not.toContain('not_activated');
+
+    setActivationChecker(null);
+    const unregistered = await request('POST', '/v1/search', {});
+    expect(unregistered.status).toBe(registered.status);
   });
 });
