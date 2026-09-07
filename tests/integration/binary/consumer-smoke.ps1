@@ -112,11 +112,15 @@ if ($declared -ne $Semver) {
 # ---------------------------------------------------------------------------
 # G5 — the executable's own answer.
 # ---------------------------------------------------------------------------
+# `wigolo --version` answers `wigolo <semver>`, so the version is the last field rather than
+# the whole line.
+function Get-ReportedSemver([string]$text) { (($text.Trim() -split '\s+') | Select-Object -Last 1) }
+
 $r = Invoke-Artifact $exe @('--version')
 if ($r.Code -ne 0) {
   Fail 'G5' 'versioned' "``wigolo --version`` exited $($r.Code): $($r.Text)"
-} elseif ($r.Text.Trim() -ne $Semver) {
-  Fail 'G5' 'versioned' "``wigolo --version`` says '$($r.Text.Trim())', the release published $Semver"
+} elseif ((Get-ReportedSemver $r.Text) -ne $Semver) {
+  Fail 'G5' 'versioned' "``wigolo --version`` printed '$($r.Text.Trim())', the release published $Semver"
 } else {
   Pass 'G5' "--version says $Semver"
 }
@@ -131,8 +135,8 @@ $relocExe = Join-Path $reloc 'wigolo\bin\wigolo.exe'
 $r = Invoke-Artifact $relocExe @('--version')
 if ($r.Code -ne 0) {
   Fail 'G1' 'relocatable' "the relocated copy would not start: $($r.Text)"
-} elseif ($r.Text.Trim() -ne $Semver) {
-  Fail 'G1' 'relocatable' "the relocated copy says '$($r.Text.Trim())', not $Semver"
+} elseif ((Get-ReportedSemver $r.Text) -ne $Semver) {
+  Fail 'G1' 'relocatable' "the relocated copy printed '$($r.Text.Trim())', not $Semver"
 } else {
   Pass 'G1' 'runs from a relocated copy under a path with a space'
 }

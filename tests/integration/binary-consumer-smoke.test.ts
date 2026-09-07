@@ -59,7 +59,7 @@ function scratchDir(): string {
  * to one arm of the battery, so a mutant is a one-flag change rather than a rewritten stub.
  */
 interface StubOptions {
-  /** What `--version` prints. Default: the semver the battery is told to expect. */
+  /** The semver `--version` reports, in the CLI's real `wigolo <semver>` shape. */
   readonly version?: string;
   /** Bake the tree's original location in, so a relocated copy refuses to start. */
   readonly pinnedToItsOriginalPath?: boolean;
@@ -105,7 +105,7 @@ ${pin}
 
 case "\${1:-}" in
   --version)
-    echo "${version}"
+    echo "wigolo ${version}"
     ;;
   mcp)
 ${banner}    while IFS= read -r line; do
@@ -304,7 +304,7 @@ describe('consumer-smoke.sh can actually go red — one mutant per guarantee', (
     const { code, output } = runBattery(stubArtifact({ version: '0.0.1' }));
     expect(code).toBe(1);
     expect(output).toContain('::error::guarantee G5 (versioned) broke');
-    expect(output).toContain("says '0.0.1'");
+    expect(output).toContain("printed 'wigolo 0.0.1'");
   }, 200_000);
 
   it.skipIf(!posix)('G1 — reds when the tree only works from where it was unpacked', () => {

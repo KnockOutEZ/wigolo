@@ -74,12 +74,17 @@ trap cleanup EXIT INT TERM
 # G5 — versioned. The VERSION file inside the archive is what install.sh checked; this is
 # the executable's own answer, which is the one a user ever sees.
 # ---------------------------------------------------------------------------
+# `wigolo --version` answers `wigolo <semver>`, so the version is the last field rather than
+# the whole line. Reported back in full on a mismatch — "says '0.0.1'" is actionable, "says
+# 'wigolo0.0.1'" is a bug report about this file.
+reported_semver() { awk 'NR == 1 { print $NF }' "$1"; }
+
 if run_capture "$TMP/version.txt" "$EXE" --version; then
-  got="$(tr -d ' \r' < "$TMP/version.txt" | head -n 1)"
+  got="$(reported_semver "$TMP/version.txt")"
   if [ "$got" = "$WANT_SEMVER" ]; then
     pass G5 "--version says $got"
   else
-    fail G5 versioned "\`wigolo --version\` says '$got', the release published $WANT_SEMVER"
+    fail G5 versioned "\`wigolo --version\` printed '$(head -n 1 "$TMP/version.txt")', the release published $WANT_SEMVER"
   fi
 else
   fail G5 versioned "\`wigolo --version\` exited non-zero: $(head -c 400 "$TMP/version.txt")"
@@ -95,11 +100,11 @@ RELOC="$TMP/a moved/place"
 mkdir -p "$RELOC"
 cp -R "$ROOT" "$RELOC/wigolo"
 if run_capture "$TMP/reloc.txt" "$RELOC/wigolo/bin/wigolo" --version; then
-  got="$(tr -d ' \r' < "$TMP/reloc.txt" | head -n 1)"
+  got="$(reported_semver "$TMP/reloc.txt")"
   if [ "$got" = "$WANT_SEMVER" ]; then
     pass G1 "runs from a relocated copy under a path with a space"
   else
-    fail G1 relocatable "the relocated copy says '$got', not $WANT_SEMVER"
+    fail G1 relocatable "the relocated copy printed '$(head -n 1 "$TMP/reloc.txt")', not $WANT_SEMVER"
   fi
 else
   fail G1 relocatable "the relocated copy would not start: $(head -c 400 "$TMP/reloc.txt")"
@@ -198,12 +203,26 @@ fi
 # quietly on all three.
 # ---------------------------------------------------------------------------
 if [ "$(uname -s)" = "Linux" ]; then
-  if run_capture "$TMP/offline.txt" unshare -rn "$EXE" --version; then
-    got="$(tr -d ' \r' < "$TMP/offline.txt" | head -n 1)"
+  # Two ways in, because neither is available everywhere. `unshare -rn` needs unprivileged
+  # user namespaces, which Ubuntu 24.04 (and the GitHub image built on it) restricts by
+  # AppArmor — it fails with `write failed /proc/self/uid_map: Operation not permitted`, a
+  # refusal from the sandbox rather than from the artifact. `sudo unshare -n` needs a
+  # passwordless sudo, which a CI runner has and a developer's laptop may not. The sudo runs
+  # BEFORE the namespace exists, so it is not itself inside the network cut.
+  OFFLINE_HOME="$TMP/offline-home"
+  mkdir -p "$OFFLINE_HOME"
+  if sudo -n true 2>/dev/null; then
+    set -- sudo -n unshare -n env HOME="$OFFLINE_HOME" "$EXE" --version
+  else
+    set -- unshare -rn env HOME="$OFFLINE_HOME" "$EXE" --version
+  fi
+
+  if run_capture "$TMP/offline.txt" "$@"; then
+    got="$(reported_semver "$TMP/offline.txt")"
     if [ "$got" = "$WANT_SEMVER" ]; then
       pass G2 "answers with no network namespace at all"
     else
-      fail G2 "offline-first" "with no network it says '$got', not $WANT_SEMVER"
+      fail G2 "offline-first" "with no network it printed '$(head -n 1 "$TMP/offline.txt")', not $WANT_SEMVER"
     fi
   else
     fail G2 "offline-first" "with no network it would not start: $(head -c 400 "$TMP/offline.txt")"
