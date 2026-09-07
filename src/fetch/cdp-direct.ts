@@ -93,6 +93,8 @@ const ISOLATED_WORLD_NAME = 'wigolo_cdp_direct';
 // skips module resolution — `chrome-remote-interface` is an optionalDependency
 // and may be absent on `npm install --omit=optional`. The dynamic import still
 // throws at runtime when absent; we catch it and degrade to `null`.
+//
+// ⚠ NOT the specifier the `import()` below uses — see the comment there.
 const CRI_MODULE_ID: string = 'chrome-remote-interface';
 
 interface CriModuleShape {
@@ -129,7 +131,20 @@ export async function loadCRI(): Promise<CriFactory | null> {
   if (_criPromise) return _criPromise;
   _criPromise = (async () => {
     try {
-      const mod = (await import(CRI_MODULE_ID)) as CriModuleShape;
+      // ⚠ Specifier spelled INLINE, not via CRI_MODULE_ID — a bundler drops a
+      // variable specifier with no warning, which would remove the direct-CDP
+      // rung from the packaged binary only. Same rule as `browser-driver.ts`.
+      //
+      // The suppression is the cost of that inline specifier: `chrome-remote-interface`
+      // ships no types and has no `@types/` package, so naming it literally is a TS7016
+      // where naming it through a `string` was not. `@ts-expect-error` rather than
+      // `@ts-ignore` on purpose — it goes red the day upstream ships types, which is
+      // when this line should be deleted rather than left as permanent scar tissue.
+      // The shape is asserted below regardless: `typeof factory !== 'function'` degrades
+      // to `null`, so nothing here trusts the compiler's opinion of this module.
+      // @ts-expect-error — untyped package; the literal specifier is what a bundler can see.
+      const imported: unknown = await import('chrome-remote-interface');
+      const mod = imported as CriModuleShape;
       const factory = (mod.default ?? mod) as unknown;
       if (typeof factory !== 'function') {
         log.debug('chrome-remote-interface present but no callable export; degrading');

@@ -217,6 +217,8 @@ interface PatchrightModuleShape {
 // Held as a non-literal string so the compiler skips module resolution — the
 // package lives in optionalDependencies and may be absent (keyless installs,
 // `npm install --omit=optional`, or a platform with no patched browser).
+//
+// ⚠ NOT the specifier the `import()` below uses — see the comment there.
 const PATCHRIGHT_MODULE_ID: string = 'patchright';
 
 let _driverPromise: Promise<StealthDriverLauncher | null> | null = null;
@@ -246,7 +248,12 @@ export async function loadStealthDriver(): Promise<StealthDriverLauncher | null>
   if (_driverPromise) return _driverPromise;
   _driverPromise = (async () => {
     try {
-      const mod = (await import(PATCHRIGHT_MODULE_ID)) as PatchrightModuleShape;
+      // ⚠ Specifier spelled INLINE, not via PATCHRIGHT_MODULE_ID. A bundler
+      // silently drops a variable specifier, which would delete this rung of
+      // the anti-bot ladder from the packaged binary alone — the failure mode
+      // is a capability that is present everywhere it is tested and absent
+      // where it ships. Same rule as `browser-driver.ts`.
+      const mod = (await import('patchright')) as unknown as PatchrightModuleShape;
       const chromium = mod.chromium ?? mod.default?.chromium;
       if (!chromium || typeof chromium.launch !== 'function') {
         log.debug('stealth driver present but missing a chromium launcher, falling back');
