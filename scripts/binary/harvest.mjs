@@ -46,6 +46,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { readManifest, REPO_ROOT } from './manifest.mjs';
 import { resolveCells, versionDrift } from './cells.mjs';
@@ -367,7 +368,26 @@ async function main() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+/**
+ * Is this module the process entry, rather than an import from a test or from BIN-3?
+ *
+ * `fileURLToPath`, never `new URL(url).pathname`. The pathname is the URL-ENCODED path: a
+ * checkout under `~/My Projects/` gives `/Users/.../My%20Projects/...`, which never equals
+ * `path.resolve(argv[1])`, so `main()` is not called, nothing is harvested, and the process
+ * exits 0 — a build step that reports success having produced no staging dir. On win32 the
+ * pathname additionally carries a leading slash before the drive letter (`/C:/...`), so the
+ * comparison is false for EVERY invocation on the one target whose harvest cannot be
+ * re-checked on a unix build host.
+ *
+ * @param {string|undefined} argv1 `process.argv[1]`
+ * @param {string} moduleUrl `import.meta.url`
+ */
+export function isMainModule(argv1, moduleUrl) {
+  if (!argv1) return false;
+  return path.resolve(argv1) === fileURLToPath(moduleUrl);
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
   main().catch((err) => {
     console.error(`\n${err?.message ?? err}`);
     process.exitCode = 1;

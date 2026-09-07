@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { harvestTarget, describeTarget, checkIntegrity } from '../../../scripts/binary/harvest.mjs';
+import { harvestTarget, describeTarget, checkIntegrity, isMainModule } from '../../../scripts/binary/harvest.mjs';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { versionDrift } from '../../../scripts/binary/cells.mjs';
 
@@ -366,5 +367,38 @@ describe('describeTarget answers "does every target resolve?" with no network', 
       expect(rows.filter((r: { unresolvable: string | null; optional: boolean }) => r.unresolvable && !r.optional), target).toEqual([]);
       expect(rows.length, target).toBeGreaterThanOrEqual(6);
     }
+  });
+});
+
+describe('the CLI entry guard — the shape that reports success having produced nothing', () => {
+  /*
+   * `harvest.mjs` is BOTH a module BIN-3 imports and a command a build step runs, so it needs
+   * an is-this-the-entry check. The obvious spelling of that check —
+   * `path.resolve(new URL(import.meta.url).pathname)` — compares a decoded path to an ENCODED
+   * one, and there is no error path: `main()` simply is not called, nothing is fetched, and the
+   * process exits 0. A harvest step that exits 0 with no staging dir is strictly worse than one
+   * that throws, because the compile slice after it fails somewhere else entirely.
+   *
+   * Both arms below are host-reproducible on any platform: a space in the checkout path is all
+   * it takes. win32 is the harsher case (its pathname carries a leading slash before the drive
+   * letter, so EVERY invocation misses) and is exactly the target no unix build host re-checks.
+   */
+  it('matches when the module URL encodes a character the path spells literally', () => {
+    const dir = join(work, 'entry guard');
+    mkdirSync(dir, { recursive: true });
+    const script = join(dir, 'harvest.mjs');
+    writeFileSync(script, '');
+    const url = pathToFileURL(script).href;
+
+    expect(url).toContain('%20');
+    expect(isMainModule(script, url)).toBe(true);
+    // The spelling this replaced, shown failing on the same inputs.
+    expect(resolve(new URL(url).pathname)).not.toBe(resolve(script));
+  });
+
+  it('does not claim to be the entry when a different script was invoked', () => {
+    const url = pathToFileURL(join(work, 'harvest.mjs')).href;
+    expect(isMainModule(join(work, 'other.mjs'), url)).toBe(false);
+    expect(isMainModule(undefined, url)).toBe(false);
   });
 });
