@@ -64,10 +64,14 @@ describe('wigolo/companion-stages loads from a packed tarball', () => {
       // npm tarballs unpack to a `package/` root. Installing it as `node_modules/wigolo` is what
       // puts the probe on the package's own `exports` map — a bare path import would bypass it
       // and prove nothing about the subpath.
-      // `tar` needs no `npmInvocation` treatment: unlike `npm`, it is a real executable on all
-      // three platforms — bsdtar lives in System32 on Windows — and libuv's PATH search appends
-      // `.exe` for exactly that case. It is the `.cmd` shims that it cannot find.
-      execFileSync('tar', ['-xzf', join(work, tarballs[0]), '-C', work], { stdio: 'pipe' });
+      // `tar` itself resolves fine on all three platforms — unlike `npm` it is a real
+      // executable, and libuv's PATH search appends `.exe`. What is NOT portable is handing it
+      // an ABSOLUTE Windows path: the runner's PATH picks up GNU tar, which reads the `C:` in
+      // `C:\Users\…` as a remote `host:path` and dies with `Cannot connect to C: resolve
+      // failed`. So the archive is named RELATIVELY with `cwd` doing the work of `-C`. That is
+      // correct for both flavours — a name with no colon is local to GNU tar and to bsdtar
+      // alike — where `--force-local` would fix GNU tar and break the bsdtar on macOS.
+      execFileSync('tar', ['-xzf', tarballs[0]], { cwd: work, stdio: 'pipe' });
       const consumer = join(work, 'consumer');
       const consumerModules = join(consumer, 'node_modules');
       mkdirSync(consumerModules, { recursive: true });
