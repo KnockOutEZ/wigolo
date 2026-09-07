@@ -53,7 +53,12 @@ describe('DoctorScreen', () => {
     runDoctorMock.mockResolvedValue(0);
     render(<DoctorScreen onBack={() => {}} />);
     await wait(40);
-    expect(runDoctorMock).toHaveBeenCalledWith('/tmp/wigolo-dt');
+    // The second argument is the run's cancellation — see
+    // tests/unit/cli/tui/doctor-screen-abort.test.tsx for what it must do.
+    expect(runDoctorMock).toHaveBeenCalledWith(
+      '/tmp/wigolo-dt',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('shows the OK summary when runDoctor returns 0', async () => {
