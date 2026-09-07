@@ -1,15 +1,27 @@
 /**
- * PX2 RC exit gate, every arm (mini-spec §13): a fresh install demands
- * registration, completes it against a locally-run accounts service, runs all
- * ten tools with nothing leaving this machine, sends zero telemetry when
- * telemetry is off, and refuses once a non-perpetual entitlement falls out of
- * both its own validity window and the fourteen-day grace.
+ * PX2-R RC exit gate, every arm (mini-spec §13, amended by PX brief §0a.1-5):
+ * a fresh install RUNS ALL TEN TOOLS UNREGISTERED, nudges once and never again,
+ * completes registration against a locally-run accounts service both
+ * interactively and headlessly, runs all ten tools with nothing leaving this
+ * machine, sends zero telemetry when telemetry is off, and KEEPS RUNNING once a
+ * non-perpetual entitlement falls out of both its own validity window and the
+ * fourteen-day grace.
+ *
+ * WHAT §0a INVERTED, AND WHY THE ARMS DID NOT SIMPLY GO AWAY. PX2's gate arms
+ * asserted a refusal at every one of those points. The CEO consulting pass of
+ * 2026-09-03 made the hard gate Studio-only, so each refusal became its
+ * opposite — but the FIXTURE is what was expensive and what was load-bearing,
+ * not the assertion. A packed tarball installed from disk, a real Postgres
+ * cluster, a real accounts service on a back-dated clock: that apparatus is the
+ * only thing in the tree that can say "an actually-shipped install, with an
+ * actually-expired entitlement, still runs". So the arms keep their fixtures and
+ * flip their claims.
  *
  * The whole file is one sequence on purpose. Each arm's precondition is the
- * previous arm's outcome — an install that has not refused has not proven it was
- * fresh, and tools that run before registration would prove the opposite of the
- * gate — so splitting them across files would mean re-paying a multi-minute
- * install to assert something the previous file already established.
+ * previous arm's outcome — the unregistered arms must run before registration or
+ * they are testing a registered install — so splitting them across files would
+ * mean re-paying a multi-minute install to assert something the previous file
+ * already established.
  *
  * ORDER IS LOAD-BEARING AT THE TAIL. The telemetry arm needs a healthy activated
  * install, and the grace arm ENDS with one that is deliberately expired and a
@@ -56,9 +68,29 @@ import { startMcpSession, TEN_TOOLS, type McpSession } from './rc-mcp-client.js'
 
 if (RC_GATE_DISABLED) console.warn(RC_GATE_SKIP_NOTICE);
 
-/** The refusal a never-activated install must give, verbatim (`src/account/gate.ts`). */
+/** The refusal a never-activated install must NEVER give in core, verbatim
+ *  (`src/account/gate.ts`). Restated rather than imported for the same reason as
+ *  `GRACE_MS` below: these arms drive an INSTALLED tarball. */
 const NEVER_ACTIVATED_LINE =
   'wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).';
+
+/** The first line of the single registration nudge (`src/account/unlocks.ts`). */
+const NUDGE_LEAD_LINE = 'wigolo runs fully without an account — registering only adds to it.';
+
+/** The unlock list the footer and first-run output must carry (`src/account/unlocks.ts`). */
+const UNLOCK_LINES = [
+  'sync — your cache, settings and watches across machines',
+  'marketplace — publish and install skills and plugins',
+  'higher pacing and watch limits',
+  'managed cloud runs, when they land',
+];
+
+/** The telemetry claim, verbatim per PX brief §0a.4. */
+const TELEMETRY_CLAIM_LINE =
+  'no page content, URLs, or credentials leave your machine; usage stats do, off with one flag';
+
+/** `NUDGE_AFTER_RUNS` in `src/account/nudge.ts`, restated for the same reason. */
+const NUDGE_AFTER_RUNS = 5;
 
 /** The changelog fixture's two bodies. `diff` is handed both, so the change is real. */
 const CHANGELOG_V1 = 'Version one of this page.';
@@ -117,6 +149,7 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
   let tarball: PackedTarball;
   let full: FreshInstall;
   let omitOptional: FreshInstall;
+  let headless: FreshInstall;
 
   /** Set on every arm, so a forgotten variable reds instead of reaching a real host. */
   let env: Record<string, string>;
@@ -172,35 +205,68 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     }
   }, 300_000);
 
-  it('refuses the first tool run before registration, naming `wigolo register`', async () => {
+  it('runs the first tool on a fresh install with no account at all', async () => {
+    // THE SENTENCE §0a.1 TURNS ON, measured on a real installed tarball. PX2's
+    // version of this arm asserted exit 1 and the refusal line at exactly this
+    // point in the sequence.
     const result = await runCli(full, ['cache', '--stats'], { env });
 
-    expect(result.code).toBe(1);
-    expect(result.combined).toContain(NEVER_ACTIVATED_LINE);
+    expect(result.code, `a fresh install refused its first tool run:\n${result.combined}`).toBe(0);
+    expect(result.combined).not.toContain(NEVER_ACTIVATED_LINE);
+    // Run one of five: far too early for the nudge, which is asserted below.
+    expect(result.combined).not.toContain(NUDGE_LEAD_LINE);
     record('arm 2 — first tool run, unregistered (CLI)', `$ wigolo cache --stats\n${result.combined}`);
   }, 300_000);
 
-  it('refuses every one of the ten tools over MCP before registration', async () => {
+  it('runs every one of the ten tools over MCP before registration', async () => {
     const session = await startMcpSession(full, env);
     try {
-      // The server serves the protocol and refuses per call (A-212-2), so a
-      // successful handshake here is part of the assertion, not a precondition.
       const listed = await session.listTools();
       for (const tool of TEN_TOOLS) expect(listed).toContain(tool);
 
-      const refusals: string[] = [];
+      const outcomes: string[] = [];
       for (const tool of TEN_TOOLS) {
         const outcome = await session.call(tool, minimalArgs(tool, site.url));
-        expect(outcome.text, `${tool} must refuse before registration`).toContain(
+        // The exit gate's clause is that all ten RUN unregistered. Whether each
+        // one's own answer is a result or an input complaint is arm 4's business
+        // — here the claim is only that no account was asked for.
+        expect(outcome.text, `${tool} refused before registration`).not.toContain(
           NEVER_ACTIVATED_LINE,
         );
-        refusals.push(`${tool}: ${outcome.text.split('\n')[0]}`);
+        expect(outcome.text.length, `${tool} returned nothing`).toBeGreaterThan(0);
+        outcomes.push(`${tool}: ${outcome.text.split('\n')[0]}`);
       }
-      record('arm 2 — all ten tools refused over MCP, unregistered', refusals.join('\n'));
+      record('arm 2 — all ten tools RUN over MCP, unregistered', outcomes.join('\n'));
     } finally {
       await session.stop();
     }
   }, 600_000);
+
+  it('nudges ONCE about registration, with the unlock list, and never again', async () => {
+    // §0a.2/3 on a real install. `cache --stats` is used because it succeeds from
+    // local state alone, so "N successful runs" is reached deterministically and
+    // the arm is not measuring the fixture site or the stub engine.
+    //
+    // The counter already carries the arms above, so the loop drives a generous
+    // margin past N rather than counting to it exactly — what is being asserted
+    // is "exactly one nudge across many runs", which is stronger than "on run N"
+    // and is the clause §0a.2 actually pins ("never repeated").
+    const seen: string[] = [];
+    for (let i = 0; i < NUDGE_AFTER_RUNS * 2; i += 1) {
+      const r = await runCli(full, ['cache', '--stats'], { env });
+      expect(r.code, `run ${i + 1} failed:\n${r.combined}`).toBe(0);
+      if (r.combined.includes(NUDGE_LEAD_LINE)) seen.push(r.combined);
+    }
+
+    expect(seen.length, `the nudge fired ${seen.length} times across ${NUDGE_AFTER_RUNS * 2} runs`).toBe(1);
+    const nudge = seen[0];
+    expect(nudge).toContain('wigolo register');
+    // §0a.3: the unlock LIST, not merely an invitation to register.
+    for (const unlock of UNLOCK_LINES) expect(nudge).toContain(unlock);
+    // §0a.4: the claim, in the pinned wording, where the user is deciding.
+    expect(nudge).toContain(TELEMETRY_CLAIM_LINE);
+    record('arm 2b — the single registration nudge', nudge);
+  }, 900_000);
 
   it('completes registration through the installed binary, with the code from the dev outbox', async () => {
     const result = await runCli(full, ['register', '--email', EMAIL], {
@@ -212,8 +278,10 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
       onStarted: async (_child, write) => {
         const code = await readOutboxCode(service.dataDir, EMAIL);
         write(code);
-        // The consent prompt defaults Y; answering it explicitly keeps the arm
-        // independent of that default.
+        // §0a.5 reversed the marketing-consent default to unticked, so this
+        // prompt is now `[y/N]`. The arm answers it EXPLICITLY, which is what
+        // keeps it independent of the default in either direction — and the
+        // default itself gets its own arm below, driven with a bare newline.
         write('y');
       },
     });
@@ -235,6 +303,52 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
       expect.objectContaining({ type: 'perpetual', expires: null }),
     );
   }, 600_000);
+
+  it('registers headlessly — the agent-assisted path, with no prompt anywhere', async () => {
+    // §0a.2's second half, on a separate install so the sequence's own account is
+    // untouched. STAGE ONE creates nothing: it asks the service to mail the human,
+    // prints the exact command that finishes the job, and exits 0 with no prompt.
+    headless = await installTarball(tarball.path);
+    const email = 'px2-rc-headless@example.test';
+
+    const started = await runCli(headless, ['register', '--headless', '--email', email], { env });
+    expect(started.code, `headless stage one failed:\n${started.combined}`).toBe(0);
+    expect(started.combined).toContain(email);
+    expect(started.combined).toContain('--code');
+    // Nothing exists yet: no account state was written by asking for a code.
+    expect(await readStateOrNull(headless)).toBeNull();
+
+    // STAGE TWO: the human hands over the code, the agent finishes. No stdin is
+    // written at any point in this arm and `runCli` ends the pipe immediately, so
+    // any surviving prompt reads EOF, takes the "nothing given" branch and exits
+    // 1 — which is what makes `code === 0` a real assertion that nothing asked.
+    const code = await readOutboxCode(service.dataDir, email);
+    const finished = await runCli(
+      headless,
+      ['register', '--headless', '--email', email, '--code', code],
+      { env },
+    );
+    expect(finished.code, `headless stage two failed:\n${finished.combined}`).toBe(0);
+    expect(finished.combined).toContain('Account created.');
+
+    const state = await readState(headless);
+    expect(state.email).toBe(email);
+    expect(state.entitlement_token).toMatch(/^v1\./);
+    // §0a.5: no `--marketing-consent` was passed, so consent is NO. An omitted
+    // flag defaulting to yes is exactly the GDPR-invalid shape §0a.5 reversed.
+    expect(state['marketing_consent']).toBe(false);
+
+    // And the unlocked install runs, which is the point of unlocking anything.
+    const ran = await runCli(headless, ['cache', '--stats'], { env });
+    expect(ran.code).toBe(0);
+
+    record(
+      'arm 3b — headless registration',
+      `$ wigolo register --headless --email ${email}\n${started.combined}\n` +
+        `$ wigolo register --headless --email ${email} --code <code>\n${finished.combined}\n` +
+        `marketing_consent persisted as: ${String(state['marketing_consent'])}`,
+    );
+  }, 900_000);
 
   it('records which credential-custody tier actually ran on the full install', async () => {
     const result = await runCli(full, ['whoami'], { env });
@@ -387,9 +501,9 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
   it('forces the encrypted-file custody tier on an --omit=optional install and still registers and runs a tool', async () => {
     omitOptional = await installTarball(tarball.path, { omitOptional: true });
 
-    const refused = await runCli(omitOptional, ['cache', '--stats'], { env });
-    expect(refused.code).toBe(1);
-    expect(refused.combined).toContain(NEVER_ACTIVATED_LINE);
+    const unregistered = await runCli(omitOptional, ['cache', '--stats'], { env });
+    expect(unregistered.code, `an --omit=optional install refused unregistered:\n${unregistered.combined}`).toBe(0);
+    expect(unregistered.combined).not.toContain(NEVER_ACTIVATED_LINE);
 
     const email = 'px2-rc-omit@example.test';
     const registered = await runCli(omitOptional, ['register', '--email', email], {
@@ -416,7 +530,7 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
       'arm 1b — --omit=optional install',
       `custody tier: ${custody.tier} (keychainAvailable()=${custody.keychainAvailable}, ` +
         `readRefreshToken().location=${String(custody.location)})\n\n` +
-        `$ wigolo cache --stats (unregistered)\n${refused.combined}\n` +
+        `$ wigolo cache --stats (unregistered)\n${unregistered.combined}\n` +
         `\n$ wigolo register --email ${email}\n${registered.combined}` +
         `\n$ wigolo cache --stats (registered) → exit ${ran.code}`,
     );
@@ -493,7 +607,7 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     );
   }, 1_800_000);
 
-  it('refuses when a non-perpetual entitlement is out of BOTH its validity window and grace, while a perpetual one survives the identical clock', async () => {
+  it('KEEPS RUNNING when a non-perpetual entitlement is out of BOTH its validity window and grace, while the gate seam still calls it expired', async () => {
     // ---- move the service's clock, not the assertion ----------------------------------
     //
     // Revoking the grant and ageing `last_refresh_at` is NOT sufficient on its own: the
@@ -582,16 +696,30 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     expect(Date.parse(expiredPayload.valid_until)).toBeLessThan(Date.now());
     expect(Date.now() - Date.parse(expiredState.last_refresh_at ?? '')).toBeGreaterThan(GRACE_MS);
 
-    const refusedRun = await runCli(full, ['cache', '--stats'], { env });
-    expect(refusedRun.code).toBe(1);
-    expect(refusedRun.combined).toContain(EXPIRED_LINE);
-    // WHICH refusal fired is the whole arm. `never_activated` is step 1/2 and would mean the
-    // state or the signature broke — an earlier clause answering in step 6's place.
+    // ---- the two halves of §0a.1, on the sharpest fixture the suite can build ----------
+    //
+    // (a) CORE DOES NOT REFUSE. Under PX2 this exact command exited 1 with EXPIRED_LINE.
+    const expiredRun = await runCli(full, ['cache', '--stats'], { env });
     expect(
-      refusedRun.combined,
-      'the install refused as never-activated, so the state or the pinned key broke rather ' +
-        'than the entitlement expiring',
-    ).not.toContain(NEVER_ACTIVATED_LINE);
+      expiredRun.code,
+      `an expired entitlement stopped core from running:\n${expiredRun.combined}`,
+    ).toBe(0);
+    expect(expiredRun.combined).not.toContain(EXPIRED_LINE);
+    expect(expiredRun.combined).not.toContain(NEVER_ACTIVATED_LINE);
+
+    // (b) THE SEAM STILL WORKS, AND STILL SAYS `expired`. This is the half that would
+    // otherwise rot silently: §0a.1 keeps `requireActivation` because Studio and the
+    // unlock story consume it, so a core that stopped refusing must NOT be a core whose
+    // gate stopped evaluating. `whoami` renders the decision, and WHICH answer it gives
+    // is the whole point — "not activated" would mean the state or the pinned key broke
+    // rather than the entitlement expiring, an earlier clause answering in step 6's place.
+    const seam = await runCli(full, ['whoami'], { env });
+    expect(seam.code).toBe(0);
+    expect(
+      seam.combined,
+      `the gate seam did not report an expired activation:\n${seam.combined}`,
+    ).toContain('expired');
+    expect(seam.combined).not.toContain('not activated');
 
     // ---- restore: the same binary, the same clock, the perpetual state back -------------
     await writeState(full, perpetualState);
@@ -610,7 +738,8 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
         `  $ wigolo cache --stats → exit ${perpetualRun.code} (PASSES, brief §3)\n\n` +
         `after raw SQL revoke + subscription insert — live grants ${JSON.stringify(liveGrants)}\n` +
         `  grants=${JSON.stringify(expiredPayload.grants)}, valid_until ${expiredPayload.valid_until}\n` +
-        `  $ wigolo cache --stats → exit ${refusedRun.code}\n${refusedRun.combined.trim()}\n\n` +
+        `  $ wigolo cache --stats → exit ${expiredRun.code} (RUNS, §0a.1)\n${expiredRun.combined.trim()}\n` +
+        `  $ wigolo whoami → activation reported as expired by the surviving seam\n${seam.combined.trim()}\n\n` +
         `restore (perpetual state written back) → exit ${restoredRun.code}`,
     );
   }, 1_800_000);
