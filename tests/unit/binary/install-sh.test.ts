@@ -228,6 +228,11 @@ beforeAll(async () => {
   serveDir = join(work, 'serve');
   mkdirSync(serveDir, { recursive: true });
 
+  // On Windows every consumer of this setup is skipped (see `isWindows`), and the setup itself
+  // would be the thing that failed: `uname` is not a Windows command, so the hook would throw
+  // and take the static arms — which are perfectly runnable there — down with it.
+  if (isWindows) return;
+
   const unameS = execFileSync('uname', ['-s'], { encoding: 'utf8' }).trim();
   const unameM = execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
   hostTarget = {
@@ -253,11 +258,28 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(work, { recursive: true, force: true });
 });
 
 const hasShellcheck = spawnSync('shellcheck', ['--version'], { encoding: 'utf8' }).status === 0;
+
+/**
+ * The smoke does not run on Windows, and that is the contract rather than an accommodation.
+ *
+ * `install.sh` refuses Windows by design (§5's channel is macOS and Linux; a Windows user gets
+ * the `.zip` asset), so a smoke there would be installing with a script whose first act on that
+ * platform is to decline. The Windows BEHAVIOUR is still covered — the refusal arm below runs on
+ * POSIX with a stubbed `uname`, which exercises the same branch on a host that can run the script
+ * at all.
+ *
+ * Measured, not assumed: on `windows-latest` the arms failed inside the FIXTURE, before the
+ * installer was reached — `tar` there is Git's GNU tar, which reads `C:\Users\…` as a `host:path`
+ * remote spec and answers `Cannot connect to C: resolve failed` (the same build-fact BIN-4 hit in
+ * the win32 release lane). The static arms above have no such dependency and keep running
+ * everywhere, so the file is never silent on Windows.
+ */
+const isWindows = process.platform === 'win32';
 
 describe('install.sh — static shape', () => {
   it.skipIf(!hasShellcheck)('is shellcheck-clean as POSIX sh', () => {
@@ -297,7 +319,7 @@ describe('install.sh — static shape', () => {
   });
 });
 
-describe('install.sh — local-artifact smoke', () => {
+describe.skipIf(isWindows)('install.sh — local-artifact smoke', () => {
   it('installs, links, and answers --version from a fresh shell', async () => {
     publish({ artifact: buildArtifact() });
     requests = [];
