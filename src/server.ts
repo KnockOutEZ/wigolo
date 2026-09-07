@@ -734,10 +734,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
       ts: Date.now(),
       durationMs: Date.now() - auditStartedAt,
     });
-    // Telemetry rides the same seam as the audit, and deliberately BELOW the gate: a
-    // refused call returned above and never reaches here, so an unactivated install
-    // produces no account, no queue write and no event — the absence is structural,
-    // not a condition anyone has to remember to write.
+    // Telemetry rides the same seam as the audit. Before §0a.1 this line sat below a
+    // gate that returned first, so an unregistered install structurally emitted
+    // nothing; now every install reaches here and the only thing standing between an
+    // unregistered run and an event is the off switch itself (A-336-5). That is the
+    // claim §0a.4 makes out loud rather than the silence PX2 could imply.
     recordToolTelemetry(name, 'mcp', !result.isError, Date.now() - auditStartedAt, errorReason);
     // §0a.2/3: registration is an unlock, so the ONE thing an unregistered install
     // is told is what an account would add — once, in a footer, on a call that

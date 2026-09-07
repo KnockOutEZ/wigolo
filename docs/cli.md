@@ -162,28 +162,44 @@ Five verbs, separate from the management commands above because they concern you
 rather than this machine's setup. Not to be confused with [`wigolo auth`](#auth), which
 manages site sign-ins for the browser engine.
 
-All ten tools are gated on an activated install. Diagnostics are not: `doctor`, `verify`
-and `warmup` run on a machine that has never registered, so a broken install can always be
-diagnosed. Everything that reaches a tool — the MCP server, the REST daemon, the
-interactive shell, a one-shot tool command — refuses with the same line until you activate:
+**No tool is gated on an account.** All ten run on a machine that has never registered, on
+every surface — the MCP server, the REST daemon, the interactive shell, a one-shot tool
+command — and so do `doctor`, `verify` and `warmup`. Registering *unlocks* things instead:
+sync across machines, the marketplace, higher pacing and watch limits, and managed cloud
+runs when they land. An unregistered install is told that exactly once, in a footer under a
+tool result that already succeeded, and never again.
 
-```text
-wigolo needs an account — run `wigolo register` to create one (already have one? `wigolo login`).
-```
+Telemetry, in the words every surface uses: no page content, URLs, or credentials leave
+your machine; usage stats do, off with one flag (`WIGOLO_TELEMETRY=off`).
 
 ### register
 
 ```text
-wigolo register [--email E] [--json]
+wigolo register [--email E] [--code C] [--headless] [--marketing-consent] [--json]
 ```
 
-Creates your account and activates this install. It asks for your email address, mails a
+Creates your account and unlocks it on this install. It asks for your email address, mails a
 sign-in code and waits for you to type it back; then — still before the account exists —
 shows what usage and reliability telemetry covers and asks whether you want occasional
-product-update emails. No password at any point. If the account service is unreachable
-when the disclosure is fetched, registration stops and nothing is created: the wording
-being agreed to is served, never bundled into the client, so there is no offline
-substitute to show you.
+product-update emails. That last question is **unticked by default**: consent is an
+affirmative act, so anything other than an explicit yes is a no. No password at any point.
+If the account service is unreachable when the disclosure is fetched, registration stops and
+nothing is created: the wording being agreed to is served, never bundled into the client, so
+there is no offline substitute to show you.
+
+**`--headless` is the agent-assisted path**, and it asks nothing — there is no prompt to
+hang on, which is what makes it safe inside an agent loop. It runs in two stages:
+
+```bash
+wigolo register --headless --email you@example.com          # mails the code; creates nothing
+wigolo register --headless --email you@example.com --code 123456   # the human relays the code
+```
+
+Stage one creates no account and carries no consent. The human reads the code out of their
+own inbox and hands it back, so the person who owns the address is the person who claims the
+account. `--marketing-consent` is the only way to say yes to product-update email on this
+path; omitting it — and the explicit `--no-marketing-consent` — both mean no. `wigolo login`
+takes the same two flags for signing an existing account in.
 
 ### login
 
