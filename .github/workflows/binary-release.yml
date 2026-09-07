@@ -223,26 +223,33 @@ jobs:
 
       # Reconcile, then write. The plan is read back from the same matrix the verify jobs ran
       # from rather than re-derived here, so the two halves cannot disagree about what should ship.
+      #
+      # EVERY PATH HERE IS UNDER `RUNNER_TEMP`, and the staging dir is why. A first version staged
+      # into `assets/`, which is a REAL DIRECTORY IN THIS REPO: the checkout above put it in the
+      # workspace, the six release files landed beside it, and `gh release upload assets/*` then
+      # tried to upload `assets/promo` and failed with `read assets/promo: is a directory` — after
+      # the release had already been created. A job that writes into the checkout is one rename
+      # away from that every time.
       - name: SHA256SUMS, cross-checked against the verify records
         shell: bash
         run: |
           set -euo pipefail
-          cat > plan.json <<'PLAN'
+          cat > "$RUNNER_TEMP/plan.json" <<'PLAN'
           ${{ needs.plan.outputs.verify }}
           PLAN
           node scripts/binary/checksums.mjs \
-            --plan plan.json \
+            --plan "$RUNNER_TEMP/plan.json" \
             --assets downloaded \
             --verified verified \
-            --out SHA256SUMS \
-            --stage assets
+            --out "$RUNNER_TEMP/SHA256SUMS" \
+            --stage "$RUNNER_TEMP/release-assets"
 
       # The consumer's own view of the file (§4 G4: install.sh, the brew formula and a user with
       # curl all verify this way). A `SHA256SUMS` that our own writer accepts but `sha256sum -c`
       # rejects would be discovered by users.
       - name: sha256sum -c, the way a consumer runs it
         shell: bash
-        run: cd assets && sha256sum -c SHA256SUMS
+        run: cd "$RUNNER_TEMP/release-assets" && sha256sum -c SHA256SUMS
 
       - name: Publish to the GitHub Release
         shell: bash
@@ -254,7 +261,7 @@ jobs:
           PRERELEASE=""
           if [ "${{ needs.plan.outputs.prerelease }}" = "true" ]; then PRERELEASE="--prerelease"; fi
 
-          cat > notes-binary.md <<'NOTES'
+          cat > "$RUNNER_TEMP/notes-binary.md" <<'NOTES'
           ### Standalone binaries
 
           One download, no npm and no Node required. Unpack and run `wigolo/bin/wigolo`; the
@@ -277,7 +284,7 @@ jobs:
           NOTES
 
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes-binary.md $PRERELEASE \
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes-binary.md" $PRERELEASE \
               || gh release view "$TAG" >/dev/null
           else
             # The release already exists (`release.yml` creates one for an npm tag). Append rather
@@ -286,9 +293,9 @@ jobs:
             BODY="$(gh release view "$TAG" --json body -q .body)"
             case "$BODY" in
               *'Standalone binaries'*) echo 'binary notes already present' ;;
-              *) printf '%s\n\n%s\n' "$BODY" "$(cat notes-binary.md)" | gh release edit "$TAG" --notes-file - ;;
+              *) printf '%s\n\n%s\n' "$BODY" "$(cat "$RUNNER_TEMP/notes-binary.md")" | gh release edit "$TAG" --notes-file - ;;
             esac
           fi
 
-          gh release upload "$TAG" assets/* --clobber
+          gh release upload "$TAG" "$RUNNER_TEMP"/release-assets/* --clobber
           gh release view "$TAG" --json assets -q '.assets[].name'

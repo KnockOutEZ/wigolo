@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -259,6 +259,22 @@ describe('the workflow consumes the matrix instead of restating it', () => {
     const wf = await workflow();
     expect(wf.permissions).toEqual({ contents: 'write' });
     expect(wf.concurrency['cancel-in-progress']).toBe(false);
+  });
+
+  it('stages the release assets outside the checkout — `assets/` is a real repo directory', async () => {
+    const wf = await workflow();
+    const runs = wf.jobs.release.steps.map((s: { run?: string }) => s.run ?? '').join('\n');
+    // A first version staged into `assets/`, which this repo HAS: the six release files landed
+    // beside it and `gh release upload assets/*` failed on `assets/promo: is a directory` — after
+    // the release had already been created. The guard is that every write is under RUNNER_TEMP.
+    expect(existsSync(new URL('../../assets', import.meta.url))).toBe(true);
+    expect(runs).toContain('--stage "$RUNNER_TEMP/release-assets"');
+    expect(runs).toContain('"$RUNNER_TEMP"/release-assets/*');
+    for (const written of ['plan.json', 'SHA256SUMS', 'notes-binary.md']) {
+      // Every file this job writes, named where it is written: a bare `> plan.json` puts it in
+      // the checkout, which is the shape that produced the failure above.
+      expect(runs, `${written} must be written under RUNNER_TEMP`).toContain(`$RUNNER_TEMP/${written}`);
+    }
   });
 
   it('builds the artifact outside the checkout', async () => {
