@@ -277,6 +277,18 @@ describe('the workflow consumes the matrix instead of restating it', () => {
     }
   });
 
+  it('never creates the release with the binary notes as the whole body', async () => {
+    const wf = await workflow();
+    const runs = wf.jobs.release.steps.map((s: { run?: string }) => s.run ?? '').join('\n');
+    // `release.yml` creates the same release for an npm tag, with `--generate-notes`, and
+    // whichever job gets there first wins. Creating it with only our section would leave the npm
+    // release's page without its changelog — this workflow editing the npm release after all.
+    expect(runs).toContain('gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes');
+    expect(runs).not.toMatch(/gh release create[^\n]*--notes-file/);
+    // And the append is idempotent, so a re-run does not stack a second copy of the section.
+    expect(runs).toContain("*'Standalone binaries'*) echo 'binary notes already present'");
+  });
+
   it('builds the artifact outside the checkout', async () => {
     const wf = await workflow();
     const build = wf.jobs.build.steps.find((s: { name?: string }) => s.name?.includes('artifact'));

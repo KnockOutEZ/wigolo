@@ -283,19 +283,23 @@ jobs:
           upload.
           NOTES
 
+          # CREATE WITH `--generate-notes`, THEN APPEND — never create with the binary notes as the
+          # whole body. On a real release tag `release.yml` also creates this release, with
+          # `--generate-notes`, and whichever job gets there first wins: creating it with only our
+          # section would leave the npm release's page without its changelog, which is this
+          # workflow editing the npm release after all. Both jobs skip creation when the release
+          # exists, so the outcome is the same either way round.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes-binary.md" $PRERELEASE \
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $PRERELEASE \
               || gh release view "$TAG" >/dev/null
-          else
-            # The release already exists (`release.yml` creates one for an npm tag). Append rather
-            # than replace: its notes are the package release's, and dropping them to add ours
-            # would make this workflow edit the npm release after all.
-            BODY="$(gh release view "$TAG" --json body -q .body)"
-            case "$BODY" in
-              *'Standalone binaries'*) echo 'binary notes already present' ;;
-              *) printf '%s\n\n%s\n' "$BODY" "$(cat "$RUNNER_TEMP/notes-binary.md")" | gh release edit "$TAG" --notes-file - ;;
-            esac
           fi
+
+          # Append, idempotently — a re-run of this job must not stack a second copy of the section.
+          BODY="$(gh release view "$TAG" --json body -q .body)"
+          case "$BODY" in
+            *'Standalone binaries'*) echo 'binary notes already present' ;;
+            *) printf '%s\n\n%s\n' "$BODY" "$(cat "$RUNNER_TEMP/notes-binary.md")" | gh release edit "$TAG" --notes-file - ;;
+          esac
 
           gh release upload "$TAG" "$RUNNER_TEMP"/release-assets/* --clobber
           gh release view "$TAG" --json assets -q '.assets[].name'
