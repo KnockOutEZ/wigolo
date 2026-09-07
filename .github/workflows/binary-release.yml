@@ -1,0 +1,294 @@
+# Single-binary release matrix — single-binary mini-spec §§3–4, 6 (BIN-4).
+#
+# WHAT IT DOES. On a release tag: build the five §1 targets, run the M2 load-verify battery for
+# each one ON THAT TARGET'S OWN PLATFORM, then publish the artifacts plus a `SHA256SUMS` file as
+# GitHub Release assets under the §4 names.
+#
+# WHAT IT DELIBERATELY DOES NOT DO. It does not touch npm. `release.yml` publishes the package
+# and is not edited by this file, not called by it, and shares nothing with it but the tag that
+# starts both (mini-spec §5, §10: "npm unchanged", re-asserted per slice). This workflow is
+# additive by construction — deleting it would leave the npm release byte-identical.
+#
+# WHY THE MATRICES COME FROM A SCRIPT AND NOT FROM YAML. `scripts/binary/ship-matrix.mjs` derives
+# both the build list and the verify list from ONE source, and derives each target's verify runner
+# from the runner image that IS that platform and arch. Spelling two matrices here would let a
+# target be built and never verified, or be verified on the build host — the outcome §3 forbids —
+# with every job in the run still green. The script also refuses a plan in which any target would
+# drop without a recorded spec amendment.
+#
+# WHY THERE IS NO `workflow_dispatch`. Two reasons, and the second is the real one. GitHub only
+# offers the dispatch trigger for workflow files that are already on the default branch, so on a
+# program branch it is an input nobody can exercise and nobody can test. And a dispatch that
+# uploads release assets is a way to publish from an arbitrary ref: the tag is what makes an
+# artifact's provenance auditable, so the tag is the only entry point.
+name: binary-release
+
+on:
+  push:
+    tags:
+      # The npm release tags, matched exactly as `release.yml` matches them, because §4 pins
+      # "release tag = npm version" and the two sets of assets belong to one release.
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+      # The binary-only channel. Deliberately OUTSIDE the `v*` namespace so it cannot start an npm
+      # publish, and outside `binary-build.yml`'s `v*` too: it exercises this pipeline end to end
+      # against a real GitHub prerelease without pretending to be a package release.
+      - 'binary-v*'
+
+permissions:
+  contents: write # upload release assets
+
+# A release must never be cancelled halfway through — half the matrix uploaded is worse than none.
+concurrency:
+  group: binary-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan the ship matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.matrix.outputs.build }}
+      verify: ${{ steps.matrix.outputs.verify }}
+      semver: ${{ steps.matrix.outputs.semver }}
+      count: ${{ steps.matrix.outputs.count }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The artifact names carry the package version, so a `v*` tag that disagrees with
+      # package.json would publish assets named for a version nobody released. `release.yml` makes
+      # the same comparison for the npm side; this one exists because the two jobs must not be
+      # able to disagree about what the tag means.
+      - name: Tag agrees with package.json
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PKG="$(node -p "require('./package.json').version")"
+          case "$TAG" in
+            v*)
+              if [ "${TAG#v}" != "$PKG" ]; then
+                echo "::error::tag $TAG does not match package.json version $PKG"
+                exit 1
+              fi
+              # A stable `vX.Y.Z` is a real release; anything with a pre-release suffix is not.
+              case "${TAG#v}" in
+                *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+                *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+              esac
+              ;;
+            binary-v*)
+              # The binary-only channel is always a prerelease: it publishes artifacts for a
+              # package version that npm has not released under this tag.
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::unexpected tag shape $TAG"
+              exit 1
+              ;;
+          esac
+          echo "tag $TAG, package version $PKG"
+
+      - name: Derive the build and verify matrices
+        id: matrix
+        run: node scripts/binary/ship-matrix.mjs --emit
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    # One host for all five targets: the SEA blob is platform-agnostic and postject is pure JS
+    # (§2a M6), and `codesign` — mandatory for darwin arm64 (§6) — exists only on macOS.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.build) }}
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # `WIGOLO_SKIP_PREPARE=1`: the root `prepare` hook builds on `npm ci`, and the next step
+      # builds explicitly. Without the opt-out this matrix pays for a second full build per target.
+      - name: Install dependencies
+        shell: bash
+        env:
+          WIGOLO_SKIP_PREPARE: '1'
+        run: npm ci
+
+      - name: Build dist
+        shell: bash
+        run: npm run build
+
+      # `--out` under RUNNER_TEMP, never inside the checkout: the artifact is ~400 MB unpacked and
+      # a later step that walked the workspace would measure the build's own leftovers.
+      - name: Build the §4 artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/binary/build.mjs --target "${{ matrix.target }}" --out "$RUNNER_TEMP/binary-${{ matrix.target }}"
+          test -f "$RUNNER_TEMP/binary-${{ matrix.target }}/${{ matrix.artifact }}"
+
+      - name: Upload the artifact for its verify lane
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ runner.temp }}/binary-${{ matrix.target }}/${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: load-verify ${{ matrix.target }} on ${{ matrix.runner }}
+    needs: [plan, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.verify) }}
+    steps:
+      # Checkout and a Node interpreter, and nothing else — no `npm ci`. `verify.mjs` is Node
+      # builtins plus pure sibling modules precisely so a verify lane needs no toolchain: what it
+      # tests is the artifact, and an installed dependency tree is a way for the host to answer a
+      # question the artifact was supposed to.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: incoming
+
+      # The battery's first act is to refuse if `process.platform`-`process.arch` is not
+      # ${{ matrix.target }}. That refusal, not this runner label, is what makes the
+      # platform-native claim in §3 checkable — a label can be edited, a machine cannot.
+      - name: M1 + M2 + M3 battery against the artifact
+        shell: bash
+        run: |
+          node scripts/binary/verify.mjs \
+            --artifact "incoming/${{ matrix.artifact }}" \
+            --target "${{ matrix.target }}" \
+            --expect-semver "${{ needs.plan.outputs.semver }}" \
+            --json "verified-${{ matrix.target }}.json"
+
+      # The digest of what was actually verified. The release job refuses to publish an asset whose
+      # bytes differ from these — three artifact hand-offs sit between this job and the upload.
+      - name: Record what this lane verified
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-${{ matrix.target }}
+          path: verified-${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish assets + SHA256SUMS
+    needs: [plan, build, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # `needs: verify` already means a red verify lane never reaches this job — that is the gate
+    # §3 asks for, expressed as a dependency rather than as an `if`. The ref guard is belt: this
+    # job can only ever publish from a tag.
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: downloaded
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: verified-*
+          path: verified
+
+      # Reconcile, then write. The plan is read back from the same matrix the verify jobs ran
+      # from rather than re-derived here, so the two halves cannot disagree about what should ship.
+      - name: SHA256SUMS, cross-checked against the verify records
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > plan.json <<'PLAN'
+          ${{ needs.plan.outputs.verify }}
+          PLAN
+          node scripts/binary/checksums.mjs \
+            --plan plan.json \
+            --assets downloaded \
+            --verified verified \
+            --out SHA256SUMS \
+            --stage assets
+
+      # The consumer's own view of the file (§4 G4: install.sh, the brew formula and a user with
+      # curl all verify this way). A `SHA256SUMS` that our own writer accepts but `sha256sum -c`
+      # rejects would be discovered by users.
+      - name: sha256sum -c, the way a consumer runs it
+        shell: bash
+        run: cd assets && sha256sum -c SHA256SUMS
+
+      - name: Publish to the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PRERELEASE=""
+          if [ "${{ needs.plan.outputs.prerelease }}" = "true" ]; then PRERELEASE="--prerelease"; fi
+
+          cat > notes-binary.md <<'NOTES'
+          ### Standalone binaries
+
+          One download, no npm and no Node required. Unpack and run `wigolo/bin/wigolo`; the
+          directory is relocatable and resolves its own support files relative to the executable.
+
+          Verify your download first:
+
+          ```
+          sha256sum -c SHA256SUMS      # shasum -a 256 -c SHA256SUMS on macOS
+          ```
+
+          - **macOS** — signed ad hoc, not with a Developer ID: the first run may need
+            `System Settings -> Privacy & Security -> Open Anyway`.
+          - **Windows** — unsigned, so SmartScreen shows a publisher warning. Choose
+            *More info -> Run anyway*, or verify the checksum above and use the npm package instead.
+          - **Linux** — glibc only. On Alpine or another musl distribution, use `npm i -g wigolo`.
+
+          Every artifact here ran a full native load-verify battery on its own platform before
+          upload.
+          NOTES
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes-binary.md $PRERELEASE \
+              || gh release view "$TAG" >/dev/null
+          else
+            # The release already exists (`release.yml` creates one for an npm tag). Append rather
+            # than replace: its notes are the package release's, and dropping them to add ours
+            # would make this workflow edit the npm release after all.
+            BODY="$(gh release view "$TAG" --json body -q .body)"
+            case "$BODY" in
+              *'Standalone binaries'*) echo 'binary notes already present' ;;
+              *) printf '%s\n\n%s\n' "$BODY" "$(cat notes-binary.md)" | gh release edit "$TAG" --notes-file - ;;
+            esac
+          fi
+
+          gh release upload "$TAG" assets/* --clobber
+          gh release view "$TAG" --json assets -q '.assets[].name'
