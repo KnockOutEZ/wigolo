@@ -100,7 +100,16 @@ export function resolvePackageDir(fromDir, name, stopAt) {
  * skipped rather than refused: an unmet peer is a warning in npm's own model, and the packages
  * here that declare one they do not get are declaring it for a consumer, not for themselves.
  *
- * @returns {{ packages: Array<{name: string, dir: string, version: string}>, missing: string[] }}
+ * ⚠ THE CLOSURE IS KEYED ON THE RESOLVED DIRECTORY, NOT ON THE PACKAGE NAME, and it records
+ * each package's path RELATIVE TO THE REPO so the staging step can rebuild npm's tree shape
+ * instead of flattening it. That distinction is not academic — it was a measured failure.
+ * Keying on the name collapses `node_modules/tar` (6.2.1, hoisted, what `fastembed` resolves)
+ * and `node_modules/<something>/node_modules/tar` (7.5.16) into one entry, whichever was
+ * reached first wins, and the artifact ships a `tar` whose API `fastembed` does not have:
+ * embeddings died with `Cannot read properties of undefined (reading 'x')` deep inside a
+ * dependency, from a binary whose build was green and whose npm equivalent worked.
+ *
+ * @returns {{ packages: Array<{name: string, dir: string, rel: string, version: string}>, missing: string[] }}
  */
 export function resolveClosure({ repoRoot, roots = EXTERNALS.map((e) => e.name) }) {
   const seen = new Map();
@@ -109,16 +118,16 @@ export function resolveClosure({ repoRoot, roots = EXTERNALS.map((e) => e.name) 
 
   while (queue.length > 0) {
     const { name, fromDir, via } = queue.shift();
-    if (seen.has(name)) continue;
 
     const dir = resolvePackageDir(fromDir, name, repoRoot);
     if (!dir) {
       if (!NOT_INSTALLED.has(name)) missing.push(`${name} (required by ${via})`);
       continue;
     }
+    if (seen.has(dir)) continue;
 
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-    seen.set(name, { name, dir, version: pkg.version ?? '(none)' });
+    seen.set(dir, { name, dir, rel: path.relative(repoRoot, dir), version: pkg.version ?? '(none)' });
 
     for (const dep of Object.keys(pkg.dependencies ?? {})) {
       queue.push({ name: dep, fromDir: dir, via: name });
@@ -126,13 +135,12 @@ export function resolveClosure({ repoRoot, roots = EXTERNALS.map((e) => e.name) 
     // Optional and peer: present-or-skip. `resolvePackageDir` returning null for one of these
     // is a fact about this platform's install, not a defect, so they never reach `missing`.
     for (const dep of [...Object.keys(pkg.optionalDependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})]) {
-      if (seen.has(dep)) continue;
       if (resolvePackageDir(dir, dep, repoRoot)) queue.push({ name: dep, fromDir: dir, via: name });
     }
   }
 
   return {
-    packages: [...seen.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    packages: [...seen.values()].sort((a, b) => a.rel.localeCompare(b.rel)),
     missing: missing.sort(),
   };
 }
@@ -170,10 +178,18 @@ export function stageClosure({ repoRoot, stageRoot, roots }) {
     );
   }
 
-  const modulesRoot = path.join(stageRoot, 'libexec', 'node_modules');
-  fs.mkdirSync(modulesRoot, { recursive: true });
+  const libexec = path.join(stageRoot, 'libexec');
+  fs.mkdirSync(path.join(libexec, 'node_modules'), { recursive: true });
   for (const pkg of packages) {
-    const dest = path.join(modulesRoot, pkg.name);
+    // `pkg.rel` is the package's position in the REPO's tree, always beginning `node_modules/`
+    // and possibly nested. Replaying it verbatim under `libexec/` is what makes Node's ordinary
+    // resolution inside the sidecar agree with resolution inside the repo — see `resolveClosure`
+    // for the version-shadowing failure that flattening caused.
+    //
+    // Nested packages are copied by their PARENT's recursive copy as well; the explicit copy
+    // here is what guarantees one is present even when its parent was reached by a path that
+    // filtered it, and `force` (cpSync's default) makes the overlap a no-op rather than a race.
+    const dest = path.join(libexec, pkg.rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.cpSync(pkg.dir, dest, {
       recursive: true,
