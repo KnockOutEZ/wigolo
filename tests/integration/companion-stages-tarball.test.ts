@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DIRECTORY_LINK_TYPE, npmInvocation } from './npm-invocation.js';
 
 /*
  * WHY THIS LIVES IN `tests/integration/` AND NOT BESIDE `tests/unit/package-exports.test.ts`.
@@ -48,7 +49,11 @@ describe('wigolo/companion-stages loads from a packed tarball', () => {
       // `--pack-destination` into an empty directory rather than parsing `--json` off stdout:
       // the `prepare` hook writes build progress to the same stream, which is what broke the
       // G-TARBALL measurement once already. The directory has exactly one entry afterwards.
-      execFileSync('npm', ['pack', '--pack-destination', work], {
+      // Spawned through `npmInvocation` rather than as a bare `npm`: the bare name is
+      // unresolvable on Windows, where this line threw `ENOENT` before `npm pack` ever ran
+      // while the same arm passed on ubuntu and macOS.
+      const pack = npmInvocation(['pack', '--pack-destination', work]);
+      execFileSync(pack.file, pack.args, {
         cwd: REPO_ROOT,
         encoding: 'utf8',
         stdio: 'pipe',
@@ -59,6 +64,9 @@ describe('wigolo/companion-stages loads from a packed tarball', () => {
       // npm tarballs unpack to a `package/` root. Installing it as `node_modules/wigolo` is what
       // puts the probe on the package's own `exports` map — a bare path import would bypass it
       // and prove nothing about the subpath.
+      // `tar` needs no `npmInvocation` treatment: unlike `npm`, it is a real executable on all
+      // three platforms — bsdtar lives in System32 on Windows — and libuv's PATH search appends
+      // `.exe` for exactly that case. It is the `.cmd` shims that it cannot find.
       execFileSync('tar', ['-xzf', join(work, tarballs[0]), '-C', work], { stdio: 'pipe' });
       const consumer = join(work, 'consumer');
       const consumerModules = join(consumer, 'node_modules');
@@ -73,13 +81,17 @@ describe('wigolo/companion-stages loads from a packed tarball', () => {
       // is whether the PUBLISHED FILES are complete and reachable through `exports`, not npm's
       // ability to download third-party packages. A missing dependency DECLARATION is a different
       // failure with its own gate (the clean-machine install smoke).
+      // `DIRECTORY_LINK_TYPE`, not a literal `'dir'`: a directory SYMLINK on Windows needs a
+      // privilege the runner account may not hold, and a junction — which these absolute targets
+      // qualify for — needs none.
       const packageDeps = join(work, 'node_modules');
       mkdirSync(packageDeps, { recursive: true });
       for (const dep of readdirSync(join(REPO_ROOT, 'node_modules'))) {
         if (dep.startsWith('.') || dep === 'wigolo') continue;
-        symlinkSync(join(REPO_ROOT, 'node_modules', dep), join(packageDeps, dep), 'dir');
+        const target = join(REPO_ROOT, 'node_modules', dep);
+        symlinkSync(target, join(packageDeps, dep), DIRECTORY_LINK_TYPE);
       }
-      symlinkSync(join(work, 'package'), join(consumerModules, 'wigolo'), 'dir');
+      symlinkSync(join(work, 'package'), join(consumerModules, 'wigolo'), DIRECTORY_LINK_TYPE);
       writeFileSync(
         join(consumer, 'package.json'),
         JSON.stringify({ name: 'stages-probe', version: '0.0.0', type: 'module', private: true }),
