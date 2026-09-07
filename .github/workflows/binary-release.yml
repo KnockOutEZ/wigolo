@@ -352,7 +352,7 @@ jobs:
       #
       # WHY `WIGOLO_RELEASE_TAG` IS SET. install.sh addresses assets as `<base>/<tag>/<name>`
       # and defaults the tag to `v$VERSION`. The binary-only channel publishes under
-      # `binary-v*` precisely so it cannot start an npm publish, so on that channel the tag
+      # `binary-v*` precisely so it cannot start a package release, so on that channel the tag
       # and the version genuinely differ and only the publisher knows it. `WIGOLO_VERSION`
       # names the version; this names the tag. On a `v*.*.*` release both are the release's
       # own defaults and neither is needed.
