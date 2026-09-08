@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resetConfig } from '../../src/config.js';
 import { closeDatabase, getDatabase, initDatabase } from '../../src/cache/db.js';
-import { BrokerGrantStore, executeBrokerOp } from '../../src/daemon/studio-db-broker.js';
+import { BrokerGrantStore, executeBrokerOp, schemaHead } from '../../src/daemon/studio-db-broker.js';
 import { BROKER_TABLES } from '../../src/companion-contract/index.js';
 import type { BrokerOp, BrokerRefusal, BrokerRow, BrokerTable } from '../../src/companion-contract/index.js';
 
@@ -81,7 +81,7 @@ describe('the SD10 tables over the companion broker', () => {
   });
 
   function token(tables: readonly BrokerTable[]): string {
-    return grants.issue({ mode: 'readwrite', tables, schemaHead: 1 }).token;
+    return grants.issue({ mode: 'readwrite', tables, schemaHead: schemaHead(getDatabase()) }).token;
   }
 
   function run(op: BrokerOp): ReturnType<typeof executeBrokerOp> {

@@ -6,6 +6,7 @@ import {
   BrokerGrantStore,
   BrokerOpError,
   executeBrokerOp,
+  schemaHead,
 } from '../../src/daemon/studio-db-broker.js';
 import { BROKER_TABLES } from '../../src/companion-contract/index.js';
 import type { BrokerOp, BrokerRefusal, BrokerRow } from '../../src/companion-contract/index.js';
@@ -50,7 +51,7 @@ describe('studio_memories over the companion broker', () => {
     return grants.issue({
       mode,
       tables: tables as Parameters<BrokerGrantStore['issue']>[0]['tables'],
-      schemaHead: 1,
+      schemaHead: schemaHead(db()),
     }).token;
   }
 
