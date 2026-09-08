@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, getDatabase, closeDatabase } from '../../../src/cache/db.js';
-import { BrokerGrantStore, executeBrokerOp } from '../../../src/daemon/studio-db-broker.js';
+import { BrokerGrantStore, executeBrokerOp, schemaHead } from '../../../src/daemon/studio-db-broker.js';
 import { BROKER_TABLES } from '../../../src/companion-contract/index.js';
 import type { BrokerRow } from '../../../src/companion-contract/index.js';
 
@@ -56,7 +56,7 @@ describe('companion broker — the run-log surface is reachable as table ops', (
     resetConfig();
     initDatabase(':memory:');
     grants = new BrokerGrantStore();
-    token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+    token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
     op({
       grant: token,
       kind: 'insert',
