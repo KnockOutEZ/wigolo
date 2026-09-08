@@ -1075,6 +1075,320 @@ export function resetConfig(): void {
   resetPersistedConfig();
 }
 
+// ---------------------------------------------------------------------------
+// Config key registry — the single enumeration every surface projects
+// ---------------------------------------------------------------------------
+
+/**
+ * The value type a config key carries. This is the type of the RESOLVED value,
+ * not the widget a surface renders for it: `newTabSearchEngine` and `logLevel`
+ * are both `'string'` here and both render as a picker.
+ */
+export type ConfigKeyKind =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'string-list'
+  | 'path'
+  | 'secret';
+
+/**
+ * One config key, described once for every surface that has to name it.
+ *
+ * A hand-maintained surface that restates an env-var name or a default drifts
+ * from the resolver silently — the shipped `wigolo config --plain` carried six
+ * env-var names no resolver reads and nine defaults the resolver contradicts,
+ * and because that output doubles as the `--set` key list, and the same names
+ * are what gets written into an agent's MCP env block, the drift was not
+ * cosmetic. Every entry below is asserted against `getConfig()` by enumeration
+ * in `tests/unit/cli/config-key-registry.test.ts`, which probes the real
+ * resolver per key: a wrong `envVar` or `default` here fails that suite.
+ */
+export interface ConfigKeyDef {
+  /** Key under `settings` in `~/.wigolo/config.json`. */
+  settingsKey: string;
+  /**
+   * The environment variable `getConfig()` reads for this key, or `null` when
+   * no env var resolves it. `null` is load-bearing: a surface must not print
+   * or propagate an env-var name for such a key.
+   */
+  envVar: string | null;
+  kind: ConfigKeyKind;
+  /**
+   * What `getConfig()` resolves when neither the env var nor the persisted
+   * layer is set. `undefined` means the key has no resolved default at all
+   * (secrets and settings-only keys).
+   */
+  default: unknown;
+  /** Allowed values, when the key is a closed set. */
+  enumValues?: readonly string[];
+  /**
+   * True when `getConfig()` exposes `settingsKey` with the default above.
+   * False for keys no resolver reads (`agents`, a TUI-local install list) and
+   * for key-store secrets that never enter the resolved config.
+   */
+  resolved: boolean;
+  secret?: true;
+  /**
+   * How a surface should render `default` when the bare value would mislead.
+   * `searchBackend` resolves to `null` and every consumer reads that as
+   * `core`, so printing `(unset)` alone hides the effective behaviour.
+   */
+  defaultDisplay?: string;
+  /**
+   * Identifiers an older build printed and accepted for this key. Still
+   * accepted by `--set` so a working invocation keeps working; never printed,
+   * because none of them is an env var anything reads.
+   */
+  legacyKeys?: readonly string[];
+}
+
+/**
+ * The keys the CLI and the control portal enumerate. Growing this list is how
+ * a surface gains a key — never by restating a name locally.
+ */
+export const CONFIG_KEYS: readonly ConfigKeyDef[] = [
+  // --- browser ---
+  {
+    settingsKey: 'browserTypes',
+    envVar: 'WIGOLO_BROWSER_TYPES',
+    kind: 'string-list',
+    default: ['chromium'],
+    enumValues: ['chromium', 'firefox', 'webkit'],
+    resolved: true,
+  },
+  {
+    settingsKey: 'maxBrowsers',
+    envVar: 'MAX_BROWSERS',
+    kind: 'number',
+    default: 3,
+    resolved: true,
+    legacyKeys: ['WIGOLO_MAX_BROWSERS'],
+  },
+  {
+    settingsKey: 'browserIdleTimeoutMs',
+    envVar: 'BROWSER_IDLE_TIMEOUT',
+    kind: 'number',
+    default: 60000,
+    resolved: true,
+    legacyKeys: ['WIGOLO_BROWSER_IDLE_TIMEOUT_MS'],
+  },
+
+  // --- search ---
+  {
+    settingsKey: 'searchBackend',
+    envVar: 'WIGOLO_SEARCH',
+    kind: 'string',
+    default: null,
+    enumValues: ['core', 'searxng', 'hybrid'],
+    resolved: true,
+    // Unset resolves to null, and every consumer reads null as core
+    // (`cfg.searchBackend ?? 'core'`). Printing a bare `(unset)` would hide
+    // which backend actually runs.
+    defaultDisplay: '(unset — core)',
+  },
+  {
+    settingsKey: 'newTabSearchEngine',
+    envVar: 'WIGOLO_NEW_TAB_SEARCH_ENGINE',
+    kind: 'string',
+    default: 'google',
+    resolved: true,
+  },
+  {
+    settingsKey: 'reranker',
+    envVar: 'WIGOLO_RERANKER',
+    kind: 'string',
+    default: 'onnx',
+    enumValues: ['onnx', 'none', 'custom'],
+    resolved: true,
+  },
+  {
+    settingsKey: 'rerankerModel',
+    envVar: 'WIGOLO_RERANKER_MODEL',
+    kind: 'string',
+    default: 'bge-reranker-v2-m3',
+    resolved: true,
+  },
+  {
+    settingsKey: 'embeddingModel',
+    envVar: 'WIGOLO_EMBEDDING_MODEL',
+    kind: 'string',
+    default: 'BAAI/bge-small-en-v1.5',
+    resolved: true,
+  },
+
+  // --- LLM provider ---
+  {
+    settingsKey: 'llmProvider',
+    envVar: 'WIGOLO_LLM_PROVIDER',
+    kind: 'string',
+    default: null,
+    enumValues: ['anthropic', 'openai', 'gemini', 'ollama'],
+    resolved: true,
+  },
+  {
+    // A key-store secret: resolved from the keychain or the env var, never
+    // from config.json, so the resolver exposes no value for it.
+    settingsKey: 'llmApiKey',
+    envVar: 'WIGOLO_LLM_API_KEY',
+    kind: 'secret',
+    default: undefined,
+    resolved: false,
+    secret: true,
+  },
+
+  // --- agents ---
+  {
+    // The list of coding agents wigolo installs itself into. Persisted and
+    // read by the TUI; no env var resolves it, and the shipped catalog's
+    // `WIGOLO_AGENTS` was propagated into agent env blocks where nothing
+    // reads it.
+    settingsKey: 'agents',
+    envVar: null,
+    kind: 'string-list',
+    default: [],
+    enumValues: ['claude-code', 'vscode', 'zed', 'windsurf', 'cursor'],
+    resolved: false,
+    legacyKeys: ['WIGOLO_AGENTS'],
+  },
+
+  // --- cache ---
+  {
+    settingsKey: 'dataDir',
+    envVar: 'WIGOLO_DATA_DIR',
+    kind: 'path',
+    default: join(homedir(), '.wigolo'),
+    resolved: true,
+  },
+  {
+    settingsKey: 'cacheTtlSearch',
+    envVar: 'CACHE_TTL_SEARCH',
+    kind: 'number',
+    default: 86400,
+    resolved: true,
+    legacyKeys: ['WIGOLO_CACHE_TTL_SEARCH'],
+  },
+  {
+    settingsKey: 'cacheTtlContent',
+    envVar: 'CACHE_TTL_CONTENT',
+    kind: 'number',
+    default: 604800,
+    resolved: true,
+    legacyKeys: ['WIGOLO_CACHE_TTL_CONTENT'],
+  },
+
+  // --- advanced ---
+  {
+    settingsKey: 'logLevel',
+    envVar: 'LOG_LEVEL',
+    kind: 'string',
+    default: 'info',
+    enumValues: ['debug', 'info', 'warn', 'error'],
+    resolved: true,
+    legacyKeys: ['WIGOLO_LOG_LEVEL'],
+  },
+  {
+    settingsKey: 'proxyUrl',
+    envVar: 'PROXY_URL',
+    kind: 'string',
+    default: null,
+    resolved: true,
+  },
+  {
+    settingsKey: 'useProxy',
+    envVar: 'USE_PROXY',
+    kind: 'boolean',
+    default: false,
+    resolved: true,
+  },
+  {
+    settingsKey: 'solverUrl',
+    envVar: 'WIGOLO_SOLVER_URL',
+    kind: 'string',
+    default: null,
+    resolved: true,
+  },
+  {
+    settingsKey: 'hostedReaderUrl',
+    envVar: 'WIGOLO_HOSTED_READER_URL',
+    kind: 'string',
+    default: null,
+    resolved: true,
+  },
+  {
+    settingsKey: 'userAgent',
+    envVar: 'USER_AGENT',
+    kind: 'string',
+    default: null,
+    resolved: true,
+  },
+  {
+    settingsKey: 'daemonPort',
+    envVar: 'WIGOLO_DAEMON_PORT',
+    kind: 'number',
+    default: 3333,
+    resolved: true,
+  },
+  {
+    settingsKey: 'accountsUrl',
+    envVar: 'WIGOLO_ACCOUNTS_URL',
+    kind: 'string',
+    default: PRODUCTION_ACCOUNTS_URL,
+    resolved: true,
+  },
+  {
+    settingsKey: TELEMETRY_SETTINGS_KEY,
+    envVar: TELEMETRY_ENV,
+    kind: 'boolean',
+    default: true,
+    resolved: true,
+  },
+  {
+    settingsKey: 'daemonHost',
+    envVar: 'WIGOLO_DAEMON_HOST',
+    kind: 'string',
+    default: '127.0.0.1',
+    resolved: true,
+  },
+];
+
+const CONFIG_KEYS_BY_SETTINGS_KEY = new Map(CONFIG_KEYS.map((d) => [d.settingsKey, d]));
+
+const CONFIG_KEYS_BY_IDENTIFIER = (() => {
+  const index = new Map<string, ConfigKeyDef>();
+  for (const def of CONFIG_KEYS) {
+    // Every name a surface may hand us: the env var, the settings key, and any
+    // identifier an older build accepted.
+    for (const id of [def.envVar, def.settingsKey, ...(def.legacyKeys ?? [])]) {
+      if (id !== null) index.set(id, def);
+    }
+  }
+  return index;
+})();
+
+/** Look up a key by its `settings` key. */
+export function configKeyBySettingsKey(settingsKey: string): ConfigKeyDef | undefined {
+  return CONFIG_KEYS_BY_SETTINGS_KEY.get(settingsKey);
+}
+
+/**
+ * Look up a key by any identifier a caller might use for it: its env var, its
+ * settings key, or an identifier an older build printed. This is what lets
+ * `--set WIGOLO_CACHE_TTL_SEARCH=…` keep working while `--plain` prints the
+ * env var the resolver actually reads.
+ */
+export function configKeyByIdentifier(identifier: string): ConfigKeyDef | undefined {
+  return CONFIG_KEYS_BY_IDENTIFIER.get(identifier);
+}
+
+/**
+ * The identifier a surface should print and accept for a key: the env var when
+ * one resolves it, the settings key when none does. Never a legacy name.
+ */
+export function configKeyIdentifier(def: ConfigKeyDef): string {
+  return def.envVar ?? def.settingsKey;
+}
+
 /**
  * Narrow persisted-config write seam for a human choosing the app's search
  * engine. This intentionally cannot write any other setting.
