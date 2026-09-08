@@ -534,7 +534,14 @@ describe('runDoctor', () => {
       activateAccount();
       resetTelemetryForTest();
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/Telemetry: on — usage and reliability counters are sent to your account/);
+      // §0a.4 pins the WORDING, so the literal is spelled out here rather than
+      // imported from `account/unlocks.ts` — importing the constant would make this
+      // assertion agree with any edit to the constant, including a wrong one, and
+      // the point of the clause is that all six surfaces say the SAME sentence.
+      expect(outBuffer).toContain(
+        'Telemetry: on — no page content, URLs, or credentials leave your machine;'
+          + ' usage stats do, off with one flag',
+      );
       expect(outBuffer).toContain('WIGOLO_TELEMETRY=off');
       // Anti-inversion: an activated install with telemetry ON must never be described
       // with the word "off" ahead of the switch hint.

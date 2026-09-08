@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { runAccountCommand } from '../../../src/cli/account.js';
 import { ACTIVATION_REFUSALS, type ActivationRefusalReason } from '../../../src/account/gate.js';
-import { activationNextStepLine } from '../../../src/cli/init.js';
+import { activationNextStepLines } from '../../../src/cli/init.js';
 import { advancedCategory } from '../../../src/cli/tui/schema/advanced.js';
 import { runStudioSetup } from '../../../src/cli/studio-setup.js';
 import type { AccountsClient } from '../../../src/account/client.js';
@@ -120,7 +120,7 @@ describe('capability language — the copy PX2 added', () => {
     expect(ACTIVATION_REFUSALS.never_activated).toContain('wigolo register');
   });
 
-  it("init's next step names no implementation, for every reason it can fire on", async () => {
+  it("init's first-run block names no implementation, for every reason it can fire on", async () => {
     const actual = await vi.importActual<typeof import('../../../src/account/gate.js')>(
       '../../../src/account/gate.js',
     );
@@ -132,19 +132,20 @@ describe('capability language — the copy PX2 added', () => {
         evaluateActivation: () => ({ ok: false, step: 'no_token', reason, message: '' }),
       }));
       vi.resetModules();
-      const { activationNextStepLine: fresh } = await import('../../../src/cli/init.js');
-      const line = await fresh(mkdtempSync(join(tmpdir(), 'wigolo-caplang-init-')), {}, Date.now());
-      expect(line, `no line for ${reason}`).not.toBeNull();
-      assertCapabilityLanguage(`init next step (${reason})`, line as string);
-      seen.push(line as string);
+      const { activationNextStepLines: fresh } = await import('../../../src/cli/init.js');
+      const lines = await fresh(mkdtempSync(join(tmpdir(), 'wigolo-caplang-init-')), {}, Date.now());
+      expect(lines.length, `no block for ${reason}`).toBeGreaterThan(0);
+      const block = lines.join('\n');
+      assertCapabilityLanguage(`init next step (${reason})`, block);
+      seen.push(block);
       vi.doUnmock('../../../src/account/gate.js');
       vi.resetModules();
     }
-    // Three reasons, three DIFFERENT lines — a single shared line would make the sweep
-    // above cover one string while claiming three.
+    // Three reasons, three DIFFERENT blocks — a single shared block would make the
+    // sweep above cover one string while claiming three.
     expect(new Set(seen).size).toBe(3);
     // And the real export still works unmocked.
-    expect(typeof activationNextStepLine).toBe('function');
+    expect(typeof activationNextStepLines).toBe('function');
   });
 
   it.each([

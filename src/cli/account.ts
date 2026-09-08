@@ -113,6 +113,25 @@ function flagValue(args: readonly string[], name: string): string | null {
  *  and a client-side pattern that rejects a deliverable address is a worse bug
  *  than one that forwards an undeliverable one. This only catches "empty" and
  *  "obviously not an address" before spending a round trip. */
+/** Presence-only flag, matching `--flag` exactly (never `--flag=…`). */
+function hasFlag(args: readonly string[], name: string): boolean {
+  return args.includes(name);
+}
+
+/**
+ * Marketing consent from flags — the headless answer to the interactive prompt.
+ *
+ * DEFAULT FALSE, and that is a legal position rather than a preference (PX brief
+ * §0a.5): consent must be an affirmative act, so an omitted flag is a NO. The
+ * explicit `--no-marketing-consent` exists anyway, because an agent writing the
+ * command line should be able to say "the human declined" and have it read as a
+ * decision in the transcript instead of as an omission.
+ */
+function marketingConsentFromFlags(args: readonly string[]): boolean {
+  if (hasFlag(args, '--no-marketing-consent')) return false;
+  return hasFlag(args, '--marketing-consent');
+}
+
 function looksLikeEmail(value: string): boolean {
   const v = value.trim();
   return v.length >= 3 && v.includes('@') && !v.startsWith('@') && !v.endsWith('@') && !/\s/.test(v);
@@ -244,6 +263,12 @@ async function runSignIn(
   const json = args.includes('--json');
   const write = (line: string): void => { stderr.write(`${line}\n`); };
 
+  // HEADLESS / AGENT-ASSISTED (PX brief §0a.2). `--headless` asks nothing: every
+  // answer arrives as a flag, so an unattended agent can drive the half of
+  // registration that is machine work while the human does the half that is not.
+  const headless = hasFlag(args, '--headless') || hasFlag(args, '--no-input');
+  const codeFlag = flagValue(args, '--code');
+
   const store = new AccountStateStore(dataDir);
   // Read BEFORE verify: "account created" vs "signed in" is keyed on local
   // prior state only. The verify response does not flag creation and we do not
@@ -251,6 +276,10 @@ async function runSignIn(
   const priorState = store.read();
 
   let email = flagValue(args, '--email');
+  if (!email && headless) {
+    write('`--email` is required with `--headless` — there is no prompt to ask on.');
+    return 1;
+  }
   if (!email) email = await prompter.ask('Email: ');
   if (email === null) {
     write('No email address given.');
@@ -262,40 +291,84 @@ async function runSignIn(
     return 1;
   }
 
-  const requested = await client.requestCode(email);
-  if (!requested.ok) {
-    write(`Could not request a sign-in code: ${describeFailure(requested.code, requested.message)}`);
-    return 1;
-  }
-  write('Check your email for the sign-in code.');
+  // The disclosure is SERVED, never client-bundled (PX1 §9). If we cannot fetch
+  // it we cannot show it, and creating an account without showing the wording
+  // the service is publishing is not a thing this command may do — so the flow
+  // stops rather than degrading to a summary of our own. Headless is held to the
+  // SAME rule: the agent relays it to the human, who is the one consenting.
+  let disclosureVersion: string | null = priorState.disclosure_version;
+  const showDisclosure = async (): Promise<boolean> => {
+    const disclosure = await client.telemetryDisclosure();
+    if (!disclosure.ok) {
+      write('Could not load the telemetry disclosure from the accounts service.');
+      write('Registration stopped — nothing was created. Try again when the service is reachable.');
+      return false;
+    }
+    write('');
+    write(disclosure.data.text);
+    write('');
+    disclosureVersion = disclosure.data.version;
+    return true;
+  };
 
-  const code = await prompter.ask('Sign-in code: ');
+  if (headless && codeFlag === null) {
+    // STAGE ONE of the headless flow: the agent asks the service to mail the
+    // human, then STOPS. Nothing is created here — `request-code` is idempotent
+    // and carries no consent — so an agent that runs this without the human's
+    // say-so has done nothing but send them an email they can ignore.
+    if (options.withConsent && !(await showDisclosure())) return 1;
+    const requested = await client.requestCode(email);
+    if (!requested.ok) {
+      write(`Could not request a sign-in code: ${describeFailure(requested.code, requested.message)}`);
+      return 1;
+    }
+    const finish = `wigolo ${verb} --headless --email ${email} --code <code>`;
+    if (json) {
+      stdout.write(`${JSON.stringify({
+        status: 'ok',
+        action: 'claim_pending',
+        email,
+        finish_command: finish,
+        ...(disclosureVersion === null ? {} : { disclosure_version: disclosureVersion }),
+      })}\n`);
+    }
+    write(`A sign-in code is on its way to ${email}.`);
+    write('That mailbox owns this account: nothing exists until its owner hands over the code.');
+    write(`Finish with: ${finish}`);
+    write('Add `--marketing-consent` only if they said yes to product-update email.');
+    return 0;
+  }
+
+  let code: string | null = codeFlag;
+  if (code === null) {
+    const requested = await client.requestCode(email);
+    if (!requested.ok) {
+      write(`Could not request a sign-in code: ${describeFailure(requested.code, requested.message)}`);
+      return 1;
+    }
+    write('Check your email for the sign-in code.');
+    code = await prompter.ask('Sign-in code: ');
+  }
   if (code === null || code.trim().length === 0) {
     write('No sign-in code given.');
     return 1;
   }
 
   let marketingConsent: boolean | undefined;
-  let disclosureVersion: string | null = priorState.disclosure_version;
 
   if (options.withConsent) {
-    // The disclosure is SERVED, never client-bundled (PX1 §9). If we cannot
-    // fetch it we cannot show it, and creating an account without showing the
-    // wording the service is publishing is not a thing this command may do —
-    // so the flow stops rather than degrading to a summary of our own.
-    const disclosure = await client.telemetryDisclosure();
-    if (!disclosure.ok) {
-      write('Could not load the telemetry disclosure from the accounts service.');
-      write('Registration stopped — nothing was created. Try again when the service is reachable.');
-      return 1;
+    if (!(await showDisclosure())) return 1;
+    if (headless) {
+      // No prompt exists, so the flag IS the answer — and an absent flag is a no.
+      marketingConsent = marketingConsentFromFlags(args);
+    } else {
+      // UNTICKED BY DEFAULT (§0a.5, reversing §5 pin 8's "default ON"). Consent
+      // has to be an affirmative act to be valid, which makes the bare-Enter
+      // answer NO and puts the capital letter on the `N`. Product and security
+      // email is transactional and unaffected — this toggle is marketing only.
+      const answer = await prompter.ask('Send me occasional product updates by email? [y/N] ');
+      marketingConsent = parseYesNo(answer, false);
     }
-    write('');
-    write(disclosure.data.text);
-    write('');
-    disclosureVersion = disclosure.data.version;
-
-    const answer = await prompter.ask('Send me occasional product updates by email? [Y/n] ');
-    marketingConsent = parseYesNo(answer, true);
   }
 
   const verified = await client.verify({

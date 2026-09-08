@@ -23,6 +23,7 @@ import {
 } from '../search/core/engine-health.js';
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { telemetryStatus } from '../telemetry/index.js';
+import { TELEMETRY_CLAIM } from '../account/unlocks.js';
 import { readPersistedConfig } from '../persisted-config.js';
 import { authenticatedOriginCount } from '../companion/auth-origin-store.js';
 import { readEscalationCounters, formatEscalationCounterLines } from '../companion/escalation-counters.js';
@@ -1451,7 +1452,9 @@ function checkTelemetryStatus(): void {
   // account`, which already says "Telemetry: on" / "Telemetry: off".
   switch (telemetryStatus()) {
     case 'enabled':
-      out('[wigolo doctor] Telemetry: on — usage and reliability counters are sent to your account (set WIGOLO_TELEMETRY=off to turn it off)');
+      // §0a.4 pins the WORDING of the claim, not its gist, so it is imported rather
+      // than re-typed in the ninth voice — see `account/unlocks.ts`.
+      out(`[wigolo doctor] Telemetry: on — ${TELEMETRY_CLAIM} (set WIGOLO_TELEMETRY=off to turn it off)`);
       break;
     case 'disabled':
       out('[wigolo doctor] Telemetry: off — nothing is queued and nothing is sent');

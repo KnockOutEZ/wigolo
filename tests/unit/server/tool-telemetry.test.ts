@@ -29,7 +29,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { resetConfig } from '../../../src/config.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { setActivationChecker } from '../../../src/server/activation.js';
-import { ACTIVATION_REFUSALS } from '../../../src/account/gate.js';
+import { ACTIVATION_REFUSALS, evaluateActivation } from '../../../src/account/gate.js';
+import { AccountStateStore } from '../../../src/account/state.js';
+import { resolvePinnedKeys } from '../../../src/account/pinned-keys.js';
 import { queuePath } from '../../../src/telemetry/queue.js';
 import { _resetTelemetryForTest, telemetryStatus } from '../../../src/telemetry/index.js';
 import { generateMintKeyPair, mintToken, grant, payload } from '../account/mint-entitlement.js';
@@ -265,13 +267,18 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
     expect(bytes).not.toContain('/secret/');
   });
 
-  it('emits ZERO events for a never-activated call', async () => {
-    // No activate(): the data dir has no state file, so the gate refuses for real.
+  it('emits ZERO events for an unregistered call that SUCCEEDS', async () => {
+    // No activate(): the data dir has no state file, so there is no account id.
+    // Since §0a.1 the call itself goes through — which is what makes this arm say
+    // something. Under PX2 the call was refused, so "nothing was queued" was
+    // over-determined: a report placed anywhere would have had no call to report.
+    // Now the tool really runs, really succeeds, and STILL nothing is queued,
+    // because collection is keyed to an account that does not exist.
     fetchStub.impl.mockResolvedValue({ ok: true, data: { url: PLANTED_URL, markdown: 'x' } });
     const { client, teardown } = await connectClient();
     try {
       const res = await client.callTool({ name: 'fetch', arguments: { url: PLANTED_URL } });
-      expect(res.isError).toBe(true);
+      expect(res.isError).toBeFalsy();
     } finally {
       await teardown();
     }
@@ -280,7 +287,7 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
     expect(existsSync(queuePath(dataDir))).toBe(false);
 
     // And the recorder is not simply broken in this file: the SAME call, on the SAME
-    // process, reports as soon as the install is activated.
+    // process, reports as soon as the install has an account.
     activate();
     _resetTelemetryForTest();
     const second = await connectClient();
@@ -293,23 +300,28 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
   });
 
   /**
-   * THE ARM THAT PINS THE GATE'S PLACEMENT.
+   * THE ARM THAT PINS WHICH LAYER DECIDES, NOW THAT THERE IS ONLY ONE.
    *
-   * The never-activated arm above cannot do it: the telemetry client independently
-   * declines to collect when there is no account id, so a report moved ABOVE the gate
-   * would still write nothing there and that arm would stay green. Measured — the
-   * mutation was run.
+   * Under PX2 there were two: the activation gate refused an expired install's tool
+   * calls, AND the telemetry client independently declines to collect without an
+   * account id. This arm existed to separate them — an EXPIRED install has a real
+   * `account_id`, so the client was collecting and only the gate's refusal kept the
+   * queue empty. §0a.1 deleted that gate from core, so the expired install now
+   * DISPATCHES, and with a collecting client it reports.
    *
-   * An EXPIRED install is the shape that separates the two layers. Its `state.json`
-   * carries a real `account_id`, so the client is collecting; the gate refuses anyway,
-   * because the token is out of validity and out of its 14-day grace. If the report ever
-   * moves above the refusal, this queue stops being empty.
+   * That inversion is the whole point of keeping the arm. The property that survives
+   * is that ACCOUNT IDENTITY, not activation, is what decides whether wigolo reports:
+   * an install with an account reports (this arm), an install without one reports
+   * nothing at all (the never-activated arm above), and the difference is made by
+   * `telemetry/client.ts` alone. If someone re-derives collection from the gate — the
+   * obvious "tidy-up" now that the gate has no other core consumer — an expired
+   * install stops reporting and this queue goes empty again.
    *
    * The condition is forced, not stubbed: a real subscription token is minted with a past
-   * `valid_until` and a `last_refresh_at` aged past the grace window, and the gate walks
-   * all six of its steps over it.
+   * `valid_until` and a `last_refresh_at` aged past the grace window, so the gate really
+   * does evaluate to `expired` while the account id really is present.
    */
-  it('emits ZERO events for an EXPIRED install, whose account id would otherwise be collecting', async () => {
+  it('DISPATCHES and reports for an EXPIRED install — account identity decides, not activation', async () => {
     const past = new Date(Date.now() - 60 * 24 * 3600_000).toISOString();
     const { token } = mintToken(
       mintKeys,
@@ -333,20 +345,25 @@ describe('tool.run / tool.error at the MCP dispatch seam', () => {
       { mode: 0o600 },
     );
 
-    // The precondition this arm rests on: telemetry considers this install activated.
+    // Two preconditions this arm rests on, both asserted rather than assumed:
+    // telemetry considers this install collecting, and the GATE considers it expired.
     expect(telemetryStatus()).toBe('enabled');
+    expect(evaluateActivation(
+      { state: new AccountStateStore(dataDir).read(), keys: resolvePinnedKeys().keys },
+      Date.now(),
+    ).ok).toBe(false);
 
     fetchStub.impl.mockResolvedValue({ ok: true, data: { url: PLANTED_URL, markdown: 'x' } });
     const { client, teardown } = await connectClient();
     try {
       const res = await client.callTool({ name: 'fetch', arguments: { url: PLANTED_URL } });
-      expect(res.isError).toBe(true);
-      expect(textOf(res)).toContain(ACTIVATION_REFUSALS.expired);
+      expect(res.isError).toBeFalsy();
+      expect(JSON.stringify(res)).not.toContain(ACTIVATION_REFUSALS.expired);
     } finally {
       await teardown();
     }
 
-    expect(queueBytes()).toBe('');
+    expect(queuedEvents().map((e) => e.name)).toContain('tool.run');
   });
 
   it('reports nothing for a name outside the ten-tool enum', async () => {

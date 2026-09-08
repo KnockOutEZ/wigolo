@@ -27,30 +27,7 @@ import { createLogger } from '../logger.js';
 import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
-import { checkActivation } from '../server/activation.js';
 
-/**
- * REST paths inside the `/v1` family that the activation gate does NOT cover,
- * because the gate's predicate is "can this reach one of the ten tool handlers"
- * (A-212-1) and these cannot (A-222-3).
- *
- * DISCOVERY — `/openapi.json`, `/v1/openapi.json`, `/v1/tools` describe the
- * surface and execute nothing. They are this transport's `initialize` and
- * `tools/list`, which mini-spec §3 keeps open on MCP; a REST client must be
- * able to learn what a server offers before it has an account.
- *
- * The runs surface used to be the second group, ungated for the same predicate. It left core with
- * the companion extraction, and the group left with it rather than being kept warm for it.
- */
-const REST_UNGATED_EXACT: ReadonlySet<string> = new Set([
-  '/openapi.json',
-  '/v1/openapi.json',
-  '/v1/tools',
-]);
-
-function restPathIsUngated(pathname: string): boolean {
-  return REST_UNGATED_EXACT.has(pathname);
-}
 import type { RestRouter } from './rest/router.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
@@ -388,20 +365,12 @@ export class DaemonHttpServer {
       pathname === '/compat/firecrawl' ||
       pathname.startsWith('/compat/firecrawl/')
     ) {
-      // THE ACTIVATION GATE for the REST families (PX2 mini-spec §3, A-212-2).
-      // Route-level IS tool-level here, and this is the one seam that sits above
-      // BOTH dispatchers: `/v1` goes through `rest/dispatch.ts`, but the
-      // firecrawl-compat handlers call `handleFetch`/`handleSearch`/`handleCrawl`
-      // directly and would walk straight past a check placed inside dispatch.
-      //
-      // See `REST_UNGATED_EXACT` for which paths inside this family are exempt
-      // and why. `/health`, `/sse` and every non-tool route never reach here.
-      if (!restPathIsUngated(pathname)) {
-        const activation = checkActivation();
-        if (!activation.ok) {
-          return this.writeRequestError(res, 403, 'not_activated', activation.message);
-        }
-      }
+      // NO ACTIVATION GATE HERE (PX brief §0a.1, 2026-09-03). PX2 refused every
+      // `/v1` and firecrawl-compat request from an unregistered install; the CEO
+      // consulting pass amended the hard gate to Studio-only, so core's REST
+      // surface runs unregistered. The `requireActivation` seam itself stays —
+      // Studio and the unlock list still ask it the same question — but no core
+      // route turns its answer into a refusal.
       const router = await this.getRestRouter();
       return router.handle(req, res);
     }

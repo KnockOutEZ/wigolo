@@ -78,7 +78,7 @@ export const advancedCategory: CategoryDef = {
       // NOT "anonymous": every batch is authorised as your account, so the counters are
       // attributed to it. Claiming anonymity in the same sentence that says "to your
       // account" was the shipped wording and it contradicted itself.
-      help: 'Send usage and reliability counters to your account: which tools ran, how long they took as coarse buckets, error classes, and the registrable domain of a blocked site. Never page content, queries, full URLs, credentials or file paths. Turn it off here, or set WIGOLO_TELEMETRY=off for a single run — off means nothing is queued and nothing leaves the machine.',
+      help: 'Send usage and reliability counters to your account: which tools ran, how long they took as coarse buckets, error classes, and the registrable domain of a blocked site. Never page content, queries, full URLs, credentials or file paths. Turn it off here, or set WIGOLO_TELEMETRY=off for a single run — off means nothing is queued and no counter reaches the wire.',
     },
     {
       key: 'WIGOLO_DAEMON_HOST',

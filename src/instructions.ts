@@ -65,32 +65,40 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 Full usage detail: read resource \`wigolo://docs/usage\`.`;
 
 /**
- * The one-line activation notice prepended to the per-session instructions when
- * the install has no account yet (PX2 mini-spec §3).
+ * The one-line unlock notice prepended to the per-session instructions when the
+ * install has no account yet (PX brief §0a.1-3, CEO consulting pass 2026-09-03).
  *
- * It exists because the refusal a harness gets back from `tools/call` arrives
- * AFTER the model has already decided to call a tool. Saying it once, up front,
- * is the difference between an agent that reports "wigolo needs an account" and
- * one that keeps retrying a tool it can never run. It is deliberately not a
- * second copy of the refusal line — the refusal is the gate's to word (see
- * `src/account/gate.ts`); this only tells the model the surface is inert.
+ * WHAT IT USED TO BE, AND WHY THAT MATTERS TO ITS WORDING. Under PX2 this line
+ * said the surface was INERT — every `tools/call` was refused until an account
+ * existed — because a harness only learns about a refusal after the model has
+ * already committed to a tool call. §0a.1 made the hard gate Studio-only, so
+ * the notice's whole premise is gone: nothing here is refused. What replaced it
+ * has the opposite failure mode to avoid. A model that reads "not registered"
+ * and infers "so this will not work" would stop calling tools that work
+ * perfectly, which is exactly the outcome the old line was written to cause. So
+ * the first clause is the capability, the rest is the offer, and the word
+ * "optional" is doing real work.
+ *
+ * It carries no per-unlock detail: the four-line list is the footer's job
+ * (`src/account/unlocks.ts`), and every character here is charged against the
+ * per-session instruction budget on every single session.
  */
-export const ACTIVATION_NOTICE =
-  'NOT ACTIVATED: this wigolo install has no account, so every tool call is refused until `wigolo register` completes (already have one? `wigolo login`). Registering takes effect on the next call — no restart.';
+export const UNLOCK_NOTICE =
+  'ACCOUNT: none on this install. Every tool below works anyway — registration is optional and only ADDS to wigolo (sync, marketplace, higher pacing and watch limits). `wigolo register` when the user wants those; never block a tool call on it.';
 
 /**
- * The per-session instructions for a server, with the activation notice when the
- * install is un-activated.
+ * The per-session instructions for a server, with the unlock notice when the
+ * install has no account.
  *
- * HONEST LIMITATION, stated in the mini-spec rather than papered over: this
- * string is composed once at server construction — per session on the daemon,
- * per PROCESS on stdio — so after registering, the notice lingers until the
- * harness restarts the server. Harmless, because tool calls re-check per
- * dispatch and start working immediately; the notice's own last sentence says
- * exactly that, so a model reading a stale notice is not misled.
+ * HONEST LIMITATION, unchanged from PX2 and still worth stating: this string is
+ * composed once at server construction — per session on the daemon, per PROCESS
+ * on stdio — so after registering, the notice lingers until the harness restarts
+ * the server. It was harmless then because tool calls re-checked per dispatch;
+ * it is more harmless now, because a stale copy of this notice describes an
+ * install that has strictly more capability than the notice claims.
  */
 export function serverInstructions(activated: boolean): string {
-  return activated ? WIGOLO_INSTRUCTIONS : `${ACTIVATION_NOTICE}\n\n${WIGOLO_INSTRUCTIONS}`;
+  return activated ? WIGOLO_INSTRUCTIONS : `${UNLOCK_NOTICE}\n\n${WIGOLO_INSTRUCTIONS}`;
 }
 
 // Full usage guide. Surfaced via the wigolo://docs/usage resource so MCP

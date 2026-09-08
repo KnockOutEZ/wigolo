@@ -4,10 +4,18 @@ wigolo's privacy model is structural, not a policy promise: the software runs on
 machine, stores on your disk, and the only thing it can report is a closed list of counters
 that page content, queries and URLs are not representable in.
 
-As of 0.3.0 there is one vendor backend — the account service that activates your install
-and receives usage and reliability telemetry. What it can receive is bounded by the code,
-not by a promise, and the telemetry half is a single switch away from silent. Both are
-below.
+As of 0.3.0 there is one vendor backend — the account service that registers you and
+receives usage and reliability telemetry. What it can receive is bounded by the code, not by
+a promise, and the telemetry half is a single switch away from silent. Both are below.
+
+The claim in one sentence, and it is the same sentence the CLI, the first-run output and
+your agent are shown: **no page content, URLs, or credentials leave your machine; usage
+stats do, off with one flag.** Earlier copy said nothing left your machine at all. That was
+never true of the counters and the wording is retired; what follows is the exact list.
+
+No tool is gated on an account — a machine that has never registered runs all ten — and an
+install with no account reports nothing at all, because counters are attributed to an
+account or not collected ([below](#usage-and-reliability-telemetry)).
 
 ## Everything stays local
 
@@ -103,7 +111,7 @@ wigolo config --set WIGOLO_TELEMETRY=off   # permanently
 ```
 
 `off`, `no`, `false` and `0` all mean off. Off means nothing is queued, nothing is written
-to `telemetry/`, and nothing leaves the machine — the switch is read before an event is
+to `telemetry/`, and no counter reaches the wire — the switch is read before an event is
 built, not before a batch is sent. Nothing is queued or sent on an install that has never
 registered either, because there is no account to attribute counters to.
 
