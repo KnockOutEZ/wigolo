@@ -1,4 +1,5 @@
 import type { CategoryDef } from './types.js';
+import { field } from './from-registry.js';
 import { validateNewTabSearchEngine } from '../../../config.js';
 
 export const searchCategory: CategoryDef = {
@@ -6,55 +7,48 @@ export const searchCategory: CategoryDef = {
   label: 'Search',
   description: 'Search backend, reranker, and embedding model',
   fields: [
-    {
-      key: 'WIGOLO_SEARCH',
-      settingsPath: 'searchBackend',
+    field('searchBackend', {
       label: 'Backend',
       kind: 'select',
       options: [
         { value: 'core', label: 'Core', hint: 'direct engines + RRF + ML rerank' },
-        { value: 'searxng', label: 'SearXNG', hint: 'legacy aggregator' },
+        { value: 'searxng', label: 'Aggregator', hint: 'legacy metasearch aggregator' },
         { value: 'hybrid', label: 'Hybrid', hint: 'core with smart fallback' },
       ],
-      default: 'core',
       help: 'Search backend',
-    },
-    {
-      key: 'WIGOLO_NEW_TAB_SEARCH_ENGINE',
-      settingsPath: 'newTabSearchEngine',
+    }),
+    field('newTabSearchEngine', {
       label: 'New-tab search engine',
       kind: 'text',
-      default: 'google',
       help: 'google, duckduckgo, bing, wigolo, or an HTTPS URL containing {searchTerms}',
       validate: (value) => {
         const result = validateNewTabSearchEngine(value);
         return result.valid ? null : result.message;
       },
       propagateToAgents: false,
-    },
-    {
-      key: 'WIGOLO_RERANKER',
-      settingsPath: 'reranker',
+    }),
+    field('reranker', {
+      // Not a toggle: the resolver reads three values and ignores a boolean
+      // outright (`envStr` drops a non-string persisted value), so the shipped
+      // on/off switch wrote a setting that could never take effect.
       label: 'Reranker',
-      kind: 'toggle',
-      default: true,
-      help: 'Use ML reranker for results',
-    },
-    {
-      key: 'WIGOLO_RERANKER_MODEL',
-      settingsPath: 'rerankerModel',
+      kind: 'select',
+      options: [
+        { value: 'onnx', label: 'ML reranker', hint: 'default — local cross-encoder' },
+        { value: 'none', label: 'Off', hint: 'engine order, no rerank' },
+        { value: 'custom', label: 'Custom', hint: 'supplied by a plugin' },
+      ],
+      help: 'Which reranker orders search results',
+    }),
+    field('rerankerModel', {
       label: 'Reranker model',
       kind: 'text',
-      default: 'ms-marco-MiniLM-L-12-v2',
-      help: 'FlashRank model name',
-    },
-    {
-      key: 'WIGOLO_EMBEDDING_MODEL',
-      settingsPath: 'embeddingModel',
+      help: 'Reranker model name',
+    }),
+    field('embeddingModel', {
       label: 'Embedding model',
       kind: 'text',
-      default: 'all-MiniLM-L6-v2',
-      help: 'Sentence-transformers model name',
-    },
+      help: 'Embedding model name',
+    }),
   ],
 };

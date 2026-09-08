@@ -3,8 +3,19 @@
  *
  * Returns a structured result for the Dashboard to render. Never reaches into
  * SQLite directly; always delegates to the public cache/store.ts export.
+ *
+ * The database connection is opened here when the process has not opened one
+ * yet. `wigolo cache --stats` succeeds because its dispatcher opens the
+ * database first; `wigolo config --cache-stats` reported "Database not
+ * initialized" and exited 1 on the same data directory purely because nothing
+ * on that path had opened it. Opening it here fixes both callers rather than
+ * the one flag, and matches what every other reader of the cache does.
  */
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { getCacheStats } from '../../../cache/store.js';
+import { initDatabase, isDatabaseInitialized } from '../../../cache/db.js';
+import { getConfig } from '../../../config.js';
 
 export interface CacheStatsResult {
   totalEntries: number;
@@ -15,8 +26,20 @@ export interface CacheStatsResult {
   error?: string;
 }
 
-export async function getCacheStatsAction(): Promise<CacheStatsResult> {
+export interface CacheStatsOpts {
+  /** Override the data directory holding `wigolo.db`. Defaults to the resolved config. */
+  dataDir?: string;
+}
+
+export async function getCacheStatsAction(
+  opts: CacheStatsOpts = {},
+): Promise<CacheStatsResult> {
   try {
+    if (!isDatabaseInitialized()) {
+      const dataDir = opts.dataDir ?? getConfig().dataDir;
+      mkdirSync(dataDir, { recursive: true });
+      initDatabase(join(dataDir, 'wigolo.db'));
+    }
     const stats = getCacheStats();
     return {
       totalEntries: stats.total_urls,

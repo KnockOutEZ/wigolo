@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { agentsCategory } from '../../../../../src/cli/tui/schema/agents.js';
+import { configKeyBySettingsKey } from '../../../../../src/config.js';
+
+/** The registry is the only place a default or an env-var name is declared. */
+function registered(settingsKey: string) {
+  const def = configKeyBySettingsKey(settingsKey);
+  expect(def, `${settingsKey} missing from CONFIG_KEYS`).toBeDefined();
+  return def!;
+}
+
 
 describe('agentsCategory', () => {
   it('has id agents with a non-empty label and description', () => {
@@ -13,7 +22,14 @@ describe('agentsCategory', () => {
     const field = agentsCategory.fields[0]!;
     expect(field.kind).toBe('multiselect');
     expect(field.settingsPath).toBe('agents');
-    expect(field.key).toBe('WIGOLO_AGENTS');
+    // No env var resolves this list, so there is no env-var name to print and
+    // none to write into an agent's env block. It was printed and propagated
+    // as WIGOLO_AGENTS, which nothing anywhere reads.
+    expect(registered('agents').envVar).toBeNull();
+    expect(field.key).toBe('agents');
+    expect(field.propagateToAgents).toBe(false);
+    // The old name keeps working for `--set`, which is where it was documented.
+    expect(registered('agents').legacyKeys).toContain('WIGOLO_AGENTS');
   });
 
   it('lists exactly 5 agent options: claude-code, vscode, zed, windsurf, cursor', () => {
@@ -34,6 +50,7 @@ describe('agentsCategory', () => {
   it('default is an empty array (no agents pre-selected)', () => {
     const field = agentsCategory.fields[0]!;
     expect(Array.isArray(field.default)).toBe(true);
+    expect(field.default).toEqual(registered('agents').default);
     expect(field.default).toEqual([]);
   });
 

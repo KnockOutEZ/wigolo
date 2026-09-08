@@ -33,8 +33,11 @@ vi.mock('../../../src/cli/tui/actions/index.js', () => ({
   applyHeadlessSet: applyHeadlessSetMock,
 }));
 
-// Stub getConfig so dataDir is deterministic.
-vi.mock('../../../src/config.js', () => ({
+// Stub getConfig so dataDir is deterministic. Partial: the schema catalog
+// reads CONFIG_KEYS from the same module at import time, and replacing the
+// whole module leaves the registry undefined.
+vi.mock('../../../src/config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/config.js')>()),
   getConfig: vi.fn(() => ({ dataDir: '/tmp/wigolo-test-datadir' })),
 }));
 

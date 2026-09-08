@@ -69,16 +69,28 @@ export interface ApplyHeadlessSetOpts {
   fs?: WritableFs;
 }
 
+/**
+ * Resolve `--set <key>` to a field. Matched, in order: the identifier the CLI
+ * prints, the settings key, and any identifier an older build printed for the
+ * same setting.
+ *
+ * The legacy arm exists because the shipped catalog advertised six env-var
+ * names the resolver never read (`WIGOLO_CACHE_TTL_SEARCH`,
+ * `WIGOLO_MAX_BROWSERS`, …) and those names were the documented `--set` keys.
+ * They keep writing the right setting; only the printed name changed.
+ */
 function findField(
   catalog: ReadonlyArray<CategoryDef>,
   key: string,
 ): FieldDef | null {
+  let legacyMatch: FieldDef | null = null;
   for (const category of catalog) {
     for (const field of category.fields) {
-      if (field.key === key) return field;
+      if (field.key === key || field.settingsPath === key) return field;
+      if (field.legacyKeys?.includes(key)) legacyMatch = field;
     }
   }
-  return null;
+  return legacyMatch;
 }
 
 /**

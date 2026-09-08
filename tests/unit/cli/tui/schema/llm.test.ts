@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { llmCategory } from '../../../../../src/cli/tui/schema/llm.js';
+import { configKeyBySettingsKey } from '../../../../../src/config.js';
+
+/** The registry is the only place a default or an env-var name is declared. */
+function registered(settingsKey: string) {
+  const def = configKeyBySettingsKey(settingsKey);
+  expect(def, `${settingsKey} missing from CONFIG_KEYS`).toBeDefined();
+  return def!;
+}
+
 
 describe('llmCategory', () => {
   it('has id llm with the spec label/description', () => {
@@ -24,7 +33,11 @@ describe('llmCategory', () => {
       'ollama',
     ]);
     expect(provider?.options?.map((o) => o.value)).not.toContain('custom');
-    expect(provider?.default).toBe('anthropic');
+    // The catalog claimed anthropic; the resolver leaves this unset, and a
+    // provider shown as chosen when none is chosen is what sent users looking
+    // for a key they never configured.
+    expect(provider?.default).toBe(registered('llmProvider').default);
+    expect(provider?.default).toBeNull();
   });
 
   it('exposes ollama as a keyless local-LLM choice (no api-key field shown when selected)', () => {
@@ -52,6 +65,8 @@ describe('llmCategory', () => {
     expect(key?.secret).toBe(true);
     expect(key?.propagateToAgents).toBe(true);
     expect(key?.key).toBe('WIGOLO_LLM_API_KEY');
+    // A masked field must never carry a default — it would be printed.
+    expect(key?.default).toBeUndefined();
     // Help text must mention the keychain so users understand where secrets land.
     expect(key?.help).toMatch(/keychain/i);
   });

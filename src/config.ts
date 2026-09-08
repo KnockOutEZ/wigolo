@@ -1141,6 +1141,14 @@ export interface ConfigKeyDef {
    * because none of them is an env var anything reads.
    */
   legacyKeys?: readonly string[];
+  /**
+   * True when `default` is a fallback the resolver substitutes rather than a
+   * value a user should save. A read-only surface still prints it — that is
+   * what the resolver returns — but an editor must not pre-fill it, because
+   * the editor persists whatever it starts from and `accountsUrl` would end up
+   * pinned to a sentinel hostname in config.json.
+   */
+  sentinelDefault?: true;
 }
 
 /**
@@ -1335,6 +1343,8 @@ export const CONFIG_KEYS: readonly ConfigKeyDef[] = [
     kind: 'string',
     default: PRODUCTION_ACCOUNTS_URL,
     resolved: true,
+    sentinelDefault: true,
+    defaultDisplay: `${PRODUCTION_ACCOUNTS_URL} (default — the hosted accounts service)`,
   },
   {
     settingsKey: TELEMETRY_SETTINGS_KEY,

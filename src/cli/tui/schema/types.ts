@@ -20,12 +20,27 @@ export interface FieldOption {
 }
 
 export interface FieldDef {
+  /**
+   * The identifier this field is printed and accepted under: the env var when
+   * one resolves the key, the settings key when none does. Sourced from
+   * `CONFIG_KEYS` via `field()` — never written by hand.
+   */
   key: string;
   settingsPath: string;
+  /**
+   * The env var the resolver reads for this key, or `null` when none does.
+   * `null` means the value must not be propagated into an agent's env block:
+   * writing a name nothing reads is what the shipped catalog did.
+   */
+  envVar?: string | null;
+  /** Identifiers an older build accepted for this key. Accepted, never printed. */
+  legacyKeys?: readonly string[];
   label: string;
   kind: FieldKind;
   help?: string;
   default?: unknown;
+  /** How to render `default` when the bare value would mislead. */
+  defaultDisplay?: string;
   options?: ReadonlyArray<FieldOption>;
   min?: number;
   max?: number;

@@ -554,9 +554,17 @@ function formatFieldValue(field: FieldDef, raw: unknown): string {
     return raw === undefined || raw === '' ? '(unset)' : '****';
   }
   if (raw === undefined || raw === null) {
-    return field.default === undefined ? '(unset)' : `${String(field.default)} (default)`;
+    if (field.defaultDisplay !== undefined) return field.defaultDisplay;
+    // A null default is genuinely "no value", not the string "null".
+    if (field.default === undefined || field.default === null) return '(unset)';
+    if (Array.isArray(field.default)) {
+      return field.default.length === 0
+        ? '(none)'
+        : `${field.default.join(', ')} (default)`;
+    }
+    return `${String(field.default)} (default)`;
   }
-  if (Array.isArray(raw)) return raw.join(', ');
+  if (Array.isArray(raw)) return raw.length === 0 ? '(none)' : raw.join(', ');
   return String(raw);
 }
 

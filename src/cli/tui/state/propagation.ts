@@ -40,6 +40,15 @@ import type { AgentTarget } from './agent-targets.js';
 
 const log = createLogger('cli');
 
+/**
+ * The env var to mirror a field under in an agent's MCP env block, or null
+ * when no env var resolves the key. Fields predating the registry carry no
+ * `envVar`; their `key` was the env name, so fall back to it.
+ */
+function agentEnvVar(field: FieldDef): string | null {
+  return field.envVar === undefined ? field.key : field.envVar;
+}
+
 const CONFIG_FILE_MODE = 0o600;
 const BACKUP_DIR_MODE = 0o700;
 const BACKUP_RETENTION = 5;
@@ -351,8 +360,9 @@ export async function save(opts: SaveOpts): Promise<SaveResult> {
     try {
       const result = await opts.secretStore.set(w.key, w.value);
       secretLocations[w.key] = result.location;
-      if (w.field.propagateToAgents !== false) {
-        propagationSet[w.field.key] = w.value;
+      const secretEnvVar = agentEnvVar(w.field);
+      if (w.field.propagateToAgents !== false && secretEnvVar !== null) {
+        propagationSet[secretEnvVar] = w.value;
       }
     } catch (err) {
       return {
@@ -416,13 +426,18 @@ export async function save(opts: SaveOpts): Promise<SaveResult> {
   }
 
   // 5. Build the propagation set for non-secret fields. Plain settings whose
-  //    field declares propagateToAgents !== false are mirrored under the
-  //    field's env-var key (e.g. browserTypes -> WIGOLO_BROWSER_TYPES).
+  //    field declares propagateToAgents !== false are mirrored under the env
+  //    var the resolver reads for that key (e.g. browserTypes ->
+  //    WIGOLO_BROWSER_TYPES), and skipped when no env var resolves it.
   for (const [settingsPath, value] of Object.entries(plainSettings)) {
     const field = index.bySettingsPath.get(settingsPath);
     if (!field) continue; // unknown keys never propagate
     if (field.propagateToAgents === false) continue;
-    propagationSet[field.key] = String(value);
+    // A field with no env var must not be mirrored: writing a name nothing
+    // reads is what the shipped catalog did with WIGOLO_AGENTS.
+    const envVar = agentEnvVar(field);
+    if (envVar === null) continue;
+    propagationSet[envVar] = String(value);
   }
 
   // 6. Fan out to each detected agent (parallel, fail-isolated).
