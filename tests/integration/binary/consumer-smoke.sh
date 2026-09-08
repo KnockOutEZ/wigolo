@@ -53,6 +53,34 @@ defer() {
   printf '  gate %s — refused by the activation gate, not run (#336)\n' "$1" >&2
 }
 
+# resolve_exe <path> — the path with every symlink in its final component resolved.
+#
+# WHY THIS EXISTS. Both real acquisition paths hand this script a SYMLINK, not the executable:
+# install.sh links `~/.local/bin/wigolo` at an absolute path inside `~/.wigolo/dist/...`, and
+# brew links `<prefix>/bin/wigolo` at a relative path inside the keg. Deriving the installed
+# tree from `dirname` of the link gives `~/.local` or `<brew prefix>` — the link's directory,
+# not the artifact's — and the G1 arm below then copies the wrong tree. On the install.sh leg
+# that copy still ran, because the copied absolute symlink pointed back at the untouched
+# original: the arm re-ran the binary from its original location and called that relocation.
+# `pwd -P` on the resolved path is what makes G1 an assertion instead of a tautology.
+#
+# `readlink` without `-f`: BSD readlink and GNU readlink agree on the one-hop form, and the
+# loop is the portable way to reach the end of a chain.
+resolve_exe() {
+  p="$1"
+  n=0
+  while [ -L "$p" ]; do
+    n=$((n + 1))
+    [ "$n" -lt 40 ] || { printf '%s\n' "$1"; return 0; }
+    t="$(readlink "$p")"
+    case "$t" in
+      /*) p="$t" ;;
+      *) p="$(dirname "$p")/$t" ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
+}
+
 # run_capture <outfile> <cmd...> — never lets a non-zero child kill the script.
 run_capture() {
   out="$1"
@@ -95,7 +123,7 @@ fi
 # space in its name, and run it from there. `bin/wigolo` has to find `libexec/` from its
 # own realpath; a baked absolute path passes at the original location and only at it.
 # ---------------------------------------------------------------------------
-ROOT="$(cd "$(dirname "$EXE")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(resolve_exe "$EXE")")/.." && pwd -P)"
 RELOC="$TMP/a moved/place"
 mkdir -p "$RELOC"
 cp -R "$ROOT" "$RELOC/wigolo"
