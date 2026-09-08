@@ -418,3 +418,48 @@ jobs:
             -ReleaseBase "https://github.com/${{ github.repository }}/releases/download" `
             -Tag "${{ github.ref_name }}" `
             -Semver "${{ needs.plan.outputs.semver }}"
+
+  # ---------------------------------------------------------------------------
+  # BIN-6 — the homebrew tap's version bump.
+  #
+  # WHY THIS JOB IS A POKE AND NOT THE BUMP ITSELF. The formula lives in
+  # `KnockOutEZ/homebrew-wigolo`, and `github.token` is scoped to this repository: writing the
+  # bump from here needs a cross-repo token, which is a thing that expires, gets revoked and is
+  # missing exactly when a release is cut. So the PR is opened by the tap's own workflow, with
+  # the tap's own `GITHUB_TOKEN`, from a public release feed it can read without credentials —
+  # and that workflow ALSO runs hourly on a schedule. This job is the accelerator: with
+  # `HOMEBREW_TAP_TOKEN` present the bump PR appears in seconds, without it the identical PR
+  # appears within the hour. A missing token delays the bump; it cannot lose it, and it must
+  # never fail a release that has already published its assets.
+  #
+  # WHY IT NEEDS `smoke`. The bump asks the tap to point users at these artifacts. The consumer
+  # smoke above is the evidence they are installable at all, so a release it rejected must not
+  # reach the formula.
+  #
+  # WHY THE POKE CARRIES NO INSTRUCTION. The payload names the tag for the tap's log and
+  # nothing else. The tap re-resolves its own target — newest release with binary assets,
+  # stable preferred over prerelease — because a scratch tag on the binary-only channel is a
+  # real published prerelease, and a payload the tap obeyed would let one become the formula.
+  tap:
+    name: poke the homebrew tap
+    needs: [plan, release, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Ask the tap to open its version-bump PR
+        shell: bash
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP: KnockOutEZ/homebrew-wigolo
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set — not poking $TAP. Its hourly bump" \
+                 "workflow will open the PR for $TAG on its own within the hour."
+            exit 0
+          fi
+          printf '{"event_type":"wigolo-release","client_payload":{"tag":"%s"}}\n' "$TAG" \
+            | GH_TOKEN="$TAP_TOKEN" gh api -X POST "repos/$TAP/dispatches" --input -
+          echo "poked $TAP; its bump workflow opens the PR for $TAG"
