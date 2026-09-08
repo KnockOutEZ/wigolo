@@ -29,6 +29,16 @@ export interface CacheStatsResult {
 export interface CacheStatsOpts {
   /** Override the data directory holding `wigolo.db`. Defaults to the resolved config. */
   dataDir?: string;
+  /**
+   * Override how the database is opened. Injected by tests so a unit test does
+   * not create a real SQLite file; production passes nothing.
+   */
+  openDatabase?: (dataDir: string) => void;
+}
+
+function openDatabaseAt(dataDir: string): void {
+  mkdirSync(dataDir, { recursive: true });
+  initDatabase(join(dataDir, 'wigolo.db'));
 }
 
 export async function getCacheStatsAction(
@@ -36,9 +46,7 @@ export async function getCacheStatsAction(
 ): Promise<CacheStatsResult> {
   try {
     if (!isDatabaseInitialized()) {
-      const dataDir = opts.dataDir ?? getConfig().dataDir;
-      mkdirSync(dataDir, { recursive: true });
-      initDatabase(join(dataDir, 'wigolo.db'));
+      (opts.openDatabase ?? openDatabaseAt)(opts.dataDir ?? getConfig().dataDir);
     }
     const stats = getCacheStats();
     return {
