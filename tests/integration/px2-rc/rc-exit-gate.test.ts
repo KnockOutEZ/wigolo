@@ -30,7 +30,7 @@
  * activation had already been taken away from it.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -194,24 +194,6 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     tarball = await packWigolo();
     full = await installTarball(tarball.path, { omitOptional: false });
 
-    // THE BROWSER ENGINE IS A PREREQUISITE, NOT AN ARM'S PROBLEM.
-    //
-    // `installTarball` is npm alone, so the engine is absent — and the fetch
-    // router pins a host to the tier that last served it. The fixture's short
-    // pages escalate once, the host stays pinned at the browser tier, and a later
-    // `force_refresh` therefore STARTS there with no lower-tier content to fall
-    // back to: `browser_engine_unavailable`, plus a background install racing the
-    // rest of the run. Measured twice on this fixture, red both times in the
-    // registered ten-tool arm's diff seeding.
-    //
-    // Warming it here is what an ordinary install does at setup, and it is the
-    // only fix that does not make an arm's result depend on how far a download
-    // got. Asserted rather than best-effort, for the reason `rc-gate-env.ts`
-    // gives: once the gate says it runs, a missing prerequisite throws instead of
-    // quietly reporting green about something it never exercised.
-    const warmed = await runCli(full, ['warmup', '--browser'], { env, timeoutMs: 900_000 });
-    expect(warmed.code, `warming the browser engine failed:\n${warmed.combined}`).toBe(0);
-
     record(
       'service',
       `accounts service: ${service.url}\nkid: ${service.kid}\n` +
@@ -246,6 +228,11 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
    * reading it would guess.
    */
   async function resetNudgeState(): Promise<void> {
+    // `mkdir -p` because the directory is created by whichever surface writes the
+    // account state first, and an arm run in isolation (`-t`) has not run them.
+    // Measured: without it the arm dies on ENOENT instead of asserting anything,
+    // which is exactly the shape that makes a forced-condition check unreadable.
+    await mkdir(join(full.dataDir, 'account'), { recursive: true });
     await writeFile(
       join(full.dataDir, 'account', 'nudge.json'),
       `${JSON.stringify({ successful_runs: 0, nudged: false }, null, 2)}\n`,
@@ -385,15 +372,26 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
     try {
       const footed: string[] = [];
       let lastJson = '';
+      let footerText = '';
       for (let i = 0; i < NUDGE_AFTER_RUNS; i += 1) {
         const outcome = await session.call('cache', { stats: true });
         expect(outcome.isError, `cache call ${i + 1} errored:\n${outcome.text}`).toBe(false);
-        if (outcome.text.includes(UNREGISTERED_RUNS_LINE)) footed.push(`call ${i + 1}`);
+        if (outcome.text.includes(UNREGISTERED_RUNS_LINE)) {
+          footed.push(`call ${i + 1}`);
+          footerText = outcome.text;
+        }
         lastJson = firstTextBlock(outcome.raw);
       }
 
       expect(footed.length, `the footer appeared on ${footed.join(', ')}`).toBe(1);
       expect(footed[0]).toBe(`call ${NUDGE_AFTER_RUNS}`);
+      // §0a.3: the footer's job is to say what an account ADDS, so the list is the
+      // assertion — a footer that only invited the reader to register would be the
+      // wall being announced late, which is the thing §0a.1 removed.
+      for (const unlock of UNLOCK_LINES) {
+        expect(footerText, `the MCP footer omitted the unlock "${unlock}"`).toContain(unlock);
+      }
+      expect(footerText).toContain(TELEMETRY_CLAIM_LINE);
       const footedText = lastJson;
       // The footer is a SEPARATE content block. Every core tool returns JSON in the
       // first one, so prose concatenated onto it would break every caller that

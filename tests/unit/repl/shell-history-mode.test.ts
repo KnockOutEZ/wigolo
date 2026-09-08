@@ -25,12 +25,17 @@ const fsMock = vi.hoisted(() => ({
 
 vi.mock('node:fs', () => fsMock);
 
-// This file replaces node:fs WHOLESALE, so the activation gate at the top of
-// `startShell` cannot read the account state the suite seeds on the real disk
-// (tests/setup.ts): it would refuse before readline ever attaches and take every
-// history-mode assertion below with it. The gate is not what this file is about,
-// and its own arms — driven against a real un-activated data dir with a real
-// signed token — live in tests/unit/server/activation-gate.test.ts and
+// This file replaces node:fs WHOLESALE, so anything `startShell` reads from the
+// real disk has to be stubbed here or it reads the mock's empty world instead.
+// The account state the suite seeds (tests/setup.ts) is one of those things.
+//
+// It mattered more before PX2-R: an activation gate stood at the top of
+// `startShell` and would have refused before readline ever attached, taking every
+// history-mode assertion below with it. §0a.1 deleted that gate, so what is left
+// on this path is the registration nudge — which reads and WRITES the counter
+// file, i.e. the mocked fs. Both nudge seams are stubbed to no-ops for the same
+// reason the gate was: neither is what this file is about, and their own arms
+// live in tests/unit/server/activation-gate.test.ts and
 // tests/integration/activation-cli.test.ts.
 vi.mock('../../../src/server/activation.js', () => ({
   checkActivation: () => ({
@@ -45,6 +50,8 @@ vi.mock('../../../src/server/activation.js', () => ({
       ],
     },
   }),
+  noteSuccessfulToolRun: () => {},
+  claimRegistrationNudge: () => null,
 }));
 
 vi.mock('../../../src/repl/commands/fetch.js', () => ({ executeFetch: vi.fn() }));
