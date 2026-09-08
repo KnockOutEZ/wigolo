@@ -12,8 +12,9 @@
  *
  *  1. **Nothing without a live grant.** No grant, an unknown token, a revoked one or an expired one is
  *     refused before a statement is prepared. Read grants cannot write.
- *  2. **Refusals never leave residue.** Every refusal is decided BEFORE the storage is touched, and every
- *     write runs inside one transaction, so an op either completes or leaves the table byte-identical.
+ *  2. **Refusals never leave residue.** Every refusal is decided BEFORE the protected table is touched;
+ *     the schema-skew decision reads only the migration ledger. Every write runs inside one transaction,
+ *     so an op either completes or leaves the table byte-identical.
  *  3. **Identifiers are never interpolated from the wire.** Table names come from the CLOSED contract set;
  *     column names are checked against the table's real columns read from the database itself. Values are
  *     always bound. A wire that names a column the table does not have is a malformed op, not a refusal —
