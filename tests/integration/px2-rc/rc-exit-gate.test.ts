@@ -555,6 +555,23 @@ describe.skipIf(RC_GATE_DISABLED)('PX2 RC exit gate — fresh install, registrat
               `<main><h1>Changelog</h1><p>${CHANGELOG_V2}</p></main></body></html>`,
           );
 
+          // WHICH OF THE TWO IT WAS (#521). Not the fixture, and not the
+          // warmup/acquirer disagreement the issue suspected either — measured on a
+          // fresh packed install with a live network, `wigolo warmup --browser`
+          // reports `Browser: ok` and the NEXT process's acquirer reports the driver
+          // and the binary both present. The disagreement was never real; under this
+          // suite's egress fence the driver simply cannot be acquired at all, which is
+          // a correct answer for a machine with no network.
+          //
+          // The red was a PRODUCT defect one layer up. `/changelog`'s body is under the
+          // 200-character visible-text threshold, so the seeding fetch tripped SPA-shell
+          // detection and MARKED the fixture host `preferPlaywright`. That first fetch
+          // still succeeded — the escalation had the HTTP result in hand and degraded to
+          // it. This re-read then took the domain-marked path, which started AT the
+          // browser tier with nothing in hand and hard-failed `browser_engine_unavailable`
+          // for a page HTTP had just served in full. `router.ts` now defers a lower-tier
+          // fetch onto that branch, so the arm passes through HTTP and never depends on
+          // whether an engine could be acquired.
           const refreshed = await session.call('fetch', {
             url: `${site.url}/changelog`,
             force_refresh: true,

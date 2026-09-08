@@ -792,6 +792,26 @@ export class SmartRouter {
       screenshot,
       signal,
       stealth: stealthForBrowser(getConfig(), { antiBotEscalation: false }),
+      // WHY A THUNK AND NOT A `fallback`. Every OTHER escalation reaches the browser
+      // holding an HTTP result it already paid for, so it hands that over as `fallback`
+      // for free. This path starts AT the browser because the host is MARKED, so there
+      // is no such result — and eagerly fetching one would put a full HTTP round-trip in
+      // front of every domain-marked fetch on a healthy machine, which is the cost the
+      // mark exists to avoid. Deferring it means the lower tier is paid for only on the
+      // hosts that actually cannot reach the browser rung.
+      //
+      // The mark is a PREFERENCE, not a requirement: it is set by an under-threshold
+      // body, a `__NEXT_DATA__` blob or a high script ratio, none of which claim HTTP
+      // cannot serve the page. Without this, a machine with no browser engine answered
+      // `browser_engine_unavailable` for a page plain HTTP had returned in full one call
+      // earlier — and on a fresh install with no engine that is every fetch of the host,
+      // forever.
+      fallbackFetch: async () => {
+        if (!this.httpClient) return null;
+        const lower = await this.httpClientFetch(url, { headers, conditionalHeaders, signal });
+        this.ensureStats(domain);
+        return this.toRawFetchResult(lower);
+      },
     });
   }
 
@@ -871,11 +891,20 @@ export class SmartRouter {
 
   private async browserFetch(
     url: string,
-    options: BrowserFetchArgs & { fallback?: RawFetchResult },
+    options: BrowserFetchArgs & {
+      fallback?: RawFetchResult;
+      /**
+       * A lower tier that has not been fetched yet, for the call sites that reach the
+       * browser without one in hand. Invoked ONLY when acquisition fails, so a healthy
+       * machine never pays for it. Resolving `null` (or throwing) means the lower tier
+       * had nothing to give, and the actionable error stands.
+       */
+      fallbackFetch?: () => Promise<RawFetchResult | null>;
+    },
   ): Promise<RawFetchResult | StageError> {
     if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
 
-    const { fallback, ...browserOptions } = options;
+    const { fallback, fallbackFetch, ...browserOptions } = options;
     const acquired = await this.browserAcquirer.ensureBrowser();
     if (acquired !== 'ready') {
       const logger = createLogger('fetch');
@@ -897,14 +926,30 @@ export class SmartRouter {
       const companion = await this.companionRungFetch(url, browserOptions, acquired);
       if (companion) return this.guardChallengeShell(companion);
 
-      if (fallback) {
+      // Nothing in hand — ask the deferred lower tier whether it can serve the page.
+      // Tried AFTER the companion rung: a real browser is a better answer than HTTP.
+      let lowerTier = fallback;
+      if (!lowerTier && fallbackFetch) {
+        try {
+          lowerTier = (await fallbackFetch()) ?? undefined;
+        } catch (err) {
+          logger.debug('deferred lower-tier fetch failed; falling through to the actionable error', {
+            url,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (lowerTier) {
         logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
-        // The browser was the escalation target because the lower tier returned
-        // a challenge shell (or an anti-bot-status challenge body). If we cannot
-        // acquire it, we must NOT fall back to returning that shell as content —
-        // guard it so a challenge fallback becomes blocked_by_challenge, while
-        // legit lower-tier content passes through unchanged with the note.
-        return this.guardChallengeShell({ ...fallback, warning: BROWSER_INSTALLING_NOTE });
+        // The lower tier is guarded whichever way it arrived. When the browser was the
+        // ESCALATION target, the thing that triggered the escalation may well be a
+        // challenge shell (or an anti-bot-status challenge body), and returning that as
+        // content would pass an interstitial off as the page. When it arrived from the
+        // deferred fetch above it is a fresh response that has never been classified at
+        // all. Both become blocked_by_challenge if they are challenges; legit lower-tier
+        // content passes through unchanged with the note.
+        return this.guardChallengeShell({ ...lowerTier, warning: BROWSER_INSTALLING_NOTE });
       }
       logger.info('browser engine not ready within budget and no lower-tier content — failing with actionable error', { url });
       return {

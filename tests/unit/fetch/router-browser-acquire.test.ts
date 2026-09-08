@@ -286,5 +286,66 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
       expect('error' in result).toBe(true);
       expect((result as { hint?: string; error_reason: string }).hint ?? '').toMatch(/wigolo warmup --browser/);
     });
+
+    /**
+     * THE MARK IS A PREFERENCE, NOT A REQUIREMENT — and this is the one branch that
+     * used to read it as a requirement.
+     *
+     * `preferPlaywright` is set by heuristics that never claim HTTP cannot serve the
+     * page: a body under the 200-character visible-text threshold, a `__NEXT_DATA__`
+     * blob, a high script ratio. The escalation that SETS the mark hands `browserFetch`
+     * the HTTP result as `fallback`, so a machine with no browser engine degrades to
+     * that content with the actionable note. The very next fetch of the same host takes
+     * `browserOrHttpForBinary` instead, which had no fallback to hand over — so the same
+     * host, one call later, answered `browser_engine_unavailable` for a page plain HTTP
+     * had just returned in full.
+     *
+     * That is the shape PX2's RC exit gate met: fetch a short fixture page (marks the
+     * host), then re-read it with `force_refresh` (domain-marked path) and get a hard
+     * error on a fresh install that has no engine and — behind the gate's egress fence —
+     * can never acquire one.
+     *
+     * The two fetches share ONE router because the mark is in-memory per router
+     * (`ensureStats`); splitting them would drop the precondition the case is about.
+     */
+    it('the domain-marked path degrades to lower-tier content instead of hard-failing', async () => {
+      vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult(SPA_SHELL_HTML));
+      const { acquirer } = makeAcquirer('unavailable');
+      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer, systemBrowserFetch: noInstalledBrowser });
+
+      // First fetch: SPA-shell detection marks the host and escalates. Already covered
+      // above; asserted here only to prove the precondition actually landed.
+      const first = await router.fetch('https://marked.example/page') as RawFetchResult;
+      expect(first.method).toBe('http');
+
+      // Second fetch: same host, now domain-marked, so it starts AT the browser tier.
+      const second = await router.fetch('https://marked.example/other') as RawFetchResult;
+
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect('error' in second, `domain-marked re-read hard-failed: ${JSON.stringify(second)}`).toBe(false);
+      expect(second.method).toBe('http');
+      expect(second.html).toBe(SPA_SHELL_HTML);
+      expect(second.warning).toMatch(/browser engine installing/);
+      expect(second.warning).toMatch(/wigolo warmup --browser/);
+    });
+
+    it('the domain-marked path still hard-fails when the lower tier has nothing to give', async () => {
+      const { acquirer } = makeAcquirer('unavailable');
+      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer, systemBrowserFetch: noInstalledBrowser });
+
+      vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult(SPA_SHELL_HTML));
+      await router.fetch('https://marked2.example/page');
+
+      // The host is marked; now HTTP itself is down, so the degradation has no content
+      // to return and the actionable error is the correct answer. Without this the fix
+      // above could have swallowed a real failure into a silent empty success.
+      vi.mocked(httpClient.fetch).mockRejectedValue(new Error('refused'));
+      const result = await router.fetch('https://marked2.example/other');
+
+      expect('error' in result).toBe(true);
+      const err = result as { error: string; error_reason: string; hint?: string };
+      expect(err.error).toBe('browser_engine_unavailable');
+      expect(err.hint ?? err.error_reason).toMatch(/wigolo warmup --browser/);
+    });
   });
 });
