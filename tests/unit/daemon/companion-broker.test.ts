@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, getDatabase, closeDatabase } from '../../../src/cache/db.js';
+import { applyMigrations, MIGRATIONS } from '../../../src/cache/migrations/runner.js';
 import {
   BrokerGrantStore,
   BrokerOpError,
@@ -110,6 +112,56 @@ describe('companion broker — grant-scoped table access', () => {
 
       db().exec('DROP TABLE schema_migrations');
       expect(schemaHead(db())).toBe(0);
+    });
+
+    it('revokes a grant when the shared database migrates past its issued head', () => {
+      const migratedDb = new Database(':memory:');
+      try {
+        migratedDb.exec(
+          'CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+        );
+        const nextMigration = [...MIGRATIONS].reverse().find((migration) => !migration.requiresVec);
+        if (!nextMigration) throw new Error('expected a non-vector migration');
+        const recordMigration = migratedDb.prepare(
+          'INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)',
+        );
+        for (const migration of MIGRATIONS) {
+          if (migration === nextMigration) break;
+          if (migration.requiresVec) continue;
+          migratedDb.transaction(() => {
+            migratedDb.exec(migration.sql);
+            migration.postStep?.(migratedDb);
+            recordMigration.run(migration.name, 1);
+          })();
+        }
+
+        const issuedHead = schemaHead(migratedDb);
+        const grant = grants.issue({ mode: 'read', tables: ['studio_runs'], schemaHead: issuedHead });
+
+        applyMigrations(migratedDb, { vecLoaded: false });
+        expect(schemaHead(migratedDb)).toBe(issuedHead + 1);
+
+        const op = {
+          grant: grant.token,
+          kind: 'read' as const,
+          table: 'studio_runs' as const,
+          limit: 10,
+        };
+        const first = executeBrokerOp(migratedDb, grants, op);
+
+        expect(refusalOf(first)).toEqual({ ok: false, reason: 'grant_revoked', table: 'studio_runs' });
+        expect(grants.revocationOf(grant.token)).toEqual({
+          token: grant.token,
+          revokedAt: clock,
+          reason: 'schema_skew',
+        });
+
+        const second = executeBrokerOp(migratedDb, grants, op);
+        expect(refusalOf(second)).toEqual({ ok: false, reason: 'grant_revoked', table: 'studio_runs' });
+        expect(grants.revocationOf(grant.token)?.reason).toBe('schema_skew');
+      } finally {
+        migratedDb.close();
+      }
     });
 
     it('revokes idempotently and keeps the FIRST reason', () => {
@@ -283,7 +335,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     it('refuses write_not_granted for a read grant and leaves the table untouched', () => {
-      const grant = grants.issue({ mode: 'read', tables: BROKER_TABLES, schemaHead: 1 });
+      const grant = grants.issue({ mode: 'read', tables: BROKER_TABLES, schemaHead: schemaHead(db()) });
       const before = runRows();
 
       const result = executeBrokerOp(db(), grants, {
@@ -300,7 +352,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     it('refuses row_limit_exceeded above the wire ceiling without running the read', () => {
-      const grant = grants.issue({ mode: 'read', tables: BROKER_TABLES, schemaHead: 1 });
+      const grant = grants.issue({ mode: 'read', tables: BROKER_TABLES, schemaHead: schemaHead(db()) });
 
       const ok = executeBrokerOp(db(), grants, {
         grant: grant.token,
@@ -326,7 +378,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     function grant() {
-      return grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+      return grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
     }
 
     it('round-trips insert → read → update → delete on the run projection tables', () => {
@@ -413,7 +465,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     it('rejects a column the table does not have as a malformed op, not a refusal', () => {
-      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
       const before = runRows();
 
       expect(() =>
@@ -432,7 +484,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     it('binds a value that looks like SQL rather than interpolating it', () => {
-      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
 
       executeBrokerOp(db(), grants, {
         grant: token,
@@ -446,7 +498,7 @@ describe('companion broker — grant-scoped table access', () => {
     });
 
     it('refuses an unfiltered update or delete — a whole-table mutation asked for by omission', () => {
-      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
 
       expect(() =>
         executeBrokerOp(db(), grants, { grant: token, kind: 'update', table: 'studio_runs', row: { status: 'x' } }),
@@ -463,7 +515,7 @@ describe('companion broker — grant-scoped table access', () => {
   describe('in-flight atomicity', () => {
     it('leaves the table byte-identical when a write violates a constraint mid-op', () => {
       seedRun();
-      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 }).token;
+      const token = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: schemaHead(db()) }).token;
       const before = runRows();
 
       // Same primary key as the seeded run: SQLite aborts inside the transaction.
@@ -481,7 +533,11 @@ describe('companion broker — grant-scoped table access', () => {
 
     it('does not roll back an op that already completed when a later one is refused', () => {
       seedRun();
-      const grantRecord = grants.issue({ mode: 'readwrite', tables: BROKER_TABLES, schemaHead: 1 });
+      const grantRecord = grants.issue({
+        mode: 'readwrite',
+        tables: BROKER_TABLES,
+        schemaHead: schemaHead(db()),
+      });
 
       const first = executeBrokerOp(db(), grants, {
         grant: grantRecord.token,
