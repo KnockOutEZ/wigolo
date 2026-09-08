@@ -61,9 +61,9 @@ wigolo config [--plain] [--json] [--set <key>=<value>] [--storage] [--cache-stat
               [--force-wizard] [--uninstall --yes]
 ```
 
-Interactive settings shell by default. `--set` takes the env-var-style key (`--set WIGOLO_SEARCH=hybrid`); `--plain` lists the accepted keys. `--cleanup` frees storage for `cache|embeddings|models|browser|searxng`. `wigolo dashboard` is an alias. See [configuration](./configuration.md).
+Interactive settings shell by default. `--set` takes the env-var-style key (`--set WIGOLO_SEARCH=hybrid`), and also accepts the camelCase setting name; `--plain` lists the accepted keys. `--cleanup` frees storage for `cache|embeddings|models|browser|searxng`. `wigolo dashboard` is an alias. See [configuration](./configuration.md).
 
-`--cache-stats` is currently broken — it reports a database-initialization error rather than the stats. Use `wigolo cache stats` instead.
+`--cache-stats` reports the same counts as `wigolo cache stats`.
 
 ### setup
 

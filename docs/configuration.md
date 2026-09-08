@@ -25,9 +25,9 @@ wigolo config --import settings.json
 wigolo config --cleanup cache              # cache|embeddings|models|browser|searxng
 ```
 
-`--set` takes the **env-var-style key**, not the camelCase field name — `WIGOLO_SEARCH=hybrid`, not `searchBackend=hybrid`. `wigolo config --plain` prints the accepted keys, and an unknown one is rejected by name rather than silently ignored. Note that a handful of these keys are the persisted-setting name and differ from the env var the runtime reads (`WIGOLO_CACHE_TTL_SEARCH` as a `--set` key vs `CACHE_TTL_SEARCH` as an env var); the tables below document the **env vars**.
+`--set` takes the **env-var-style key** — `WIGOLO_SEARCH=hybrid`. The camelCase setting name (`searchBackend=hybrid`) is accepted too, as is any key an older release printed for the same setting. `wigolo config --plain` prints the accepted keys, and an unknown one is rejected by name rather than silently ignored. It prints the env var the runtime actually reads for every setting one resolves, so the identifier in the tables below and the identifier `--plain` shows are the same string; the few settings no env var resolves (`agents`) print under their setting name instead.
 
-For cache counts use `wigolo cache stats` — `wigolo config --cache-stats` is currently broken and reports a database-initialization error instead of the stats.
+`wigolo config --cache-stats` and `wigolo cache stats` both report cache counts.
 
 `wigolo dashboard` is an alias of `wigolo config`. Secrets (LLM keys, proxy credentials) never go into `config.json` — they live in the OS keychain (see [privacy & security](./privacy-security.md#credentials)).
 
