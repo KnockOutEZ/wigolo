@@ -12,6 +12,7 @@ import {
 } from '../../../src/fetch/companion-bridge.js';
 import { ESCALATION_ROUTE, STUDIO_FETCH_CAPABILITY } from '../../../src/companion-contract/escalation.js';
 import type { EscalationResponse } from '../../../src/companion-contract/escalation.js';
+import { ESCALATION_FIXTURES } from '../../../src/companion-contract/fixtures.js';
 import type { SessionHandle } from '../../../src/companion/handle.js';
 import { readEscalationCounters } from '../../../src/companion/escalation-counters.js';
 
@@ -238,5 +239,100 @@ describe('postEscalation — the wire', () => {
       { capability: STUDIO_FETCH_CAPABILITY, url: 'https://walled.example/' },
     );
     expect(seen.url).toBe(ESCALATION_ROUTE);
+  });
+});
+
+/**
+ * Spec §10's OTHER half, mirrored into core's own suite.
+ *
+ * #474 pinned `POST /companion/escalate` at route level — but both halves of that pin live in the studio
+ * repo, so they only run when that repo bumps its core pin. Until then core's suite can go green on a
+ * client that no longer speaks the address it posts at. These arms close that: a stub companion that
+ * serves exactly ONE address — {@link ESCALATION_ROUTE}, imported for the same reason the client imports
+ * it, never a literal — answering the SHARED {@link ESCALATION_FIXTURES}, driven through the real handle
+ * file by the real transport. A client that drifts off the constant 404s here instead of in production.
+ */
+describe('the escalation route, end to end against a stub companion', () => {
+  interface StubCompanion {
+    endpoint: string;
+    handle: SessionHandle;
+    requests: { url: string; body: unknown }[];
+    close: () => Promise<void>;
+  }
+
+  /**
+   * A companion that answers `servedAt` and 404s every other address.
+   *
+   * The 404 is the point, not an edge case: two sides that disagree about the address produce exactly
+   * this, and at the client it is indistinguishable from an absent companion. Serving one address is what
+   * makes the constant load-bearing in this file.
+   */
+  async function startCompanion(servedAt: string, answer: unknown, status = 200): Promise<StubCompanion> {
+    const requests: { url: string; body: unknown }[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        requests.push({ url: req.url ?? '', body: raw === '' ? null : JSON.parse(raw) });
+        const hit = req.url === servedAt;
+        res.writeHead(hit ? status : 404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(hit ? answer : { error: 'no such route' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    return {
+      endpoint,
+      handle: { id: 's1', endpoint, token: 't', pid: 1, instanceId: 'other' },
+      requests,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  let companion: StubCompanion;
+  afterEach(async () => { await companion.close(); });
+
+  it('serves the shared fixture page when the client posts the shared request at the contract address', async () => {
+    companion = await startCompanion(ESCALATION_ROUTE, ESCALATION_FIXTURES.served);
+    publishHandle(companion.endpoint);
+    const r = await companionBridgeFetch(ESCALATION_FIXTURES.request.url, { dataDir: dir });
+    expect(companion.requests.map((q) => q.url)).toEqual([ESCALATION_ROUTE]);
+    expect(companion.requests[0].body).toEqual(ESCALATION_FIXTURES.request);
+    expect(r).toMatchObject({
+      url: ESCALATION_FIXTURES.request.url,
+      finalUrl: ESCALATION_FIXTURES.served.url,
+      html: ESCALATION_FIXTURES.served.html,
+      method: 'browser',
+      escalated: true,
+    });
+    expect(readEscalationCounters(dir)).toMatchObject({ bridgeAttempted: 1, bridgeServed: 1, bridgeDeclined: 0 });
+  });
+
+  it('declines on the shared decline fixture served at that same address', async () => {
+    companion = await startCompanion(ESCALATION_ROUTE, ESCALATION_FIXTURES.decline);
+    publishHandle(companion.endpoint);
+    expect(await companionBridgeFetch(ESCALATION_FIXTURES.request.url, { dataDir: dir })).toBeNull();
+    expect(companion.requests.map((q) => q.url)).toEqual([ESCALATION_ROUTE]);
+    expect(readEscalationCounters(dir)).toMatchObject({ bridgeAttempted: 1, bridgeServed: 0, bridgeDeclined: 1 });
+  });
+
+  it('falls back when the page is served at a MOVED address — a 404 is what a one-sided route change produces', async () => {
+    // The companion here answers a real page, just not at the address the wire publishes. The client must
+    // still decline: nothing about a 404 is distinguishable from an absent companion, which is why the
+    // address belongs to the contract module both sides import rather than to either side's own literal.
+    companion = await startCompanion(`${ESCALATION_ROUTE}-moved`, ESCALATION_FIXTURES.served);
+    publishHandle(companion.endpoint);
+    expect(await companionBridgeFetch(ESCALATION_FIXTURES.request.url, { dataDir: dir })).toBeNull();
+    expect(companion.requests.map((q) => q.url)).toEqual([ESCALATION_ROUTE]);
+    expect(readEscalationCounters(dir)).toMatchObject({ bridgeDeclined: 1 });
+  });
+
+  it('returns the shared served fixture verbatim from the wire, and null from the moved address', async () => {
+    companion = await startCompanion(ESCALATION_ROUTE, ESCALATION_FIXTURES.served);
+    expect(await postEscalation(companion.handle, ESCALATION_FIXTURES.request)).toEqual(ESCALATION_FIXTURES.served);
+    await companion.close();
+    companion = await startCompanion(`${ESCALATION_ROUTE}/v2`, ESCALATION_FIXTURES.served);
+    expect(await postEscalation(companion.handle, ESCALATION_FIXTURES.request)).toBeNull();
   });
 });

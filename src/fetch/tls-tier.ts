@@ -106,6 +106,10 @@ export function _setTlsBackendForTests(backend: LoadedTlsBackend | null): void {
 // Resolving it as a literal would break `tsc --noEmit` on those installs;
 // the dynamic import still throws at runtime and we surface that as
 // `TlsTierUnavailableError`.
+//
+// ⚠ NOT USED BY THE `import()` BELOW, and that separation is load-bearing —
+// see the comment there. This constant survives for the error text and for any
+// resolver path that needs the name without asking the compiler to find it.
 const WREQ_MODULE_ID: string = 'wreq-js';
 
 interface WreqJsModuleShape {
@@ -121,7 +125,16 @@ async function loadBackend(): Promise<LoadedTlsBackend> {
     try {
       // Dynamic import keeps the napi binary out of the module graph for
       // every command that doesn't actually invoke the TLS tier.
-      const mod = (await import(WREQ_MODULE_ID)) as WreqJsModuleShape;
+      //
+      // ⚠ THE SPECIFIER IS SPELLED INLINE, not via WREQ_MODULE_ID, and the two
+      // are not interchangeable — same rule as `browser-driver.ts`. A bundler
+      // can only see a statically analysable specifier; routing this through a
+      // `const`-bound string makes esbuild DROP the import with no warning at
+      // any log level, so the TLS-impersonation rung would simply cease to
+      // exist in the packaged binary and nowhere else. Measured: the spike's
+      // first SEA silently lost this rung, `sharp`, and `fastembed` while the
+      // build reported success.
+      const mod = (await import('wreq-js')) as unknown as WreqJsModuleShape;
       const fetchFn: WreqFetch | undefined = mod.fetch ?? mod.default?.fetch;
       if (!fetchFn) {
         throw new Error('wreq-js: no fetch export found');

@@ -306,15 +306,24 @@ const SUBPATHS: Subpath[] = [
     // string-matching a message — and they are two classes so the SERP can tell which rail refused.
     spec: 'wigolo/companion-stages',
     target: './dist/companion/stages.js',
+    // SD-482 adds the extract stage: the session-target wire runs `extract` on the host, and
+    // core's mode dispatch was on no published subpath, so the app served `metadata` alone and
+    // refused the other five modes as data. It enters by the same ceiling rule as the rest —
+    // a named import site outside core — and on THIS subpath because it is the same class of
+    // injection the broker's other stages are, not a new door onto one module.
     runtime: [
+      'ExtractStageError',
       'FindSimilarStageError',
       'SearchStageError',
       'createBriefStage',
+      'createExtractStage',
       'createFindSimilarStage',
       'createSearchStage',
     ],
     types: [
       'BriefStage',
+      'ExtractStage',
+      'ExtractStageRequest',
       'FindSimilarStage',
       'FindSimilarStageOptions',
       'SearchStage',

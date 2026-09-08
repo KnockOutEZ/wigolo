@@ -20,6 +20,7 @@ import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { npmInvocation } from '../npm-invocation.js';
 import { stopChild } from './rc-accounts-service.js';
 import { CORE_REPO_ROOT } from './rc-gate-env.js';
 
@@ -38,7 +39,9 @@ export interface PackedTarball {
  */
 export async function packWigolo(): Promise<PackedTarball> {
   const directory = await mkdtemp(join(tmpdir(), 'wigolo-rc-pack-'));
-  await run('npm', ['pack', CORE_REPO_ROOT, '--pack-destination', directory], {
+  // Through `npmInvocation`, not a bare `npm`: the bare name cannot be spawned on Windows.
+  const pack = npmInvocation(['pack', CORE_REPO_ROOT, '--pack-destination', directory]);
+  await run(pack.file, pack.args, {
     cwd: directory,
     timeoutMs: 600_000,
   });
@@ -146,7 +149,8 @@ export async function installTarball(
     '--no-fund',
     ...(omitOptional ? ['--omit=optional'] : []),
   ];
-  await run('npm', args, { cwd: root, timeoutMs: 900_000 });
+  const npmInstall = npmInvocation(args);
+  await run(npmInstall.file, npmInstall.args, { cwd: root, timeoutMs: 900_000 });
 
   return {
     root,

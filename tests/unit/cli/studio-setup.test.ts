@@ -47,6 +47,15 @@ const ALLOW_HTTP: NodeJS.ProcessEnv = { WIGOLO_COMPANION_ALLOW_HTTP: '1' };
  * `signed` is what a real `codesign --verify` would answer. A fixture bundle is a directory with
  * a marker file in it, so the honest default is UNSIGNED — which is exactly the case that must
  * still be quarantined and must NOT be assessed.
+ *
+ * EVERY `platform: 'darwin'` arm must inject this, whatever outcome it asserts. Omitting it falls
+ * back to `defaultRun`, which spawns the real `xattr` — present on macOS, absent on Linux and
+ * Windows, where the spawn `error` becomes code 127 and the install answers `quarantine_failed`.
+ * That makes the arm assert on the host's binaries rather than on the code under test: two arms
+ * were green on macOS and red on both CI runners for exactly that reason. An arm that asserts a
+ * pre-install outcome today is one assertion away from the same trap. The single exception is the
+ * `it.skipIf(process.platform !== 'darwin')` arm below, which omits `run` on purpose because the
+ * real attribute on a real directory is its outside signal.
  */
 function recordingRun(opts: { xattrCode?: number; signed?: boolean; assessCode?: number } = {}): {
   run: NonNullable<CompanionSetupDeps['run']>;
@@ -375,6 +384,7 @@ describe('setupCompanion', () => {
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1675,6 +1685,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       arch: 'arm64',
       installRoot,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1739,12 +1750,126 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       // test that must not write two gigabytes to prove the guard exists.
       downloadCeilingBytes: 256 * 1024,
       install: recordingInstaller(installRoot).install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
     expect(result.outcome).toBe('download_failed');
     expect(result.detail).toContain('more bytes than');
     expect(result.partialRetained).toBe(false);
+  });
+  /**
+   * A host whose manifest declares a size ABOVE the ceiling this run carries, and whose body is
+   * FINITE and ends between the two. That gap is what makes the clamp direction observable: the
+   * body is too long for the ceiling and comfortably short of the declaration, so a cap taken
+   * from the ceiling stops it and a cap taken from the declaration lets it run to completion.
+   */
+  async function startDeclaresAboveCeilingHost(
+    declared: number,
+    bodyBytes: number,
+  ): Promise<{ origin: string; sent: () => number }> {
+    let origin = '';
+    let sent = 0;
+    const chunk = Buffer.alloc(64 * 1024, 0x5a);
+    const server = await startServer((req, res) => {
+      if (req.url === COMPANION_MANIFEST_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            version: '1.4.0',
+            artifacts: {
+              'darwin-arm64': { url: `${origin}/art.dmg`, sha256: sha256(artifactBytes()), size: declared },
+            },
+          } satisfies CompanionRelease),
+        );
+        return;
+      }
+      // No content-length, as in the arm above: the meter has to be what stops this, not framing.
+      res.writeHead(200);
+      // The client aborts mid-body by design, so the write that races the abort must not surface
+      // as an unhandled 'error' — that exits the process 1 with every test still reported passing.
+      res.on('error', () => {});
+      let closed = false;
+      res.on('close', () => {
+        closed = true;
+      });
+      const pump = (): void => {
+        while (!closed && sent < bodyBytes) {
+          sent += chunk.length;
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        if (!closed) res.end();
+      };
+      pump();
+    });
+    hosts.push(server);
+    origin = `http://127.0.0.1:${getPort(server)}`;
+    return { origin, sent: () => sent };
+  }
+
+  /**
+   * ⚠ A DECLARED SIZE MAY ONLY TIGHTEN THE CEILING, NEVER LIFT IT (A-476-1).
+   *
+   * `size` is published by the same host, in the same manifest, as the bytes it describes — so a
+   * host willing to stream forever is equally willing to declare a terabyte, and a cap that took
+   * the declaration at face value would hand that host exactly the bound it asked for. The arm
+   * above pins the cap when the declaration is the tighter of the two; this one pins the ONLY
+   * other direction, which is where the trust question actually lives.
+   *
+   * The fixture sits in the GAP between the two candidate caps on purpose. Widen the clamp to
+   * `declared + slack` and this body — finite, and far under the declaration — finishes, the
+   * digest check then answers `checksum_mismatch`, and this arm is the only one that reds.
+   */
+  it('does not let a declared size above the ceiling lift it, and fails at the ceiling boundary', async () => {
+    const ceiling = 256 * 1024;
+    // The "manifest declares a terabyte" shape, scaled to something a fixture can hold: what
+    // matters is only that it is far above the ceiling, so the two caps cannot coincide.
+    const declared = 64 * 1024 * 1024;
+    // Past the ceiling, and nowhere near the declaration plus its slack. Both halves are load
+    // bearing: the first makes the correct cap fire, the second makes the widened cap NOT fire.
+    const bodyBytes = 1024 * 1024;
+    expect(declared).toBeGreaterThan(ceiling);
+    expect(bodyBytes).toBeGreaterThan(ceiling);
+    expect(bodyBytes).toBeLessThan(declared);
+
+    const host = await startDeclaresAboveCeilingHost(declared, bodyBytes);
+
+    const root = tempRoot();
+    const dataDir = join(root, 'data');
+    const installRoot = join(root, 'Applications');
+    mkdirSync(installRoot, { recursive: true });
+    const installer = recordingInstaller(installRoot);
+
+    const result = await setupCompanion({
+      releaseHost: host.origin,
+      env: ALLOW_HTTP,
+      dataDir,
+      platform: 'darwin',
+      arch: 'arm64',
+      installRoot,
+      downloadCeilingBytes: ceiling,
+      install: installer.install,
+      run: recordingRun().run,
+      launch: async () => true,
+    });
+
+    expect(result.outcome).toBe('download_failed');
+    expect(result.detail).toContain('more bytes than');
+    // WHICH bound stopped it, not merely that one did. The limit the transfer names is the
+    // injected ceiling; a cap that had taken the declaration would name `declared + slack`, and
+    // asserting the absence of that number is what keeps this from passing on the wrong bound.
+    expect(result.error).toContain(`${ceiling}-byte limit`);
+    expect(result.error).not.toContain(`${declared + 64 * 1024}-byte limit`);
+    // Stopped near the ceiling rather than after swallowing the declaration: an independent
+    // count, taken by the host, of what it managed to put on the wire.
+    expect(host.sent()).toBeLessThan(declared);
+    expect(installer.calls).toEqual([]);
+    // Same disposal as the declaration-tighter arm: a prefix past the cap can never verify.
+    expect(result.partialRetained).toBe(false);
+    expect(existsSync(join(dataDir, 'studio', 'downloads', 'wigolo-studio-1.4.0-darwin-arm64.dmg.part'))).toBe(false);
   });
 
   it('aborts a body that stalls mid-transfer instead of hanging, and keeps the prefix to resume from', async () => {
@@ -1792,6 +1917,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       // not the number.
       downloadIdleTimeoutMs: 250,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 
@@ -1836,6 +1962,7 @@ describe('setupCompanion — the artifact body is bounded in bytes and in time',
       installRoot,
       downloadIdleTimeoutMs: 5_000,
       install: installer.install,
+      run: recordingRun().run,
       launch: async () => true,
     });
 

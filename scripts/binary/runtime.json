@@ -1,0 +1,83 @@
+{
+  "$doc": "THE single place the embedded runtime version and the per-native ABI/NAPI expectations live. Bumping the runtime = editing this file; harvest, compile and verify all read it. Package VERSIONS are deliberately absent — they come from package-lock.json, which is exact where package.json floats (sharp ^0.34.5, sqlite-vec ^0.1.9). Values recorded by the BIN-1 spike (single-binary mini-spec 2a, wigolo-studio-run#502).",
+
+  "runtime": {
+    "kind": "node",
+    "version": "22.14.0",
+    "abi": "127",
+    "napi": 10,
+    "source": "nodejs.org official downloads — never the build host's node (that is what shipped an unredistributable runtime in SD-234-1)"
+  },
+
+  "toolchain": {
+    "esbuild": "0.28.0",
+    "postject": "1.0.0-alpha.6",
+    "seaFuse": "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    "$doc": "esbuild MUST be invoked with --supported:dynamic-import=false. Spike 2a build-fact 1: six runtime-fatal import() calls survived with ZERO warnings at --log-level=verbose. A post-build grep for surviving `import(` is a hard gate, not a nicety."
+  },
+
+  "runtimeTarballSha256": {
+    "$doc": "Official nodejs.org archives, as downloaded 2026-09-07. The compile slice verifies the download against these before postject touches it.",
+    "darwin-arm64": "e9404633bc02a5162c5c573b1e2490f5fb44648345d64a958b17e325729a5e42",
+    "darwin-x64": "6698587713ab565a94a360e091df9f6d91c8fadda6d00f0cf6526e9b40bed250",
+    "linux-x64": "9d942932535988091034dc94cc5f42b6dc8784d6366df3a36c4c9ccb3996f0c2",
+    "linux-arm64": "8cf30ff7250f9463b53c18f89c6c606dfda70378215b2c905d0a9a8b08bd45e0",
+    "win32-x64": "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217"
+  },
+
+  "targets": ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"],
+
+  "natives": {
+    "$doc": "abiKind decides what harvest can ASSERT about a fetched artifact. `node-abi`: the asset name embeds the runtime ABI, so the ABI is checkable byte-for-byte. `napi`: runtime-independent within a NAPI level — checkable only where upstream DECLARES the level, hence the explicit nulls rather than a guessed number. `sqlite-extension`: SQLite's ABI, not Node's, so the runtime version is irrelevant to it.",
+
+    "better-sqlite3": {
+      "lockPath": "node_modules/better-sqlite3",
+      "abiKind": "node-abi",
+      "napiVersion": null,
+      "optional": false,
+      "abiNote": "node-gyp addon. The GitHub release asset is named better-sqlite3-v<version>-node-v<abi>-<platform>-<arch>.tar.gz, so runtime.abi appears in the URL and a mismatch cannot be silent."
+    },
+    "sqlite-vec": {
+      "lockPath": "node_modules/sqlite-vec",
+      "abiKind": "sqlite-extension",
+      "napiVersion": null,
+      "optional": false,
+      "abiNote": "A SQLite loadable extension (vec0.<dylib|so|dll>), not a Node addon. Runtime-ABI-independent; per-platform npm packages exist for all five targets."
+    },
+    "onnxruntime-node": {
+      "lockPath": "node_modules/onnxruntime-node",
+      "abiKind": "napi",
+      "napiVersion": 3,
+      "optional": false,
+      "abiNote": "napiVersion is upstream's own declaration (package.json binary.napi_versions). One npm package carries bin/napi-v3/{darwin,linux,win32}/{arm64,x64} — six runtimes — so harvest SLICES the pair for the target instead of staging the package."
+    },
+    "sharp": {
+      "lockPath": "node_modules/sharp",
+      "abiKind": "napi",
+      "napiVersion": null,
+      "optional": false,
+      "abiNote": "NAPI addon in @img/sharp-<target>, with its libvips in a sibling @img/sharp-libvips-<target> on the platforms that have one. Upstream declares no NAPI level, so none is asserted — the sibling set is derived from the platform package's own optionalDependencies in the lockfile, never from a hardcoded per-platform rule."
+    },
+    "@napi-rs/keyring": {
+      "lockPath": "node_modules/@napi-rs/keyring",
+      "abiKind": "napi",
+      "napiVersion": null,
+      "optional": true,
+      "abiNote": "NAPI addon in @napi-rs/keyring-<napi-triple>. Optional: the OS keychain tier degrades cleanly under npm already, and must degrade the same way here — an absent cell is recorded, never a failed build."
+    },
+    "@anush008/tokenizers": {
+      "lockPath": "node_modules/@anush008/tokenizers",
+      "abiKind": "napi",
+      "napiVersion": null,
+      "optional": true,
+      "abiNote": "fastembed's tokenizer addon, in @anush008/tokenizers-<platform pkg>. NOT a napi triple: one darwin-universal package serves both darwin targets, and the pinned 0.0.0 publishes no linux-arm64 package at all — recorded as an absence with that reason, because the embedding route is equally unavailable on that target under npm. Optional in the same sense keyring is: an absent cell is recorded and the build continues, and the load-verify battery then refuses to let an artifact claim an embedding route it cannot run."
+    },
+    "wreq-js": {
+      "lockPath": "node_modules/wreq-js",
+      "abiKind": "napi",
+      "napiVersion": null,
+      "optional": true,
+      "abiNote": "Native TLS-impersonation fetch tier. One package ships rust/wreq-js.<triple>.node for every target, so harvest slices one file. glibc only — mini-spec 1 puts musl/Alpine out of the matrix, so the -musl triples are never harvested even though the package carries them."
+    }
+  }
+}

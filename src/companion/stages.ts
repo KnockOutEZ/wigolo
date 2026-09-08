@@ -1,5 +1,5 @@
 /**
- * The three library stages the companion broker injects (`wigolo/companion-stages`).
+ * The library stages the companion broker injects (`wigolo/companion-stages`).
  *
  * `packages/studio-core`'s `createBrokerHandlers` takes `findSimilar` (local-corpus search), `search`
  * (the in-app SERP's web search) and `buildBrief` (the research-brief shaper) as INJECTED stages
@@ -23,6 +23,8 @@
  * the caller's, and a stage called before it fails loudly rather than answering an empty corpus.
  */
 import type {
+  ExtractInput,
+  ExtractOutput,
   FindSimilarInput,
   FindSimilarOutput,
   ResearchBrief,
@@ -39,6 +41,7 @@ import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
 import { BackendStatus } from '../server/backend-status.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { getConfig } from '../config.js';
+import { handleExtract } from '../tools/extract.js';
 import { handleFindSimilar } from '../tools/find-similar.js';
 import { handleSearch } from '../tools/search.js';
 import { buildResearchBrief } from '../research/brief.js';
@@ -244,4 +247,81 @@ export function createSearchStage(options: SearchStageOptions = {}): SearchStage
 export function createBriefStage(): BriefStage {
   return (question, sources, perSourceCharCap, totalSourcesCharCap) =>
     buildResearchBrief(question, sources, [], perSourceCharCap, totalSourcesCharCap, 'general', []);
+}
+
+/**
+ * Exactly what a session-targeted extract needs, and nothing that would let it do more.
+ *
+ * `url`, `execution_mode` and `session_id` are absent BY CONSTRUCTION. The host is already on the
+ * page and already holds its settled DOM, so there is nothing here to navigate to — and a stage that
+ * could navigate would be a second fetcher living behind the broker's RPC surface with none of the
+ * fetch tool's guards in front of it. Every other knob the ephemeral tool takes crosses unchanged,
+ * because the point of this seam is that the two paths answer the same thing.
+ */
+export interface ExtractStageRequest
+  extends Omit<ExtractInput, 'url' | 'html' | 'execution_mode' | 'session_id'> {
+  /** The settled DOM the host captured from the live session's current page. */
+  html: string;
+  /**
+   * The live page's address, reported back as `ExtractOutput.source_url`. It is PROVENANCE and never
+   * a target: nothing reads it, resolves it or fetches it. Omitted, the answer names no page —
+   * exactly what the ephemeral tool's raw-HTML call does.
+   */
+  source_url?: string;
+}
+
+/** Exactly the arity the broker's extract stage declares — one request, one `ExtractOutput`. */
+export type ExtractStage = (request: ExtractStageRequest) => Promise<ExtractOutput>;
+
+/**
+ * Raised when the extract stage refuses — same reason the two above exist, plus one specific to this
+ * tool: an EMPTY payload is a legitimate extract answer (a page with no tables in a mode that finds
+ * none, a schema whose fields are genuinely absent), so a refusal that arrived as one would be
+ * unreadable. `hint` is carried because extract's own refusals ship recovery instructions with them,
+ * and dropping the instruction turns an actionable refusal into a dead end.
+ */
+export class ExtractStageError extends Error {
+  constructor(
+    readonly code: string,
+    reason: string,
+    readonly hint?: string,
+  ) {
+    super(reason);
+    this.name = 'ExtractStageError';
+  }
+}
+
+/**
+ * Build the session-targeted extract stage over core's own collaborators.
+ *
+ * WHY THIS EXISTS AT ALL. The app's session-target wire runs `extract` on the HOST, against the live
+ * session's current page — but no published subpath reached core's mode dispatch, so the app served
+ * `metadata` and answered the other five modes with a refusal on `ExtractOutput`'s fail-as-data
+ * channel. Honest, and still a half-live tool. This is the door that closes that gap without the app
+ * growing a second extraction pipeline beside core's (D11's shared-schema tax stays paid once).
+ *
+ * THE CALL GOES THROUGH THE TOOL HANDLER, not the extractors underneath, for the same reason the
+ * search and corpus stages do: `handleExtract` is where the mode dispatch, the input validation, the
+ * named-schema table, the token clamp and the structure-first schema ladder all live. Binding the
+ * extractors directly would move every one of those decisions into the consumer, where the session
+ * answer would drift from the ephemeral answer field by field — which is precisely the drift this
+ * stage exists to end.
+ *
+ * IT CANNOT NAVIGATE. `ExtractStageRequest` carries no `url`, so `handleExtract`'s resolve step takes
+ * the raw-HTML branch every time: no cache read, no router fetch, no browser tier. The router below is
+ * bound because the handler's signature takes one, and it is unreachable on this path by construction
+ * — the honest shape for a seam whose whole input is a DOM the host already has.
+ */
+export function createExtractStage(): ExtractStage {
+  const { router } = buildCollaborators();
+
+  return async ({ html, source_url, ...rest }: ExtractStageRequest): Promise<ExtractOutput> => {
+    // `'agent'` is the conservative source: the navigation guard it selects is unreachable without a
+    // url, so it costs nothing, and it is the verdict this seam should get if a url ever appears.
+    const result = await handleExtract({ ...rest, html }, router, 'agent');
+    if (!result.ok) {
+      throw new ExtractStageError(result.error, result.error_reason ?? result.error, result.hint);
+    }
+    return source_url === undefined ? result.data : { ...result.data, source_url };
+  };
 }

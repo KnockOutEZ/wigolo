@@ -27,12 +27,18 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
 
   useEffect(() => {
     let cancelled = false;
+    // Unmounting has to STOP the diagnostic, not just stop listening to it.
+    // Doctor's account section is a live request, and one left running after
+    // the screen is gone finishes into nothing — burning a round trip, and (in
+    // a test run) landing an egress that gets blamed on whatever is executing
+    // when it arrives.
+    const controller = new AbortController();
 
     async function run(): Promise<void> {
       const end = activityStore.begin('doctor');
       try {
         const { runDoctor } = await import('../../doctor.js');
-        const code = await runDoctor(getConfig().dataDir);
+        const code = await runDoctor(getConfig().dataDir, { signal: controller.signal });
         if (cancelled) return;
         setExitCode(code);
         setPhase('done');
@@ -48,6 +54,7 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
     void run();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 

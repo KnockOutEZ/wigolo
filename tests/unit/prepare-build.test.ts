@@ -383,6 +383,7 @@ describe('the prepare opt-out across every workflow that installs at the repo ro
     expect(affected().map((s) => s.key)).toEqual([
       'agent-benchmark.yml / benchmark / npm ci',
       'binary-build.yml / build / Install dependencies',
+      'binary-release.yml / build / Install dependencies',
       'ci.yml / clean-machine-smoke / Install + build',
       'ci.yml / clean-machine-smoke / Pack + global install (fresh `npm i -g wigolo`)',
       'ci.yml / full-suite / npm ci',
