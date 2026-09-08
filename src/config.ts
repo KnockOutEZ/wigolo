@@ -1231,7 +1231,12 @@ export const CONFIG_KEYS: readonly ConfigKeyDef[] = [
     envVar: 'WIGOLO_LLM_PROVIDER',
     kind: 'string',
     default: null,
-    enumValues: ['anthropic', 'openai', 'gemini', 'ollama'],
+    // Every value the resolver accepts, not every value a picker offers.
+    // `groq` is keystore-capable and env-supported but deliberately hidden
+    // from the TUI picker (`key-store.ts:42`, `provider-keys.ts:52`), and
+    // `ollama` is the local-server alias. A surface may show fewer of these;
+    // a validator built on this list must not reject one of them.
+    enumValues: ['anthropic', 'openai', 'gemini', 'groq', 'ollama'],
     resolved: true,
   },
   {

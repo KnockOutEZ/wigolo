@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allProviders } from '../../../src/integrations/cloud/llm/select.js';
 import {
   CONFIG_KEYS,
   configKeyByIdentifier,
@@ -230,6 +231,28 @@ describe('CONFIG_KEYS registry', () => {
       }
     }
     expect(leaked).toEqual([]);
+  });
+
+  it('offers every provider the LLM subsystem can actually use', () => {
+    // A narrower enum than the subsystem accepts is not cosmetic either: this
+    // list is what a validator downstream of the registry enforces, so a
+    // missing provider is one the portal refuses to save for a key
+    // `getConfig()` resolves happily. `groq` is the live case — env-supported
+    // and keystore-capable, but hidden from the TUI picker, so a registry
+    // copied from the picker's options omits it.
+    //
+    // Anchored on `allProviders()` rather than on a list restated here: the
+    // resolver casts this key without validating (mini-spec §2.2), so probing
+    // it through the env var proves nothing — an unaccepted string resolves
+    // through unchanged.
+    const def = configKeyBySettingsKey('llmProvider');
+    expect(def?.enumValues).toBeDefined();
+    for (const provider of allProviders()) {
+      expect(def?.enumValues, `provider ${provider} missing from the registry`)
+        .toContain(provider);
+    }
+    // The local-server alias has no entry in the provider union.
+    expect(def?.enumValues).toContain('ollama');
   });
 
   it('constrains an enum key to values the resolver tolerates', () => {
