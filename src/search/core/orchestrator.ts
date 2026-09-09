@@ -320,7 +320,14 @@ function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): Engi
 // never fall back to the full roster of the current vertical — that would
 // dispatch engines the caller did not select. Only a filter that matches no
 // configured engine at all (caller typo) keeps the full-roster fallback.
-const ALL_VERTICALS: Vertical[] = ['general', 'news', 'code', 'docs', 'papers', 'images'];
+const ALL_VERTICALS = Object.keys({
+  general: true,
+  news: true,
+  code: true,
+  docs: true,
+  papers: true,
+  images: true,
+} satisfies Record<Vertical, true>) as Vertical[];
 
 function isEngineFilterRecognisedAnywhere(allowlist: string[]): boolean {
   return ALL_VERTICALS.some(
