@@ -1022,6 +1022,34 @@ describe('runV1Search — degraded fallback to general', () => {
     expect(out.vertical).toBe('general');
     expect(out.degraded).toBe(false);
   });
+
+  it('dispatches nothing when the filter is recognized only in ANOTHER vertical (no full-roster restore)', async () => {
+    // github-code exists ONLY in the code roster; the caller asks for a
+    // general search filtered to it. Both local checks miss, but the filter
+    // is recognized in the registry — restoring the full general roster
+    // would dispatch engines the caller never selected. The selection stays
+    // restricted: nothing runs, the result surfaces degraded + empty.
+    const codeOnly = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeOnly.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['github-code'],
+      category: 'general',
+    });
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(codeOnly.spy).not.toHaveBeenCalled();
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(true);
+    expect(out.results).toEqual([]);
+    expect(out.enginesUsed).toEqual([]);
+  });
 });
 
 describe('runV1Search — per-result starvation re-dispatch', () => {
@@ -1568,6 +1596,7 @@ describe('runV1Search — engineFilter (search_engines parameter)', () => {
     });
     expect(ddgSpy).toHaveBeenCalledOnce();
     expect(bingSpy).not.toHaveBeenCalled();
+    expect(mojeekSpy).not.toHaveBeenCalled();
     // Probe-only selection is honoured via its intended wave, not the primary.
     expect(out.enginesUsed).not.toContain('bing');
   });

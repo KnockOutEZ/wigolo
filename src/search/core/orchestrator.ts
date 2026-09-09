@@ -314,6 +314,20 @@ function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): Engi
   return filtered;
 }
 
+// Every vertical in the registry, used to decide whether an engineFilter names
+// a CONFIGURED engine somewhere in the system even when it is unavailable in
+// the vertical being dispatched. A filter that is recognised anywhere must
+// never fall back to the full roster of the current vertical — that would
+// dispatch engines the caller did not select. Only a filter that matches no
+// configured engine at all (caller typo) keeps the full-roster fallback.
+const ALL_VERTICALS: Vertical[] = ['general', 'news', 'code', 'docs', 'papers', 'images'];
+
+function isEngineFilterRecognisedAnywhere(allowlist: string[]): boolean {
+  return ALL_VERTICALS.some(
+    (v) => applyEngineAllowlist(getEntriesForVertical(v), allowlist).length > 0,
+  );
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
   opts: RunV1SearchOptions = {},
@@ -404,11 +418,22 @@ export async function runV1Search(
       // probe-only selection: if the filter names a configured probe-only
       // engine (e.g. Mojeek with searchMojeekProbeOnly enabled), dispatch those
       // probe-only engines rather than silently restoring the full primary
-      // roster and dispatching unselected engines. Fall back to the full roster
-      // ONLY when the filter matches no configured engine at all.
+      // roster and dispatching unselected engines. Then check GLOBAL
+      // recognition: if the filter names an engine configured only in ANOTHER
+      // vertical (e.g. a code-vertical engine requested on a general search),
+      // dispatch nothing rather than the full roster — the caller selected
+      // engines that this vertical cannot provide, not "every engine".
+      // Fall back to the full roster ONLY when the filter matches no
+      // configured engine anywhere (caller typo or unknown engine name).
       const probeAllowlisted = applyEngineAllowlist(probeEntries, engineAllowlist);
       if (probeAllowlisted.length > 0) {
         entries = probeAllowlisted;
+      } else if (isEngineFilterRecognisedAnywhere(engineAllowlist)) {
+        log.warn(
+          'engineFilter matches configured engines in other verticals but none here — dispatching nothing to keep the selection restricted',
+          { vertical, engineAllowlist },
+        );
+        entries = [];
       }
     }
   }
