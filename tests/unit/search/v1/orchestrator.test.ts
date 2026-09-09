@@ -976,6 +976,52 @@ describe('runV1Search — degraded fallback to general', () => {
     const out = await runV1Search({ query: 'fix python regex' });
     expect(out.vertical).toBe('general');
   });
+
+  it('keeps a recognized engineFilter restricted after category fallback (no full general roster)', async () => {
+    // github-code exists ONLY in the code roster. The filter selects it, it
+    // returns zero results, so the vertical degrades. The general fallback
+    // must NOT treat the recognized filter as unmatched and restore the full
+    // general roster — no unselected general engine may run.
+    const codeOnly = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeOnly.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['github-code'],
+    });
+    expect(codeOnly.spy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.vertical).toBe('code');
+    expect(out.degraded).toBe(true);
+    expect(out.results).toEqual([]);
+  });
+
+  it('still falls back to the full general roster when the filter matches no configured engine (typo)', async () => {
+    // Unrecognized filter = caller typo: the pre-existing full-roster
+    // fallback semantics must survive the recognized-filter guard.
+    const codeEmpty = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeEmpty.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/y')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['nonexistent-engine'],
+    });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(false);
+  });
 });
 
 describe('runV1Search — per-result starvation re-dispatch', () => {

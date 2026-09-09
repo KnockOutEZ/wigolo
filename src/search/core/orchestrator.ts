@@ -897,8 +897,30 @@ export async function runV1Search(
   // image vertical surfaces empty + engine_warnings rather than silently
   // morphing into a general search.
   if (degraded && vertical !== 'general' && vertical !== 'images' && !opts._isFallback) {
-    log.info('vertical degraded, falling back to general', { from: vertical });
-    return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
+    // Keep a RECOGNIZED engineFilter restricted across the fallback. If the
+    // filter matched configured engines in this vertical but none of them
+    // exist in the general roster, recursing would re-enter the allowlist
+    // gate with zero matches and silently restore the FULL general roster,
+    // running engines the caller never selected. Skip the fallback in that
+    // case and surface the degraded result. An unrecognized filter (typo)
+    // still falls back to the full general roster as before, and a filter
+    // that matches general engines falls back normally (the gate in the
+    // recursive call restricts dispatch to the matched engines).
+    let skipFallback = false;
+    if (engineAllowlist && engineAllowlist.length > 0) {
+      const matchedHere = applyEngineAllowlist(allEntries, engineAllowlist).length > 0;
+      const matchedGeneral =
+        applyEngineAllowlist(getEntriesForVertical('general'), engineAllowlist).length > 0;
+      skipFallback = matchedHere && !matchedGeneral;
+    }
+    if (!skipFallback) {
+      log.info('vertical degraded, falling back to general', { from: vertical });
+      return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
+    }
+    log.info(
+      'vertical degraded; engineFilter matches no general engine — skipping fallback to keep the filter restricted',
+      { from: vertical },
+    );
   }
 
   return {
