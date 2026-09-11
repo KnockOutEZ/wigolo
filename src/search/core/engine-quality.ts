@@ -61,6 +61,12 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   'github-code': 'medium',
   arxiv: 'medium',
   'semantic-scholar': 'medium',
+  // OpenAlex and OpenReview return real abstracts, matching the arxiv/S2 tier.
+  // DBLP is bibliographic metadata only (author + venue + year, no abstract),
+  // so it sits with the other metadata-only lookups below.
+  openalex: 'medium',
+  openreview: 'medium',
+  dblp: 'low',
   lobsters: 'low',
   devdocs: 'low',
   // RSS feed engine (news vertical, conditional on config). Curated by the
