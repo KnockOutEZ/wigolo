@@ -6,6 +6,7 @@ import type {
   SearchEngineOptions,
 } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { normaliseEngineList } from '../../util/engine-list.js';
 import {
   classifyIntentDetailed,
   extractErrorTokens,
@@ -211,6 +212,10 @@ export interface OrchestratorInput {
    * result whose title+snippet does not contain the unquoted query as a
    * case-insensitive substring is dropped post-rerank. */
   exactMatch?: boolean;
+  /** Caller-supplied engine allowlist. When non-empty, only engines whose
+   * name matches an entry (case-insensitive) are dispatched. Wired from
+   * SearchInput.search_engines via the MCP schema and CLI --search-engines. */
+  engineFilter?: string[];
 }
 
 export interface OrchestratorOutput {
@@ -303,6 +308,33 @@ interface RunV1SearchOptions {
   _isFallback?: boolean;
 }
 
+function applyEngineAllowlist(entries: EngineEntry[], allowlist: string[]): EngineEntry[] {
+  const lowered = allowlist.map((n) => n.toLowerCase());
+  const filtered = entries.filter((e) => lowered.includes(e.engine.name.toLowerCase()));
+  return filtered;
+}
+
+// Every vertical in the registry, used to decide whether an engineFilter names
+// a CONFIGURED engine somewhere in the system even when it is unavailable in
+// the vertical being dispatched. A filter that is recognised anywhere must
+// never fall back to the full roster of the current vertical — that would
+// dispatch engines the caller did not select. Only a filter that matches no
+// configured engine at all (caller typo) keeps the full-roster fallback.
+const ALL_VERTICALS = Object.keys({
+  general: true,
+  news: true,
+  code: true,
+  docs: true,
+  papers: true,
+  images: true,
+} satisfies Record<Vertical, true>) as Vertical[];
+
+function isEngineFilterRecognisedAnywhere(allowlist: string[]): boolean {
+  return ALL_VERTICALS.some(
+    (v) => applyEngineAllowlist(getEntriesForVertical(v), allowlist).length > 0,
+  );
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
   opts: RunV1SearchOptions = {},
@@ -365,8 +397,53 @@ export async function runV1Search(
   // Probe-only engines are held back from the primary wave: they are a
   // per-call latency/failure tax on the happy path but still an independent
   // signal the degraded-recovery wave can pull in when the pool collapses.
-  const entries = allEntries.filter((e) => e.probeOnly !== true);
+  let entries = allEntries.filter((e) => e.probeOnly !== true);
   const probeEntries = allEntries.filter((e) => e.probeOnly === true);
+
+  // Apply caller-supplied engine allowlist (SearchInput.search_engines).
+  // Normalise ONCE up front (trim, lowercase, dedupe, sort) and use that
+  // normalised list at every gate below — primary, probe fallback, recovery,
+  // and starvation backfill. Normalising at the gates (rather than raw-matching)
+  // keeps the orchestrator consistent with the cache-key fingerprint in
+  // cache/store.ts, which trims the same value: a whitespace-padded valid name
+  // like [' duckduckgo '] must dispatch ONLY that engine, not miss the
+  // allowlist and dispatch the full roster (which would then be cached under
+  // the trimmed single-engine key). An all-blank list normalises to null,
+  // i.e. treated as "no filter". Case-insensitive match against engine name.
+  // For the primary wave, if no entries match the allowlist, fall back to the
+  // full roster (the caller likely made a typo or passed an unknown engine
+  // name). For recovery and backfill waves, an empty result means those waves
+  // run nothing — which is correct: if the caller explicitly filtered out all
+  // probe/backfill engines, we don't secretly re-introduce them.
+  const engineAllowlist = normaliseEngineList(input.engineFilter);
+  if (engineAllowlist && engineAllowlist.length > 0) {
+    const allowlisted = applyEngineAllowlist(entries, engineAllowlist);
+    if (allowlisted.length > 0) {
+      entries = allowlisted;
+    } else {
+      // No NON-probe entry matched. Distinguish a caller typo from an explicit
+      // probe-only selection: if the filter names a configured probe-only
+      // engine (e.g. Mojeek with searchMojeekProbeOnly enabled), dispatch those
+      // probe-only engines rather than silently restoring the full primary
+      // roster and dispatching unselected engines. Then check GLOBAL
+      // recognition: if the filter names an engine configured only in ANOTHER
+      // vertical (e.g. a code-vertical engine requested on a general search),
+      // dispatch nothing rather than the full roster — the caller selected
+      // engines that this vertical cannot provide, not "every engine".
+      // Fall back to the full roster ONLY when the filter matches no
+      // configured engine anywhere (caller typo or unknown engine name).
+      const probeAllowlisted = applyEngineAllowlist(probeEntries, engineAllowlist);
+      if (probeAllowlisted.length > 0) {
+        entries = probeAllowlisted;
+      } else if (isEngineFilterRecognisedAnywhere(engineAllowlist)) {
+        log.warn(
+          'engineFilter matches configured engines in other verticals but none here — dispatching nothing to keep the selection restricted',
+          { vertical, engineAllowlist },
+        );
+        entries = [];
+      }
+    }
+  }
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
@@ -623,10 +700,30 @@ export async function runV1Search(
   const skippedPrimary = outcomes
     .filter((o) => o.skipped)
     .map((o) => o.engine);
-  const recoveryEntries = [
-    ...probeEntries,
+  // Engines that received an ATTEMPTED (non-skipped) primary dispatch. A
+  // probe-only engine selected via engineFilter and dispatched as the primary
+  // wave that returns zero results must NOT re-enter the recovery roster via
+  // probeEntries — that would fire a second external request and recovery wait
+  // against the same engine without probing a new one. Engines SKIPPED in the
+  // primary wave (breaker open) stay eligible: recovery is their retry path.
+  const attemptedPrimary = new Set(
+    outcomes.filter((o) => !o.skipped).map((o) => o.engine),
+  );
+  let recoveryEntries = [
+    ...probeEntries.filter((e) => !attemptedPrimary.has(e.engine.name)),
     ...entries.filter((e) => skippedPrimary.includes(e.engine.name)),
   ];
+  // Dedupe by engine name: a probe-only engine selected via engineFilter and
+  // skipped (breaker open) appears in both lists above.
+  const seenRecovery = new Set<string>();
+  recoveryEntries = recoveryEntries.filter((e) => {
+    if (seenRecovery.has(e.engine.name)) return false;
+    seenRecovery.add(e.engine.name);
+    return true;
+  });
+  if (engineAllowlist && engineAllowlist.length > 0) {
+    recoveryEntries = applyEngineAllowlist(recoveryEntries, engineAllowlist);
+  }
   if (
     outcomes.length > 0 &&
     primaryHealthy < poolHealthFloor(outcomes.length) &&
@@ -684,7 +781,10 @@ export async function runV1Search(
     vertical !== 'images' &&
     !opts._isFallback
   ) {
-    const generalEntries = getGeneralEngines();
+    let generalEntries = getGeneralEngines();
+    if (engineAllowlist && engineAllowlist.length > 0) {
+      generalEntries = applyEngineAllowlist(generalEntries, engineAllowlist);
+    }
     if (generalEntries.length > 0) {
       log.info('vertical starved below floor, backfilling from general', {
         from: vertical,
@@ -829,8 +929,30 @@ export async function runV1Search(
   // image vertical surfaces empty + engine_warnings rather than silently
   // morphing into a general search.
   if (degraded && vertical !== 'general' && vertical !== 'images' && !opts._isFallback) {
-    log.info('vertical degraded, falling back to general', { from: vertical });
-    return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
+    // Keep a RECOGNIZED engineFilter restricted across the fallback. If the
+    // filter matched configured engines in this vertical but none of them
+    // exist in the general roster, recursing would re-enter the allowlist
+    // gate with zero matches and silently restore the FULL general roster,
+    // running engines the caller never selected. Skip the fallback in that
+    // case and surface the degraded result. An unrecognized filter (typo)
+    // still falls back to the full general roster as before, and a filter
+    // that matches general engines falls back normally (the gate in the
+    // recursive call restricts dispatch to the matched engines).
+    let skipFallback = false;
+    if (engineAllowlist && engineAllowlist.length > 0) {
+      const matchedHere = applyEngineAllowlist(allEntries, engineAllowlist).length > 0;
+      const matchedGeneral =
+        applyEngineAllowlist(getEntriesForVertical('general'), engineAllowlist).length > 0;
+      skipFallback = matchedHere && !matchedGeneral;
+    }
+    if (!skipFallback) {
+      log.info('vertical degraded, falling back to general', { from: vertical });
+      return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
+    }
+    log.info(
+      'vertical degraded; engineFilter matches no general engine — skipping fallback to keep the filter restricted',
+      { from: vertical },
+    );
   }
 
   return {
