@@ -99,6 +99,12 @@ export class Crawler {
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
 
+    // seedOrigin comes from the pre-redirect input URL. Re-anchored to the
+    // seed's final origin below once it has been fetched, so a seed that
+    // redirects (apex -> www, http -> https) doesn't reject every link on the
+    // page it actually landed on.
+    let scopeOrigin = seedOrigin;
+
     // Queue: [url, depth]
     const queue: Array<[string, number]> = [[input.url, 0]];
     visited.add(canonicalForCrawl(input.url));
@@ -138,6 +144,15 @@ export class Crawler {
         continue;
       }
 
+      // depth 0 is only ever the seed: scope the crawl to where it landed.
+      if (depth === 0) {
+        try {
+          scopeOrigin = new URL(fetchResult.url).origin;
+        } catch {
+          // unparseable final URL — keep the origin we started with
+        }
+      }
+
       const item: CrawlResultItem = {
         url: canonicalForOutput(fetchResult.url),
         title: fetchResult.title,
@@ -158,7 +173,7 @@ export class Crawler {
 
       // Discover links for traversal
       if (depth < maxDepth) {
-        const newLinks = this.filterLinks(fetchResult.links, seedOrigin, visited, input.include_patterns, input.exclude_patterns, robotsParser);
+        const newLinks = this.filterLinks(fetchResult.links, scopeOrigin, visited, input.include_patterns, input.exclude_patterns, robotsParser);
 
         // filterLinks() runs against the visited snapshot before this loop,
         // so two outbound links with the same canonical (e.g. /page#a and
