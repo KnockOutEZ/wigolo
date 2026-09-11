@@ -47,8 +47,9 @@ export const PICKER_PROVIDERS: ReadonlyArray<LLMProvider | 'custom'> = [
   'custom',
 ];
 
-// All providers that can have keystore entries (including groq via env only)
-const STORE_PROVIDERS: ReadonlyArray<LLMProvider> = ['anthropic', 'openai', 'gemini', 'groq'];
+// All providers that can have keystore entries (groq + minimax supported via
+// env/keystore but hidden from the TUI picker above)
+const STORE_PROVIDERS: ReadonlyArray<LLMProvider> = ['anthropic', 'openai', 'gemini', 'groq', 'minimax'];
 
 /**
  * Process-lifetime memo for resolveProviderKey, keyed by `provider:dataDir`.
