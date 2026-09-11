@@ -142,6 +142,7 @@
     "vitest": "^4.1.4"
   },
   "optionalDependencies": {
+    "@anush008/tokenizers-linux-arm64-gnu": "^0.5.0",
     "@napi-rs/keyring": "^1.3.0",
     "chrome-remote-interface": "^0.33.3",
     "patchright": "1.60.2",
