@@ -45,6 +45,7 @@ describe('llm-fallback e2e per provider', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.GOOGLE_API_KEY;
     delete process.env.GROQ_API_KEY;
+    delete process.env.ORCAROUTER_API_KEY;
     delete process.env.WIGOLO_LLM_PROVIDER;
     resetConfig();
     initDatabase(':memory:');
@@ -134,7 +135,23 @@ describe('llm-fallback e2e per provider', () => {
     expect(out.provider).toBe('groq');
   });
 
-  it('no-key returns warning listing all four env vars', async () => {
+  it('orcarouter full path', async () => {
+    process.env.ORCAROUTER_API_KEY = 'k';
+    openaiCreate.mockResolvedValue({
+      choices: [{ message: { content: '{"price":"$5"}' } }],
+      model: 'orcarouter/auto',
+    });
+    const out = await extractWithLLM({
+      html: '<p/>',
+      jsonSchema: schema,
+      partial: {},
+      missing: ['price'],
+    });
+    expect(out.values).toEqual({ price: '$5' });
+    expect(out.provider).toBe('orcarouter');
+  });
+
+  it('no-key returns warning listing all five env vars', async () => {
     const out = await extractWithLLM({
       html: '<p/>',
       jsonSchema: schema,
@@ -146,6 +163,7 @@ describe('llm-fallback e2e per provider', () => {
     expect(w).toMatch(/OPENAI_API_KEY/);
     expect(w).toMatch(/GEMINI_API_KEY/);
     expect(w).toMatch(/GROQ_API_KEY/);
+    expect(w).toMatch(/ORCAROUTER_API_KEY/);
   });
 
   it('budget exhaustion blocks call', async () => {

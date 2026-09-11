@@ -11,6 +11,7 @@ const PROVIDER_DEFAULTS: Record<LLMProvider, string> = {
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.5-flash-lite',
   groq: 'llama-3.3-70b-versatile',
+  orcarouter: 'orcarouter/auto',
 };
 
 const PROVIDER_ENV: Record<LLMProvider, string> = {
@@ -18,6 +19,7 @@ const PROVIDER_ENV: Record<LLMProvider, string> = {
   openai: 'WIGOLO_LLM_MODEL_OPENAI',
   gemini: 'WIGOLO_LLM_MODEL_GEMINI',
   groq: 'WIGOLO_LLM_MODEL_GROQ',
+  orcarouter: 'WIGOLO_LLM_MODEL_ORCAROUTER',
 };
 
 export function resolveModel(
