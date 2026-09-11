@@ -777,6 +777,33 @@ export class MultiBrowserPool {
         }
         throw err;
       }
+    } else if (options.storageStatePath) {
+      // An authenticated fetch requests a logged-in session. A seeded context
+      // must NEVER be returned to the shared pool: Playwright's pooled contexts
+      // are reused by later fetches, so restoring storage state onto one would
+      // leak this caller's cookies/localStorage to whichever fetch reuses that
+      // context next. Treat it like the dedicated stealth path — its own
+      // throwaway browser + a per-fetch context created WITH Playwright's
+      // `storageState` option (which restores cookies, origin localStorage and
+      // IndexedDB in one call), closed in the finally below and never released.
+      // The pooled path stays byte-identical when no storageStatePath is given.
+      resolvedType = this.resolveType(options.browserType, url);
+      dedicated = true;
+      log.debug('fetching with browser (authenticated context)', { url, type: resolvedType });
+      try {
+        const cfg = getConfig();
+        const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
+        dedicatedBrowser = await getLauncher(resolvedType).launch({
+          headless: true,
+          env: sanitizedChildEnv({ stripProxy: true }),
+          ...(proxy ? { proxy } : {}),
+        });
+        ctx = await dedicatedBrowser.newContext({ storageState: options.storageStatePath, acceptDownloads: true });
+      } catch (err) {
+        await dedicatedBrowser?.close().catch(() => {});
+        dedicatedBrowser = null;
+        throw err;
+      }
     } else {
       resolvedType = this.resolveType(options.browserType, url);
       log.debug('fetching with browser', { url, type: resolvedType });
