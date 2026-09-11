@@ -99,11 +99,12 @@ Core tools never need an LLM. Configuring one adds answer synthesis (`format: "a
 
 | Env var | Default | What it does |
 | --- | --- | --- |
-| `WIGOLO_LLM_PROVIDER` | unset | `anthropic`, `openai`, `gemini`, `groq`, or `ollama` (any local OpenAI-compatible server). |
+| `WIGOLO_LLM_PROVIDER` | unset | `anthropic`, `openai`, `gemini`, `groq`, `ollama` (any local OpenAI-compatible server), or `openai-compatible` (any **authenticated** remote OpenAI-compatible endpoint — see below). |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` | unset | Per-provider keys, read from env. |
-| `WIGOLO_LLM_API_KEY` | unset | Generic key slot (used by `init --provider=...`; stored in the OS keychain, never passed as a flag). |
+| `WIGOLO_LLM_API_KEY` | unset | Generic key slot (used by `init --provider=...`; stored in the OS keychain, never passed as a flag). **Also the API key for the `openai-compatible` provider.** |
 | `WIGOLO_LLM_MODEL` | provider default | Override the model name. |
-| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any OpenAI-compatible endpoint. |
+| `WIGOLO_LLM_MODEL_OPENAI_COMPATIBLE` | `gpt-4o-mini` | Model for the `openai-compatible` provider (set this to your endpoint's model id). |
+| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` **and** `openai-compatible` providers — point `openai-compatible` at your OpenAI-compatible `/v1` endpoint. |
 | `WIGOLO_LLM_CACHE_TTL_DAYS` | `7` | Cache lifetime for LLM outputs. |
 | `WIGOLO_LLM_MAX_CALLS_PER_REQUEST` | `1` | Hard cap on LLM calls per tool request. |
 

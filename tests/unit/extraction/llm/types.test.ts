@@ -9,7 +9,7 @@ import type {
 describe('llm types', () => {
   it('LLMProvider is union of supported providers', () => {
     expectTypeOf<LLMProvider>().toEqualTypeOf<
-      'anthropic' | 'openai' | 'gemini' | 'groq'
+      'anthropic' | 'openai' | 'gemini' | 'groq' | 'openai-compatible'
     >();
   });
 
