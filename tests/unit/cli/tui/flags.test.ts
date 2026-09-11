@@ -76,6 +76,14 @@ describe('parseInitFlags — flags', () => {
     expect(parseInitFlags(['-h']).help).toBe(true);
   });
 
+  it('recognizes --no-permissions and its explicit-on alias', () => {
+    expect(parseInitFlags([]).permissions).toBe(true);
+    expect(parseInitFlags(['--no-permissions']).permissions).toBe(false);
+    expect(parseInitFlags(['--permissions']).permissions).toBe(true);
+    // Last flag wins, matching how --warmup/--no-warmup already behave.
+    expect(parseInitFlags(['--no-permissions', '--permissions']).permissions).toBe(true);
+  });
+
   it('combines flags in any order', () => {
     const out = parseInitFlags(['--plain', '--agents=cursor', '-y', '--skip-verify']);
     expect(out).toEqual({
@@ -88,6 +96,8 @@ describe('parseInitFlags — flags', () => {
       wizard: false,
       // Full setup is the default: warmup is TRUE unless --no-warmup is passed.
       warmup: true,
+      // Same shape: allowing the tools is on unless --no-permissions is passed.
+      permissions: true,
       json: false,
       provider: undefined,
       search: undefined,

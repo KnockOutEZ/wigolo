@@ -21,6 +21,8 @@ const INIT_KNOWN = new Set([
   '--interactive',
   '--warmup',
   '--no-warmup',
+  '--permissions',
+  '--no-permissions',
   '--json',
 ]);
 
@@ -143,7 +145,7 @@ function parseCommon(args: readonly string[], known: ReadonlySet<string>): Raw {
 const VALID_PROVIDERS = ['anthropic', 'openai', 'gemini', 'ollama'] as const;
 const VALID_SEARCH_BACKENDS = ['core', 'searxng', 'hybrid'] as const;
 
-function parseInitOnlyFlags(args: readonly string[]): { provider?: string; search?: string; interactive: boolean; wizard: boolean; warmup: boolean } {
+function parseInitOnlyFlags(args: readonly string[]): { provider?: string; search?: string; interactive: boolean; wizard: boolean; warmup: boolean; permissions: boolean } {
   let provider: string | undefined;
   let search: string | undefined;
   let interactive = false;
@@ -153,6 +155,9 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
   // `--warmup` is kept as an explicit-on alias for back-compat (a no-op given
   // the new default).
   let warmup = true;
+  // Allowing the tools is part of wiring an agent, same as the instructions
+  // block init already writes. `--no-permissions` opts out.
+  let permissions = true;
 
   let i = 0;
   while (i < args.length) {
@@ -180,6 +185,18 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
 
     if (token === '--no-warmup') {
       warmup = false;
+      i++;
+      continue;
+    }
+
+    if (token === '--permissions') {
+      permissions = true;
+      i++;
+      continue;
+    }
+
+    if (token === '--no-permissions') {
+      permissions = false;
       i++;
       continue;
     }
@@ -245,12 +262,12 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
     i++;
   }
 
-  return { provider, search, interactive, wizard, warmup };
+  return { provider, search, interactive, wizard, warmup, permissions };
 }
 
 export function parseInitFlags(args: readonly string[]): InitFlags {
   const raw = parseCommon(args, INIT_KNOWN);
-  const { provider, search, interactive, wizard, warmup } = parseInitOnlyFlags(args);
+  const { provider, search, interactive, wizard, warmup, permissions } = parseInitOnlyFlags(args);
   return {
     nonInteractive: raw.nonInteractive,
     agents: raw.agents,
@@ -260,6 +277,7 @@ export function parseInitFlags(args: readonly string[]): InitFlags {
     interactive,
     wizard,
     warmup,
+    permissions,
     json: raw.json,
     provider,
     search,
