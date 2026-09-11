@@ -1352,3 +1352,100 @@ describe('runV1Search — recency boost', () => {
     ]);
   });
 });
+
+describe('runV1Search — engineFilter (search_engines parameter)', () => {
+  it('filters engines by name when engineFilter is provided', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['duckduckgo'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('matches engine names case-insensitively', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['DuckDuckGo'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('falls back to full roster when filter matches nothing', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['nonexistent-engine'],
+    });
+    // Both engines dispatched when filter matches nothing
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not filter when engineFilter is empty', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: [],
+    });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not filter when engineFilter is undefined', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({ query: 'test query' });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+});
