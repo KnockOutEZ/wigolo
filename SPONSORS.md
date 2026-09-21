@@ -1,6 +1,6 @@
 # Sponsors
 
-**wigolo is free for all, and it is meant to stay that way.**
+**wigolo is free for everyone.**
 
 There is no paid tier, no metered plan, and no feature held back for people who
 pay. The core tools need no API keys and send nothing to a third party. That is
