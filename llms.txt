@@ -1,6 +1,6 @@
 # wigolo
 
-> wigolo is a local-first web-intelligence server for AI agents: web search, page fetch, site crawl, structured extraction, hybrid semantic discovery, multi-step research, autonomous data gathering, page diffing, change watching, and a persistent local knowledge cache. It runs on the user's machine (Node.js 20+), needs no API keys for core work, and speaks MCP over stdio for local coding agents, MCP over HTTP + a REST API for remote/self-hosted agents, and a plain CLI for scripts. Results are transparent: per-result evidence scores, citations with source spans, per-engine telemetry, honestly labeled failures. All data stays in ~/.wigolo. License: AGPL-3.0-only.
+> wigolo is a local-first web-intelligence server for AI agents: web search, page fetch, site crawl, structured extraction, hybrid semantic discovery, multi-step research, autonomous data gathering, page diffing, change watching, and a persistent local knowledge cache. It runs on the user's machine (Node.js 20+), needs no API keys for core work, and speaks MCP over stdio for local coding agents, MCP over HTTP + a REST API for remote/self-hosted agents, and a plain CLI for scripts. Results are transparent: per-result evidence scores, citations with source spans, per-engine telemetry, honestly labeled failures. All data stays in ~/.wigolo. License: AGPL-3.0-only, with a commercial license available for companies (see LICENSING.md).
 
 Install: `npx wigolo init` (unattended full setup; `--agents=claude-code` wires an agent)
 
@@ -27,3 +27,4 @@ Repository: https://github.com/KnockOutEZ/wigolo
 - [Plugins](docs/plugins.md): custom search-engine and extractor plugins
 - [Troubleshooting](docs/troubleshooting.md): symptom-to-fix table, blocked_by_challenge, logs, FAQ
 - [Privacy & security](docs/privacy-security.md): local-only data, credential handling, serve hardening, SSRF guards, disclosure policy
+- [Licensing](LICENSING.md): AGPL-3.0 for everyone; commercial license terms for companies that need to build on wigolo without copyleft obligations

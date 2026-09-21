@@ -1,6 +1,6 @@
 # Sponsors
 
-**wigolo is free for all, and it is meant to stay that way.**
+**wigolo is free for everyone.**
 
 There is no paid tier, no metered plan, and no feature held back for people who
 pay. The core tools need no API keys and send nothing to a third party. That is
@@ -54,6 +54,8 @@ time to answer issues from people running wigolo in production.
   and on this page.
 - A link on every placement, with its reach measured — figures available on
   request, see [Measurement](#measurement) below.
+- Annual sponsors get a commercial license included; see
+  [LICENSING.md](LICENSING.md).
 
 ### How sponsorship and the project stay separate
 

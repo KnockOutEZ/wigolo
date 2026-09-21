@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- docs: add commercial licensing terms (LICENSING.md); AGPL-3.0 unchanged.
+
 ## v0.2.0 — 2026-07-17
 
 Zero-config onboarding, full distribution surface, and a headless-first control plane — matching and going past the ergonomics of the paid tools without shedding the local semantic brain. All ten tools (search, fetch, crawl, extract, cache, find_similar, research, agent, diff, watch) keep working throughout; everything below is additive and keyless-by-default.
