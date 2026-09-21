@@ -2,6 +2,8 @@
 
 wigolo is dual-licensed: open source under the GNU AGPL-3.0, with a commercial license available for companies that need different terms. This page explains how the two fit together and how companies fund the project.
 
+If you're making money with wigolo or building a commercial product on it, take a commercial license or sponsor the project. It's how wigolo stays maintained. Pricing scales with your size, and if you're early-stage or bootstrapped, say so and we'll work something out.
+
 ## What won't change
 
 - Every feature ships in the AGPL release. There is no gated tier.
@@ -11,7 +13,7 @@ wigolo is dual-licensed: open source under the GNU AGPL-3.0, with a commercial l
 
 ## Open source (AGPL-3.0)
 
-Free for everyone. Use it, modify it, self-host it. The one condition: if you modify wigolo and let people interact with it over a network, you must make your modified source available under the AGPL. Running it unmodified as an internal service does not trigger this.
+Free for everyone. Use it, modify it, self-host it. The main condition: if you modify wigolo and let people interact with it over a network, you must make your modified source available under the AGPL. Running it unmodified as an internal service does not trigger this. The normal AGPL rules also apply if you distribute copies of wigolo, modified or not.
 
 The full license text is in [LICENSE](LICENSE).
 
@@ -23,6 +25,8 @@ For companies that want to build on wigolo without AGPL obligations. It includes
 - Redistribute it inside your own images, installers or appliances
 - Priority bug fixes and a direct support line
 - A signed license agreement on request
+
+Annual sponsors get a commercial license included. See [SPONSORS.md](SPONSORS.md).
 
 ## Do I need one?
 
@@ -40,12 +44,4 @@ For companies that want to build on wigolo without AGPL obligations. It includes
 
 ## Pricing
 
-Starts at $1,500/yr.
-
-| Tier | Price |
-| --- | --- |
-| Small team (under 10 developers) | $1,500/yr |
-| Company | $5,000/yr |
-| Enterprise | Custom |
-
-Email [ktowhid20@gmail.com](mailto:ktowhid20@gmail.com) with a line about how you use wigolo and you'll get a quote within a day.
+Pricing scales with company size, from small startups to enterprises. Early-stage or bootstrapped teams get a rate that fits. Email [ktowhid20@gmail.com](mailto:ktowhid20@gmail.com) with a line about how you use wigolo and what stage you're at, and you'll get a quote within a day.

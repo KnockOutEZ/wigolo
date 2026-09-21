@@ -430,7 +430,9 @@ wigolo is open source under **[GNU AGPL-3.0](LICENSE)**, and always will be.
 
 Individuals, hobbyists, students, open-source projects and researchers: use it freely. No obligations beyond the AGPL, and none in practice for local use.
 
-Companies and commercial products: the AGPL applies to you too. If you modify wigolo and run it as a service, the AGPL requires you to publish those changes under the same license. Some company policies don't allow AGPL dependencies at all. If either applies to you, or if you're building wigolo into a commercial product or service, take a commercial license. It removes the copyleft obligations, adds priority support, and funds the project you're building on. See **[LICENSING.md](LICENSING.md)** or email [ktowhid20@gmail.com](mailto:ktowhid20@gmail.com).
+Companies and commercial products: the AGPL applies to you too. If you modify wigolo and run it as a service, the AGPL requires you to publish those changes under the same license. Some company policies don't allow AGPL dependencies at all. If either applies to you, a commercial license is the clean route. It removes the copyleft obligations, adds priority support, and funds the project you're building on. See **[LICENSING.md](LICENSING.md)** or email [ktowhid20@gmail.com](mailto:ktowhid20@gmail.com).
+
+If you're making money with wigolo or building a commercial product on it, take a commercial license or sponsor the project. It's how wigolo stays maintained. Pricing scales with your size, and if you're early-stage or bootstrapped, say so and we'll work something out.
 
 See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name.
 

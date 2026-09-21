@@ -54,6 +54,8 @@ time to answer issues from people running wigolo in production.
   and on this page.
 - A link on every placement, with its reach measured — figures available on
   request, see [Measurement](#measurement) below.
+- Annual sponsors get a commercial license included; see
+  [LICENSING.md](LICENSING.md).
 
 ### How sponsorship and the project stay separate
 

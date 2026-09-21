@@ -18,7 +18,7 @@ Optional LLM (for research/agent answer synthesis): any of Anthropic/OpenAI/Gemi
 - [npm package](https://www.npmjs.com/package/wigolo)
 - [Report a bug](https://github.com/KnockOutEZ/wigolo/issues/new?template=bug_report.yml)
 - [Discussions](https://github.com/KnockOutEZ/wigolo/discussions)
-- [Licensing](https://github.com/KnockOutEZ/wigolo/blob/main/LICENSING.md): AGPL-3.0 for everyone; commercial license terms and pricing for companies that need to build on wigolo without copyleft obligations
+- [Licensing](https://github.com/KnockOutEZ/wigolo/blob/main/LICENSING.md): AGPL-3.0 for everyone; commercial license terms for companies that need to build on wigolo without copyleft obligations
 
 ## Positioning
 

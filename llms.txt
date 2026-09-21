@@ -27,4 +27,4 @@ Repository: https://github.com/KnockOutEZ/wigolo
 - [Plugins](docs/plugins.md): custom search-engine and extractor plugins
 - [Troubleshooting](docs/troubleshooting.md): symptom-to-fix table, blocked_by_challenge, logs, FAQ
 - [Privacy & security](docs/privacy-security.md): local-only data, credential handling, serve hardening, SSRF guards, disclosure policy
-- [Licensing](LICENSING.md): AGPL-3.0 for everyone; commercial license terms and pricing for companies that need to build on wigolo without copyleft obligations
+- [Licensing](LICENSING.md): AGPL-3.0 for everyone; commercial license terms for companies that need to build on wigolo without copyleft obligations
