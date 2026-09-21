@@ -22,7 +22,7 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 <a href="https://trendshift.io/repositories/79424?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-79424" target="_blank"><img src="https://trendshift.io/api/badge/repositories/79424" alt="wigolo on Trendshift" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/79424?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-79424" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/79424/daily?language=TypeScript" alt="KnockOutEZ%2Fwigolo | Trendshift" width="250" height="55"/></a>
 
-[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Discord](https://discord.gg/BkUUgz2bNF) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
+[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Discord](https://discord.gg/BkUUgz2bNF) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Licensing](LICENSING.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
 
 **Join the community on [Discord](https://discord.gg/BkUUgz2bNF)** — questions, help, and what's being built next.
 
@@ -148,7 +148,7 @@ Thank you to the sponsors below, who help keep wigolo maintained and free for ev
 
 </div>
 
-**wigolo is free for all and is meant to stay that way.** If you or your company would like to help keep it maintained, there's room for more sponsors — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**, or see [SPONSORS.md](SPONSORS.md) for the terms. A one-off via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez) is welcome too.
+**wigolo is free for everyone.** If you or your company would like to help keep it maintained, there's room for more sponsors — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**, or see [SPONSORS.md](SPONSORS.md) for the terms. A one-off via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez) is welcome too.
 
 ## Benchmark
 
@@ -353,7 +353,7 @@ wigolo is in **public beta**. Everything documented here works and is held to a 
 - 💡 **[Request a feature](https://github.com/KnockOutEZ/wigolo/issues/new?template=feature_request.yml)** — something it should do
 - 💬 **[Ask anything](https://github.com/KnockOutEZ/wigolo/discussions)** — questions, setups, show & tell
 
-If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (there's no paid tier and never will be), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
+If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (the open-source version is the full product; commercial licenses fund it, not gated features), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
 
 ## Troubleshooting
 
@@ -371,7 +371,7 @@ The full guide covers per-symptom fixes, a "what still works when X fails" map, 
 <details>
 <summary><b>Free? What's the catch?</b></summary>
 
-No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's sustained by donations, and the AGPL license legally prevents a switch into a closed hosted product.
+No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's funded by commercial licenses and sponsors, and the AGPL legally prevents a switch into a closed hosted product.
 
 </details>
 
@@ -397,9 +397,9 @@ wigolo reads the public web the way a browser does: robots.txt respected by defa
 </details>
 
 <details>
-<summary><b>AGPL — can I use this at work?</b></summary>
+<summary><b>Can I use this at work?</b></summary>
 
-Yes, freely, company-wide. The license only bites if you *modify wigolo and run it as a network service*, in which case you must publish those modifications; using it as a local dev tool carries zero obligation. For commercial-licensing questions, reach out.
+As an individual developer on your own machine: yes, freely. As a company shipping a product or running a service on top of wigolo: you can under the AGPL, but check the terms carefully, and if your legal team doesn't allow AGPL or you'd rather not publish your modifications, a commercial license is the clean route. See [LICENSING.md](LICENSING.md).
 
 </details>
 
@@ -426,12 +426,18 @@ Bug reports, feature requests, and PRs are all welcome; see **[CONTRIBUTING.md](
 
 ## License
 
-**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host, including inside a company. The one obligation: if you run a **modified** version as a network service, you must publish your modified source under the same license. That keeps wigolo open while preventing a closed, hosted fork. See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name. For commercial-licensing questions, reach out.
+wigolo is open source under **[GNU AGPL-3.0](LICENSE)**, and always will be.
+
+Individuals, hobbyists, students, open-source projects and researchers: use it freely. No obligations beyond the AGPL, and none in practice for local use.
+
+Companies and commercial products: the AGPL applies to you too. If you modify wigolo and run it as a service, the AGPL requires you to publish those changes under the same license. Some company policies don't allow AGPL dependencies at all. If either applies to you, or if you're building wigolo into a commercial product or service, take a commercial license. It removes the copyleft obligations, adds priority support, and funds the project you're building on. See **[LICENSING.md](LICENSING.md)** or email [ktowhid20@gmail.com](mailto:ktowhid20@gmail.com).
+
+See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name.
 
 <div align="center">
 <br>
 
-wigolo is free and actively maintained, and it's meant to stay that way.
+wigolo is open source, free, and actively maintained.
 If it saves you a metered search bill, a ⭐, a sharp issue, or a **[☕ coffee](https://buymeacoffee.com/knockoutez)** helps keep it sustainable.
 
 <sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a> · <a href="mailto:ktowhid20@gmail.com">ktowhid20@gmail.com</a> · <a href="https://x.com/yourtowhid">X</a> · <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a></sub>

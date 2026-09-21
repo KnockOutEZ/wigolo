@@ -37,6 +37,7 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     title: "Legal",
     links: [
       { label: "License (AGPL-3.0)", href: `${GH}/blob/main/LICENSE`, ext: true },
+      { label: "Licensing", href: `${GH}/blob/main/LICENSING.md`, ext: true },
       { label: "Trademark", href: `${GH}/blob/main/TRADEMARK.md`, ext: true },
       { label: "Security", href: `${GH}/blob/main/SECURITY.md`, ext: true },
     ],

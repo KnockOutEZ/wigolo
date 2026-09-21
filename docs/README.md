@@ -20,6 +20,7 @@ Everything the server returns is transparent: per-result evidence scores, per-en
 | [Plugins](./plugins.md) | Extending wigolo with your own search engines and content extractors. |
 | [Troubleshooting](./troubleshooting.md) | Symptom-to-fix table, platform notes, and the FAQ. |
 | [Privacy & security](./privacy-security.md) | What lives on disk, what leaves your machine, credential handling, and responsible disclosure. |
+| [Licensing](../LICENSING.md) | AGPL-3.0 for everyone, plus commercial license terms and pricing for companies. |
 
 ## Getting help
 
