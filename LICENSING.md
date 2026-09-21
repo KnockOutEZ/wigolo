@@ -1,8 +1,8 @@
 # Licensing
 
-wigolo is dual-licensed: open source under the GNU AGPL-3.0, with a commercial license available for companies that need different terms. This page explains how the two fit together and how companies fund the project.
+wigolo is dual-licensed: open source under the GNU AGPL-3.0, with a commercial license available for companies that need different terms.
 
-If you're making money with wigolo or building a commercial product on it, take a commercial license or sponsor the project. It's how wigolo stays maintained. Pricing scales with your size, and if you're early-stage or bootstrapped, say so and we'll work something out.
+wigolo is free and open source, and it'll stay that way. If you're a company, or you're making money with wigolo, please take a commercial license or sponsor the project. That's what keeps it maintained. Pricing scales with your size; if you're early-stage or bootstrapped, say so and we'll work something out.
 
 ## What won't change
 
@@ -13,9 +13,7 @@ If you're making money with wigolo or building a commercial product on it, take 
 
 ## Open source (AGPL-3.0)
 
-Free for everyone. Use it, modify it, self-host it. The main condition: if you modify wigolo and let people interact with it over a network, you must make your modified source available under the AGPL. Running it unmodified as an internal service does not trigger this. The normal AGPL rules also apply if you distribute copies of wigolo, modified or not.
-
-The full license text is in [LICENSE](LICENSE).
+Licensed under the GNU AGPL-3.0. Full text in [LICENSE](LICENSE).
 
 ## Commercial license
 
@@ -28,19 +26,13 @@ For companies that want to build on wigolo without AGPL obligations. It includes
 
 Annual sponsors get a commercial license included. See [SPONSORS.md](SPONSORS.md).
 
-## Do I need one?
+## Who should take a commercial license or sponsor
 
-| Situation | License |
-| --- | --- |
-| Personal use, hobby projects, learning | AGPL, free |
-| Open-source product, including from a company, as long as your source is published under an AGPL-compatible license | AGPL, free |
-| Academic research | AGPL, free |
-| Company using wigolo internally, unmodified | AGPL works; commercial recommended if your legal team restricts AGPL |
-| Company shipping a product or SaaS built on wigolo | Commercial license recommended |
-| Modifying wigolo and running it as a service, closed source | Commercial license required |
-| Redistributing wigolo inside a proprietary product | Commercial license required |
+- Companies using wigolo in their work
+- Anyone shipping a product or service built on wigolo
+- Anyone who'd rather not deal with AGPL obligations
 
-*Recommended* means the AGPL permits it; a commercial license is for teams whose policy or product plans don't fit copyleft.
+Individuals, students, open-source projects and researchers: it's free, enjoy it.
 
 ## Pricing
 
