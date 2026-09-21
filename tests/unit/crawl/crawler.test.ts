@@ -216,6 +216,66 @@ describe('Crawler — BFS', () => {
     expect(urls).not.toContain('https://other.example.com/external');
   });
 
+  describe('seed redirect', () => {
+    // https://example.com 301s to https://www.example.com, so every link on the
+    // page we actually landed on carries the www host.
+    const redirectingFetch: FetchFn = vi.fn(async (url: string) => {
+      if (url === 'https://example.com') {
+        return makeFetchOutput('https://www.example.com', 'Home', '# Home', [
+          'https://www.example.com/a',
+          'https://www.example.com/b',
+          'https://other.example.com/external',
+        ]);
+      }
+      return makeFetchOutput(url, 'Page', '# Page', []);
+    });
+
+    it('scopes the crawl to the seed final origin, not the requested one', async () => {
+      const crawler = new Crawler(redirectingFetch, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 10,
+      });
+
+      const urls = result.pages.map((p) => p.url);
+      expect(urls).toContain('https://www.example.com/a');
+      expect(urls).toContain('https://www.example.com/b');
+      expect(result.pages.length).toBe(3);
+    });
+
+    it('still rejects off-origin links after re-anchoring', async () => {
+      const crawler = new Crawler(redirectingFetch, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 10,
+      });
+
+      expect(result.pages.map((p) => p.url)).not.toContain('https://other.example.com/external');
+    });
+
+    it('keeps the requested origin when the seed fetch fails', async () => {
+      const failingSeed: FetchFn = vi.fn(async (url: string) => {
+        if (url === 'https://example.com') {
+          return { ...makeFetchOutput(url, '', '', []), error: 'fetch_failed' };
+        }
+        return makeFetchOutput(url, 'Page', '# Page', []);
+      });
+      const crawler = new Crawler(failingSeed, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 10,
+      });
+
+      expect(result.pages).toEqual([]);
+    });
+  });
+
   it('does not visit the same URL twice', async () => {
     const crawler = new Crawler(fetchFn, rawFetchFn);
     await crawler.crawl({
