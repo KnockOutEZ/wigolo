@@ -3,13 +3,14 @@ import type { KeyStoreOpts } from '../../../security/key-store.js';
 import { readPersistedConfig, defaultConfigPath } from '../../../persisted-config.js';
 import { resolveCustomBackend } from './custom-backend.js';
 
-const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
+const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq', 'minimax'];
 
 const PROVIDER_ENV: Record<LLMProvider, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   gemini: 'GEMINI_API_KEY',
   groq: 'GROQ_API_KEY',
+  minimax: 'MINIMAX_API_KEY',
 };
 
 // Extra env var names accepted for a provider's key, beyond the canonical one
