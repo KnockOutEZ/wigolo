@@ -103,7 +103,7 @@ function makeMockEngine(cfg: MockEngineConfig): {
 }
 
 function makeEntry(
-  cfg: MockEngineConfig & { weight?: number; supportsDateFilter?: boolean },
+  cfg: MockEngineConfig & { weight?: number; supportsDateFilter?: boolean; probeOnly?: boolean },
 ): { entry: EngineEntry; spy: ReturnType<typeof vi.fn> } {
   const { engine, spy } = makeMockEngine(cfg);
   return {
@@ -111,6 +111,7 @@ function makeEntry(
       engine,
       weight: cfg.weight,
       supportsDateFilter: cfg.supportsDateFilter,
+      probeOnly: cfg.probeOnly,
     },
     spy,
   };
@@ -975,6 +976,80 @@ describe('runV1Search — degraded fallback to general', () => {
     const out = await runV1Search({ query: 'fix python regex' });
     expect(out.vertical).toBe('general');
   });
+
+  it('keeps a recognized engineFilter restricted after category fallback (no full general roster)', async () => {
+    // github-code exists ONLY in the code roster. The filter selects it, it
+    // returns zero results, so the vertical degrades. The general fallback
+    // must NOT treat the recognized filter as unmatched and restore the full
+    // general roster — no unselected general engine may run.
+    const codeOnly = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeOnly.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['github-code'],
+    });
+    expect(codeOnly.spy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.vertical).toBe('code');
+    expect(out.degraded).toBe(true);
+    expect(out.results).toEqual([]);
+  });
+
+  it('still falls back to the full general roster when the filter matches no configured engine (typo)', async () => {
+    // Unrecognized filter = caller typo: the pre-existing full-roster
+    // fallback semantics must survive the recognized-filter guard.
+    const codeEmpty = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeEmpty.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/y')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['nonexistent-engine'],
+    });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(false);
+  });
+
+  it('dispatches nothing when the filter is recognized only in ANOTHER vertical (no full-roster restore)', async () => {
+    // github-code exists ONLY in the code roster; the caller asks for a
+    // general search filtered to it. Both local checks miss, but the filter
+    // is recognized in the registry — restoring the full general roster
+    // would dispatch engines the caller never selected. The selection stays
+    // restricted: nothing runs, the result surfaces degraded + empty.
+    const codeOnly = makeEntry({ name: 'github-code', results: [] });
+    verticalState.code = [codeOnly.entry];
+
+    const { entry: bingEntry, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    verticalState.general = [bingEntry];
+
+    const out = await runV1Search({
+      query: 'fix typescript error',
+      engineFilter: ['github-code'],
+      category: 'general',
+    });
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(codeOnly.spy).not.toHaveBeenCalled();
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(true);
+    expect(out.results).toEqual([]);
+    expect(out.enginesUsed).toEqual([]);
+  });
 });
 
 describe('runV1Search — per-result starvation re-dispatch', () => {
@@ -1350,5 +1425,254 @@ describe('runV1Search — recency boost', () => {
       'https://a.test/1',
       'https://b.test/2',
     ]);
+  });
+});
+
+describe('runV1Search — engineFilter (search_engines parameter)', () => {
+  it('filters engines by name when engineFilter is provided', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['duckduckgo'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('matches engine names case-insensitively', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['DuckDuckGo'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('falls back to full roster when filter matches nothing', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['nonexistent-engine'],
+    });
+    // Both engines dispatched when filter matches nothing
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not filter when engineFilter is empty', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: [],
+    });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not filter when engineFilter is undefined', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({ query: 'test query' });
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('dispatches a configured probe-only engine when it is the only filter match (no full-roster fallback)', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    // Mojeek configured probe-only (searchMojeekProbeOnly enabled): held back
+    // from the primary wave, but an explicit selection must dispatch it — not
+    // be treated as "unknown engine" and restore the whole primary roster.
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, ddg, mojeek];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['mojeek'],
+    });
+    expect(mojeekSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(ddgSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['mojeek']);
+  });
+
+  it('keeps the full-roster fallback when the filter matches no configured engine at all', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, mojeek];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['nonexistent-engine'],
+    });
+    // Unknown name: full primary roster restored (probe-only still held back).
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(mojeekSpy).not.toHaveBeenCalled();
+  });
+
+  it('holds probe-only engines back when the filter also matches a primary engine', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [makeResult('mojeek', 'https://mojeek.test/z')],
+    });
+    verticalState.general = [bing, ddg, mojeek];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: ['duckduckgo', 'mojeek'],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(mojeekSpy).not.toHaveBeenCalled();
+    // Probe-only selection is honoured via its intended wave, not the primary.
+    expect(out.enginesUsed).not.toContain('bing');
+  });
+
+  it('treats a whitespace-padded valid engine name as its trimmed value', async () => {
+    // The cache-key fingerprint trims filter values, so the dispatch gates
+    // must too — otherwise [' duckduckgo '] misses the allowlist, dispatches
+    // the FULL roster, and that response gets cached under the trimmed
+    // single-engine key.
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    const out = await runV1Search({
+      query: 'test query',
+      engineFilter: [' duckduckgo '],
+    });
+    expect(ddgSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('treats an all-blank engineFilter as no filter', async () => {
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    verticalState.general = [bing, ddg];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['  ', ''],
+    });
+    // Blank-only list normalises to null: both engines dispatched.
+    expect(bingSpy).toHaveBeenCalledOnce();
+    expect(ddgSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-dispatch a zero-result probe-only engine selected as the primary wave', async () => {
+    // Selecting a probe-only engine dispatches it as the primary wave. If it
+    // returns zero results, the pool is below the health floor and the
+    // recovery wave fires — but it must NOT re-dispatch the same engine
+    // (second external request + recovery wait without probing a new one).
+    const { entry: bing, spy: bingSpy } = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const { entry: ddg, spy: ddgSpy } = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/y')],
+    });
+    const { entry: mojeek, spy: mojeekSpy } = makeEntry({
+      name: 'mojeek',
+      probeOnly: true,
+      results: [],
+    });
+    verticalState.general = [bing, ddg, mojeek];
+
+    await runV1Search({
+      query: 'test query',
+      engineFilter: ['mojeek'],
+    });
+    // Exactly one dispatch: the primary attempt. The recovery wave (which
+    // triggers on 0 healthy < floor 1) excludes the already-attempted probe.
+    expect(mojeekSpy).toHaveBeenCalledOnce();
+    expect(bingSpy).not.toHaveBeenCalled();
+    expect(ddgSpy).not.toHaveBeenCalled();
   });
 });
