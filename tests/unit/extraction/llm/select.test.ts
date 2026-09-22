@@ -59,6 +59,15 @@ describe('selectProvider', () => {
     expect(selectProvider({ WIGOLO_LLM_API_KEY: 'x' })).toBeNull();
   });
 
+  it('selects openai-compatible only when WIGOLO_LLM_PROVIDER names it explicitly', () => {
+    expect(
+      selectProvider({
+        WIGOLO_LLM_PROVIDER: 'openai-compatible',
+        WIGOLO_LLM_API_KEY: 'x',
+      }),
+    ).toBe('openai-compatible');
+  });
+
   it('provider-specific var wins over WIGOLO_LLM_API_KEY', () => {
     expect(
       selectProvider({

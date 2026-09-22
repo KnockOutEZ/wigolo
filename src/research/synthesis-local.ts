@@ -6,7 +6,11 @@ const log = createLogger('research');
 const DEFAULT_MAX_SOURCES = 8;
 const DEFAULT_MAX_CHARS_PER_SOURCE = 4000;
 const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_TOKENS = 3000;
+// 8k tokens of headroom: reasoning-capable models (e.g. some OpenAI-compatible
+// endpoints) spend part of the budget on a hidden `reasoning` field and can
+// otherwise return empty `content`, which the adapter rejects and wigolo
+// downgrades to the heuristic fallback.
+const DEFAULT_MAX_TOKENS = 8000;
 
 export interface LocalSynthesisOptions {
   maxSources?: number;
