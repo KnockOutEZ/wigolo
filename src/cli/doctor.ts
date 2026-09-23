@@ -1,7 +1,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePythonExe } from '../python-env.js';
@@ -554,6 +554,8 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
     detail: openBreakers.length > 0 ? `${openBreakers.length} open/half-open` : 'all closed',
   });
 
+  checks.push(checkClaudeCodePermissions());
+
   // Data-dir writability — non-fixable (a permissions problem doctor can't
   // repair) but a real failure that must surface at diagnosis time.
   const wr = checkDataDirWritable(dataDir);
@@ -565,6 +567,121 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
   });
 
   return checks;
+}
+
+/**
+ * Rules that allow every wigolo tool. The wildcard is what `init` writes; the
+ * bare server form and the full literal set are accepted so a user who wired it
+ * by hand a different way is not told they got it wrong.
+ */
+const CLAUDE_ALLOW_RULES = ['mcp__wigolo__*', 'mcp__wigolo'];
+
+const CLAUDE_TOOL_RULES = [
+  'fetch', 'search', 'crawl', 'cache', 'extract',
+  'find_similar', 'research', 'agent', 'diff', 'watch',
+].map((t) => `mcp__wigolo__${t}`);
+
+function claudeSettingsPath(): string {
+  return join(homedir(), '.claude', 'settings.json');
+}
+
+interface ClaudePermissionLists {
+  allow: string[];
+  ask: string[];
+  deny: string[];
+}
+
+function readClaudePermissions(): ClaudePermissionLists | null {
+  const path = claudeSettingsPath();
+  if (!existsSync(path)) return null;
+  try {
+    const root = JSON.parse(readFileSync(path, 'utf-8')) as {
+      permissions?: { allow?: unknown; ask?: unknown; deny?: unknown };
+    };
+    const list = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    return {
+      allow: list(root.permissions?.allow),
+      ask: list(root.permissions?.ask),
+      deny: list(root.permissions?.deny),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether Claude Code will call wigolo's tools without prompting.
+ *
+ * Never reports `failed`, and is deliberately not `fixable`. Two reasons:
+ * prompting on every call is a legitimate preference, not a broken install, so
+ * it must not colour the exit code; and repairing it would mean `--fix` writing
+ * into another application's config, which is further than doctor should reach.
+ * When the rule is absent the detail carries the exact remedy instead.
+ *
+ * Read-only, which keeps `runDoctorColdChecks` safe to reuse from `init`.
+ */
+function checkClaudeCodePermissions(): DoctorCheck {
+  const advisory = (detail: string): DoctorCheck => ({
+    name: 'claude-code-permissions',
+    status: 'skipped',
+    fixable: false,
+    detail,
+  });
+
+  if (!existsSync(join(homedir(), '.claude'))) {
+    return advisory('Claude Code not detected');
+  }
+
+  const perms = readClaudePermissions();
+  if (perms === null) {
+    return advisory(`${claudeSettingsPath()} missing or unreadable`);
+  }
+
+  // Claude Code evaluates deny, then ask, then allow — so a rule in either of
+  // the first two wins and reporting `ok` off the allow list alone would be
+  // wrong. Any overlap at all is reported rather than second-guessed: a rule
+  // shadowing only some tools still means the user does not get what the
+  // allow rule promises.
+  const shadows = (rules: string[]): string[] =>
+    rules.filter((r) => CLAUDE_ALLOW_RULES.includes(r) || CLAUDE_TOOL_RULES.includes(r));
+
+  const denied = shadows(perms.deny);
+  if (denied.length > 0) {
+    return advisory(
+      `a deny rule blocks wigolo tools (${denied.join(', ')}) — deny wins over allow in ` +
+        `Claude Code, so remove it from permissions.deny in ${claudeSettingsPath()}`,
+    );
+  }
+
+  const asked = shadows(perms.ask);
+  if (asked.length > 0) {
+    return advisory(
+      `an ask rule forces a prompt for wigolo tools (${asked.join(', ')}) — ask wins over ` +
+        `allow in Claude Code, so remove it from permissions.ask in ${claudeSettingsPath()}`,
+    );
+  }
+
+  const covered =
+    CLAUDE_ALLOW_RULES.some((r) => perms.allow.includes(r)) ||
+    CLAUDE_TOOL_RULES.every((r) => perms.allow.includes(r));
+
+  if (covered) {
+    return {
+      name: 'claude-code-permissions',
+      status: 'ok',
+      fixable: false,
+      detail: 'wigolo tools allowed without a prompt (user settings)',
+    };
+  }
+
+  // Scoped to user settings on purpose — project settings and managed policy
+  // can also allow the tools, so the wording must not claim more than it read.
+  return advisory(
+    'wigolo tools are not allow-listed in your user settings — run ' +
+      '`wigolo init --agents=claude-code`, or add "mcp__wigolo__*" to permissions.allow in ' +
+      `${claudeSettingsPath()}, then restart Claude Code (rules are read at session start)`,
+  );
 }
 
 /** Whether a stale searxng lock/port file is present (process dead / unparseable). */

@@ -54,6 +54,8 @@ const INIT_USAGE = [
   '  --interactive           Plain-text prompt flow (needs a terminal)',
   '  --wizard                Rich guided setup wizard TUI (needs a terminal)',
   '  --no-warmup             Skip ALL component downloads (lazy-load on first use)',
+  '  --no-permissions        Do not allow wigolo tools in the agent (you approve each call)',
+  '  --permissions           Explicit-on alias (allowing them is the default; no-op)',
   '  --warmup                Explicit-on alias (full setup is the default; no-op)',
   '  --json                  Emit a machine-readable JSON summary on stdout',
   '  --agents=<csv>          Comma-separated agent ids to auto-wire (optional; omit to set up the engine only and point any MCP client at wigolo yourself)',
@@ -443,6 +445,7 @@ interface InitFlagsResolved {
   interactive: boolean;
   wizard: boolean;
   warmup: boolean;
+  permissions: boolean;
   json: boolean;
   provider?: string;
   search?: string;
@@ -648,6 +651,18 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           out(`  ${warn(`Command skipped: ${message}`)}`);
+        }
+      }
+
+      // The allow rule only takes effect on the host's NEXT session, so say so
+      // here — a user who tests immediately would otherwise conclude it failed.
+      if (flags.permissions && handler.installPermissions) {
+        try {
+          const changed = await handler.installPermissions();
+          out(`  ${ok(changed ? 'Tools allowed (restart the agent to apply)' : 'Tools already allowed')}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          out(`  ${warn(`Tool permissions skipped: ${message}`)}`);
         }
       }
     }

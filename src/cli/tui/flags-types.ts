@@ -42,6 +42,13 @@ export interface InitFlags {
    * use). `--warmup` is accepted as an explicit-on alias for back-compat.
    */
   warmup: boolean;
+  /**
+   * Whether init allows wigolo's tools in hosts that keep a writable allow-list
+   * (currently Claude Code only). Defaults to TRUE, matching how init already
+   * writes the instructions block unattended. `--no-permissions` sets it false
+   * for anyone who prefers to approve each tool by hand.
+   */
+  permissions: boolean;
   /** Emit a machine-readable JSON summary on stdout instead of the human report. */
   json: boolean;
   provider?: string;
