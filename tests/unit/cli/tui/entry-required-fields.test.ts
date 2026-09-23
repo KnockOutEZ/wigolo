@@ -23,6 +23,12 @@ function writeCfg(file: string, settings: Record<string, unknown>): string {
   return p;
 }
 
+function writePersistedCfg(file: string, config: Record<string, unknown>): string {
+  const p = join(tmpDir, file);
+  writeFileSync(p, JSON.stringify({ version: 1, ...config }), { mode: 0o600 });
+  return p;
+}
+
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'wigolo-entry-rf-'));
 });
@@ -38,6 +44,24 @@ describe('resolveEntry auto-routing with required-fields check', () => {
     const r = await resolveEntry({ mode: 'auto', configPath: p, isTTY: true });
     expect(r.mode).toBe('home');
     expect(r.firstRun).toBe(false);
+  });
+
+  it('config with a secret-location reference → home without persisting the key', async () => {
+    const p = writeCfg('key-reference.json', {
+      llmProvider: 'anthropic',
+      llmApiKeyKeyLocation: 'keychain',
+    });
+    const r = await resolveEntry({ mode: 'auto', configPath: p, isTTY: true });
+    expect(r.mode).toBe('home');
+  });
+
+  it('legacy provider block with a matching provider → home', async () => {
+    const p = writePersistedCfg('legacy-provider.json', {
+      settings: { llmProvider: 'openai' },
+      provider: { name: 'openai', keyLocation: 'file' },
+    });
+    const r = await resolveEntry({ mode: 'auto', configPath: p, isTTY: true });
+    expect(r.mode).toBe('home');
   });
 
   it('config exists but missing llmProvider → wizard', async () => {

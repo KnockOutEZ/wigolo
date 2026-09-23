@@ -1,5 +1,8 @@
 import type { CategoryDef } from './types.js';
 
+const usesApiKey = (ctx: Parameters<NonNullable<CategoryDef['fields'][number]['visible']>>[0]): boolean =>
+  (ctx.pending.llmProvider ?? ctx.current.llmProvider) !== 'ollama';
+
 export const llmCategory: CategoryDef = {
   id: 'llm',
   label: 'LLM Provider',
@@ -21,6 +24,7 @@ export const llmCategory: CategoryDef = {
         },
       ],
       default: 'anthropic',
+      required: true,
     },
     {
       key: 'WIGOLO_LLM_API_KEY',
@@ -29,10 +33,11 @@ export const llmCategory: CategoryDef = {
       kind: 'masked',
       secret: true,
       propagateToAgents: true,
+      required: usesApiKey,
       help: 'Stored in OS keychain when available; never written to config.json.',
       // Ollama is keyless — hide the API-key field when it's the chosen provider
       // so the wizard never prompts for a credential the local server ignores.
-      visible: (ctx) => (ctx.pending.llmProvider ?? ctx.current.llmProvider) !== 'ollama',
+      visible: usesApiKey,
     },
   ],
 };

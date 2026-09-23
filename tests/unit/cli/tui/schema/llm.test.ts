@@ -25,6 +25,7 @@ describe('llmCategory', () => {
     ]);
     expect(provider?.options?.map((o) => o.value)).not.toContain('custom');
     expect(provider?.default).toBe('anthropic');
+    expect(provider?.required).toBe(true);
   });
 
   it('exposes ollama as a keyless local-LLM choice (no api-key field shown when selected)', () => {
@@ -52,6 +53,9 @@ describe('llmCategory', () => {
     expect(key?.secret).toBe(true);
     expect(key?.propagateToAgents).toBe(true);
     expect(key?.key).toBe('WIGOLO_LLM_API_KEY');
+    expect(typeof key?.required).toBe('function');
+    expect(key?.required?.({ current: { llmProvider: 'anthropic' }, pending: {} })).toBe(true);
+    expect(key?.required?.({ current: { llmProvider: 'ollama' }, pending: {} })).toBe(false);
     // Help text must mention the keychain so users understand where secrets land.
     expect(key?.help).toMatch(/keychain/i);
   });
