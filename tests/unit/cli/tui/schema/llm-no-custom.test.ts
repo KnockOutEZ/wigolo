@@ -18,7 +18,7 @@ describe('llmCategory — no custom provider (Fix D)', () => {
     const values = provider?.options?.map((o) => o.value) ?? [];
     expect(values).not.toContain('custom');
     // The keyed cloud providers remain; slice-3 appended the keyless 'ollama' lever.
-    expect(values).toEqual(['anthropic', 'openai', 'gemini', 'ollama']);
+    expect(values).toEqual(['anthropic', 'openai', 'gemini', 'orcarouter', 'ollama']);
   });
 
   it('llmCategory has exactly 2 fields after removing custom + endpoint URL field', () => {

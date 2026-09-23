@@ -93,9 +93,13 @@ describe('provider actions (SP4)', () => {
   });
 });
 
-describe('PICKER_PROVIDERS — groq hidden from picker (locked decision)', () => {
+describe('PICKER_PROVIDERS — groq/orcarouter hidden from picker (locked decision)', () => {
   it('does NOT include groq', () => {
     expect(PICKER_PROVIDERS).not.toContain('groq');
+  });
+
+  it('does NOT include orcarouter', () => {
+    expect(PICKER_PROVIDERS).not.toContain('orcarouter');
   });
 
   it('includes the four picker-visible providers', () => {

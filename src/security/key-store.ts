@@ -47,8 +47,8 @@ export const PICKER_PROVIDERS: ReadonlyArray<LLMProvider | 'custom'> = [
   'custom',
 ];
 
-// All providers that can have keystore entries (including groq via env only)
-const STORE_PROVIDERS: ReadonlyArray<LLMProvider> = ['anthropic', 'openai', 'gemini', 'groq'];
+// All providers that can have keystore entries (including groq/orcarouter via env only)
+const STORE_PROVIDERS: ReadonlyArray<LLMProvider> = ['anthropic', 'openai', 'gemini', 'groq', 'orcarouter'];
 
 /**
  * Process-lifetime memo for resolveProviderKey, keyed by `provider:dataDir`.

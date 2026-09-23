@@ -13,6 +13,7 @@ vi.mock('../../../src/integrations/cloud/llm/text-adapters.js', () => {
       openai: make('openai'),
       gemini: make('gemini'),
       groq: make('groq'),
+      orcarouter: make('orcarouter'),
     },
   };
 });
@@ -35,10 +36,12 @@ describe('runLlmText', () => {
     delete process.env.WIGOLO_LLM_MODEL_ANTHROPIC;
     delete process.env.WIGOLO_LLM_MODEL_OPENAI;
     delete process.env.WIGOLO_LLM_MODEL_GROQ;
+    delete process.env.WIGOLO_LLM_MODEL_ORCAROUTER;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.GOOGLE_API_KEY;
     delete process.env.GROQ_API_KEY;
+    delete process.env.ORCAROUTER_API_KEY;
   });
   afterEach(() => {
     process.env = originalEnv;
@@ -131,6 +134,7 @@ describe('runLlmText — ollama alias', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.GOOGLE_API_KEY;
     delete process.env.GROQ_API_KEY;
+    delete process.env.ORCAROUTER_API_KEY;
   });
   afterEach(() => {
     process.env = originalEnv;
@@ -222,6 +226,7 @@ describe('runLlmJson', () => {
     delete process.env.GOOGLE_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.GROQ_API_KEY;
+    delete process.env.ORCAROUTER_API_KEY;
   });
   afterEach(() => {
     process.env = originalEnv;

@@ -29,7 +29,7 @@ vi.mock('groq-sdk', () => ({
   },
 }));
 
-const { callAnthropicText, callOpenAIText, callGeminiText, callGroqText } = await import(
+const { callAnthropicText, callOpenAIText, callGeminiText, callGroqText, callOrcaRouterText } = await import(
   '../../../../../src/integrations/cloud/llm/text-adapters.js'
 );
 
@@ -111,6 +111,25 @@ describe('text adapters — vision (image) input', () => {
       const out = await callGroqText({ prompt: 'plain', model: 'm', image: IMG }, 'k');
       expect(out.text).toBe('ok');
       const body = groqCreate.mock.calls[0][0];
+      expect(body.messages).toEqual([{ role: 'user', content: 'plain' }]);
+    });
+  });
+
+  describe('orcarouter', () => {
+    it('builds a multimodal content array with a data: url when image is present', async () => {
+      openaiCreate.mockResolvedValue({ choices: [{ message: { content: 'ok' } }], model: 'm' });
+      await callOrcaRouterText({ prompt: 'describe', model: 'm', image: IMG }, 'k');
+      const body = openaiCreate.mock.calls[0][0];
+      expect(body.messages[0].content).toEqual([
+        { type: 'text', text: 'describe' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+      ]);
+    });
+
+    it('sends bare string content when no image (byte-identical text path)', async () => {
+      openaiCreate.mockResolvedValue({ choices: [{ message: { content: 'ok' } }], model: 'm' });
+      await callOrcaRouterText({ prompt: 'plain', model: 'm' }, 'k');
+      const body = openaiCreate.mock.calls[0][0];
       expect(body.messages).toEqual([{ role: 'user', content: 'plain' }]);
     });
   });

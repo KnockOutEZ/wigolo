@@ -24,7 +24,7 @@ export async function maybePrintOllamaHint(print: (line: string) => void): Promi
   }
 }
 
-const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
+const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq', 'orcarouter'];
 
 /**
  * One-line hint printed on a `--no-warmup` init: nothing was pre-downloaded, so
