@@ -245,18 +245,29 @@ describe('OpenCode descriptor', () => {
 describe('Antigravity descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('detects when `antigravity` binary is on PATH', () => {
+  it('detects when `agy` binary is on PATH', () => {
+    vi.mocked(binaryInPath).mockImplementation((n) => (n === 'agy' ? '/usr/local/bin/agy' : null));
+    expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
+  });
+
+  it('detects the legacy `antigravity` binary alias', () => {
     vi.mocked(binaryInPath).mockImplementation((n) => (n === 'antigravity' ? '/usr/local/bin/antigravity' : null));
     expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
   });
 
-  it('detects when ~/.antigravity dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.antigravity'));
+  it('detects when ~/.gemini/antigravity dir exists', () => {
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.gemini', 'antigravity'));
     expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
   });
 
-  it('configPath returns ~/.antigravity/mcp.json', () => {
-    expect(getDescriptor('antigravity').configPath(ENV)).toBe(join('/home/test', '.antigravity', 'mcp.json'));
+  it('does not treat the shared ~/.gemini/config dir as an install signal', () => {
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.gemini', 'config'));
+    vi.mocked(binaryInPath).mockReturnValue(null);
+    expect(getDescriptor('antigravity').detect(ENV)).toBe(false);
+  });
+
+  it('configPath returns ~/.gemini/config/mcp_config.json', () => {
+    expect(getDescriptor('antigravity').configPath(ENV)).toBe(join('/home/test', '.gemini', 'config', 'mcp_config.json'));
   });
 });
 

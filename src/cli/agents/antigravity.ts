@@ -1,47 +1,59 @@
 /**
  * Antigravity integration.
  *
- * Antigravity is Anthropic's IDE (VS Code-derived), storing config in ~/.antigravity/.
- * MCP config format mirrors VS Code's mcp.json (mcpServers key).
- *
- * TODO: When Antigravity's official MCP config docs are published, verify the
- * exact config path and key structure.
+ * Antigravity is Google's IDE.
+ * The global MCP configuration is ~/.gemini/config/mcp_config.json.
+ * The file stores servers under the mcpServers key.
  */
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { spawnSync  } from 'node:child_process';
 import { mergeMcpJson, removeMcpJson } from './utils.js';
 
 const MCP_KEY_PATH = ['mcpServers', 'wigolo'];
 
-function antigravityDir(): string {
-  return join(homedir(), '.antigravity');
+export function antigravityDataDir(home: string = homedir()): string {
+  return join(home, '.gemini', 'antigravity');
 }
 
-function detect(): boolean {
-  if (existsSync(antigravityDir())) return true;
+export function antigravityMcpConfigPath(home: string = homedir()): string {
+  return join(home, '.gemini', 'config', 'mcp_config.json');
+}
+
+function binaryExists(name: string): boolean {
+  const comand = process.platform === 'win32' ? 'where': 'which';
+
   try {
-    execSync('which antigravity', { stdio: ['pipe', 'pipe', 'pipe'] });
-    return true;
+    const result = spawnSync(comand, [name], {
+      encoding:'utf-8',
+      timeout: 3000,
+    });
+    
+    return !result.error && result.status === 0;
   } catch {
     return false;
   }
 }
 
+function detect(): boolean {
+  return existsSync(antigravityDataDir()) ||
+    binaryExists('agy') ||
+    binaryExists('antigravity');
+}
+
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {
-  const dir = antigravityDir();
-  mkdirSync(dir, { recursive: true });
-  const configPath = join(dir, 'mcp.json');
+  const configPath = antigravityMcpConfigPath();
+  mkdirSync(dirname(configPath), { recursive: true });
   mergeMcpJson(configPath, { command: cmd.command, args: cmd.args }, MCP_KEY_PATH);
 }
 
 async function uninstall(): Promise<{ removed: string[] }> {
   const removed: string[] = [];
-  const configPath = join(antigravityDir(), 'mcp.json');
+  const configPath = antigravityMcpConfigPath();
   if (existsSync(configPath)) {
     removeMcpJson(configPath, MCP_KEY_PATH);
-    removed.push('~/.antigravity/mcp.json (wigolo entry)');
+    removed.push('~/.gemini/config/mcp_config.json (wigolo entry)');
   }
   return { removed };
 }
@@ -53,7 +65,7 @@ export const antigravityHandler = {
   supportsCommands: false,
   detect,
   installMcp,
-  // No instructions layer for antigravity (config format unclear, MCP only)
+  // Antigravity has no instruction file in this integration.
   installInstructions: async () => { /* noop */ },
   uninstall,
 };
