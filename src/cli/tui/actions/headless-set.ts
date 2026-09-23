@@ -4,7 +4,9 @@
  * TUI uses.
  *
  * Design:
- *  - Find the FieldDef in CATALOG by `key` (env-var style, e.g. WIGOLO_SEARCH).
+ *  - Find the FieldDef in CATALOG by `key` (env-var style, e.g. WIGOLO_SEARCH,
+ *    the names text `--plain` prints) or by `settingsPath` (config.json name,
+ *    e.g. searchBackend — the docs' `--set` examples and `--plain --json`).
  *  - Refuse `kind === 'masked'` / `secret: true` fields with a clear error —
  *    secrets leak via shell history; the dedicated secret-store path stays in
  *    charge of those.
@@ -76,6 +78,11 @@ function findField(
   for (const category of catalog) {
     for (const field of category.fields) {
       if (field.key === key) return field;
+    }
+  }
+  for (const category of catalog) {
+    for (const field of category.fields) {
+      if (field.settingsPath === key) return field;
     }
   }
   return null;
