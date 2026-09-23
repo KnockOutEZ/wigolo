@@ -15,6 +15,7 @@ import type {
   AgentSource,
   AgentStep,
   GridConfidence,
+  ProgressCallback,
   SearchEngine,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -39,12 +40,23 @@ export async function runAgentPipeline(
   engines: SearchEngine[],
   router: SmartRouter,
   server?: SamplingCapableServer,
+  onProgress?: ProgressCallback,
 ): Promise<AgentOutput> {
   const start = Date.now();
   const maxPages = input.max_pages ?? DEFAULT_MAX_PAGES;
   const maxTimeMs = input.max_time_ms ?? DEFAULT_MAX_TIME_MS;
   const deadlineMs = start + maxTimeMs;
   const steps: AgentStep[] = [];
+  let completedSteps = 0;
+  const reportStep = async (step: AgentStep): Promise<void> => {
+    if (!onProgress) return;
+    completedSteps += 1;
+    try {
+      await onProgress({ progress: completedSteps, message: step.detail });
+    } catch (err) {
+      log.debug('agent progress notification failed', { error: String(err) });
+    }
+  };
 
   try {
     const planStart = Date.now();
@@ -52,11 +64,13 @@ export async function runAgentPipeline(
 
     const plan = await planExecution(input.prompt, input.urls, server);
 
-    steps.push({
+    const planStep: AgentStep = {
       action: 'plan',
       detail: `Generated ${plan.searches.length} searches, ${plan.urls.length} URLs${plan.samplingUsed ? ' (via sampling)' : ' (keyword extraction)'}`,
       time_ms: Date.now() - planStart,
-    });
+    };
+    steps.push(planStep);
+    await reportStep(planStep);
 
     log.info('plan generated', {
       searches: plan.searches.length,
@@ -67,7 +81,7 @@ export async function runAgentPipeline(
     const execResult = await executeAgentPlan(plan, engines, router, {
       maxPages,
       deadlineMs,
-    }, input.prompt);
+    }, input.prompt, reportStep);
 
     steps.push(...execResult.steps);
 
@@ -87,11 +101,13 @@ export async function runAgentPipeline(
         const extractStart = Date.now();
         const schemaResult = applySchemaExtraction(sources, input.schema as JsonSchema);
 
-        steps.push({
+        const extractStep: AgentStep = {
           action: 'extract',
           detail: `Applied schema extraction to ${fetchedCount} sources`,
           time_ms: Date.now() - extractStart,
-        });
+        };
+        steps.push(extractStep);
+        await reportStep(extractStep);
 
         if (schemaResult && !schemaResult.lowConfidence) {
           return {
@@ -127,11 +143,13 @@ export async function runAgentPipeline(
       : llmUsed
         ? ' (via configured LLM)'
         : ' (evidence fallback)';
-    steps.push({
+    const synthesizeStep: AgentStep = {
       action: 'synthesize',
       detail: `Produced ${resultLen} char result${synthPath}`,
       time_ms: Date.now() - synthStart,
-    });
+    };
+    steps.push(synthesizeStep);
+    await reportStep(synthesizeStep);
 
     // When every fetch failed but the planner produced URLs,
     // surface that as a partial-fail warning so callers don't see "No data
