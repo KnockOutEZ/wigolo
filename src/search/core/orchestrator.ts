@@ -211,6 +211,10 @@ export interface OrchestratorInput {
    * result whose title+snippet does not contain the unquoted query as a
    * case-insensitive substring is dropped post-rerank. */
   exactMatch?: boolean;
+  /** Restrict the vertical roster to these engine names. When no name
+   * matches, the full roster still runs (same fail-open as the SearXNG
+   * orchestrator) so a typo cannot empty the pool. */
+  searchEngines?: string[];
 }
 
 export interface OrchestratorOutput {
@@ -350,6 +354,14 @@ export async function runV1Search(
   const hasDateBound = !!(effectiveFromDate || effectiveToDate);
 
   const allEntries = getEntriesForVertical(vertical);
+  const requested = input.searchEngines
+    ?.map((n) => n.trim().toLowerCase())
+    .filter(Boolean);
+  const filtered =
+    requested && requested.length > 0
+      ? allEntries.filter((e) => requested.includes(e.engine.name.toLowerCase()))
+      : [];
+  const roster = filtered.length > 0 ? filtered : allEntries;
 
   // A date bound no longer narrows the
   // engine set. The previous behaviour dropped every date-naive engine the
@@ -365,8 +377,8 @@ export async function runV1Search(
   // Probe-only engines are held back from the primary wave: they are a
   // per-call latency/failure tax on the happy path but still an independent
   // signal the degraded-recovery wave can pull in when the pool collapses.
-  const entries = allEntries.filter((e) => e.probeOnly !== true);
-  const probeEntries = allEntries.filter((e) => e.probeOnly === true);
+  const entries = roster.filter((e) => e.probeOnly !== true);
+  const probeEntries = roster.filter((e) => e.probeOnly === true);
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
