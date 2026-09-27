@@ -70,9 +70,11 @@ Be aware of an honest ceiling before you deploy scraping-adjacent workflows to a
 
 The opt-in workaround for legitimate research that keeps hitting this wall is routing through a proxy whose IP reputation matches your use. Any HTTP(S) proxy works: turn proxying on and give wigolo the proxy URL.
 
+> **Sponsored example.** [Helodata](https://wigolo.app/go/helodata/?ref=docs) sponsors wigolo. Any HTTP(S) proxy works the same way — swap in its host, port and credentials. The full walkthrough is in [examples/proxy-helodata](../examples/proxy-helodata/).
+
 ```bash
 wigolo config --set useProxy=true
-PROXY_URL=https://user:pass@proxy.example.com:8443 wigolo serve
+PROXY_URL=http://helo_<sub-user>-type-res-region-us:<password>@gate.helodata.io:7777 wigolo serve
 ```
 
 Proxy credentials never persist to disk — the userinfo is moved to the OS keychain and only the credential-free URL is stored. Politeness still applies through a proxy: robots.txt on by default, per-domain rate limits, research-grade volumes.
