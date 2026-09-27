@@ -112,11 +112,13 @@ Core tools never need an LLM. Configuring one adds answer synthesis (`format: "a
 
 Any service that speaks the OpenAI API works through the `openai` provider: set its base URL, its key, and one of its model names.
 
+> **Sponsored example.** [Fluxion AI](https://wigolo.app/go/fluxion/?ref=docs) sponsors wigolo. Any OpenAI-compatible provider works the same way — swap in its base URL, key and model name. The full walkthrough is in [examples/llm-synthesis-fluxion](../examples/llm-synthesis-fluxion/).
+
 ```bash
 export WIGOLO_LLM_PROVIDER=openai
-export OPENAI_BASE_URL=https://api.example.com/v1   # the service's OpenAI-compatible endpoint
-export OPENAI_API_KEY=sk-...                        # your key for that service
-export WIGOLO_LLM_MODEL=model-name                  # one of its model ids
+export OPENAI_BASE_URL=https://fluxionai.world/v1
+export OPENAI_API_KEY=sk-...            # your Fluxion AI key
+export WIGOLO_LLM_MODEL=claude-haiku-4-5
 ```
 
 ### Keyless local ladder
