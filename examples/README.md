@@ -20,6 +20,7 @@ self-hosted automation (n8n-style platforms, cron jobs, plain shell).
 | [n8n-remote-mcp](./n8n-remote-mcp/) | config reference: point self-hosted n8n (or any remote MCP/REST client) at `wigolo serve` |
 | [watch-changelog-webhook](./watch-changelog-webhook/) | change-watch jobs on a changelog, on-demand checks, diff reports, webhook delivery |
 | [plugin-search-engine](./plugin-search-engine/) | minimal `searchEngine` plugin — extend wigolo's engine set with your own source |
+| [proxy-helodata](./proxy-helodata/) | sponsored example: route fetches through a Helodata proxy when a datacenter IP keeps getting challenged |
 
 ## Previews
 
