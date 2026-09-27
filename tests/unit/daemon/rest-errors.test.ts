@@ -86,24 +86,41 @@ describe('error envelope builders', () => {
   });
 });
 
+// On a StageResult the machine code lives in `error` and the human sentence in
+// `error_reason` — the inverse of the REST envelope. Every case below is shaped
+// the way src/tools/*.ts actually emits failures.
 describe('statusForStageResult', () => {
   it('unavailability code → 503', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'browser_engine_unavailable', stage: 'fetch' })).toBe(503);
+    expect(statusForStageResult({ error: 'browser_engine_unavailable', error_reason: 'playwright is not installed', stage: 'fetch' })).toBe(503);
   });
   it('fetch-stage upstream code → 502', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'blocked_by_challenge', stage: 'fetch' })).toBe(502);
-    expect(statusForStageResult({ error: 'x', error_reason: 'fetch_failed', stage: 'fetch' })).toBe(502);
+    expect(statusForStageResult({ error: 'blocked_by_challenge', error_reason: 'the site returned a bot challenge', stage: 'fetch' })).toBe(502);
+    expect(statusForStageResult({ error: 'fetch_failed', error_reason: 'connection refused', stage: 'fetch' })).toBe(502);
+  });
+  it('fetch-stage http_<status> code → 502', () => {
+    expect(statusForStageResult({ error: 'http_404', error_reason: 'Upstream returned HTTP 404', stage: 'fetch' })).toBe(502);
+    expect(statusForStageResult({ error: 'http_503', error_reason: 'Upstream returned HTTP 503', stage: 'fetch' })).toBe(502);
   });
   it('semantic-validation allowlist → 400', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'invalid_url', stage: 'validate' })).toBe(400);
+    expect(statusForStageResult({ error: 'invalid_url', error_reason: 'url is not a valid absolute URL', stage: 'fetch' })).toBe(400);
   });
-  it('unknown reason → 500', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'some_novel_reason', stage: 'extract' })).toBe(500);
+  it('unknown code → 500', () => {
+    expect(statusForStageResult({ error: 'some_novel_reason', error_reason: 'something new broke', stage: 'extract' })).toBe(500);
   });
-  it('NEGATIVE: a reason containing the word "timeout" does NOT map to 504', () => {
-    expect(statusForStageResult({ error: 'connection timeout occurred', error_reason: 'network_timeout', stage: 'fetch' })).not.toBe(504);
+  it('NEGATIVE: a reason sentence containing the word "timeout" does NOT map to 504', () => {
+    expect(statusForStageResult({ error: 'network_timeout', error_reason: 'connection timeout occurred', stage: 'fetch' })).not.toBe(504);
     // network_timeout is not in the fetch upstream allowlist nor unavailability → 500
-    expect(statusForStageResult({ error: 'connection timeout occurred', error_reason: 'network_timeout', stage: 'fetch' })).toBe(500);
+    expect(statusForStageResult({ error: 'network_timeout', error_reason: 'connection timeout occurred', stage: 'fetch' })).toBe(500);
+  });
+  it('NEGATIVE: a code that only appears in the reason sentence is NOT matched', () => {
+    expect(statusForStageResult({ error: 'x', error_reason: 'invalid_url', stage: 'fetch' })).toBe(500);
+    expect(statusForStageResult({ error: 'x', error_reason: 'browser_engine_unavailable', stage: 'fetch' })).toBe(500);
+  });
+  it('NEGATIVE: an http_-prefixed free-text reason is not a status code', () => {
+    expect(statusForStageResult({ error: 'http_gateway_wobble', error_reason: 'upstream misbehaved', stage: 'fetch' })).toBe(500);
+  });
+  it('upstream codes only map to 502 on the fetch stage', () => {
+    expect(statusForStageResult({ error: 'fetch_failed', error_reason: 'connection refused', stage: 'extract' })).toBe(500);
   });
 });
 
