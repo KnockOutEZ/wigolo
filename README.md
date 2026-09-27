@@ -23,7 +23,8 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 <a href="https://trendshift.io/repositories/79424?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-79424" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/79424/daily?language=TypeScript" alt="KnockOutEZ%2Fwigolo | Trendshift" width="250" height="55"/></a>
 
 <sub>sponsored by</sub><br>
-<a href="https://wigolo.app/go/testmu/?ref=readme-top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg"><img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" height="20"></picture></a>
+<a href="https://wigolo.app/go/testmu/?ref=readme-top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg"><img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" height="20"></picture></a>&nbsp;&nbsp;&nbsp;
+<a href="https://wigolo.app/go/fluxion/?ref=readme-top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/fluxion-ai-dark.png"><img alt="Fluxion AI" src="assets/sponsors/fluxion-ai.png" height="20"></picture></a>
 
 [Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Discord](https://discord.gg/BkUUgz2bNF) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Licensing](LICENSING.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
 
@@ -418,6 +419,17 @@ Thank you to the sponsors below, who help keep wigolo maintained and free for ev
 </a>
 
 <sub>**[TestMu AI](https://wigolo.app/go/testmu/?ref=readme)** (formerly LambdaTest) is the world's first full-stack agentic AI quality engineering platform, trusted by 18,000+ enterprises.</sub>
+
+<br>
+
+<a href="https://wigolo.app/go/fluxion/?ref=readme">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/fluxion-ai-dark.png">
+<img alt="Fluxion AI" src="assets/sponsors/fluxion-ai.png" height="32">
+</picture>
+</a>
+
+<sub>**[Fluxion AI](https://wigolo.app/go/fluxion/?ref=readme)** provides reliable, cost-efficient access to GPT, Claude, and other leading AI models through one unified API. Save up to 70% compared with official API pricing — and get $1 in API credits when you sign up through this link.</sub>
 
 </div>
 
