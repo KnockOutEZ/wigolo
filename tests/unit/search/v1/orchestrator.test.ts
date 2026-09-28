@@ -1352,3 +1352,40 @@ describe('runV1Search — recency boost', () => {
     ]);
   });
 });
+
+describe('runV1Search — searchEngines filter', () => {
+  it('dispatches only the named engine when the filter matches', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/x')],
+    });
+    verticalState.general = [bing.entry, ddg.entry];
+
+    const out = await runV1Search({
+      query: 'cute cats',
+      searchEngines: ['duckduckgo'],
+    });
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(ddg.spy).toHaveBeenCalledOnce();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('uses the full roster when the filter matches nothing', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/x')],
+    });
+    verticalState.general = [bing.entry];
+
+    const out = await runV1Search({
+      query: 'cute cats',
+      searchEngines: ['nonexistent'],
+    });
+    expect(bing.spy).toHaveBeenCalledOnce();
+    expect(out.enginesUsed).toEqual(['bing']);
+  });
+});

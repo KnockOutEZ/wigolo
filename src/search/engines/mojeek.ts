@@ -1,7 +1,7 @@
 import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
-import { nextUserAgent, isBlockedError } from './user-agents.js';
+import { nextUserAgent, isBlockedError, isCaptchaHtml } from './user-agents.js';
 
 const log = createLogger('search');
 
@@ -44,6 +44,7 @@ export class MojeekEngine implements SearchEngine {
     if (!response.ok) throw new Error(`Mojeek returned ${response.status}`);
 
     const html = await response.text();
+    if (isCaptchaHtml(html)) throw new Error('Mojeek returned captcha challenge');
     return this.parseResults(html, maxResults);
   }
 
