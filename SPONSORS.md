@@ -115,8 +115,9 @@ What is measured:
   images; repo views are the stand-in, and they're described as exactly that.
 - **What is collected** — anonymous page views and events, grouped into
   sessions without cookies or local storage, with URL query strings left out.
-  The site uses Umami and honours Do Not Track. The wigolo tool itself sends
-  nothing to the site; this covers the website only.
+  The site uses Umami and honours Do Not Track, and its traffic is public:
+  [live site stats](https://cloud.umami.is/share/PPqf7cwX1Qzh3n2D). The wigolo
+  tool itself sends nothing to the site; this covers the website only.
 
 The implementation is in [`site/src/lib/sponsors.ts`](site/src/lib/sponsors.ts),
 [`site/src/lib/analytics.ts`](site/src/lib/analytics.ts) and the interstitial in
