@@ -191,6 +191,63 @@ describe('applyHeadlessSet — validation', () => {
   });
 });
 
+describe('applyHeadlessSet — settingsPath keys (issue #256)', () => {
+  it("accepts the settingsPath name 'searchBackend' and saves hybrid", async () => {
+    let capturedDirty: Record<string, unknown> = {};
+    const fakeSave = vi.fn(async (opts: {
+      store: { getPending: () => Record<string, unknown>; commit: () => void };
+    }): Promise<SaveResult> => {
+      capturedDirty = opts.store.getPending();
+      opts.store.commit();
+      return { saved: ['searchBackend'], propagated: ['claude-code'], failed: [] };
+    });
+
+    const result = await applyHeadlessSet({
+      key: 'searchBackend',
+      value: 'hybrid',
+      configPath: '/tmp/config.json',
+      catalog: CATALOG,
+      agents: [stubAgent],
+      secretStore: stubSecretStore,
+      storeFactory: createSettingsStore,
+      readSettings: () => ({}),
+      save: fakeSave,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.saved).toEqual(['searchBackend']);
+    expect(capturedDirty).toEqual({ searchBackend: 'hybrid' });
+    expect(fakeSave).toHaveBeenCalledOnce();
+  });
+
+  it("still accepts the env-style key 'WIGOLO_SEARCH'", async () => {
+    let capturedDirty: Record<string, unknown> = {};
+    const fakeSave = vi.fn(async (opts: {
+      store: { getPending: () => Record<string, unknown>; commit: () => void };
+    }): Promise<SaveResult> => {
+      capturedDirty = opts.store.getPending();
+      opts.store.commit();
+      return { saved: ['searchBackend'], propagated: ['claude-code'], failed: [] };
+    });
+
+    const result = await applyHeadlessSet({
+      key: 'WIGOLO_SEARCH',
+      value: 'hybrid',
+      configPath: '/tmp/config.json',
+      catalog: CATALOG,
+      agents: [stubAgent],
+      secretStore: stubSecretStore,
+      storeFactory: createSettingsStore,
+      readSettings: () => ({}),
+      save: fakeSave,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.saved).toEqual(['searchBackend']);
+    expect(capturedDirty).toEqual({ searchBackend: 'hybrid' });
+  });
+});
+
 describe('applyHeadlessSet — happy path', () => {
   it('coerces a number-kind field and calls save with the staged value', async () => {
     let capturedDirty: Record<string, unknown> = {};
