@@ -5,6 +5,7 @@ import { DevDocsEngine } from '../../engines/devdocs.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { CratesIoEngine } from '../../engines/crates-io.js';
+import { NpmRegistryEngine } from '../../engines/npm-registry.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
@@ -70,6 +71,14 @@ export function getCodeEngines(): EngineEntry[] {
 
   entries.push({
     engine: wrapWithRetryAndBreaker(new CratesIoEngine()),
+    weight: 0.3,
+    supportsDateFilter: false,
+    secondary: true,
+    quality: 'high',
+  });
+
+  entries.push({
+    engine: wrapWithRetryAndBreaker(new NpmRegistryEngine()),
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,
