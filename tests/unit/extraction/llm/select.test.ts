@@ -18,6 +18,24 @@ describe('selectProvider', () => {
     expect(selectProvider({ GROQ_API_KEY: 'x' })).toBe('groq');
   });
 
+  it('auto-detects minimax from MINIMAX_API_KEY (lowest priority)', () => {
+    expect(selectProvider({ MINIMAX_API_KEY: 'x' })).toBe('minimax');
+    // a higher-priority key still wins over minimax
+    expect(
+      selectProvider({ MINIMAX_API_KEY: 'm', ANTHROPIC_API_KEY: 'a' }),
+    ).toBe('anthropic');
+  });
+
+  it('WIGOLO_LLM_PROVIDER override forces minimax when its key is present', () => {
+    expect(
+      selectProvider({
+        ANTHROPIC_API_KEY: 'a',
+        MINIMAX_API_KEY: 'm',
+        WIGOLO_LLM_PROVIDER: 'minimax',
+      }),
+    ).toBe('minimax');
+  });
+
   it('WIGOLO_LLM_PROVIDER override forces a specific provider', () => {
     expect(
       selectProvider({
