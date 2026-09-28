@@ -28,6 +28,8 @@ jobs:
       # client bundle either way. Unset → no analytics tag at all, and the /go/
       # hop still forwards. See site/README.md § Analytics.
       NEXT_PUBLIC_UMAMI_ID: ${{ vars.UMAMI_WEBSITE_ID }}
+      # Public, read-only Umami dashboard linked from /sponsors/ as live traffic.
+      NEXT_PUBLIC_UMAMI_SHARE_URL: ${{ vars.UMAMI_SHARE_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
