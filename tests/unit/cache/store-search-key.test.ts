@@ -62,6 +62,26 @@ describe('buildSearchCacheKey', () => {
     expect(balanced).not.toBe(noRerank);
     expect(balanced).not.toBe('q'); // depth always present -> always fingerprinted
   });
+
+  it('normalises search_engines: casing, order, and duplicates share one key', () => {
+    const a = buildSearchCacheKey('q', { search_engines: ['DuckDuckGo'] });
+    const b = buildSearchCacheKey('q', { search_engines: ['duckduckgo'] });
+    const c = buildSearchCacheKey('q', { search_engines: ['brave', 'duckduckgo'] });
+    const d = buildSearchCacheKey('q', { search_engines: ['DuckDuckGo', 'brave'] });
+    const e = buildSearchCacheKey('q', { search_engines: ['duckduckgo', 'duckduckgo'] });
+    expect(a).toBe(b); // case-insensitive
+    expect(c).toBe(d); // order- and case-insensitive
+    expect(a).toBe(e); // duplicates collapse
+    expect(a).not.toBe(c); // different engine sets stay distinct
+  });
+
+  it('treats whitespace-only or empty search_engines as no filter', () => {
+    const bare = buildSearchCacheKey('q');
+    const empty = buildSearchCacheKey('q', { search_engines: [] });
+    const blanks = buildSearchCacheKey('q', { search_engines: ['  ', ''] });
+    expect(bare).toBe(empty);
+    expect(bare).toBe(blanks);
+  });
 });
 
 describe('cache miss on filter mismatch', () => {
