@@ -77,8 +77,11 @@ let outBuffer = '';
 let stdoutBuffer = '';
 let writeSpy: ReturnType<typeof vi.spyOn>;
 let stdoutSpy: ReturnType<typeof vi.spyOn>;
+const originalReranker = process.env.WIGOLO_RERANKER;
+const originalRerankBase = process.env.WIGOLO_RERANK_API_BASE;
 
 beforeEach(() => {
+  process.env.WIGOLO_RERANKER = 'onnx';
   outBuffer = '';
   stdoutBuffer = '';
   resetConfig();
@@ -92,6 +95,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalReranker === undefined) delete process.env.WIGOLO_RERANKER;
+  else process.env.WIGOLO_RERANKER = originalReranker;
+  if (originalRerankBase === undefined) delete process.env.WIGOLO_RERANK_API_BASE;
+  else process.env.WIGOLO_RERANK_API_BASE = originalRerankBase;
   resetConfig();
   delete process.env.WIGOLO_SEARCH;
   writeSpy.mockRestore();
@@ -115,6 +122,15 @@ function mockFreshInstall(): void {
 }
 
 describe('doctor — fresh-install lazy contract', () => {
+  it('reports a configured remote reranker without checking the ONNX cache', async () => {
+    process.env.WIGOLO_RERANKER = 'remote';
+    process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+    resetConfig();
+    mockFreshInstall();
+    await runDoctor('/tmp/.wigolo-remote');
+    expect(outBuffer).toMatch(/ML reranker:\s+remote configured \(endpoint not probed\)/);
+    expect(getRerankProviderMock).not.toHaveBeenCalled();
+  });
   it('exits 0 on a fresh install (missing browser + models + no searxng bootstrap)', async () => {
     mockFreshInstall();
     const code = await runDoctor('/tmp/.wigolo-fresh');

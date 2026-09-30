@@ -151,7 +151,7 @@ export async function extractHighlights(
   }
 
   const cfg = getConfig();
-  if (cfg.reranker === 'onnx') {
+  if (cfg.reranker === 'onnx' || cfg.reranker === 'remote') {
     try {
       const provider = await getRerankProvider();
       const scored = await provider.rerank(

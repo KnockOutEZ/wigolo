@@ -79,7 +79,9 @@ describe('integration: search + rerank pipeline', () => {
     resetConfig();
   });
 
-  it('search results are reordered by rerank scores', async () => {
+  it.each(['onnx', 'remote'] as const)('search results are reordered by %s rerank scores', async (mode) => {
+    process.env.WIGOLO_RERANKER = mode;
+    resetConfig();
     rerankMock.mockResolvedValue(byIds([2, 0, 3, 1], [0.98, 0.85, 0.6, 0.4]));
 
     const input: SearchInput = { query: 'typescript tutorial', include_content: false };

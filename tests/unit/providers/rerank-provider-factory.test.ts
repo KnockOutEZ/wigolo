@@ -6,6 +6,8 @@ import {
   withFetchRetry,
 } from '../../../src/providers/rerank-provider.js';
 import { TransformersRerankProvider } from '../../../src/search/reranker/transformers-rerank-provider.js';
+import { RemoteRerankProvider } from '../../../src/search/reranker/remote-rerank-provider.js';
+import { resetConfig } from '../../../src/config.js';
 
 // Mock TransformersRerankProvider so the factory test doesn't pull a real
 // model from huggingface.co. We only assert the factory wires the right
@@ -22,8 +24,8 @@ vi.mock('../../../src/search/reranker/transformers-rerank-provider.js', () => {
 });
 
 describe('getRerankProvider', () => {
-  beforeEach(() => { _resetRerankProviderForTest(); });
-  afterEach(() => { _resetRerankProviderForTest(); });
+  beforeEach(() => { vi.mocked(TransformersRerankProvider).mockClear(); process.env.WIGOLO_RERANKER = 'onnx'; resetConfig(); _resetRerankProviderForTest(); });
+  afterEach(() => { process.env.WIGOLO_RERANKER = 'none'; delete process.env.WIGOLO_RERANK_API_BASE; resetConfig(); _resetRerankProviderForTest(); });
 
   it('returns TransformersRerankProvider', async () => {
     expect(await getRerankProvider()).toBeInstanceOf(TransformersRerankProvider);
@@ -33,6 +35,16 @@ describe('getRerankProvider', () => {
     const a = await getRerankProvider();
     const b = await getRerankProvider();
     expect(a).toBe(b);
+  });
+
+  it('selects and memoizes remote without loading ONNX', async () => {
+    process.env.WIGOLO_RERANKER = 'remote';
+    process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+    resetConfig();
+    const a = await getRerankProvider();
+    expect(a).toBeInstanceOf(RemoteRerankProvider);
+    expect(await getRerankProvider()).toBe(a);
+    expect(TransformersRerankProvider).not.toHaveBeenCalled();
   });
 
   it('retries the model warmup when it fails transiently (field: reranker "fetch failed"), then resolves', async () => {

@@ -2,6 +2,7 @@ import { parseInitFlags, FlagParseError } from './tui/flags.js';
 import type { LLMProvider } from '../integrations/cloud/llm/types.js';
 import { probeOllama, resolveProbeBaseUrl, maybeOllamaHint } from './ollama-probe.js';
 import { isPackagedBinary, BINARY_TUI_UNAVAILABLE_MESSAGE } from '../util/packaged.js';
+import { getConfig } from '../config.js';
 
 /**
  * Probe for a local Ollama server and, when one is reachable AND no LLM is
@@ -111,7 +112,7 @@ function componentSummaryFromWarmup(
   const summary: ComponentSummary = {
     browserEngine: result.playwright === 'ok' ? 'ready' : 'failed',
     embeddings: result.embeddings === 'ok' ? 'ready' : 'failed',
-    reranker: result.reranker === 'ok' ? 'ready' : 'failed',
+    reranker: result.reranker === undefined ? 'skipped' : result.reranker === 'ok' ? 'ready' : 'failed',
   };
   if (summary.browserEngine === 'failed' && result.playwrightError) {
     summary.browserEngineError = result.playwrightError;
@@ -183,7 +184,9 @@ async function reportSetupAndDoctor(
     if (status === 'ready') {
       print(`  ✓ ${label[key]}: ready`);
     } else if (status === 'skipped') {
-      print(`  ○ ${label[key]}: skipped (lazy — downloads on first use)`);
+      const detail = key === 'reranker' && (getConfig().reranker === 'none' || getConfig().reranker === 'custom')
+        ? 'disabled' : 'lazy — downloads on first use';
+      print(`  ○ ${label[key]}: skipped (${detail})`);
     } else {
       const err = key === 'browserEngine' ? components.browserEngineError
         : key === 'embeddings' ? components.embeddingsError
