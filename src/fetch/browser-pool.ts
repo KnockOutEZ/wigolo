@@ -1449,7 +1449,7 @@ export class MultiBrowserPool {
     });
   }
 
-  /** True when a vision-capable cloud provider (anthropic/openai/gemini) is
+  /** True when a vision-capable cloud provider (anthropic/openai/gemini/orcarouter) is
    *  configured. Groq (weak vision) and the text-only custom backend don't
    *  count, so ai-solve is skipped cleanly when only those are present. */
   private async visionProviderAvailable(): Promise<boolean> {
@@ -1457,7 +1457,7 @@ export class MultiBrowserPool {
       const { selectProviderWithKeyStore } = await import('../integrations/cloud/llm/select.js');
       const resolved = await selectProviderWithKeyStore(process.env, { dataDir: getConfig().dataDir });
       if (!resolved) return false;
-      return resolved.provider === 'anthropic' || resolved.provider === 'openai' || resolved.provider === 'gemini';
+      return resolved.provider === 'anthropic' || resolved.provider === 'openai' || resolved.provider === 'gemini' || resolved.provider === 'orcarouter';
     } catch {
       return false;
     }

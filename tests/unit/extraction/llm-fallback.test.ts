@@ -70,6 +70,7 @@ describe('extractWithLLM', () => {
     expect(out.values).toEqual({});
     expect(out.warnings.join(' ')).toMatch(/ANTHROPIC_API_KEY/);
     expect(out.warnings.join(' ')).toMatch(/OPENAI_API_KEY/);
+    expect(out.warnings.join(' ')).toMatch(/ORCAROUTER_API_KEY/);
     expect(out.provider).toBe('anthropic');
   });
 

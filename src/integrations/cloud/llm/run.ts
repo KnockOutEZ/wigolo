@@ -1,6 +1,6 @@
 // Unified entry point for LLM calls across wigolo. Selects a backend from
 // env (or keystore) and delegates:
-//   - cloud provider name (anthropic/openai/gemini/groq) → SDK adapter
+//   - cloud provider name (anthropic/openai/gemini/groq/orcarouter) → SDK adapter
 //   - OpenAI-compatible URL (http://...)               → POST /v1/chat/completions
 //
 // SP4: keys are resolved via resolveProviderKey (keychain → file → env) and

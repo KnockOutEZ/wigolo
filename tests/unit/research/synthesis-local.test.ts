@@ -349,6 +349,7 @@ describe('synthesizeLocal LLM gate is keystore-aware', () => {
     'OPENAI_API_KEY',
     'GOOGLE_API_KEY',
     'GROQ_API_KEY',
+    'ORCAROUTER_API_KEY',
     'WIGOLO_LLM_PROVIDER',
     'WIGOLO_LLM_API_KEY',
     'WIGOLO_LLM_MODEL',
