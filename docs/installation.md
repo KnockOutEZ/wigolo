@@ -79,6 +79,8 @@ wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.j
 npx wigolo init --agents=claude-code,cursor
 ```
 
+If your agent prompts for permission on every wigolo tool call after wiring, see [troubleshooting](./troubleshooting.md#your-agent-keeps-asking-permission).
+
 For OpenCode, wigolo writes the global `~/.config/opencode/opencode.json` entry in OpenCode's local MCP format:
 
 ```json
