@@ -31,6 +31,7 @@ describe('RemoteRerankProvider', () => {
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe('http://127.0.0.1:8082/v1/rerank');
     expect(options.method).toBe('POST');
+    expect(options.redirect).toBe('error');
     expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
     expect(JSON.parse(options.body)).toEqual({
       model: 'test-model', query: 'query', documents: ['document one', 'document two'], top_n: 2,
@@ -43,7 +44,7 @@ describe('RemoteRerankProvider', () => {
   it('sends top_n and optional Bearer auth', async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply([{ index: 1, relevance_score: 0.8 }]));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await new RemoteRerankProvider(config({ rerankApiKey: 'secret' })).rerank('q', candidates, 1))
+    expect(await new RemoteRerankProvider(config({ rerankApiBase: 'https://rerank.example/v1', rerankApiKey: 'secret' })).rerank('q', candidates, 1))
       .toEqual([{ id: 'second', score: 0.8 }]);
     const options = fetchMock.mock.calls[0][1];
     expect(options.headers.Authorization).toBe('Bearer secret');
@@ -62,14 +63,24 @@ describe('RemoteRerankProvider', () => {
     expect(() => new RemoteRerankProvider(config({ rerankApiBase: 'file:///tmp/x' }))).toThrow('http(s)');
   });
 
-  it('reports bounded HTTP errors without exposing the token', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`bad: secret ${'x'.repeat(500)}`, { status: 502 })));
-    const error = await new RemoteRerankProvider(config({ rerankApiKey: 'secret' })).rerank('q', candidates)
+  it('requires HTTPS for credentials while allowing keyless HTTP', () => {
+    const remote = { rerankApiBase: 'http://192.168.1.20:8082/v1' };
+    expect(() => new RemoteRerankProvider(config({ ...remote, rerankApiKey: 'secret' }))).toThrow('requires HTTPS');
+    expect(() => new RemoteRerankProvider(config({ rerankApiKey: 'secret' }))).toThrow('requires HTTPS');
+    expect(() => new RemoteRerankProvider(config(remote))).not.toThrow();
+    expect(() => new RemoteRerankProvider(config({ rerankApiBase: 'https://rerank.example/v1', rerankApiKey: 'secret' }))).not.toThrow();
+  });
+
+  it('reports HTTP status without reading or exposing the response body', async () => {
+    const text = vi.fn(() => { throw new Error('body should not be read'); });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 502, text }));
+    const error = await new RemoteRerankProvider(config({ rerankApiBase: 'https://rerank.example/v1', rerankApiKey: 'secret' })).rerank('q', candidates)
       .catch((err: unknown) => err);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('HTTP 502');
     expect((error as Error).message).not.toContain('secret');
-    expect((error as Error).message.length).toBeLessThan(250);
+    expect((error as Error).message).toBe('Remote rerank HTTP 502');
+    expect(text).not.toHaveBeenCalled();
   });
 
   it('rejects invalid JSON and malformed or ambiguous results', async () => {

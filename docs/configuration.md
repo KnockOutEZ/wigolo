@@ -89,7 +89,7 @@ For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL
 | `WIGOLO_RERANKER` | `onnx` | Result reranking: `onnx` (bundled model), `remote` (self-hosted endpoint), `none` (disabled), or reserved `custom`. |
 | `WIGOLO_RERANKER_MODEL` | `bge-reranker-v2-m3` | Model name sent to the remote endpoint; the ONNX model is bundled. |
 | `WIGOLO_RERANK_API_BASE` | unset | Remote service base URL; Wigolo sends `POST <base>/rerank`. Required for `remote`. |
-| `WIGOLO_RERANK_API_KEY` | unset | Optional Bearer token for the remote endpoint. Read from env or keychain; never persisted in `config.json`. |
+| `WIGOLO_RERANK_API_KEY` | unset | Optional Bearer token for the remote endpoint. Requires HTTPS. Read from env or keychain; never persisted in `config.json`. |
 | `WIGOLO_RERANKER_REQUEST_TIMEOUT_MS` | `30000` | Remote request timeout in milliseconds. |
 | `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. |
 | `WIGOLO_RELEVANCE_THRESHOLD` | `0` | Drop search results below this reranker score (0 = keep all). |
@@ -100,7 +100,7 @@ The default ONNX model downloads once (during `init`/`warmup` or lazily on first
 export WIGOLO_RERANKER=remote
 export WIGOLO_RERANK_API_BASE=http://127.0.0.1:8082/v1
 export WIGOLO_RERANKER_MODEL=bge-reranker-v2-m3
-# export WIGOLO_RERANK_API_KEY=... # if your server requires a Bearer token
+# To use WIGOLO_RERANK_API_KEY, switch the base URL to HTTPS first.
 ```
 
 Wigolo sends `{ "model": "...", "query": "...", "documents": ["..."], "top_n": 2 }` to `/rerank`. The response must contain `results` with one `{ "index": 0, "relevance_score": 0.9 }` (or `score`) per requested document. Indexes refer to the original document order. This is a Cohere-style contract; OpenAI does not define a universal rerank API. Queries and candidate text are sent to the configured endpoint. Remote mode does not download the ONNX model. `warmup` and `doctor` check configuration without contacting the endpoint; the first rerank request verifies service availability. Search falls back to its existing ordering if the endpoint fails.

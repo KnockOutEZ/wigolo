@@ -20,6 +20,9 @@ export class RemoteRerankProvider implements RerankProvider {
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new Error('WIGOLO_RERANK_API_BASE must be an http(s) URL without credentials, query, or fragment');
     }
+    if (config.rerankApiKey && parsed.protocol !== 'https:') {
+      throw new Error('WIGOLO_RERANK_API_KEY requires HTTPS');
+    }
     this.url = `${base}/rerank`;
     this.modelId = config.rerankerModel;
   }
@@ -39,16 +42,14 @@ export class RemoteRerankProvider implements RerankProvider {
         headers,
         body: JSON.stringify({ model: this.modelId, query, documents: candidates.map((c) => c.text), top_n: topN }),
         signal: AbortSignal.timeout(this.config.rerankerRequestTimeoutMs),
+        redirect: 'error',
       });
     } catch (err) {
       const reason = (err instanceof Error ? err.message : 'unknown network error')
         .replaceAll(this.config.rerankApiKey || '\0', '[redacted]');
       throw new Error(`Remote rerank request failed: ${reason}`);
     }
-    if (!response.ok) {
-      const body = (await response.text()).slice(0, 200).replaceAll(this.config.rerankApiKey || '\0', '[redacted]');
-      throw new Error(`Remote rerank HTTP ${response.status}${body ? `: ${body}` : ''}`);
-    }
+    if (!response.ok) throw new Error(`Remote rerank HTTP ${response.status}`);
 
     let payload: unknown;
     try {
