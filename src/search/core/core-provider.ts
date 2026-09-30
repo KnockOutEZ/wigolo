@@ -573,12 +573,12 @@ export class CoreSearchProvider implements SearchProvider {
 
       // Cross-encoder rerank-fold: the LAST reorder, after
       // all cross-query merges + context-rank. Balanced/deep only; images skip
-      // (snippet rerank on image results is noise); gated on the same onnx
-      // reranker config the evidence path uses. The helper is failure-safe.
+      // (snippet rerank on image results is noise); gated on the configured
+      // reranker backend. The helper is failure-safe.
       if (
         (depth === 'balanced' || depth === 'deep') &&
         !isImagesCategory &&
-        getConfig().reranker === 'onnx'
+        (getConfig().reranker === 'onnx' || getConfig().reranker === 'remote')
       ) {
         processed = await foldRerankIntoOrdering(processed, {
           queries,

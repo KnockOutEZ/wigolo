@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { resetConfig } from '../../../src/config.js';
 
 const ensureProviderReady = vi.fn().mockResolvedValue(true);
 const rerankWarmup = vi.fn().mockResolvedValue(undefined);
@@ -31,8 +32,11 @@ import {
 
 describe('maybeEagerWarmup', () => {
   const originalEnv = process.env.WIGOLO_EAGER_WARMUP;
+  const originalReranker = process.env.WIGOLO_RERANKER;
 
   beforeEach(() => {
+    process.env.WIGOLO_RERANKER = 'onnx';
+    resetConfig();
     ensureProviderReady.mockClear().mockResolvedValue(true);
     rerankWarmup.mockClear().mockResolvedValue(undefined);
     getRerankProvider.mockClear();
@@ -47,6 +51,9 @@ describe('maybeEagerWarmup', () => {
     } else {
       process.env.WIGOLO_EAGER_WARMUP = originalEnv;
     }
+    if (originalReranker === undefined) delete process.env.WIGOLO_RERANKER;
+    else process.env.WIGOLO_RERANKER = originalReranker;
+    resetConfig();
   });
 
   it('is a no-op when WIGOLO_EAGER_WARMUP is unset', async () => {

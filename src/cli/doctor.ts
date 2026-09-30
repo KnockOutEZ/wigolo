@@ -10,6 +10,7 @@ import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js'
 import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
+import { RemoteRerankProvider } from '../search/reranker/remote-rerank-provider.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
@@ -720,13 +721,23 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   out(`  tls_tier:      ${formatTlsTierLine(tlsCfg.tlsTier, tlsCfg.tlsBrowser, wreqAvailable)}`);
 
   out('');
-  const reranker = checkReranker(dataDir);
+  const rerankerMode = getConfig().reranker;
+  const reranker = rerankerMode === 'onnx' ? checkReranker(dataDir) : null;
   const embeddings = checkFastembedCache(dataDir);
   out('[wigolo doctor] Optional components:');
-  if (reranker.installed) {
+  if (rerankerMode === 'remote') {
+    try {
+      new RemoteRerankProvider(getConfig());
+      out('  ML reranker:        remote configured (endpoint not probed)');
+    } catch (err) {
+      out(`  ML reranker:        ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else if (rerankerMode === 'none' || rerankerMode === 'custom') {
+    out('  ML reranker:        disabled');
+  } else if (reranker?.installed) {
     out(`  ML reranker:        installed (cross-encoder)`);
   } else {
-    out(`  ML reranker:        not installed${reranker.reason ? ` (${reranker.reason})` : ''}`);
+    out(`  ML reranker:        not installed${reranker?.reason ? ` (${reranker.reason})` : ''}`);
   }
   if (embeddings.installed) {
     out(`  Embeddings model:   installed (fastembed BGE-small-en-v1.5)`);
