@@ -73,7 +73,8 @@ describe('RemoteRerankProvider', () => {
 
   it('reports HTTP status without reading or exposing the response body', async () => {
     const text = vi.fn(() => { throw new Error('body should not be read'); });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 502, text }));
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 502, text, body: { cancel } }));
     const error = await new RemoteRerankProvider(config({ rerankApiBase: 'https://rerank.example/v1', rerankApiKey: 'secret' })).rerank('q', candidates)
       .catch((err: unknown) => err);
     expect(error).toBeInstanceOf(Error);
@@ -81,6 +82,7 @@ describe('RemoteRerankProvider', () => {
     expect((error as Error).message).not.toContain('secret');
     expect((error as Error).message).toBe('Remote rerank HTTP 502');
     expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('rejects invalid JSON and malformed or ambiguous results', async () => {

@@ -49,7 +49,10 @@ export class RemoteRerankProvider implements RerankProvider {
         .replaceAll(this.config.rerankApiKey || '\0', '[redacted]');
       throw new Error(`Remote rerank request failed: ${reason}`);
     }
-    if (!response.ok) throw new Error(`Remote rerank HTTP ${response.status}`);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`Remote rerank HTTP ${response.status}`);
+    }
 
     let payload: unknown;
     try {
