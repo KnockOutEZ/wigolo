@@ -14,4 +14,9 @@ describe('buildQueryUnderstanding language detection', () => {
     expect(buildQueryUnderstanding('ما أحدث أخبار الذكاء الاصطناعي؟', { language: 'ar' }).language).toBe('ar');
     expect(buildQueryUnderstanding('latest AI news', { language: 'custom' }).language).toBe('custom');
   });
+
+  it('does not classify Arabic-Indic digits as Arabic', () => {
+    expect(buildQueryUnderstanding('١٢٣').language).toBe('unknown');
+    expect(buildQueryUnderstanding('١٢ AI').language).toBe('en');
+  });
 });
