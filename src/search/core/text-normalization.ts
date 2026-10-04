@@ -35,8 +35,8 @@ export function normalizeSearchText(value: string): string {
 /** Unicode-aware tokens; punctuation is a boundary, including Arabic punctuation. */
 export function tokenizeSearchText(value: string): string[] {
   return normalizeSearchText(value)
-    .replace(/[^\\p{L}\\p{N}]+/gu, ' ')
-    .split(/\\s+/u)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .split(/\s+/u)
     .filter(Boolean);
 }
 
@@ -50,7 +50,7 @@ export function tokenizeContent(value: string): string[] {
 /** Lightweight script-based language guess; explicit caller language still wins. */
 export function detectSearchLanguage(value: string): string {
   const normalized = normalizeSearchText(value);
-  const arabic = normalized.match(/[\\u0600-\\u06FF]/gu)?.length ?? 0;
+  const arabic = normalized.match(/[\u0600-\u06FF]/gu)?.length ?? 0;
   const latin = normalized.match(/[A-Za-z]/g)?.length ?? 0;
   if (arabic === 0 && latin === 0) return 'unknown';
   if (arabic >= 2 && arabic >= latin) return 'ar';
