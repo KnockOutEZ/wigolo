@@ -24,20 +24,20 @@ const MAX_COMPOUND_TOKENS = 16;
 const MAX_PHRASE_TOKENS = 32;
 
 function stripEdges(token: string): string {
-  return token.replace(/^[^\\p{L}\\p{N}]+/u, '').replace(/[^\\p{L}\\p{N}]+$/u, '');
+  return token.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
 }
 
 function classifyCompound(raw: string): string | null {
   const t = stripEdges(normalizeSearchText(raw));
   if (t.length < 3) return null;
-  const hasAlpha = /\\p{L}/u.test(t);
+  const hasAlpha = /\p{L}/u.test(t);
   if (!hasAlpha) return null;
 
   // A compound must retain an explicit structural separator or a letter+digit
   // suffix. Unicode letters are supported, while bare dates remain excluded.
-  const hyphen = /^\\p{L}\\p{N}+(?:-[\\p{L}\\p{N}]+)+$/u.test(t);
-  const snake = /^\\p{L}\\p{N}+(?:_[\\p{L}\\p{N}]+)+$/u.test(t);
-  const digitSuffix = /^\\p{L}{2,}\\d+$/u.test(t);
+  const hyphen = /^\p{L}\p{N}+(?:-[\p{L}\p{N}]+)+$/u.test(t);
+  const snake = /^\p{L}\p{N}+(?:_[\p{L}\p{N}]+)+$/u.test(t);
+  const digitSuffix = /^\p{L}{2,}\d+$/u.test(t);
   return hyphen || snake || digitSuffix ? t : null;
 }
 
@@ -51,7 +51,7 @@ export function detectRareTerms(query: string): RareTerms {
   if (typeof query !== 'string' || query.trim() === '') {
     return { compoundTokens: [], conceptPhrase: null };
   }
-  const rawTokens = query.trim().split(/\\s+/u);
+  const rawTokens = query.trim().split(/\s+/u);
   const compoundSet = new Set<string>();
   for (const raw of rawTokens) {
     const c = classifyCompound(raw);
