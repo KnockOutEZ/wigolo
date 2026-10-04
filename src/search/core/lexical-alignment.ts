@@ -2,31 +2,16 @@
 //
 // Returns the fraction of non-stopword query tokens that appear in the
 // result's title or snippet token set. 0..1. Used by the core ranker to
-// damp results whose surface text has near-zero overlap with the query
-// (typical brand-collision pattern: query about a technology, result is
-// a retail homepage with no technical tokens).
+// damp results whose surface text has near-zero overlap with the query.
 
-const STOPWORDS: ReadonlySet<string> = new Set([
-  'the', 'a', 'an',
-  'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
-  'do', 'does', 'did',
-  'for', 'of', 'to', 'in', 'on', 'with', 'and', 'or', 'but', 'as', 'at',
-  'by', 'from', 'into', 'about', 'than',
-  'this', 'that', 'these', 'those', 'it', 'its',
-  'be', 'been', 'has', 'have', 'had',
-  'can', 'could', 'should', 'would', 'may', 'might', 'must',
-  'will', 'shall',
-  'i', 'you', 'we', 'they', 'he', 'she', 'them',
-  'my', 'your', 'our', 'their',
-  'latest', 'current', 'newest', 'recent', 'best', 'top', 'most',
-]);
+import { SEARCH_STOPWORDS, tokenizeContent } from './text-normalization.js';
+
+// Kept as a local alias for compatibility/readability in this module; the
+// canonical stopword set is shared with rare-term phrase matching.
+void SEARCH_STOPWORDS;
 
 function tokenize(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+  return tokenizeContent(s);
 }
 
 /**
