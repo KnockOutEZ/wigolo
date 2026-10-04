@@ -5,7 +5,7 @@
 
 const ARABIC_DIACRITICS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/gu;
 
-export const SEARCH_STOPWORDS: ReadonlySet<string> = new Set([
+const RAW_SEARCH_STOPWORDS: readonly string[] = [
   // English function words / generic query modifiers
   'the', 'a', 'an', 'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
   'do', 'does', 'did', 'for', 'of', 'to', 'in', 'on', 'with', 'and', 'or', 'but', 'as', 'at',
@@ -19,7 +19,7 @@ export const SEARCH_STOPWORDS: ReadonlySet<string> = new Set([
   'و', 'أو', 'او', 'ثم', 'لكن', 'هذا', 'هذه', 'ذلك', 'تلك', 'الذي', 'التي', 'الذين',
   'اللاتي', 'كان', 'كانت', 'يكون', 'تكون', 'تم', 'قد', 'لقد', 'لـ', 'خلال', 'عام', 'سنة',
   'آخر', 'اخر', 'أحدث', 'احدث', 'جديد', 'جديدة', 'حديث', 'حديثة',
-]);
+];
 
 /** Normalize common Arabic orthographic noise without transliterating Arabic. */
 export function normalizeSearchText(value: string): string {
@@ -31,6 +31,11 @@ export function normalizeSearchText(value: string): string {
     .replace(/ى/gu, 'ي')
     .toLowerCase();
 }
+
+/** Keep stopwords normalized exactly like search tokens. */
+export const SEARCH_STOPWORDS: ReadonlySet<string> = new Set(
+  RAW_SEARCH_STOPWORDS.map(normalizeSearchText),
+);
 
 /** Unicode-aware tokens; punctuation is a boundary, including Arabic punctuation. */
 export function tokenizeSearchText(value: string): string[] {
@@ -50,7 +55,9 @@ export function tokenizeContent(value: string): string[] {
 /** Lightweight script-based language guess; explicit caller language still wins. */
 export function detectSearchLanguage(value: string): string {
   const normalized = normalizeSearchText(value);
-  const arabic = normalized.match(/[\u0600-\u06FF]/gu)?.length ?? 0;
+  const arabic = [...normalized].filter(
+    (char) => /\p{Script=Arabic}/u.test(char) && /\p{L}/u.test(char),
+  ).length;
   const latin = normalized.match(/[A-Za-z]/g)?.length ?? 0;
   if (arabic === 0 && latin === 0) return 'unknown';
   if (arabic >= 2 && arabic >= latin) return 'ar';
