@@ -5,6 +5,7 @@ import {
 } from './intent-router.js';
 import { detectRareTerms } from './rare-terms.js';
 import { isBrandCollisionProne } from './brand-collision.js';
+import { detectSearchLanguage } from './text-normalization.js';
 
 export interface QueryUnderstanding {
   intent: Vertical;
@@ -98,7 +99,7 @@ export function buildQueryUnderstanding(
     intent: classification.vertical,
     entities: extractEntities(query),
     date_hint: classification.dateHint ?? null,
-    language: opts.language ?? 'en',
+    language: opts.language ?? detectSearchLanguage(query),
     is_brand_collision_prone: isBrandCollisionProne(query),
     rewrites: opts.rewrites ?? [],
     compound_terms: detectRareTerms(query).compoundTokens,
