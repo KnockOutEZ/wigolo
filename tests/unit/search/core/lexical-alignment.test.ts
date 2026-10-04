@@ -29,6 +29,10 @@ describe('lexicalAlignment', () => {
   it('normalizes Arabic alef variants and ignores Arabic question words', () => {
     expect(lexicalAlignment('ما أحدث أخبار الذكاء الاصطناعي في مصر؟', 'احدث اخبار الذكاء الاصطناعي في مصر', '')).toBe(1);
   });
+
+  it('filters normalized Arabic stopwords', () => {
+    expect(lexicalAlignment('إلى مصر', 'مصر', '')).toBe(1);
+  });
   it('supports mixed Arabic and English queries', () => {
     expect(lexicalAlignment('آخر أخبار OpenAI في مصر', 'OpenAI أخبار مصر', '')).toBe(1);
   });
