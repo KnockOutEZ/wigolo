@@ -534,7 +534,7 @@ export async function runV1Search(
           final,
         });
       }
-      evidenceScores.set(r.url, {
+      const evidenceScore: EvidenceScore = {
         final,
         components: {
           base_rrf: base,
@@ -552,8 +552,14 @@ export async function runV1Search(
           recencyMul,
           engineConsensus: primaryCount + secondaryCount,
         }),
-      });
-      return { ...r, relevance_score: final };
+      };
+      evidenceScores.set(r.url, evidenceScore);
+
+      // Keep the evidence breakdown on the scored result itself. Downstream
+      // score-floor logic runs before core-provider re-attaches evidence_score;
+      // without this field the degraded-pool lexical gate sees every result as
+      // zero-lexical and can incorrectly empty a healthy Bing survivor set.
+      return { ...r, relevance_score: final, evidence_score: evidenceScore };
     });
 
     scored.sort((a, b) => b.relevance_score - a.relevance_score);
