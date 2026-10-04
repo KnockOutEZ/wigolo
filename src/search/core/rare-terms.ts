@@ -68,7 +68,7 @@ export function detectRareTerms(query: string): RareTerms {
 }
 
 function tokenizeDoc(s: string): string[] {
-  return tokenizeSearchText(s);
+  return contentTokens(s);
 }
 
 function longestRun(phrase: string[], doc: string[]): number {
