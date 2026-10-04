@@ -35,8 +35,8 @@ function classifyCompound(raw: string): string | null {
 
   // A compound must retain an explicit structural separator or a letter+digit
   // suffix. Unicode letters are supported, while bare dates remain excluded.
-  const hyphen = /^\p{L}\p{N}+(?:-[\p{L}\p{N}]+)+$/u.test(t);
-  const snake = /^\p{L}\p{N}+(?:_[\p{L}\p{N}]+)+$/u.test(t);
+  const hyphen = /^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)+$/u.test(t);
+  const snake = /^[\p{L}\p{N}]+(?:_[\p{L}\p{N}]+)+$/u.test(t);
   const digitSuffix = /^\p{L}{2,}\d+$/u.test(t);
   return hyphen || snake || digitSuffix ? t : null;
 }
@@ -44,7 +44,7 @@ function classifyCompound(raw: string): string | null {
 function contentTokens(query: string): string[] {
   return tokenizeSearchText(query)
     .map(stripEdges)
-    .filter((t) => t.length >= 2 && !SEARCH_STOPWORDS.has(t));
+    .filter((t) => t.length >= 2 && /\p{L}/u.test(t) && !SEARCH_STOPWORDS.has(t));
 }
 
 export function detectRareTerms(query: string): RareTerms {
