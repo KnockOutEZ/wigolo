@@ -1,10 +1,8 @@
 // Structural rare/compound-term detection + a multiplicative rank factor.
-// No lexicon: compound tokens are recognised by shape (hyphenated, digit-
-// suffixed, snake_case) and are high-IDF by construction. A doc that contains
-// such a token verbatim is almost certainly on-topic; a doc that contains NONE
-// of the query's compounds is generic filler (the sqlite.org-homepage case).
-// Multi-word concept queries are scored by the longest in-order run of query
-// content-tokens present in the doc (Reciprocal-Rank-Fusion vs "Reciprocal").
+// Unicode-aware so Arabic and mixed-language queries get the same protections
+// as Latin queries.
+
+import { SEARCH_STOPWORDS, normalizeSearchText, tokenizeSearchText } from './text-normalization.js';
 
 export interface RareTerms {
   compoundTokens: string[];
@@ -17,58 +15,43 @@ export interface RareScorable {
   snippet: string;
 }
 
-// Conservative, fixture-tuned. Factor stays bounded so it shapes order without
-// saturating to 0/∞ and drowning the RRF/authority/lexical signals.
-const COMPOUND_PRESENT_BOOST = 0.6; // up to *1.6 (clamp) when all compounds present
-const COMPOUND_ABSENT_DAMP = 0.5; // *0.5 when query has compounds but doc has none
-// Strong present/absent swing (3.2x) so an exact compound match dominates
-// domain-quality / authority noise — compound presence is the highest-signal
-// evidence we have that a page is on-topic.
-const PHRASE_BOOST = 0.4; // up to *1.4 at full-phrase contiguity
+const COMPOUND_PRESENT_BOOST = 0.6;
+const COMPOUND_ABSENT_DAMP = 0.5;
+const PHRASE_BOOST = 0.4;
 const FACTOR_MIN = 0.5;
 const FACTOR_MAX = 1.6;
-
-// Hard caps so an abusive/malformed client can't drive the per-result
-// longestRun (O(phrase·doc)) or the buildRareTermVariant regex-compile loop
-// with a pathologically long query — the `query` schema has no maxLength.
-// Real queries carry a handful of rare terms; beyond these caps adds no signal.
 const MAX_COMPOUND_TOKENS = 16;
 const MAX_PHRASE_TOKENS = 32;
 
-const STOPWORDS = new Set([
-  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'how', 'why', 'what', 'when',
-  'where', 'who', 'do', 'does', 'did', 'for', 'of', 'to', 'in', 'on', 'with',
-  'and', 'or', 'as', 'at', 'by', 'from', 'into', 'about', 'than', 'vs', 'using',
-]);
-
 function stripEdges(token: string): string {
-  return token.replace(/^[^a-z0-9]+/i, '').replace(/[^a-z0-9]+$/i, '');
+  return token.replace(/^[^\\p{L}\\p{N}]+/u, '').replace(/[^\\p{L}\\p{N}]+$/u, '');
 }
 
 function classifyCompound(raw: string): string | null {
-  const t = stripEdges(raw).toLowerCase();
+  const t = stripEdges(normalizeSearchText(raw));
   if (t.length < 3) return null;
-  const hasAlpha = /[a-z]/.test(t);
-  if (!hasAlpha) return null; // excludes "2026-06-12"
-  const hyphen = /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(t);
-  const snake = /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(t);
-  const digitSuffix = /^[a-z]{2,}\d+$/.test(t); // "vec0","fts5"; excludes "v18"
+  const hasAlpha = /\\p{L}/u.test(t);
+  if (!hasAlpha) return null;
+
+  // A compound must retain an explicit structural separator or a letter+digit
+  // suffix. Unicode letters are supported, while bare dates remain excluded.
+  const hyphen = /^\\p{L}\\p{N}+(?:-[\\p{L}\\p{N}]+)+$/u.test(t);
+  const snake = /^\\p{L}\\p{N}+(?:_[\\p{L}\\p{N}]+)+$/u.test(t);
+  const digitSuffix = /^\\p{L}{2,}\\d+$/u.test(t);
   return hyphen || snake || digitSuffix ? t : null;
 }
 
 function contentTokens(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
+  return tokenizeSearchText(query)
     .map(stripEdges)
-    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+    .filter((t) => t.length >= 2 && !SEARCH_STOPWORDS.has(t));
 }
 
 export function detectRareTerms(query: string): RareTerms {
   if (typeof query !== 'string' || query.trim() === '') {
     return { compoundTokens: [], conceptPhrase: null };
   }
-  const rawTokens = query.trim().split(/\s+/);
+  const rawTokens = query.trim().split(/\\s+/u);
   const compoundSet = new Set<string>();
   for (const raw of rawTokens) {
     const c = classifyCompound(raw);
@@ -85,11 +68,9 @@ export function detectRareTerms(query: string): RareTerms {
 }
 
 function tokenizeDoc(s: string): string[] {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(Boolean);
+  return tokenizeSearchText(s);
 }
 
-// Longest contiguous run of `phrase` tokens (in their query order) that appears
-// contiguously in `doc`.
 function longestRun(phrase: string[], doc: string[]): number {
   let best = 0;
   for (let i = 0; i < phrase.length; i++) {
@@ -102,15 +83,11 @@ function longestRun(phrase: string[], doc: string[]): number {
   return best;
 }
 
-// True when a result is a rare-term MISS: the query carries rare terms but this
-// result contains none of them (no compound token present, or phrase run < 2).
-// Used to cap domain authority per-result — a high-authority page that doesn't
-// actually contain the rare terms shouldn't outrank an exact-match page. Hits
-// (e.g. a result that DOES contain the compound) keep their authority intact, so
-// a legitimate on-topic high-authority page is never penalised.
 export function isRareTermMiss(result: RareScorable, rare: RareTerms): boolean {
   if (rare.compoundTokens.length > 0) {
-    const haystack = `${result.title} ${result.url} ${result.snippet}`.toLowerCase();
+    const haystack = normalizeSearchText(
+      `${result.title} ${result.url} ${result.snippet}`,
+    );
     return !rare.compoundTokens.some((t) => haystack.includes(t));
   }
   if (rare.conceptPhrase && rare.conceptPhrase.length >= 2) {
@@ -124,7 +101,9 @@ export function rareTermFactor(result: RareScorable, rare: RareTerms): number {
   if (rare.compoundTokens.length === 0 && !rare.conceptPhrase) return 1;
 
   let factor = 1;
-  const haystack = `${result.title} ${result.url} ${result.snippet}`.toLowerCase();
+  const haystack = normalizeSearchText(
+    `${result.title} ${result.url} ${result.snippet}`,
+  );
 
   if (rare.compoundTokens.length > 0) {
     const present = rare.compoundTokens.filter((t) => haystack.includes(t));
