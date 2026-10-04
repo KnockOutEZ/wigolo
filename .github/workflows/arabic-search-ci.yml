@@ -9,6 +9,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: arabic-search-${{ github.ref }}
   cancel-in-progress: true
