@@ -34,6 +34,15 @@ describe('detectRareTerms', () => {
     expect(r.compoundTokens).toHaveLength(0);
     expect(r.conceptPhrase).toEqual(['اخبار', 'الذكاء', 'الاصطناعي', 'مصر']);
   });
+
+  it('matches Arabic concept phrases across stopwords in the document', () => {
+    const rare = detectRareTerms('أخبار مصر');
+    expect(isRareTermMiss({
+      title: 'أخبار في مصر',
+      url: 'https://example.com',
+      snippet: '',
+    }, rare)).toBe(false);
+  });
 });
 
 describe('rareTermFactor', () => {
