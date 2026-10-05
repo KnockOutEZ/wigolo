@@ -32,6 +32,7 @@ import { getConfig } from '../../config.js';
 const RETAIL_TLD_RE = /\.(?:co\.uk|shop|store|deals|sale|boutique|fashion)$/i;
 const BRAND_COLLISION_PENALTY = 0.3;
 
+/** Internal search helper: explainEvidence. */
 function explainEvidence(parts: {
   base: number;
   dq: number;
@@ -48,6 +49,7 @@ function explainEvidence(parts: {
   return tokens.join(', ');
 }
 
+/** Internal search helper: applyBrandCollisionGuard. */
 function applyBrandCollisionGuard(query: string, results: RawSearchResult[]): RawSearchResult[] {
   const tokens = query.trim().split(/\s+/).filter(Boolean);
   if (tokens.length > 2) return results;
@@ -105,6 +107,7 @@ const STARVATION_FLOOR = 3;
 // engine, force-probing them so the pool can recover WITHIN the burst instead
 // of waiting out the full cooldown. Half is the natural collapse signal: a
 // 5-engine pool down to 2 healthy is limping, down to 1 is collapsed.
+/** Internal search helper: poolHealthFloor. */
 function poolHealthFloor(dispatchedCount: number): number {
   return Math.ceil(dispatchedCount / 2);
 }
@@ -135,6 +138,7 @@ const RANK_DEGRADED_CONFIDENCE_FLOOR = 0.05;
 // engines treat the code as one atom (substring matching on an unquoted code
 // lets glossary/definition junk rank). Idempotent: already-quoted tokens are
 // left alone.
+/** Internal search helper: quoteErrorTokens. */
 function quoteErrorTokens(query: string): string {
   const tokens = extractErrorTokens(query);
   if (tokens.length === 0) return query;
@@ -147,6 +151,7 @@ function quoteErrorTokens(query: string): string {
   return out;
 }
 
+/** Internal search helper: escapeRegExp. */
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -155,6 +160,7 @@ function escapeRegExp(s: string): string {
 // ` (site:a.com OR site:b.com)`. Only emitted for a small domain set —
 // beyond that the operator string bloats and some engines choke.
 const MAX_SITE_SCOPE_DOMAINS = 3;
+/** Internal search helper: siteScopeSuffix. */
 function siteScopeSuffix(includeDomains?: string[]): string {
   if (!includeDomains?.length || includeDomains.length > MAX_SITE_SCOPE_DOMAINS) {
     return '';
@@ -175,6 +181,7 @@ function siteScopeSuffix(includeDomains?: string[]): string {
 // format (e.g. "Jan 15, 2026") can no longer slip a week window. Non-empty
 // guarantee: if the window would drop everything, the pre-filter set is kept so
 // scarce in-window coverage never collapses to zero results.
+/** Internal search helper: applyFreshnessWindow. */
 function applyFreshnessWindow(
   results: RawSearchResult[],
   fromDate: string | undefined,
@@ -226,6 +233,7 @@ export interface OrchestratorOutput {
   pool_degraded?: EnginePoolHealth;
 }
 
+/** Internal search helper: getEntriesForVertical. */
 function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
   switch (vertical) {
     case 'general':
@@ -243,6 +251,7 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
   }
 }
 
+/** Internal search helper: hostnameOf. */
 function hostnameOf(url: string): string {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -251,6 +260,7 @@ function hostnameOf(url: string): string {
   }
 }
 
+/** Internal search helper: matchesDomain. */
 function matchesDomain(host: string, domain: string): boolean {
   const needle = domain.toLowerCase().replace(/^\./, '');
   if (!host) return false;
@@ -263,6 +273,7 @@ function matchesDomain(host: string, domain: string): boolean {
 // applied a soft floor that demoted off-domain results when matches were
 // below 3; that leaked off-domain URLs into responses. Hard enforcement
 // matches what wigolo advertises.
+/** Internal search helper: applyDomainFilters. */
 function applyDomainFilters(
   results: RawSearchResult[],
   includeDomains?: string[],
@@ -288,6 +299,7 @@ function applyDomainFilters(
 }
 
 // Defensive per-engine dedup: keep first occurrence by URL.
+/** Internal search helper: dedupWithinEngine. */
 function dedupWithinEngine(results: RawSearchResult[]): RawSearchResult[] {
   const seen = new Set<string>();
   const out: RawSearchResult[] = [];
@@ -303,6 +315,7 @@ interface RunV1SearchOptions {
   _isFallback?: boolean;
 }
 
+/** Internal search helper: runV1Search. */
 export async function runV1Search(
   input: OrchestratorInput,
   opts: RunV1SearchOptions = {},
@@ -436,6 +449,7 @@ export async function runV1Search(
   // outcomes re-runs RRF + the full score map over the combined set (per-result
   // merge, not a naive concat). `entryList` must be positionally aligned with
   // `outcomeList` so per-engine weight/secondary metadata lines up.
+  /** Internal search helper: scoreOutcomes. */
   function scoreOutcomes(
     outcomeList: EngineOutcome[],
     entryList: EngineEntry[],
@@ -849,6 +863,7 @@ export async function runV1Search(
   };
 }
 
+/** Internal search helper: _resetOrchestratorVerticalsForTest. */
 export function _resetOrchestratorVerticalsForTest(): void {
   _resetGeneralEnginesForTest();
   _resetNewsEnginesForTest();
