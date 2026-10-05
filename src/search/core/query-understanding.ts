@@ -55,6 +55,7 @@ const LOWERCASE_ENTITY_LEXICON = new Set([
   'ceo', 'cto', 'cfo', 'coo', 'cmo',
 ]);
 
+/** Internal search helper: extractEntities. */
 export function extractEntities(query: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -87,6 +88,7 @@ export function extractEntities(query: string): string[] {
   return out;
 }
 
+/** Internal search helper: buildQueryUnderstanding. */
 export function buildQueryUnderstanding(
   query: string,
   opts: BuildQUOptions = {},
