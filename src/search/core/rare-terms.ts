@@ -23,10 +23,12 @@ const FACTOR_MAX = 1.6;
 const MAX_COMPOUND_TOKENS = 16;
 const MAX_PHRASE_TOKENS = 32;
 
+/** Internal search helper: stripEdges. */
 function stripEdges(token: string): string {
   return token.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
 }
 
+/** Internal search helper: classifyCompound. */
 function classifyCompound(raw: string): string | null {
   const t = stripEdges(normalizeSearchText(raw));
   if (t.length < 3) return null;
@@ -41,12 +43,14 @@ function classifyCompound(raw: string): string | null {
   return hyphen || snake || digitSuffix ? t : null;
 }
 
+/** Internal search helper: contentTokens. */
 function contentTokens(query: string): string[] {
   return tokenizeSearchText(query)
     .map(stripEdges)
     .filter((t) => t.length >= 2 && /\p{L}/u.test(t) && !SEARCH_STOPWORDS.has(t));
 }
 
+/** Internal search helper: detectRareTerms. */
 export function detectRareTerms(query: string): RareTerms {
   if (typeof query !== 'string' || query.trim() === '') {
     return { compoundTokens: [], conceptPhrase: null };
@@ -67,10 +71,12 @@ export function detectRareTerms(query: string): RareTerms {
   return { compoundTokens, conceptPhrase };
 }
 
+/** Internal search helper: tokenizeDoc. */
 function tokenizeDoc(s: string): string[] {
   return contentTokens(s);
 }
 
+/** Internal search helper: longestRun. */
 function longestRun(phrase: string[], doc: string[]): number {
   let best = 0;
   for (let i = 0; i < phrase.length; i++) {
@@ -83,6 +89,7 @@ function longestRun(phrase: string[], doc: string[]): number {
   return best;
 }
 
+/** Internal search helper: isRareTermMiss. */
 export function isRareTermMiss(result: RareScorable, rare: RareTerms): boolean {
   if (rare.compoundTokens.length > 0) {
     const haystack = normalizeSearchText(
@@ -97,6 +104,7 @@ export function isRareTermMiss(result: RareScorable, rare: RareTerms): boolean {
   return false;
 }
 
+/** Internal search helper: rareTermFactor. */
 export function rareTermFactor(result: RareScorable, rare: RareTerms): number {
   if (rare.compoundTokens.length === 0 && !rare.conceptPhrase) return 1;
 
