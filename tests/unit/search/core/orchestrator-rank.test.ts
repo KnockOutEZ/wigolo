@@ -391,6 +391,28 @@ describe('runV1Search — degraded-pool normalisation guard (gate d)', () => {
     const junk = out.results.find((r) => r.url === 'https://junk.example/jp')!;
     // Without the guard, max-normalisation makes the single result exactly 1.0.
     expect(junk.relevance_score).toBeLessThan(1);
+    expect(junk.evidence_score?.components.lexical_alignment).toBe(0);
+  });
+
+  it('preserves lexical evidence before the degraded score floor runs', async () => {
+    const survivor = makeEntry('bing', [
+      makeResult(
+        'bing',
+        'https://example.com/ai',
+        'AI in Egypt',
+        'latest artificial intelligence developments in Egypt 2026',
+      ),
+    ]);
+    verticalState.general = [survivor, emptyEntry('ddg'), emptyEntry('wikipedia')];
+
+    const out = await runV1Search({
+      query: 'latest artificial intelligence developments in Egypt 2026',
+      maxResults: 5,
+    });
+
+    const result = out.results.find((r) => r.url === 'https://example.com/ai');
+    expect(result).toBeDefined();
+    expect(result!.evidence_score?.components.lexical_alignment).toBeGreaterThan(0);
   });
 
   it('STILL normalises a degraded pool whose top is confident (lexically strong)', async () => {
