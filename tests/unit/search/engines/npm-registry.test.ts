@@ -224,6 +224,28 @@ describe('NpmRegistryEngine', () => {
     expect(results[0].title).toBe('valid');
   });
 
+  it('returns empty array when the top-level JSON body is a primitive', async () => {
+    for (const body of ['unexpected string', 42]) {
+      captureFetch(body);
+      const results = await new NpmRegistryEngine().search('q');
+      expect(results).toEqual([]);
+    }
+  });
+
+  it('skips non-object entries in the objects array', async () => {
+    const body = {
+      objects: [
+        'not-an-object',
+        42,
+        { package: { name: 'also-valid', description: 'fine' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('also-valid');
+  });
+
   it('returns empty array when objects field is absent', async () => {
     captureFetch({});
     const results = await new NpmRegistryEngine().search('q');
