@@ -2,11 +2,13 @@
  * Rerank provider interface.
  *
  * The default factory returns TransformersRerankProvider
- * (Transformers.js cross-encoder, in-process ONNX runtime). The legacy
+ * (Transformers.js cross-encoder, in-process ONNX runtime) for English
+ * queries and ArabicRerankProvider for Arabic queries. The legacy
  * Python FlashRank adapter still exists in `search/reranker/legacy-provider.ts`
  * but it is no longer wired in.
  */
 import { createLogger } from '../logger.js';
+import { isArabicQuery } from '../search/arabic/query-cleaner.js';
 
 const log = createLogger('providers');
 export interface RerankCandidate {
@@ -25,11 +27,14 @@ export interface RerankProvider {
     candidates: RerankCandidate[],
     topK?: number,
   ): Promise<RerankResult[]>;
+  /** Model warmup (optional; providers without a warmup no-op). */
+  warmup?(): Promise<void>;
   /** Model identifier (for cache invalidation / provenance). */
   readonly modelId: string;
 }
 
-let cached: Promise<RerankProvider> | null = null;
+let cachedArabic: Promise<RerankProvider> | null = null;
+let cachedNonArabic: Promise<RerankProvider> | null = null;
 
 /**
  * True when an error looks like a transient network/fetch blip a retry can
@@ -75,28 +80,56 @@ export async function withFetchRetry<T>(
   throw lastErr;
 }
 
-export function getRerankProvider(): Promise<RerankProvider> {
+/**
+ * Resolve the active rerank provider based on the query language.
+ *
+ * For Arabic queries, returns ArabicRerankProvider — a hybrid of the
+ * default cross-encoder + Arabic lexical boost + stopword-title penalty.
+ * This avoids the case where the default English-only cross-encoder
+ * ranks a Wikipedia article about the preposition "من" above the
+ * canonical snippet that names the actual entity.
+ *
+ * For non-Arabic queries, returns the default TransformersRerankProvider
+ * (ms-marco-MiniLM-L-6-v2).
+ *
+ * Both providers share the same `modelId` for the underlying ONNX cross-
+ * encoder, so the model cache is reused.
+ */
+export function getRerankProvider(query?: string): Promise<RerankProvider> {
+  const useArabic = query ? isArabicQuery(query) : false;
+  const cached = useArabic ? cachedArabic : cachedNonArabic;
   if (cached) return cached;
-  cached = import('../search/reranker/transformers-rerank-provider.js')
+
+  const initializing = (useArabic
+    ? import('../search/reranker/arabic-rerank-provider.js')
+    : import('../search/reranker/transformers-rerank-provider.js')
+  )
     .then(async (m) => {
-      const p = new m.TransformersRerankProvider();
-      await withFetchRetry(() => p.warmup());
+      const Provider = useArabic
+        ? (m as { ArabicRerankProvider: new () => RerankProvider }).ArabicRerankProvider
+        : (m as { TransformersRerankProvider: new () => RerankProvider }).TransformersRerankProvider;
+      const provider = new Provider();
+      await withFetchRetry(() => provider.warmup?.() ?? Promise.resolve());
       log.info('rerank provider ready', {
         provider: 'rerank',
-        impl: 'transformers',
-        modelId: p.modelId,
+        impl: useArabic ? 'arabic-hybrid' : 'transformers',
+        modelId: provider.modelId,
       });
-      return p;
+      return provider;
     })
     .catch((err) => {
-      cached = null;
+      if (useArabic) cachedArabic = null;
+      else cachedNonArabic = null;
       throw err;
     });
-  return cached;
+  if (useArabic) cachedArabic = initializing;
+  else cachedNonArabic = initializing;
+  return initializing;
 }
 
 export function _resetRerankProviderForTest(): void {
-  cached = null;
+  cachedArabic = null;
+  cachedNonArabic = null;
 }
 
 // Best-effort disposal of the cached rerank provider's native resources.

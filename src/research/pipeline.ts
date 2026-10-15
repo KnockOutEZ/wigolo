@@ -8,6 +8,7 @@ import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { classifyUrlShape, classifyScoreFloor, queryContentTerms, gateContent } from './source-validation.js';
+import { preprocessQueryForSearch } from '../search/query.js';
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';

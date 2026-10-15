@@ -1,5 +1,43 @@
+import { cleanQueryForSearch, isArabicQuery } from "./arabic/query-cleaner.js";
+
 const MAX_QUERY_LENGTH = 200;
 const CLAUSE_SEPARATORS = ['. ', '? ', '! ', '; ', ', and ', ', or ', ' - ', ' — '];
+
+/**
+ * Preprocess a user query before it is sent to the search engines.
+ *
+ * For Arabic queries, this strips leading question scaffolding ("من هو",
+ * "حدثني عن", ...), trailing question scaffolding ("وماذا تعرف عنها؟",
+ * ...), and common Arabic stopwords from the body. The cleaned string is
+ * what gets sent to Bing/DuckDuckGo/etc. The original wording is
+ * preserved on the request for downstream display and for the canonical
+ * extractor (which needs to see the user's actual epithet).
+ *
+ * For non-Arabic queries, this is a no-op pass-through.
+ *
+ * Examples:
+ *   "من هي ذات النطاقين وماذا تعرف عنها؟"
+ *     → "ذات النطاقين"
+ *   "من هو بطل الحرب والسلام؟"
+ *     → "بطل الحرب والسلام"
+ *   "ما هي عاصمة فرنسا؟"
+ *     → "عاصمة فرنسا"
+ *   "machine learning papers 2024"
+ *     → "machine learning papers 2024" (no change, not Arabic)
+ */
+export function preprocessQueryForSearch(query: string): {
+  searchQuery: string;
+  subject: string;
+  isArabic: boolean;
+  changed: boolean;
+} {
+  const isArabic = isArabicQuery(query);
+  if (!isArabic) {
+    return { searchQuery: query, subject: query, isArabic: false, changed: false };
+  }
+  const cleaned = cleanQueryForSearch(query);
+  return { ...cleaned, isArabic: true };
+}
 
 export function decomposeQuery(query: string): string[] {
   if (query.length <= MAX_QUERY_LENGTH) {

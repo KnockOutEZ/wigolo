@@ -59,7 +59,7 @@ export interface FoldOptions {
 
 function defaultRerankFn(): RerankFn {
   return async (query, candidates) => {
-    const provider = await getRerankProvider();
+    const provider = await getRerankProvider(query);
     const scored = await provider.rerank(query, candidates, candidates.length);
     const m = new Map<string, number>();
     for (const s of scored) m.set(s.id, s.score);

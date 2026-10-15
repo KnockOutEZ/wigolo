@@ -17,6 +17,7 @@ import type {
 } from '../../types.js';
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
+import { preprocessQueryForSearch } from '../query.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
@@ -157,7 +158,7 @@ export class CoreSearchProvider implements SearchProvider {
 
   async search(input: SearchInput, ctx: SearchContext): Promise<StageResult<SearchOutput>> {
     const isArray = Array.isArray(input.query);
-    const queries = isArray
+    let queries = isArray
       ? normalizeArrayQueries(input.query as string[])
       : typeof input.query === 'string' && input.query.trim() !== ''
         ? [input.query.trim()]
@@ -187,7 +188,11 @@ export class CoreSearchProvider implements SearchProvider {
 
     // Display query is the first input string (back-compat) so consumers can
     // still echo what was asked; arrays just join with " | " for clarity.
-    const displayQuery = isArray ? (input.query as string[]).filter(Boolean).join(' | ') : queries[0];
+    const originalDisplayQuery = isArray ? (input.query as string[]).filter(Boolean).join(' | ') : queries[0];
+    // For Arabic queries, preprocess the query before sending to engines, while
+    // retaining the original wording for display and canonical extraction.
+    queries = queries.map((q) => preprocessQueryForSearch(q).searchQuery);
+    const displayQuery = originalDisplayQuery;
     // Cache key includes filter params (sub-ticket 2.3) — without this,
     // include_domains / max_results / exclude_domains are silently ignored
     // on cache hits.

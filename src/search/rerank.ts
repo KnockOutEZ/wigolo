@@ -20,7 +20,7 @@ export async function rerankResults(
 
   if (config.reranker === 'onnx') {
     try {
-      const provider = await getRerankProvider();
+      const provider = await getRerankProvider(query);
       const candidates = results.map((r, i) => ({
         id: String(i),
         text: rerankInputText(r.title, r.snippet, r.url),
