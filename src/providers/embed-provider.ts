@@ -36,8 +36,8 @@ let cachedKey: string | null = null;
  * config requires a daemon restart.
  */
 export function getEmbedProvider(): Promise<EmbedProvider> {
-  const config = getConfig() as { embedding?: { model?: string } };
-  const requestedModel = config.embedding?.model || "fastembed";
+  const config = getConfig();
+  const requestedModel = config.embeddingModel === "multilingual" ? "multilingual" : "fastembed";
   if (cached && cachedKey === requestedModel) return cached;
 
   cached = (async () => {

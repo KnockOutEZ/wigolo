@@ -121,7 +121,7 @@ export class MultilingualEmbedProvider implements EmbedProvider {
       let tokenCount = 0;
       for (let s = 0; s < seqDim; s++) {
         // attention_mask: 1 = real token, 0 = padding.
-        if (attentionMask[b * seqDim + s] === 1) {
+        if (Number(attentionMask[b * seqDim + s]) === 1) {
           tokenCount++;
           for (let h = 0; h < hiddenDim; h++) {
             pooled[h] += hidden.data[b * seqDim * hiddenDim + s * hiddenDim + h];

@@ -113,13 +113,13 @@ Add to your wigolo config:
 ```json
 {
   "embedding": {
-    "model": "multilingual"   // or "fastembed" (default, English-only)
+    "model": "multilingual"
   },
-  "reranker": "onnx"          // unchanged — the Arabic fork auto-detects
-                              // Arabic queries and uses ArabicRerankProvider
-                              // for them
+  "reranker": "onnx"
 }
 ```
+
+Notes: `model` accepts `"multilingual"` (Arabic-aware) or `"fastembed"` (default, English-only). The Arabic fork auto-detects Arabic queries and uses `ArabicRerankProvider` for them, so no change to `reranker` is required.
 
 ## Latency impact
 

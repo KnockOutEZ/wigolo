@@ -33,7 +33,8 @@ export interface RerankProvider {
   readonly modelId: string;
 }
 
-let cached: Promise<RerankProvider> | null = null;
+let cachedArabic: Promise<RerankProvider> | null = null;
+let cachedNonArabic: Promise<RerankProvider> | null = null;
 
 /**
  * True when an error looks like a transient network/fetch blip a retry can
@@ -95,10 +96,11 @@ export async function withFetchRetry<T>(
  * encoder, so the model cache is reused.
  */
 export function getRerankProvider(query?: string): Promise<RerankProvider> {
-  if (cached) return cached;
   const useArabic = query ? isArabicQuery(query) : false;
+  const cached = useArabic ? cachedArabic : cachedNonArabic;
+  if (cached) return cached;
 
-  cached = (useArabic
+  const initializing = (useArabic
     ? import('../search/reranker/arabic-rerank-provider.js')
     : import('../search/reranker/transformers-rerank-provider.js')
   )
@@ -116,14 +118,18 @@ export function getRerankProvider(query?: string): Promise<RerankProvider> {
       return provider;
     })
     .catch((err) => {
-      cached = null;
+      if (useArabic) cachedArabic = null;
+      else cachedNonArabic = null;
       throw err;
     });
-  return cached;
+  if (useArabic) cachedArabic = initializing;
+  else cachedNonArabic = initializing;
+  return initializing;
 }
 
 export function _resetRerankProviderForTest(): void {
-  cached = null;
+  cachedArabic = null;
+  cachedNonArabic = null;
 }
 
 // Best-effort disposal of the cached rerank provider's native resources.

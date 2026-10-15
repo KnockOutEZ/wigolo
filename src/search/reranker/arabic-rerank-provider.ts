@@ -48,7 +48,7 @@ const log = createLogger("reranker");
 // Helpers — tokenization & overlap
 // ---------------------------------------------------------------------------
 
-const ARABIC_TOKEN_RE = /[\u0621-\u064A\u0660-\u0669]+/g;
+const ARABIC_TOKEN_RE = /[\u0621-\u064A\u0660-\u0669A-Za-z0-9_]+/g;
 
 function tokenize(text: string): Set<string> {
   const normalized = normalizeArabic(text);
@@ -70,7 +70,7 @@ function jaccardOverlap(a: Set<string>, b: Set<string>): number {
 // question word + a Wikipedia suffix.
 // ---------------------------------------------------------------------------
 
-const STOPWORD_TITLE_RE = /^(?:من|ما|ماذا|كيف|أين|هو|هي|في|على|عن|مع)\b/i;
+const STOPWORD_TITLE_RE = /^(?:من|ما|ماذا|كيف|أين|هو|هي|في|على|عن|مع)(?=\s|$|\(|\)|\.|,|!|\?)/i;
 const WIKIPEDIA_SUFFIX_RE = /-?\s*(?:ويكيبيديا|Wikipedia|Wiktionary|قاموس)$/i;
 
 function titlePenalty(title: string): number {

@@ -48,7 +48,7 @@ function compactKey(text: string): string {
 // An Arabic name token: 2+ letters (excluding diacritics, which are already
 // stripped by normalizeArabic). Allow optional leading "ال" (the definite
 // article) since many historical names use it (e.g. "السادات").
-const NAME_TOKEN = "[إلأآا-ي]+";
+const NAME_TOKEN = "[\\u0621-\\u064A\\u0671]+";
 
 // 1-4 name tokens joined by spaces. Kept conservative to avoid matching
 // whole paragraphs. The leading word-boundary lookbehind is enforced by
@@ -72,13 +72,13 @@ const EPITHET_KEYWORDS = [
 ].join("|");
 
 // Copulas that link a name to an epithet in Pattern 1.
-const COPULAS = "(?:هو|هي|يُعتبر|تُعتبر|يعتبر|تعتبر|يعد|تعد|يُعد|تُعد|يُعرف|تُعرف)";
+const COPULAS = "(?:هو|هي|يُعتبر|تُعتبر|يعتبر|تعتبر|يعد|تعد|يُعد|تُعد|يُعرف|تُعرف|يعرف|تعرف)";
 
 // Relative pronouns for Pattern 3.
 const RELATIVE_PRONOUNS = "(?:الذي|التي|الذين|اللذان|اللتان|اللاتي|اللائي)";
 
 // "Known as" prefix for Pattern 5.
-const KNOWN_AS_PREFIX = "(?:تُعرف\\s+بـ?|يُعرف\\s+بـ?|تسمى\\s+بـ?|يطلق\\s+عليها\\s+اسم\\s+|يطلق\\s+عليه\\s+اسم\\s+)";
+const KNOWN_AS_PREFIX = "(?:تعرف\\s+ب|يعرف\\s+ب|تسمى\\s+ب|يطلق\\s+عليها\\s+اسم\\s+|يطلق\\s+عليه\\s+اسم\\s+)";
 
 // ---------------------------------------------------------------------------
 // Patterns. Each pattern is anchored at a word boundary by a negative
@@ -295,7 +295,7 @@ export function extractCanonicalCandidates(
   const candidates: ExtractedCanonical[] = [];
   const seenKeys = new Set<string>();
 
-  for (let i = 0; i < results.length && candidates.length < max; i++) {
+  for (let i = 0; i < results.length; i++) {
     const result = results[i];
     // Strip diacritics before matching — Arabic copulas sometimes come
     // with harakat (e.g. "يُعتبر" vs "يعتبر") and the regex alternation
@@ -351,10 +351,25 @@ export function extractCanonicalCandidates(
           resultIndex: i,
           coOccurs: true,
         });
-        if (candidates.length >= max) break;
       }
     }
   }
 
-  return candidates;
+  // Sort by documented specificity order: patronymic, name_is_epithet,
+  // known_as, year_range, then relative_clause. resultIndex breaks ties.
+  const specificity: Record<string, number> = {
+    patronymic_chain: 0,
+    name_is_epithet: 1,
+    is_considered_name_epithet: 1,
+    known_as_name: 2,
+    name_year_range: 3,
+    name_relative_clause: 4,
+  };
+  candidates.sort((a, b) => {
+    const sa = specificity[a.pattern] ?? 99;
+    const sb = specificity[b.pattern] ?? 99;
+    if (sa !== sb) return sa - sb;
+    return a.resultIndex - b.resultIndex;
+  });
+  return candidates.slice(0, max);
 }
