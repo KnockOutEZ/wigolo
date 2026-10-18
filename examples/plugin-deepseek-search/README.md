@@ -14,9 +14,7 @@ wigolo plugin validate
 ```
 
 `DEEPSEEK_API_KEY` must be set in the server environment
-(`WIGOLO_DEEPSEEK_ENDPOINT` overrides the endpoint). The plugin loads and
-registers like any other engine, but no backend dispatches plugin engines
-today: `core` builds its pool from built-in verticals, and the `searxng` and
-`hybrid` tiers fan out only the engines their own path constructs. Expect the
-plugin to appear in startup logs and in `wigolo plugin list`, not in
-`engines_used`.
+(`WIGOLO_DEEPSEEK_ENDPOINT` overrides the endpoint). Plugin engines join the
+fan-out on the `searxng` and `hybrid` tiers, where every registered engine gets
+at least one query per search. The default `core` backend builds its pool from
+built-in verticals and does not include plugin engines.
