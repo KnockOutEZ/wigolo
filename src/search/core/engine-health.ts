@@ -55,6 +55,7 @@ interface KeyRequirement {
 const KEY_REQUIRED: Record<string, KeyRequirement> = {
   brave: { envVar: 'BRAVE_API_KEY', registeredWithoutKey: false },
   'brave-image': { envVar: 'BRAVE_API_KEY', registeredWithoutKey: false },
+  deepseek: { envVar: 'DEEPSEEK_API_KEY', registeredWithoutKey: false },
   'github-code': { envVar: 'WIGOLO_GITHUB_TOKEN', registeredWithoutKey: true },
 };
 
@@ -79,8 +80,10 @@ function noteFor(engineName: string): string | undefined {
 function isKeyAvailable(engineName: string): boolean {
   const req = KEY_REQUIRED[engineName];
   if (!req) return true;
-  // Brave uses BRAVE_API_KEY which the config layer surfaces as braveApiKey.
+  // Brave and DeepSeek use keys the config layer surfaces as
+  // braveApiKey / deepseekApiKey.
   if (req.envVar === 'BRAVE_API_KEY') return !!getConfig().braveApiKey;
+  if (req.envVar === 'DEEPSEEK_API_KEY') return !!getConfig().deepseekApiKey;
   // Generic env-var check for everything else.
   return typeof process.env[req.envVar] === 'string' && process.env[req.envVar]!.length > 0;
 }

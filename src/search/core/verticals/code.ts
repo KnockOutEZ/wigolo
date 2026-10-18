@@ -4,6 +4,7 @@ import { MdnEngine } from '../../engines/mdn.js';
 import { DevDocsEngine } from '../../engines/devdocs.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { BraveEngine } from '../../engines/brave.js';
+import { DeepseekEngine } from '../../engines/deepseek.js';
 import { CratesIoEngine } from '../../engines/crates-io.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
@@ -54,6 +55,15 @@ export function getCodeEngines(): EngineEntry[] {
   if (getConfig().braveApiKey) {
     entries.push({
       engine: wrapWithRetryAndBreaker(new BraveEngine()),
+      weight: 1.0,
+      supportsDateFilter: false,
+      quality: 'medium',
+    });
+  }
+
+  if (getConfig().deepseekApiKey) {
+    entries.push({
+      engine: wrapWithRetryAndBreaker(new DeepseekEngine()),
       weight: 1.0,
       supportsDateFilter: false,
       quality: 'medium',

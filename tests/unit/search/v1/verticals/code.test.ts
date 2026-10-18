@@ -7,20 +7,32 @@ import { _resetBreakersForTest } from '../../../../../src/search/core/engine-bas
 
 describe('getCodeEngines', () => {
   const originalBraveKey = process.env.BRAVE_API_KEY;
+  const originalDeepseekKey = process.env.DEEPSEEK_API_KEY;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     delete process.env.BRAVE_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
     _resetCodeEnginesForTest();
     _resetBreakersForTest();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (originalBraveKey === undefined) {
       delete process.env.BRAVE_API_KEY;
     } else {
       process.env.BRAVE_API_KEY = originalBraveKey;
     }
+    if (originalDeepseekKey === undefined) {
+      delete process.env.DEEPSEEK_API_KEY;
+    } else {
+      process.env.DEEPSEEK_API_KEY = originalDeepseekKey;
+    }
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
     _resetCodeEnginesForTest();
+    _resetBreakersForTest();
   });
 
   it('returns six entries by default (github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io)', () => {
@@ -46,6 +58,15 @@ describe('getCodeEngines', () => {
     _resetCodeEnginesForTest();
     const names = getCodeEngines().map((e) => e.engine.name).sort();
     expect(names).toContain('brave');
+  });
+
+  it('adds deepseek when DEEPSEEK_API_KEY is set', async () => {
+    process.env.DEEPSEEK_API_KEY = 'test-key';
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetCodeEnginesForTest();
+    const names = getCodeEngines().map((e) => e.engine.name).sort();
+    expect(names).toContain('deepseek');
   });
 
   it('memoizes — two calls return the same array reference', () => {

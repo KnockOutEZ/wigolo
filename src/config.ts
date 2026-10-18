@@ -114,6 +114,11 @@ export interface Config {
   validateLinks: boolean;
   respectRobotsTxt: boolean;
   braveApiKey: string | null;
+  /**
+   * DeepSeek search API key. When set, the deepseek adapter joins the general
+   * and code pools, the same opt-in shape as `braveApiKey`.
+   */
+  deepseekApiKey: string | null;
   /** GitHub API personal access token. When set, the github-code adapter
    * passes it as a Bearer token so search calls run authenticated. Lifts
    * the 10 req/min unauthed cap to 30 req/min, eliminates the most common
@@ -666,6 +671,7 @@ export function getConfig(): Config {
     validateLinks: envBool('VALIDATE_LINKS', true, settings, 'validateLinks'),
     respectRobotsTxt: envBool('RESPECT_ROBOTS_TXT', true, settings, 'respectRobotsTxt'),
     braveApiKey: envStr('BRAVE_API_KEY', null, settings, 'braveApiKey'),
+    deepseekApiKey: envStr('DEEPSEEK_API_KEY', null, settings, 'deepseekApiKey'),
     githubToken: envStr('WIGOLO_GITHUB_TOKEN', null, settings, 'githubToken'),
     logLevel: (envStr('LOG_LEVEL', 'info', settings, 'logLevel') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json', settings, 'logFormat') as Config['logFormat']),
