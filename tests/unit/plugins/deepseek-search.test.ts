@@ -205,6 +205,23 @@ describe('plugin deepseek search engine', () => {
     }
   });
 
+  it('always sends a request deadline', async () => {
+    const fetchImpl = fakeFetch({ results: [] });
+    await engineWith(fetchImpl).search('anything');
+
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('lets the caller override the request deadline', async () => {
+    const fetchImpl = fakeFetch({ results: [] });
+    await engineWith(fetchImpl).search('anything', { timeoutMs: 500 });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal.aborted).toBe(false);
+  });
+
   it('drops a result without a url and keeps the rest', async () => {
     const fetchImpl = fakeFetch({
       results: [

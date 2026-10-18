@@ -65,7 +65,8 @@ export interface FanOutResult {
  * Every engine gets at least one query so no engine is dropped from the pool.
  * Above that floor, each engine gets a share of TASK_BUDGET_PER_ENGINE tasks
  * scaled by the pool size, which keeps the total task count bounded as the
- * engine pool or the query list grows.
+ * engine pool or the query list grows. The bound is explicit:
+ * total tasks <= engines.length * TASK_BUDGET_PER_ENGINE.
  */
 export function boundEngineQueries(engines: SearchEngine[], queryCount: number): number[] {
   const budget = Math.max(queryCount, engines.length * TASK_BUDGET_PER_ENGINE);

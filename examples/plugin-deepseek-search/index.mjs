@@ -1,10 +1,14 @@
 // DeepSeek search-engine plugin for wigolo.
 //
-// The API accepts only `query`, `count`, and `need_content`. wigolo's
-// `maxResults` maps to `count` and `options.timeoutMs` bounds the request. The
-// remaining SearchEngineOptions (language, fromDate, toDate, includeDomains,
+// The API accepts only query, count, and need_content. wigolo's maxResults maps
+// to count and options.timeoutMs bounds the request. The remaining
+// SearchEngineOptions (language, fromDate, toDate, includeDomains,
 // excludeDomains, country, timeRange, category) have no DeepSeek equivalent and
 // are ignored. Content is never requested: wigolo fetches pages itself.
+
+// Matches wigolo's own FETCH_TIMEOUT_MS default, so a caller that passes no
+// timeout still gets a deadline instead of hanging on a stalled socket.
+const DEFAULT_TIMEOUT_MS = 10000;
 
 function asString(value) {
   return typeof value === 'string' ? value : '';
@@ -16,7 +20,7 @@ function clampCount(value) {
 }
 
 function abortSignal(timeout) {
-  return typeof timeout === 'number' && timeout > 0 ? AbortSignal.timeout(timeout) : undefined;
+  return AbortSignal.timeout(timeout);
 }
 
 function toResult(item, title, url) {
@@ -86,7 +90,7 @@ export function createDeepSeekEngine({
   fetchImpl = globalThis.fetch,
   endpoint = process.env.WIGOLO_DEEPSEEK_ENDPOINT ?? 'https://api.deepseek.com/v1/tools/search',
   key = process.env.DEEPSEEK_API_KEY,
-  timeoutMs,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   return {
     name: 'deepseek',
