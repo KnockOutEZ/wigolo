@@ -8,6 +8,11 @@ const log = createLogger('search');
 
 const RRF_K = 60;
 
+// Per-engine query allowance used by {@link boundEngineQueries}. Multi-hop
+// decomposition multiplies queries by engines, so the allowance keeps the
+// total task count near this level per engine instead of growing unbounded.
+const TASK_BUDGET_PER_ENGINE = 3;
+
 export function normalizeQueries(queries: string[]): string[] {
   try {
     const config = getConfig();
@@ -54,6 +59,20 @@ export interface FanOutResult {
   errors: string[];
 }
 
+/**
+ * How many queries each engine receives in one fan-out.
+ *
+ * Every engine gets at least one query so no engine is dropped from the pool.
+ * Above that floor, each engine gets a share of TASK_BUDGET_PER_ENGINE tasks
+ * scaled by the pool size, which keeps the total task count bounded as the
+ * engine pool or the query list grows.
+ */
+export function boundEngineQueries(engines: SearchEngine[], queryCount: number): number[] {
+  const budget = Math.max(queryCount, engines.length * TASK_BUDGET_PER_ENGINE);
+  const perEngine = Math.max(1, Math.min(queryCount, Math.ceil(budget / engines.length)));
+  return engines.map(() => perEngine);
+}
+
 export async function fanOutSearch(
   queries: string[],
   engines: SearchEngine[],
@@ -85,17 +104,18 @@ export async function fanOutSearch(
       category: options.category,
     };
 
-    // Q9-followup: when multi-hop decomposition produced ≥3 sub-queries,
-    // cap engines per query to keep total fan-out tasks bounded
-    // (3 entities × 3 engines × variants → wall blows past 180s).
-    const effEngines = queries.length >= 3 && engines.length > 2
-      ? engines.slice(0, 2)
-      : engines;
+    // Bound the total fan-out while keeping EVERY engine in the pool. The
+    // earlier rule (3+ queries => engines.slice(0, 2)) dropped the engine
+    // tail — plugin engines register last, so they never ran under auto
+    // multi-query expansion. Each engine still gets at least one query, so
+    // coverage no longer depends on registration order.
+    const engineQueryCounts = boundEngineQueries(engines, queries.length);
 
     const tasks: Array<{ engine: SearchEngine; query: string }> = [];
-    for (const engine of effEngines) {
-      for (const query of queries) {
-        tasks.push({ engine, query });
+    for (let i = 0; i < engines.length; i++) {
+      const perEngine = engineQueryCounts[i];
+      for (let j = 0; j < perEngine; j++) {
+        tasks.push({ engine: engines[i], query: queries[j] });
       }
     }
 
