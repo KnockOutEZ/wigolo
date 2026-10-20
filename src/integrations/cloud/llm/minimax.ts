@@ -111,7 +111,7 @@ async function runOnce(
   );
   const message = response.choices?.[0]?.message;
   const content = message?.content;
-  if (!content) {
+  if (!message || typeof content !== 'string' || content.length === 0) {
     throw new Error('minimax: empty content in response');
   }
   let values: Record<string, unknown>;
