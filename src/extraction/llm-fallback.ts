@@ -4,6 +4,7 @@ import { callOpenAI } from '../integrations/cloud/llm/openai.js';
 import { callGemini } from '../integrations/cloud/llm/gemini.js';
 import { callGroq } from '../integrations/cloud/llm/groq.js';
 import { callMiniMax } from '../integrations/cloud/llm/minimax.js';
+import { resolveModel } from '../integrations/cloud/llm/model-select.js';
 import {
   ensureLLMCacheTable,
   insertLLMCache,
@@ -78,7 +79,10 @@ export async function extractWithLLM(
   const prompt = buildPrompt(input);
   const promptHash = hashPrompt(prompt);
   const schemaHash = hashSchema(input.jsonSchema);
-  const modelId = `${provider}:default`;
+  // Keep MiniMax defaults and explicit models in separate cache entries.
+  const modelId = provider === 'minimax'
+    ? `${provider}:${resolveModel(provider)}`
+    : `${provider}:default`;
 
   ensureLLMCacheTable();
   const cached = lookupLLMCache(modelId, promptHash, schemaHash);

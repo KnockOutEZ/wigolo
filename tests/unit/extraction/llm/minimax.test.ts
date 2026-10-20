@@ -31,7 +31,7 @@ describe('resolveMiniMaxBaseUrl', () => {
 
   it('selects the CN endpoint when WIGOLO_MINIMAX_REGION=cn_zh', () => {
     expect(resolveMiniMaxBaseUrl({ WIGOLO_MINIMAX_REGION: 'cn_zh' })).toBe(
-      'https://api.minimaxi.com/v1',
+      'https://api.minimax.cn/v1',
     );
   });
 
@@ -55,13 +55,13 @@ describe('resolveMiniMaxBaseUrl', () => {
 });
 
 describe('minimax model metadata', () => {
-  it('exposes MiniMax-M3 as the default model', () => {
-    expect(DEFAULT_MODEL).toBe('MiniMax-M3');
-    expect(providerDefaultModel('minimax')).toBe('MiniMax-M3');
+  it('exposes MiniMax-M3.1-Flash as the default model', () => {
+    expect(DEFAULT_MODEL).toBe('MiniMax-M3.1-Flash');
+    expect(providerDefaultModel('minimax')).toBe('MiniMax-M3.1-Flash');
   });
 
-  it('recognizes both MiniMax-M3 and MiniMax-M2.7', () => {
-    expect(MINIMAX_MODELS).toEqual(['MiniMax-M3', 'MiniMax-M2.7']);
+  it('offers Flash first and M3 as the other ordinary choice', () => {
+    expect(MINIMAX_MODELS).toEqual(['MiniMax-M3.1-Flash', 'MiniMax-M3']);
   });
 });
 
@@ -79,13 +79,13 @@ describe('callMiniMax', () => {
     expect(out.model).toBe('MiniMax-M3');
   });
 
-  it('defaults to MiniMax-M3 and uses json_object response_format', async () => {
+  it('defaults to MiniMax-M3.1-Flash and uses json_object response_format', async () => {
     create.mockResolvedValue({
       choices: [{ message: { content: '{"price":"$1"}' } }],
-      model: 'MiniMax-M3',
+      model: 'MiniMax-M3.1-Flash',
     });
     await callMiniMax({ prompt: 'p', jsonSchema: schema }, 'k');
-    expect(create.mock.calls[0][0].model).toBe('MiniMax-M3');
+    expect(create.mock.calls[0][0].model).toBe('MiniMax-M3.1-Flash');
     expect(create.mock.calls[0][0].response_format).toEqual({ type: 'json_object' });
   });
 

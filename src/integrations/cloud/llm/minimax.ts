@@ -13,19 +13,20 @@
 import OpenAI from 'openai';
 import type { LLMCallOpts, LLMExtractResult } from './types.js';
 import { validateAgainstSchema, type ValidationError } from './validate.js';
+import { providerDefaultModel, resolveModel } from './model-select.js';
 
 /** Default text model when none is configured (WIGOLO_LLM_MODEL_MINIMAX / override). */
-export const DEFAULT_MODEL = 'MiniMax-M3';
+export const DEFAULT_MODEL = providerDefaultModel('minimax');
 
-/** MiniMax text models wigolo recognizes, highest-capability first. */
-export const MINIMAX_MODELS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+/** Ordinary MiniMax text choices, default first; explicit model IDs remain valid. */
+export const MINIMAX_MODELS = ['MiniMax-M3.1-Flash', 'MiniMax-M3'] as const;
 
 export type MiniMaxRegion = 'global_en' | 'cn_zh';
 
 /** OpenAI-compatible base URL per region. */
 export const MINIMAX_ENDPOINTS: Record<MiniMaxRegion, string> = {
   global_en: 'https://api.minimax.io/v1',
-  cn_zh: 'https://api.minimaxi.com/v1',
+  cn_zh: 'https://api.minimax.cn/v1',
 };
 
 export const DEFAULT_MINIMAX_REGION: MiniMaxRegion = 'global_en';
@@ -61,10 +62,10 @@ export async function callMiniMax(
   apiKey: string,
 ): Promise<LLMExtractResult> {
   const client = new OpenAI({ apiKey, baseURL: resolveMiniMaxBaseUrl() });
-  const model = opts.modelOverride ?? DEFAULT_MODEL;
+  const model = resolveModel('minimax', opts.modelOverride);
   const start = Date.now();
 
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'user', content: buildPrompt(opts.prompt, opts.jsonSchema) },
   ];
 
@@ -74,7 +75,8 @@ export async function callMiniMax(
     return done(first.values, first.responseModel ?? model, start);
   }
 
-  messages.push({ role: 'assistant', content: first.raw });
+  // Preserve reasoning fields returned by MiniMax when retrying validation.
+  messages.push(first.message);
   messages.push({ role: 'user', content: retryPrompt(errors) });
 
   const second = await runOnce(client, model, messages, opts.signal);
@@ -89,14 +91,14 @@ export async function callMiniMax(
 
 interface CallOnceResult {
   values: Record<string, unknown>;
-  raw: string;
+  message: OpenAI.Chat.Completions.ChatCompletionMessage;
   responseModel: string | undefined;
 }
 
 async function runOnce(
   client: OpenAI,
   model: string,
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   signal: AbortSignal | undefined,
 ): Promise<CallOnceResult> {
   const response = await client.chat.completions.create(
@@ -107,7 +109,8 @@ async function runOnce(
     },
     { signal },
   );
-  const content = response.choices?.[0]?.message?.content;
+  const message = response.choices?.[0]?.message;
+  const content = message?.content;
   if (!content) {
     throw new Error('minimax: empty content in response');
   }
@@ -117,7 +120,7 @@ async function runOnce(
   } catch (e) {
     throw new Error(`minimax: invalid JSON in response: ${(e as Error).message}`);
   }
-  return { values, raw: content, responseModel: response.model };
+  return { values, message, responseModel: response.model };
 }
 
 function buildPrompt(prompt: string, schema: Record<string, unknown>): string {

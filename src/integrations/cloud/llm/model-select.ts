@@ -11,7 +11,7 @@ const PROVIDER_DEFAULTS: Record<LLMProvider, string> = {
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.5-flash-lite',
   groq: 'llama-3.3-70b-versatile',
-  minimax: 'MiniMax-M3',
+  minimax: 'MiniMax-M3.1-Flash',
 };
 
 const PROVIDER_ENV: Record<LLMProvider, string> = {
