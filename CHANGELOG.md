@@ -4,6 +4,7 @@
 
 - docs: add commercial licensing terms (LICENSING.md); AGPL-3.0 unchanged.
 - feat(serve): print a one-line notice linking the commercial licensing terms when `wigolo serve` binds a non-loopback host; loopback binds and the MCP stdio path stay silent.
+- fix(search)!: the MCP `search` tool no longer emits a separate `[wigolo notice] …` text block before the JSON payload. The response is always a single JSON text block, and the synthesis warning moves into the payload as a `notice` field (replacing `warning`; combined with any existing `notice`), matching `format=stream_answer`. Callers that read `content[1]` or the `warning` field should read `content[0]` and `notice` instead. The REST API is unchanged.
 
 ## v0.2.0 — 2026-07-17
 
