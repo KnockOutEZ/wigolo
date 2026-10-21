@@ -102,6 +102,7 @@ vi.mock('../../../src/searxng/docker.js', () => ({
 vi.mock('../../../src/cache/store.js', () => ({
   getCachedContent: vi.fn().mockReturnValue(null),
   isExpired: vi.fn().mockReturnValue(false),
+  cacheContent: vi.fn(),
 }));
 
 // Avoid cold ONNX startup on every `connectClient()` — schema registration
@@ -118,6 +119,10 @@ vi.mock('../../../src/embedding/embed.js', () => ({
 async function connectClient() {
   const { initSubsystems, createMcpServer } = await import('../../../src/server.js');
   const subs = await initSubsystems();
+  subs.searchEngines.splice(0, subs.searchEngines.length, {
+    name: 'stub',
+    search: vi.fn().mockResolvedValue([]),
+  });
   const server = createMcpServer(subs);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -174,6 +179,42 @@ describe('diff + watch tool registration', () => {
       const watch = res.tools.find((t) => t.name === 'watch');
       expect(diff?.inputSchema?.type).toBe('object');
       expect(watch?.inputSchema?.type).toBe('object');
+    } finally {
+      await teardown();
+    }
+  });
+
+  it('tools/call agent delivers progress notifications before the final result', async () => {
+    const { client, teardown } = await connectClient();
+    try {
+      const progress: Array<{ progress: number; total?: number; message?: string }> = [];
+      const res = await client.callTool(
+        {
+          name: 'agent',
+          arguments: {
+            prompt: 'Read the example page title',
+            urls: ['https://example.com/'],
+            max_pages: 1,
+            stream: true,
+          },
+        },
+        undefined,
+        {
+          timeout: 10_000,
+          onprogress: (update) => progress.push(update),
+        },
+      );
+      const block = (res.content as Array<{ type: string; text: string }>)[0];
+      const payload = JSON.parse(block.text);
+
+      expect(res.isError).not.toBe(true);
+      expect(progress).toHaveLength(payload.steps.length);
+      expect(progress.map((update) => update.progress)).toEqual(
+        payload.steps.map((_: unknown, index: number) => index + 1),
+      );
+      expect(progress.map((update) => update.message)).toEqual(
+        payload.steps.map((step: { detail: string }) => step.detail),
+      );
     } finally {
       await teardown();
     }
