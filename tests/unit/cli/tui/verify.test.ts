@@ -74,9 +74,15 @@ describe('runVerify — not configured (D1 gate)', () => {
     process.env.WIGOLO_RERANKER = 'remote';
     process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
     resetConfig();
-    const result = await runVerify('/tmp/wigolo-data', new FakeReporter());
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
     expect(result.reranker).toBe('ok');
     expect(rerankMock).not.toHaveBeenCalled();
+    // The step must be started, or the TUI reporter silently drops its result.
+    const start = reporter.events.findIndex((e) => e.startsWith('start:reranker:'));
+    const done = reporter.events.findIndex((e) => e.startsWith('success:reranker:'));
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(done).toBeGreaterThan(start);
     delete process.env.WIGOLO_RERANK_API_BASE;
   });
   it('skips the searxng step entirely and never constructs SearxngProcess on the default core backend', async () => {

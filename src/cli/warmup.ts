@@ -307,9 +307,11 @@ async function installReranker(
     return {};
   }
   if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', 'Checking remote reranker');
     try {
       const provider = await getRerankProvider();
-      reporter.note(`Remote reranker configured (${provider.modelId}); no local model warmup needed`);
+      reporter.success('reranker', `remote configured (${provider.modelId}); no local model warmup needed`);
       return { reranker: 'ok' };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

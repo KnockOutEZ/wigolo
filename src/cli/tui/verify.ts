@@ -102,6 +102,8 @@ async function runRerankerProbe(
     return { state: 'ok' };
   }
   if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', RERANKER_LABEL);
     try {
       const provider = await getRerankProvider();
       reporter.success('reranker', `remote configured (${provider.modelId})`);
