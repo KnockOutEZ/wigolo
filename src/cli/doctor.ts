@@ -11,6 +11,7 @@ import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
+import { isNativeAbiMismatch } from '../util/native-abi.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { loadFeedConfig } from '../search/core/rss/feed-config.js';
@@ -968,7 +969,12 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   }
 
   checkCoreEmbeddings(dataDir);
-  await checkSqliteVec(dataDir);
+  if (await checkSqliteVec(dataDir)) {
+    // better-sqlite3 cannot load under this Node: the server cannot start
+    // either, and --fix cannot rebuild a native module for the user.
+    degraded = true;
+    nonFixableDegraded = true;
+  }
   checkCacheStats(dataDir);
   checkBackgroundQueue(dataDir);
   checkRssFeeds(dataDir);
@@ -1037,7 +1043,11 @@ function checkCoreEmbeddings(dataDir: string): void {
   }
 }
 
-async function checkSqliteVec(dataDir: string): Promise<void> {
+/**
+ * Returns true when the SQLite native module itself cannot load under the
+ * running Node (ABI mismatch, #220/#654) — a hard failure for the server.
+ */
+async function checkSqliteVec(dataDir: string): Promise<boolean> {
   out('');
   out('[wigolo doctor] Core sqlite-vec:');
   let opened = false;
@@ -1052,12 +1062,20 @@ async function checkSqliteVec(dataDir: string): Promise<void> {
       out('  extension:     not loaded (run warmup to load on next start)');
     }
   } catch (err) {
+    if (isNativeAbiMismatch(err)) {
+      // The full explanation (running Node, built-for ABI, fixes) is the
+      // actionable part — print every line, not just the first.
+      out('  sqlite:        FAILED — native module built for a different Node.js');
+      for (const line of (err as Error).message.split('\n')) out(`    ${line}`);
+      return true;
+    }
     out(`  extension:     (check failed: ${errorLine(err)})`);
   } finally {
     if (opened) {
       try { closeDatabase(); } catch { /* ignore */ }
     }
   }
+  return false;
 }
 
 function checkCacheStats(dataDir: string): void {

@@ -61,6 +61,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { runDoctor, errorLine, browserStatusLabel } from '../../../src/cli/doctor.js';
 import { initDatabase } from '../../../src/cache/db.js';
+import { explainNativeLoadError } from '../../../src/util/native-abi.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
 
 function okProc(stdout = ''): ReturnType<typeof spawnSync> {
@@ -386,6 +387,27 @@ describe('runDoctor', () => {
       await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toContain(`extension:     (check failed: ${long})`);
       expect(outBuffer).not.toContain('at stack frame');
+    });
+
+    it('surfaces a better-sqlite3 Node ABI mismatch in full and degrades (#220/#654)', async () => {
+      const raw = new Error(
+        "The module '/opt/x/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\n" +
+          'was compiled against a different Node.js version using\n' +
+          'NODE_MODULE_VERSION 137. This version of Node.js requires\n' +
+          'NODE_MODULE_VERSION 127.',
+      );
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw explainNativeLoadError(raw);
+      });
+      const code = await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toContain('sqlite:        FAILED — native module built for a different Node.js');
+      expect(outBuffer).toContain(`Running: Node ${process.version}`);
+      expect(outBuffer).toContain(process.execPath);
+      expect(outBuffer).toContain('compiled for NODE_MODULE_VERSION 137');
+      expect(outBuffer).toContain('cd "/opt/x" && npm rebuild better-sqlite3');
+      expect(outBuffer).toContain('npx -y wigolo');
+      expect(code).toBe(1);
+      expect(outBuffer).toMatch(/Overall: DEGRADED/);
     });
 
     it('gives a cold `npx playwright --version` 30s before timing out', async () => {
