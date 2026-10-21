@@ -41,6 +41,15 @@ describe('detectRareTerms', () => {
     expect(phrase).not.toBeNull();
     expect(phrase!.length).toBeLessThanOrEqual(32);
   });
+
+  it('emits a bounded concept phrase for an unsegmented CJK query', () => {
+    const phrase = detectRareTerms('北京人工智能大会最新消息').conceptPhrase;
+
+    expect(phrase).not.toBeNull();
+    expect(phrase).toContain('人工');
+    expect(phrase).toContain('智能');
+    expect(phrase!.length).toBeLessThanOrEqual(32);
+  });
 });
 
 describe('rareTermFactor', () => {
@@ -75,6 +84,20 @@ describe('rareTermFactor', () => {
   it('returns 1.0 for plain queries with no rare terms', () => {
     expect(rareTermFactor({ title: 'x', url: 'https://x.com', snippet: 'y' }, detectRareTerms('best laptop'))).toBe(1);
   });
+
+  it('boosts a contiguous CJK topic match above unrelated calendar content', () => {
+    const rare = detectRareTerms('北京人工智能大会最新消息');
+    const relevant = rareTermFactor(
+      { title: '北京人工智能大会发布最新成果', url: 'https://example.com/ai', snippet: '产业动态' },
+      rare,
+    );
+    const irrelevant = rareTermFactor(
+      { title: '今日黄历与北京天气预报', url: 'https://example.com/calendar', snippet: '出行指数' },
+      rare,
+    );
+
+    expect(relevant).toBeGreaterThan(irrelevant);
+  });
 });
 
 describe('isRareTermMiss', () => {
@@ -89,6 +112,19 @@ describe('isRareTermMiss', () => {
   it('is a miss when a concept-phrase query result has phrase run < 2', () => {
     expect(isRareTermMiss({ title: 'Reciprocal (math)', url: 'https://w.org', snippet: 'the reciprocal of x' }, phrase)).toBe(true);
     expect(isRareTermMiss({ title: 'Reciprocal Rank Fusion', url: 'https://e.com', snippet: 'how RRF works' }, phrase)).toBe(false);
+  });
+
+  it('distinguishes a CJK topic hit from unrelated calendar content', () => {
+    const cjk = detectRareTerms('北京人工智能大会最新消息');
+
+    expect(isRareTermMiss(
+      { title: '北京人工智能大会发布最新成果', url: 'https://e.com/ai', snippet: '产业动态' },
+      cjk,
+    )).toBe(false);
+    expect(isRareTermMiss(
+      { title: '今日黄历与北京天气预报', url: 'https://e.com/calendar', snippet: '出行指数' },
+      cjk,
+    )).toBe(true);
   });
 
   it('is never a miss for a single-token query with no rare terms', () => {
