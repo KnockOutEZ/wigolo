@@ -9,11 +9,10 @@ import { httpFetch } from '../../src/fetch/http-client.js';
  * dispatcher was declared outside the loop, so the literal hop inherited the previous hop's Agent.
  *
  * Be straight about what this test is: a REGRESSION GUARD, not a discriminating test. The buggy
- * version passes it too, because `createPinnedLookup` defers to real DNS whenever the host it is
- * asked for is not the host it was built for — so the inherited Agent behaved like a plain one and
- * produced the right answer by accident. That fallthrough is what kept this a correctness problem
- * rather than a routing one. The test is here so the mixed chain stays exercised, since nothing
- * else in the suite covers it.
+ * version passes it too: `net.connect` never calls the `lookup` hook for an IP-literal host, so an
+ * inherited pinned Agent dials the literal exactly as a plain one would and produces the right
+ * answer by accident. The test is here so the mixed chain stays exercised, since nothing else in
+ * the suite covers it.
  */
 describe('redirect chains mixing named and IP-literal hops', () => {
   let server: Server;
