@@ -1,5 +1,4 @@
 import { Agent, type buildConnector } from 'undici';
-import { lookup as nodeLookup } from 'node:dns';
 
 /**
  * Pin a connection to the addresses SSRF validation already cleared.
@@ -43,24 +42,21 @@ export interface ValidatedAddress {
  *
  * Two behaviours worth stating, because both are security-relevant:
  *
- *  - **A different hostname is never pinned.** If the socket asks for a host we did not validate,
- *    we fall through to real DNS rather than handing back this host's addresses. Returning them
- *    would send a request for host B to host A's IP, which is a worse bug than the one being
- *    fixed. In practice the caller builds a fresh hook per validated host, so this is a guard
- *    against future misuse rather than a path we expect to hit.
- *  - **An empty address set is never pinned.** Callers must not construct this with `[]`; if they
- *    do, we fall back to real DNS instead of failing the connection in a way that looks like a
- *    network error.
+ *  - **A different hostname is never pinned, and never resolved.** If the socket asks for a host
+ *    we did not validate, we fail with ENOTFOUND. Handing back this host's addresses would send a
+ *    request for host B to host A's IP; falling through to real DNS would reopen the rebinding
+ *    window for B. In practice the caller builds a fresh hook per validated host, so this is a
+ *    guard against future misuse rather than a path we expect to hit.
+ *  - **An empty address set fails closed.** Callers must not construct this with `[]`; if they
+ *    do, the connection fails with ENOTFOUND rather than resolving an unvalidated address.
  */
-export function createPinnedLookup(
-  hostname: string,
-  addresses: ValidatedAddress[],
-  realLookup: typeof nodeLookup = nodeLookup,
-): PinnedLookup {
+export function createPinnedLookup(hostname: string, addresses: ValidatedAddress[]): PinnedLookup {
   return (host, options, callback) => {
     if (host !== hostname || addresses.length === 0) {
-      // Not ours to pin — defer to the real resolver.
-      (realLookup as unknown as PinnedLookup)(host, options, callback);
+      // Not ours to pin, and an unvalidated resolution is exactly what this hook exists to stop.
+      const err: NodeJS.ErrnoException = new Error(`no validated address for ${host}`);
+      err.code = 'ENOTFOUND';
+      callback(err, '');
       return;
     }
 

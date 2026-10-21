@@ -79,11 +79,7 @@ describe('pinning changes which address the socket dials (issue #207)', () => {
     const before = { ...hits };
     const agent = new Agent({
       connect: {
-        lookup: createPinnedLookup(
-          'pinned.test',
-          [{ address: VALIDATED_IP, family: 4 }],
-          rebindingLookup,
-        ),
+        lookup: createPinnedLookup('pinned.test', [{ address: VALIDATED_IP, family: 4 }]),
       } as never,
     });
     const res = await request(`http://pinned.test:${port}/`, { dispatcher: agent });
