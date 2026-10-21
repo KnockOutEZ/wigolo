@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wigolo-crewai"
-version = "0.2.1"
+version = "0.3.0"
 description = "CrewAI integration for wigolo — local-first web intelligence tools"
 readme = "README.md"
 license = "AGPL-3.0-only"
