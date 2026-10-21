@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePythonExe } from '../python-env.js';
-import { probeBrowser } from '../fetch/browser-probe.js';
+import { probeBrowser, type BrowserName, type BrowserProbeResult } from '../fetch/browser-probe.js';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
@@ -94,7 +94,7 @@ function checkDocker(): { ok: boolean; version?: string; cli?: string } {
   return { ok: true, version: (r.stdout || '').trim(), cli };
 }
 
-async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string }> {
+async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string; probes: Record<BrowserName, BrowserProbeResult> }> {
   let installed = false;
   let version: string | undefined;
   try {
@@ -131,7 +131,18 @@ async function checkPlaywright(): Promise<{ installed: boolean; version?: string
     chromiumPath: chromiumProbe.execPath || undefined,
     chromiumOnDisk: chromiumProbe.onDisk,
     chromiumError: chromiumProbe.error,
+    probes: { chromium: chromiumProbe, firefox: firefoxProbe, webkit: webkitProbe },
   };
+}
+
+/**
+ * Short per-browser status for the Browsers line. A binary that is on disk but
+ * fails its launch smoke-test is a broken install, not a missing one (#653),
+ * so the two are worded differently.
+ */
+export function browserStatusLabel(probe: BrowserProbeResult): string {
+  if (probe.launchable) return 'OK';
+  return probe.onDisk ? 'installed, failed to launch' : 'not installed';
 }
 
 // Passive cache-presence probe for the cross-encoder ML reranker. The model
@@ -530,7 +541,11 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
     name: 'browser',
     status: pw.browsers.chromium ? 'ok' : 'failed',
     fixable: true,
-    detail: pw.browsers.chromium ? 'chromium launchable' : 'chromium missing',
+    detail: pw.browsers.chromium
+      ? 'chromium launchable'
+      : pw.chromiumOnDisk
+        ? `chromium installed but failed to launch: ${errorLine(pw.chromiumError ?? 'unknown error')}`
+        : 'chromium not installed',
   });
 
   const emb = checkFastembedCache(dataDir);
@@ -695,7 +710,14 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   const pw = await checkPlaywright();
   out('[wigolo doctor] Browser engine:');
   out(`  Installation:  ${pw.installed ? `installed${pw.version ? ` (v${pw.version})` : ''}` : 'not installed'}`);
-  out(`  Browsers:      chromium ${pw.browsers.chromium ? 'OK' : 'missing'}  firefox ${pw.browsers.firefox ? 'OK' : 'missing'}  webkit ${pw.browsers.webkit ? 'OK' : 'missing'}`);
+  const browserNames: BrowserName[] = ['chromium', 'firefox', 'webkit'];
+  out(`  Browsers:      ${browserNames.map((b) => `${b} ${browserStatusLabel(pw.probes[b])}`).join('  ')}`);
+  for (const b of browserNames) {
+    const probe = pw.probes[b];
+    if (probe.onDisk && !probe.launchable) {
+      out(`  ${`${b}:`.padEnd(15)} failed to launch — ${errorLine(probe.error ?? 'unknown error')}`);
+    }
+  }
   if (pw.chromiumPath) {
     const onDiskNote = pw.browsers.chromium
       ? ''

@@ -293,6 +293,28 @@ describe('doctor — broken browser still degrades (lazy ≠ blind)', () => {
     expect(code).toBe(1);
     expect(outBuffer).toMatch(/will not launch|Overall: DEGRADED/i);
   });
+
+  it('reports the browser check as installed-but-failed-to-launch with the reason, not missing', async () => {
+    vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+      const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+      if (joined.includes('--version')) return okProc('1.50.0');
+      return okProc();
+    });
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readdirSync).mockReturnValue(['model'] as never);
+    vi.mocked(readFileSync).mockReturnValue('');
+    const { chromium } = await import('playwright');
+    // JSON mode probes the browser more than once (human pass + cold checks).
+    vi.mocked(chromium.launch)
+      .mockRejectedValueOnce(new Error('crashed on launch') as never)
+      .mockRejectedValueOnce(new Error('crashed on launch') as never);
+
+    await runDoctor('/tmp/.wigolo-broken', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    const bc = parsed.checks.find((c: { name: string }) => c.name === 'browser');
+    expect(bc.status).toBe('failed');
+    expect(bc.detail).toBe('chromium installed but failed to launch: crashed on launch');
+  });
 });
 
 describe('doctor — data-dir writability probe', () => {

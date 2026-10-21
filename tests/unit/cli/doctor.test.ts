@@ -59,7 +59,7 @@ vi.mock('../../../src/security/key-store.js', async () => {
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { runDoctor, errorLine } from '../../../src/cli/doctor.js';
+import { runDoctor, errorLine, browserStatusLabel } from '../../../src/cli/doctor.js';
 import { initDatabase } from '../../../src/cache/db.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
 
@@ -146,7 +146,8 @@ describe('runDoctor', () => {
     });
     const code = await runDoctor('/tmp/.wigolo');
     expect(code).toBe(0);
-    expect(outBuffer).toContain('chromium missing');
+    expect(outBuffer).toContain('chromium not installed');
+    expect(outBuffer).not.toContain('chromium installed, failed to launch');
     expect(outBuffer).toMatch(/downloads on first use/i);
     expect(outBuffer).toMatch(/Overall: OK/);
   });
@@ -180,7 +181,11 @@ describe('runDoctor', () => {
 
       const code = await runDoctor('/tmp/.wigolo');
       expect(code).toBe(1);
-      expect(outBuffer).toContain('chromium missing');
+      // On disk but not launchable is a broken install, not a missing one (#653).
+      expect(outBuffer).toContain('chromium installed, failed to launch');
+      expect(outBuffer).not.toContain('chromium not installed');
+      expect(outBuffer).toMatch(/chromium:\s+failed to launch — libnss3\.so: cannot open shared object file/);
+      expect(outBuffer).toContain('firefox OK');
       expect(outBuffer).toContain('on disk but will not launch');
       expect(outBuffer).toContain('sudo npx playwright install-deps chromium');
     } finally {
@@ -462,5 +467,15 @@ describe('errorLine', () => {
     const out = errorLine('z'.repeat(2000));
     expect(out).toHaveLength(501);
     expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('browserStatusLabel', () => {
+  it('distinguishes launchable, not installed, and installed-but-broken', () => {
+    expect(browserStatusLabel({ onDisk: true, launchable: true, execPath: '/b' })).toBe('OK');
+    expect(browserStatusLabel({ onDisk: false, launchable: false, execPath: '/b', error: 'browser binary missing on disk' }))
+      .toBe('not installed');
+    expect(browserStatusLabel({ onDisk: true, launchable: false, execPath: '/b', error: 'libgbm.so.1 missing' }))
+      .toBe('installed, failed to launch');
   });
 });
