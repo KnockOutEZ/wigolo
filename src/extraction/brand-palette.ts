@@ -3,8 +3,8 @@
  *
  * Pipeline:
  *   1. Validate the input buffer (size cap, MIME type — reject SVG/non-raster).
- *   2. Decode + resize via sharp (already a transitive dependency through
- *      @huggingface/transformers, so no new bundle cost). Resize to <=200px
+ *   2. Decode + resize via sharp (a direct dependency; @huggingface/transformers
+ *      pulls the same version, so no new bundle cost). Resize to <=200px
  *      on the long edge before quantization — k-means over 2000x2000 is the
  *      sort of accident that turns a 2s budget into a 12s budget.
  *   3. Quantize to k=5 clusters with a small k-means (10 iterations).
