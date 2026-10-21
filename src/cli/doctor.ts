@@ -50,6 +50,17 @@ export function maskApiKey(value: string): string {
 }
 
 /**
+ * One-line rendering of an error for doctor output: the first non-empty line
+ * of the message, capped generously. The old 80-char cut hid the actionable
+ * part of most errors (#653).
+ */
+export function errorLine(err: unknown, max = 500): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const first = msg.split(/\r?\n/).find((l) => l.trim() !== '')?.trim() ?? '';
+  return first.length > max ? `${first.slice(0, max)}…` : first;
+}
+
+/**
  * Format provider/key-location/masked-value lines for doctor output.
  * Returns one or more display lines. Key value is ALWAYS masked.
  */
@@ -87,7 +98,7 @@ async function checkPlaywright(): Promise<{ installed: boolean; version?: string
   let installed = false;
   let version: string | undefined;
   try {
-    const r = spawnSync('npx', ['playwright', '--version'], { encoding: 'utf-8', timeout: 5000 });
+    const r = spawnSync('npx', ['playwright', '--version'], { encoding: 'utf-8', timeout: 30_000 });
     if (r.status === 0) {
       installed = true;
       const m = r.stdout.match(/(\d+\.\d+\.\d+)/);
@@ -286,8 +297,7 @@ export async function runEngineProbeSection(
       });
       print(`  ${name.padEnd(15)} ok (${Date.now() - t0}ms, ${results.length} results)`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      print(`  ${name.padEnd(15)} error (${msg.slice(0, 80)})`);
+      print(`  ${name.padEnd(15)} error (${errorLine(err)})`);
     }
   }
 }
@@ -870,8 +880,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   } catch (err) {
     // Engine pool construction should never throw, but degrade gracefully if
     // a vertical fails to load — doctor must keep going.
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  (engine health summary failed: ${msg.slice(0, 80)})`);
+    out(`  (engine health summary failed: ${errorLine(err)})`);
   }
 
   // Opt-in live probe of every registered engine. Off by default —
@@ -879,8 +888,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   try {
     await runEngineProbeSection(opts?.probeEngines ?? false, getRegisteredEngineEntries());
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  (engine probes failed: ${msg.slice(0, 80)})`);
+    out(`  (engine probes failed: ${errorLine(err)})`);
   }
 
   // The search-engine sidecar sections only apply when the sidecar backend is
@@ -1022,8 +1030,7 @@ async function checkSqliteVec(dataDir: string): Promise<void> {
       out('  extension:     not loaded (run warmup to load on next start)');
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  extension:     (check failed: ${msg.slice(0, 80)})`);
+    out(`  extension:     (check failed: ${errorLine(err)})`);
   } finally {
     if (opened) {
       try { closeDatabase(); } catch { /* ignore */ }
@@ -1048,8 +1055,7 @@ function checkCacheStats(dataDir: string): void {
       if (stats.newest) out(`  newest:        ${stats.newest}`);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  (check failed: ${msg.slice(0, 80)})`);
+    out(`  (check failed: ${errorLine(err)})`);
   } finally {
     if (opened) {
       try { closeDatabase(); } catch { /* ignore */ }
@@ -1072,8 +1078,7 @@ function checkBackgroundQueue(dataDir: string): void {
       out(`  pending:       ${pending} job(s) — draining on next worker tick`);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  (check failed: ${msg.slice(0, 80)})`);
+    out(`  (check failed: ${errorLine(err)})`);
   } finally {
     if (opened) {
       try { closeDatabase(); } catch { /* ignore */ }
@@ -1095,8 +1100,7 @@ function checkRssFeeds(dataDir: string): void {
     try {
       db = initDatabase(join(dataDir, 'wigolo.db'));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      out(`  feeds:         ${feeds.length} configured (db unreadable: ${msg.slice(0, 60)})`);
+      out(`  feeds:         ${feeds.length} configured (db unreadable: ${errorLine(err)})`);
       return;
     }
 
@@ -1133,8 +1137,7 @@ function checkRssFeeds(dataDir: string): void {
               line = `  ${feed.url}  ${n} items, last fetched ${day} (${ageLabel}) [${fresh}]`;
             }
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            line = `  ${feed.url}  (check failed: ${msg.slice(0, 60)})`;
+            line = `  ${feed.url}  (check failed: ${errorLine(err)})`;
           }
         }
         out(line);
@@ -1143,8 +1146,7 @@ function checkRssFeeds(dataDir: string): void {
       try { closeDatabase(); } catch { /* ignore */ }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  (check failed: ${msg.slice(0, 80)})`);
+    out(`  (check failed: ${errorLine(err)})`);
   }
 }
 

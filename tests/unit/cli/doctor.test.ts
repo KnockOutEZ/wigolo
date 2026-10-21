@@ -59,7 +59,7 @@ vi.mock('../../../src/security/key-store.js', async () => {
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { runDoctor } from '../../../src/cli/doctor.js';
+import { runDoctor, errorLine } from '../../../src/cli/doctor.js';
 import { initDatabase } from '../../../src/cache/db.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
 
@@ -373,6 +373,24 @@ describe('runDoctor', () => {
       expect(outBuffer).toMatch(/Overall: OK/);
     });
 
+    it('prints the full first line of a failed check instead of cutting it at 80 chars (#653)', async () => {
+      const long = 'SQLITE_CANTOPEN: unable to open database file at /very/long/path/' + 'x'.repeat(120) + ' (check permissions)';
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw new Error(`${long}\n    at stack frame`);
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toContain(`extension:     (check failed: ${long})`);
+      expect(outBuffer).not.toContain('at stack frame');
+    });
+
+    it('gives a cold `npx playwright --version` 30s before timing out', async () => {
+      await runDoctor('/tmp/.wigolo');
+      const call = vi.mocked(spawnSync).mock.calls.find(
+        ([cmd, args]) => cmd === 'npx' && (args as string[] | undefined)?.[0] === 'playwright',
+      );
+      expect(call?.[2]).toMatchObject({ timeout: 30_000 });
+    });
+
     it('reports no RSS feeds when none configured', async () => {
       await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toMatch(/RSS feeds:/);
@@ -427,5 +445,22 @@ describe('runDoctor', () => {
       }
       expect(outBuffer).toMatch(/Telemetry: opt-in enabled/);
     });
+  });
+});
+
+describe('errorLine', () => {
+  it('keeps the first non-empty line of the message', () => {
+    expect(errorLine(new Error('\nfirst line\nsecond line'))).toBe('first line');
+  });
+
+  it('does not cut a long first line at 80 chars', () => {
+    const msg = 'y'.repeat(300);
+    expect(errorLine(new Error(msg))).toBe(msg);
+  });
+
+  it('caps pathological lines at the generous limit', () => {
+    const out = errorLine('z'.repeat(2000));
+    expect(out).toHaveLength(501);
+    expect(out.endsWith('…')).toBe(true);
   });
 });
