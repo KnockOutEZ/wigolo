@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import type { SearchInput, SearchOutput } from '../../../src/types.js';
 import { buildSearchContentBlocks } from '../../../src/server/search-response.js';
 
-// format=stream_answer leaked the synthesis
-// warning out as a raw `[wigolo notice] ...` text block alongside the JSON
-// payload. Callers expecting a structured envelope (e.g. to pattern-match
-// `notice` vs `stream`) could not parse it. The MCP shape stays a text
-// content block, but the JSON inside is now `{stream, notice, ...rest}`.
+// Search used to leak the synthesis warning out as a raw `[wigolo notice] ...`
+// text block alongside the JSON payload. Callers expecting a structured
+// payload could not parse it. Both formats now emit a single JSON text block
+// with the warning folded in as `notice`; stream_answer is shaped
+// `{stream, notice, ...rest}`.
 
 function makeSearchOutput(overrides: Partial<SearchOutput> = {}): SearchOutput {
   return {
@@ -22,19 +22,30 @@ function makeSearchOutput(overrides: Partial<SearchOutput> = {}): SearchOutput {
 }
 
 describe('buildSearchContentBlocks', () => {
-  it('default format: prefixes warning as [wigolo notice] block then emits JSON payload', () => {
+  it('default format: folds the warning into the JSON payload as `notice` (single block)', () => {
+    // WHY: a leading "[wigolo notice] ..." text block broke callers that
+    // JSON.parse the first content block (#651).
     const input: SearchInput = { query: 'test' };
     const data = makeSearchOutput({ streaming: undefined, answer: undefined });
 
     const blocks = buildSearchContentBlocks(input, data);
 
-    expect(blocks).toHaveLength(2);
-    expect(blocks[0].text).toMatch(/^\[wigolo notice\] /);
-    const payload = JSON.parse(blocks[1].text);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).not.toMatch(/^\[wigolo notice\]/);
+    const payload = JSON.parse(blocks[0].text);
     expect(payload.query).toBe('test');
-    expect(payload.warning).toBeDefined();
+    expect(payload.notice).toBe(data.warning);
+    expect(payload.warning).toBeUndefined();
     expect(payload.stream).toBeUndefined();
-    expect(payload.notice).toBeUndefined();
+  });
+
+  it('default format: keeps an existing notice alongside the warning', () => {
+    const input: SearchInput = { query: 'test' };
+    const data = makeSearchOutput({ answer: undefined, streaming: undefined, notice: 'cache miss' });
+
+    const payload = JSON.parse(buildSearchContentBlocks(input, data)[0].text);
+
+    expect(payload.notice).toBe(`cache miss ${data.warning}`);
   });
 
   it('default format with no warning: emits a single JSON block', () => {

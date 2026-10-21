@@ -47,6 +47,22 @@ describe('config', () => {
     expect(config.respectRobotsTxt).toBe(true);
   });
 
+  it('reads WIGOLO_SEARXNG_URL, preferring it over the legacy SEARXNG_URL', () => {
+    // WHY: every user-facing hint says WIGOLO_SEARXNG_URL; config used to read
+    // only SEARXNG_URL, so following the hint silently did nothing (#645).
+    delete process.env.SEARXNG_URL;
+    process.env.WIGOLO_SEARXNG_URL = 'http://wigolo-searxng:8080';
+    expect(getConfig().searxngUrl).toBe('http://wigolo-searxng:8080');
+
+    process.env.SEARXNG_URL = 'http://legacy-searxng:8080';
+    resetConfig();
+    expect(getConfig().searxngUrl).toBe('http://wigolo-searxng:8080');
+
+    delete process.env.WIGOLO_SEARXNG_URL;
+    resetConfig();
+    expect(getConfig().searxngUrl).toBe('http://legacy-searxng:8080');
+  });
+
   it('reads env var overrides', () => {
     process.env.FETCH_TIMEOUT_MS = '5000';
     process.env.MAX_BROWSERS = '5';

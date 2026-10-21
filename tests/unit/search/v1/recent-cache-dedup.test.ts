@@ -49,6 +49,14 @@ describe('normalizeUrlForDedup', () => {
     ).toBe('https://example.com/p?keep=1');
   });
 
+  it('drops tracking params regardless of case (#633)', () => {
+    expect(
+      normalizeUrlForDedup(
+        'https://example.com/p?UTM_Source=x&Utm_Medium=m&GCLID=y&FbClid=z&Keep=1',
+      ),
+    ).toBe('https://example.com/p?Keep=1');
+  });
+
   it('sorts remaining params alphabetically', () => {
     expect(normalizeUrlForDedup('https://example.com/p?b=2&a=1')).toBe(
       'https://example.com/p?a=1&b=2',

@@ -35,6 +35,9 @@ describe('extractWithLLM', () => {
     delete process.env.GOOGLE_API_KEY;
     delete process.env.GROQ_API_KEY;
     delete process.env.WIGOLO_LLM_PROVIDER;
+    delete process.env.WIGOLO_LLM_MODEL;
+    delete process.env.WIGOLO_LLM_MODEL_OPENAI;
+    delete process.env.WIGOLO_LLM_MODEL_ANTHROPIC;
     resetConfig();
     initDatabase(':memory:');
     vi.mocked(callAnthropic).mockReset();
@@ -195,6 +198,29 @@ describe('extractWithLLM', () => {
     expect(out.provider).toBe('openai');
     expect(callAnthropic).not.toHaveBeenCalled();
     expect(callOpenAI).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the configured model to the provider adapter (not the adapter default)', async () => {
+    // WHY: with WIGOLO_LLM_PROVIDER=openai + OPENAI_BASE_URL pointing at a
+    // compatible server, extraction always sent gpt-4o-mini because the
+    // configured model never reached the adapter.
+    process.env.OPENAI_API_KEY = 'b';
+    process.env.WIGOLO_LLM_PROVIDER = 'openai';
+    process.env.WIGOLO_LLM_MODEL = 'qwen2.5-7b-instruct';
+    vi.mocked(callOpenAI).mockResolvedValue({
+      values: { price: '$5' },
+      provider: 'openai',
+      model: 'qwen2.5-7b-instruct',
+      cached: false,
+      latencyMs: 1,
+    });
+    await extractWithLLM({
+      html: '<p/>',
+      jsonSchema: schema,
+      partial: {},
+      missing: ['price'],
+    });
+    expect(vi.mocked(callOpenAI).mock.calls[0][0].modelOverride).toBe('qwen2.5-7b-instruct');
   });
 
   it('truncates HTML body in prompt to ≤ 50KB', async () => {

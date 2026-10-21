@@ -613,7 +613,8 @@ export function getConfig(): Config {
   const dataDir = dataDirRaw ?? join(homedir(), '.wigolo');
 
   cachedConfig = {
-    searxngUrl: envStr('SEARXNG_URL', null, settings, 'searxngUrl'),
+    // WIGOLO_SEARXNG_URL is the documented name; SEARXNG_URL stays as a legacy alias.
+    searxngUrl: process.env.WIGOLO_SEARXNG_URL ?? envStr('SEARXNG_URL', null, settings, 'searxngUrl'),
     searxngMode: (envStr('SEARXNG_MODE', 'native', settings, 'searxngMode') as 'native' | 'docker'),
     searxngPort: envInt('SEARXNG_PORT', 8888, settings, 'searxngPort'),
     fetchTimeoutMs: envInt('FETCH_TIMEOUT_MS', 10000, settings, 'fetchTimeoutMs'),

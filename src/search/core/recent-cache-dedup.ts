@@ -27,8 +27,10 @@ const DEFAULT_CASE_INSENSITIVE_HOSTS: ReadonlySet<string> = new Set([
 ]);
 
 function isTrackingParam(name: string): boolean {
-  if (TRACKING_PARAM_EXACT.has(name)) return true;
-  for (const p of TRACKING_PARAM_PREFIXES) if (name.startsWith(p)) return true;
+  // Match case-insensitively: UTM_SOURCE / GCLID are the same tracking params.
+  const n = name.toLowerCase();
+  if (TRACKING_PARAM_EXACT.has(n)) return true;
+  for (const p of TRACKING_PARAM_PREFIXES) if (n.startsWith(p)) return true;
   return false;
 }
 

@@ -54,9 +54,16 @@ export async function pollUntilCleared(
   const { deadlineMs, intervalMs, isStillChallenge, readContent, readCookies, signal } = opts;
   const deadline = Date.now() + Math.max(0, deadlineMs);
 
+  // Fail fast on a pre-aborted signal before building the abort rejection, so
+  // that rejection is never created unhandled.
+  if (signal?.aborted) throw signal.reason;
+
   // A single abort rejection reused across ticks; races each async step so an
   // abort propagates promptly instead of after the current tick completes.
   const abort = abortRejection(signal);
+  // Swallow the reused rejection so an abort while nothing races it never
+  // surfaces as unhandled (the racing await already propagates the reason).
+  void abort.catch(() => {});
 
   do {
     if (signal?.aborted) throw signal.reason;
