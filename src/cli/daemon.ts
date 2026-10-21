@@ -3,7 +3,7 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
-import { resolveApiToken, evaluateBindGate } from '../daemon/rest/auth.js';
+import { resolveApiToken, evaluateBindGate, isLoopbackBind } from '../daemon/rest/auth.js';
 
 const logger = createLogger('cli');
 
@@ -97,6 +97,19 @@ export function checkServeBindGate(args: DaemonArgs): ServeBindGateResult {
   return gate.ok ? { ok: true, token } : { ok: false, message: gate.message, token };
 }
 
+/**
+ * One-line ask for a network bind: a daemon serving others is where commercial
+ * use happens, so point at the commercial terms once. Loopback binds get null:
+ * a local dev server is not that case and the line must not read as a warning.
+ */
+export function formatServeLicenseNotice(host: string): string | null {
+  if (isLoopbackBind(host)) return null;
+  return (
+    'wigolo is AGPL-3.0 and free to run. Building a commercial product on it? ' +
+    'Take a commercial license or sponsor the project: https://github.com/KnockOutEZ/wigolo/blob/main/LICENSING.md'
+  );
+}
+
 export function runDaemon(args: string[]): void {
   const parsed = parseDaemonArgs(args);
 
@@ -131,6 +144,8 @@ export function runDaemon(args: string[]): void {
       log(`Health check: curl ${url}/health`);
       log(`REST API: ${url}/v1  (OpenAPI: ${url}/openapi.json)`);
       log(`Auth: ${authState}`);
+      const licenseNotice = formatServeLicenseNotice(parsed.host);
+      if (licenseNotice) log(licenseNotice);
       if (shimOn) {
         log(`Firecrawl-compat shim: ENABLED (experimental) at ${url}/compat/firecrawl`);
       }

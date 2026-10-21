@@ -71,6 +71,20 @@ describe('runMcp — MCP stdio path', () => {
     expect(startServerMock).toHaveBeenCalledOnce();
     expect(runEntryMock).not.toHaveBeenCalled();
   });
+
+  it('writes no license notice to stderr (that line belongs to `wigolo serve` on a network bind only)', async () => {
+    let stderrOutput = '';
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((data: string | Uint8Array) => {
+      stderrOutput += typeof data === 'string' ? data : new TextDecoder().decode(data);
+      return true;
+    });
+    try {
+      await runMcp();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(stderrOutput).not.toMatch(/AGPL|LICENSING\.md/);
+  });
 });
 
 describe('parseCommand routing — mcp vs Ink commands', () => {
