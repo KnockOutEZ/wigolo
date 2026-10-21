@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const { startMock, stopMock, rerankMock, existsSyncMock, readdirSyncMock } = vi.hoisted(() => ({
   startMock: vi.fn(),
@@ -44,7 +44,9 @@ class FakeReporter {
   finish() { this.events.push('finish'); }
 }
 
+const originalReranker = process.env.WIGOLO_RERANKER;
 beforeEach(() => {
+  process.env.WIGOLO_RERANKER = 'onnx';
   startMock.mockReset();
   stopMock.mockReset();
   rerankMock.mockReset();
@@ -60,8 +62,23 @@ beforeEach(() => {
   process.env.WIGOLO_SEARCH = 'searxng';
   resetConfig();
 });
+afterEach(() => {
+  if (originalReranker === undefined) delete process.env.WIGOLO_RERANKER;
+  else process.env.WIGOLO_RERANKER = originalReranker;
+  resetConfig();
+});
 
 describe('runVerify — not configured (D1 gate)', () => {
+  it('accepts a configured remote reranker without contacting it', async () => {
+    delete process.env.WIGOLO_SEARCH;
+    process.env.WIGOLO_RERANKER = 'remote';
+    process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+    resetConfig();
+    const result = await runVerify('/tmp/wigolo-data', new FakeReporter());
+    expect(result.reranker).toBe('ok');
+    expect(rerankMock).not.toHaveBeenCalled();
+    delete process.env.WIGOLO_RERANK_API_BASE;
+  });
   it('skips the searxng step entirely and never constructs SearxngProcess on the default core backend', async () => {
     // WHY (D1): verify must not spin up the sidecar for a zero-config user.
     // Constructing SearxngProcess would probe/spawn the sidecar even when the

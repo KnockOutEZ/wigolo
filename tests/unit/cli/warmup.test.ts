@@ -469,6 +469,13 @@ describe('warmup --reranker', () => {
     expect(result.reranker).toBe('ok');
   });
 
+  it('does not invoke remote inference during warmup', async () => {
+    vi.mocked(getConfig).mockReturnValue({ ...coreConfig, reranker: 'remote' } as never);
+    const result = await runWarmup(['--reranker']);
+    expect(result.reranker).toBe('ok');
+    expect(rerankMock).not.toHaveBeenCalled();
+  });
+
   it('--all flag includes reranker warmup', async () => {
     const result = await runWarmup(['--all']);
 

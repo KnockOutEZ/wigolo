@@ -113,6 +113,14 @@ describe('extractHighlights', () => {
     } as ReturnType<typeof getConfig>);
   });
 
+  it('uses remote reranking for passages', async () => {
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'remote' } as ReturnType<typeof getConfig>);
+    rerankMock.mockResolvedValue([{ id: '0', score: 0.9 }]);
+    const out = await extractHighlights('React Server Components', results, 1);
+    expect(out.reranker_used).toBe(true);
+    expect(rerankMock).toHaveBeenCalled();
+  });
+
   it('uses rerank provider when configured and sorts passages by score', async () => {
     rerankMock.mockImplementation(async (_q: string, candidates: RerankCandidate[]) =>
       candidates.map<RerankResult>((c, idx) => ({ id: c.id, score: 1 / (idx + 1) })),
