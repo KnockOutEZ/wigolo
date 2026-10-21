@@ -164,37 +164,47 @@ describe('search v1 pipeline — factory + provider integration', () => {
   });
 
   it('routes category=code to the code vertical engines (github + stackoverflow)', async () => {
-    const { calls } = installFetchRoutes([
-      { match: (u) => u.includes('api.github.com/search/code'), body: { items: [GH_ITEM] } },
-      { match: (u) => u.includes('api.stackexchange.com'), body: { items: [SO_ITEM] } },
-      // Defensive: if any general-vertical engine slips through, fail loudly.
-      { match: (u) => u.includes('bing.com'), text: BING_HTML },
-      { match: (u) => u.includes('duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('wikipedia.org'), body: [] },
-    ]);
+    // github-code only joins the code vertical when a token is configured (#649).
+    const originalToken = process.env.WIGOLO_GITHUB_TOKEN;
+    process.env.WIGOLO_GITHUB_TOKEN = 'test-token';
+    resetConfig();
+    try {
+      const { calls } = installFetchRoutes([
+        { match: (u) => u.includes('api.github.com/search/code'), body: { items: [GH_ITEM] } },
+        { match: (u) => u.includes('api.stackexchange.com'), body: { items: [SO_ITEM] } },
+        // Defensive: if any general-vertical engine slips through, fail loudly.
+        { match: (u) => u.includes('bing.com'), text: BING_HTML },
+        { match: (u) => u.includes('duckduckgo.com'), text: DDG_HTML },
+        { match: (u) => u.includes('wikipedia.org'), body: [] },
+      ]);
 
-    const provider = await getSearchProvider();
-    const input: SearchInput = {
-      query: 'something generic',
-      category: 'code',
-      max_results: 5,
-    };
-    const result = await provider.search(input, mockCtx());
+      const provider = await getSearchProvider();
+      const input: SearchInput = {
+        query: 'something generic',
+        category: 'code',
+        max_results: 5,
+      };
+      const result = await provider.search(input, mockCtx());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
 
-    const hitGithub = calls.some((c) => c.url.includes('api.github.com/search/code'));
-    const hitSo = calls.some((c) => c.url.includes('api.stackexchange.com'));
-    const hitBing = calls.some((c) => c.url.includes('bing.com'));
-    expect(hitGithub).toBe(true);
-    expect(hitSo).toBe(true);
-    expect(hitBing).toBe(false);
+      const hitGithub = calls.some((c) => c.url.includes('api.github.com/search/code'));
+      const hitSo = calls.some((c) => c.url.includes('api.stackexchange.com'));
+      const hitBing = calls.some((c) => c.url.includes('bing.com'));
+      expect(hitGithub).toBe(true);
+      expect(hitSo).toBe(true);
+      expect(hitBing).toBe(false);
 
-    const used = result.data.engines_used.sort();
-    expect(used).toContain('github-code');
-    expect(used).toContain('stackoverflow');
-    expect(used).not.toContain('bing');
+      const used = result.data.engines_used.sort();
+      expect(used).toContain('github-code');
+      expect(used).toContain('stackoverflow');
+      expect(used).not.toContain('bing');
+    } finally {
+      if (originalToken === undefined) delete process.env.WIGOLO_GITHUB_TOKEN;
+      else process.env.WIGOLO_GITHUB_TOKEN = originalToken;
+      resetConfig();
+    }
   });
 
   it('returns ok:false invalid_input for an empty query', async () => {
