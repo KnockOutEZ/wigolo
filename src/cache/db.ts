@@ -3,6 +3,7 @@ import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
+import { explainNativeLoadError } from '../util/native-abi.js';
 import { isPackagedBinary } from '../util/packaged.js';
 import { applyMigrations } from './migrations/runner.js';
 
@@ -108,7 +109,14 @@ export function initDatabase(dbPath: string): Database.Database {
     instance = null;
   }
 
-  const db = new Database(dbPath);
+  // First `new Database()` is what dlopen's the better-sqlite3 addon, so an
+  // ABI mismatch (#220/#654) surfaces here — rethrow it with a fix-it message.
+  let db: Database.Database;
+  try {
+    db = new Database(dbPath);
+  } catch (err) {
+    throw explainNativeLoadError(err);
+  }
 
   // Lock the DB file down before any write. In-memory DBs have no file.
   const isFileBacked = dbPath !== ':memory:' && dbPath !== '';

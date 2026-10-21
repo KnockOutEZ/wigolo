@@ -1,6 +1,6 @@
 # Getting started
 
-From zero to your agent searching the web in about five minutes. You need Node.js 20 or newer.
+From zero to your agent searching the web in about five minutes. You need Node.js 22 or newer.
 
 ## 1. Initialize
 

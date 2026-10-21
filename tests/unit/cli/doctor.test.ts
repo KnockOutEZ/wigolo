@@ -59,8 +59,9 @@ vi.mock('../../../src/security/key-store.js', async () => {
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { runDoctor } from '../../../src/cli/doctor.js';
+import { runDoctor, errorLine, browserStatusLabel } from '../../../src/cli/doctor.js';
 import { initDatabase } from '../../../src/cache/db.js';
+import { explainNativeLoadError } from '../../../src/util/native-abi.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
 
 function okProc(stdout = ''): ReturnType<typeof spawnSync> {
@@ -146,7 +147,8 @@ describe('runDoctor', () => {
     });
     const code = await runDoctor('/tmp/.wigolo');
     expect(code).toBe(0);
-    expect(outBuffer).toContain('chromium missing');
+    expect(outBuffer).toContain('chromium not installed');
+    expect(outBuffer).not.toContain('chromium installed, failed to launch');
     expect(outBuffer).toMatch(/downloads on first use/i);
     expect(outBuffer).toMatch(/Overall: OK/);
   });
@@ -180,7 +182,11 @@ describe('runDoctor', () => {
 
       const code = await runDoctor('/tmp/.wigolo');
       expect(code).toBe(1);
-      expect(outBuffer).toContain('chromium missing');
+      // On disk but not launchable is a broken install, not a missing one (#653).
+      expect(outBuffer).toContain('chromium installed, failed to launch');
+      expect(outBuffer).not.toContain('chromium not installed');
+      expect(outBuffer).toMatch(/chromium:\s+failed to launch — libnss3\.so: cannot open shared object file/);
+      expect(outBuffer).toContain('firefox OK');
       expect(outBuffer).toContain('on disk but will not launch');
       expect(outBuffer).toContain('sudo npx playwright install-deps chromium');
     } finally {
@@ -373,6 +379,68 @@ describe('runDoctor', () => {
       expect(outBuffer).toMatch(/Overall: OK/);
     });
 
+    it('prints the full first line of a failed check instead of cutting it at 80 chars (#653)', async () => {
+      const long = 'SQLITE_CANTOPEN: unable to open database file at /very/long/path/' + 'x'.repeat(120) + ' (check permissions)';
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw new Error(`${long}\n    at stack frame`);
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toContain(`extension:     (check failed: ${long})`);
+      expect(outBuffer).not.toContain('at stack frame');
+    });
+
+    it('surfaces a better-sqlite3 Node ABI mismatch in full and degrades (#220/#654)', async () => {
+      const raw = new Error(
+        "The module '/opt/x/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\n" +
+          'was compiled against a different Node.js version using\n' +
+          'NODE_MODULE_VERSION 137. This version of Node.js requires\n' +
+          'NODE_MODULE_VERSION 127.',
+      );
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw explainNativeLoadError(raw);
+      });
+      const code = await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toContain('sqlite:        FAILED — native module built for a different Node.js');
+      expect(outBuffer).toContain(`Running: Node ${process.version}`);
+      expect(outBuffer).toContain(process.execPath);
+      expect(outBuffer).toContain('compiled for NODE_MODULE_VERSION 137');
+      expect(outBuffer).toContain('cd "/opt/x" && npm rebuild better-sqlite3');
+      expect(outBuffer).toContain('npx -y wigolo');
+      expect(code).toBe(1);
+      expect(outBuffer).toMatch(/Overall: DEGRADED/);
+    });
+
+    it('names the ABI mismatch as a non-fixable sqlite check in the --json report', async () => {
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw explainNativeLoadError(
+          new Error('was compiled against a different Node.js version using NODE_MODULE_VERSION 137.'),
+        );
+      });
+      const writes: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      try {
+        await runDoctor('/tmp/.wigolo', { json: true });
+      } finally {
+        spy.mockRestore();
+      }
+      const report = JSON.parse(writes.find((w) => w.trim().startsWith('{')) ?? '{}');
+      expect(report.status).toBe('degraded');
+      const sqlite = report.checks.find((c: { name: string }) => c.name === 'sqlite');
+      expect(sqlite).toMatchObject({ status: 'failed', fixable: false });
+      expect(sqlite.detail).toContain('different Node.js version');
+    });
+
+    it('gives a cold `npx playwright --version` 30s before timing out', async () => {
+      await runDoctor('/tmp/.wigolo');
+      const call = vi.mocked(spawnSync).mock.calls.find(
+        ([cmd, args]) => cmd === 'npx' && (args as string[] | undefined)?.[0] === 'playwright',
+      );
+      expect(call?.[2]).toMatchObject({ timeout: 30_000 });
+    });
+
     it('reports no RSS feeds when none configured', async () => {
       await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toMatch(/RSS feeds:/);
@@ -427,5 +495,32 @@ describe('runDoctor', () => {
       }
       expect(outBuffer).toMatch(/Telemetry: opt-in enabled/);
     });
+  });
+});
+
+describe('errorLine', () => {
+  it('keeps the first non-empty line of the message', () => {
+    expect(errorLine(new Error('\nfirst line\nsecond line'))).toBe('first line');
+  });
+
+  it('does not cut a long first line at 80 chars', () => {
+    const msg = 'y'.repeat(300);
+    expect(errorLine(new Error(msg))).toBe(msg);
+  });
+
+  it('caps pathological lines at the generous limit', () => {
+    const out = errorLine('z'.repeat(2000));
+    expect(out).toHaveLength(501);
+    expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('browserStatusLabel', () => {
+  it('distinguishes launchable, not installed, and installed-but-broken', () => {
+    expect(browserStatusLabel({ onDisk: true, launchable: true, execPath: '/b' })).toBe('OK');
+    expect(browserStatusLabel({ onDisk: false, launchable: false, execPath: '/b', error: 'browser binary missing on disk' }))
+      .toBe('not installed');
+    expect(browserStatusLabel({ onDisk: true, launchable: false, execPath: '/b', error: 'libgbm.so.1 missing' }))
+      .toBe('installed, failed to launch');
   });
 });

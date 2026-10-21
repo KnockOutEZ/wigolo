@@ -47,21 +47,21 @@ function mockStatfs(bavail: number, bsize = 4096): void {
 }
 
 describe('checkNode', () => {
-  it('accepts Node 20 and above', () => {
+  it('accepts Node 22 and above', () => {
     const originalVersion = process.version;
-    Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v22.0.0', configurable: true });
     try {
       const r = checkNode();
       expect(r.ok).toBe(true);
-      expect(r.version).toBe('20.0.0');
+      expect(r.version).toBe('22.0.0');
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }
   });
 
-  it('accepts Node 22', () => {
+  it('accepts Node 26', () => {
     const originalVersion = process.version;
-    Object.defineProperty(process, 'version', { value: 'v22.14.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v26.1.0', configurable: true });
     try {
       expect(checkNode().ok).toBe(true);
     } finally {
@@ -69,13 +69,13 @@ describe('checkNode', () => {
     }
   });
 
-  it('rejects Node 18', () => {
+  it('rejects Node 20', () => {
     const originalVersion = process.version;
-    Object.defineProperty(process, 'version', { value: 'v18.20.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v20.19.0', configurable: true });
     try {
       const r = checkNode();
       expect(r.ok).toBe(false);
-      expect(r.message).toMatch(/requires Node 20/i);
+      expect(r.message).toMatch(/requires Node 22/i);
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }
