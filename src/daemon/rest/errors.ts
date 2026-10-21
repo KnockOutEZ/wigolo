@@ -125,6 +125,14 @@ const SEMANTIC_VALIDATION_REASONS = new Set([
   'unsupported_scheme',
 ]);
 
+/** Upstream HTTP failures are coded `http_<status>` (see tools/fetch.ts) → 502. */
+const HTTP_STATUS_CODE = /^http_\d{3}$/;
+
+/**
+ * A tool failure. NOTE the field convention here is the inverse of
+ * `ErrorEnvelope` above: on a StageResult `error` is the machine code and
+ * `error_reason` is the human sentence.
+ */
 export interface StageFailure {
   error: string;
   error_reason: string;
@@ -134,12 +142,13 @@ export interface StageFailure {
 /**
  * Map a StageResult failure to an HTTP status. Conservative + table-driven:
  * 503 for known unavailability, 502 for fetch-stage upstream failures, 400 for
- * the explicit semantic-validation allowlist, else 500. Never substring-scans.
+ * the explicit semantic-validation allowlist, else 500. Keyed on the machine
+ * code (`error`), never a substring scan of the `error_reason` sentence.
  */
 export function statusForStageResult(f: StageFailure): number {
-  if (UNAVAILABILITY_REASONS.has(f.error_reason)) return 503;
-  if (f.stage === 'fetch' && FETCH_UPSTREAM_REASONS.has(f.error_reason)) return 502;
-  if (SEMANTIC_VALIDATION_REASONS.has(f.error_reason)) return 400;
+  if (UNAVAILABILITY_REASONS.has(f.error)) return 503;
+  if (f.stage === 'fetch' && (FETCH_UPSTREAM_REASONS.has(f.error) || HTTP_STATUS_CODE.test(f.error))) return 502;
+  if (SEMANTIC_VALIDATION_REASONS.has(f.error)) return 400;
   return 500;
 }
 

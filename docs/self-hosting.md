@@ -44,6 +44,8 @@ The bind gate is **fail-closed**: a non-loopback bind with no token refuses to s
 
 Full auth semantics: [REST API](./rest-api.md#auth-model--fail-closed).
 
+A non-loopback bind also prints one line on startup: wigolo is AGPL-3.0 and free to run, and teams building a commercial product on it are pointed at [LICENSING.md](../LICENSING.md). Loopback binds and the MCP stdio server print nothing.
+
 ## Wiring self-hosted agents
 
 Anything that can speak MCP-over-HTTP or plain HTTP can use the daemon:

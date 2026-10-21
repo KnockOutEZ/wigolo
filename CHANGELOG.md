@@ -3,6 +3,7 @@
 ## Unreleased
 
 - docs: add commercial licensing terms (LICENSING.md); AGPL-3.0 unchanged.
+- feat(serve): print a one-line notice linking the commercial licensing terms when `wigolo serve` binds a non-loopback host; loopback binds and the MCP stdio path stay silent.
 
 ## v0.2.0 — 2026-07-17
 

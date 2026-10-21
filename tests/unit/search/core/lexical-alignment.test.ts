@@ -55,4 +55,13 @@ describe('lexicalAlignment', () => {
     const a = lexicalAlignment('Next.js', 'NEXT-JS Docs', '');
     expect(a).toBe(1);
   });
+
+  it('scores a topically aligned CJK result above unrelated fresh content', () => {
+    const query = '北京人工智能大会最新消息';
+    const relevant = lexicalAlignment(query, '北京人工智能大会发布最新成果', '大模型产业动态');
+    const irrelevant = lexicalAlignment(query, '今日黄历与北京天气预报', '出行和生活指数');
+
+    expect(relevant).toBeGreaterThan(0);
+    expect(relevant).toBeGreaterThan(irrelevant);
+  });
 });

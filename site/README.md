@@ -44,5 +44,5 @@ Built with Fumadocs (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) and Tailwin
 [Umami](https://umami.is): cookieless, no personal data, no consent banner. Loads only when `NEXT_PUBLIC_UMAMI_ID` is set (the Pages workflow reads the `UMAMI_WEBSITE_ID` repo variable), counts only on `wigolo.app`, and honours Do Not Track. `NEXT_PUBLIC_UMAMI_SRC` points the tag at a self-hosted Umami instead of Umami Cloud. Logic lives in `src/lib/analytics.ts`, the loader in `src/components/Analytics.tsx`.
 
 - **Events:** page views (automatic, including client-side docs navigation); `copy_install`, `cta_click` and `github_click` with a `location` property; `sponsor_click` with `sponsor` and `placement` from every `/go/` hop. Any element gets click tracking with `data-track="<event>"` plus `data-track-<property>` attributes.
-- **Sponsor reporting:** create a share URL in Umami (Website → Share URL) and send it to sponsors; filter events by `sponsor_click` and break down by `placement`.
+- **Sponsor reporting:** the public share URL lives in the `UMAMI_SHARE_URL` repo variable and is linked from `/sponsors/` as live traffic; filter events by `sponsor_click` and break down by `placement`.
 - **Search data** (queries, impressions, rankings) comes from Google Search Console, not the site.
