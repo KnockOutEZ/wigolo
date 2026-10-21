@@ -980,7 +980,8 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   }
 
   checkCoreEmbeddings(dataDir);
-  if (await checkSqliteVec(dataDir)) {
+  const sqliteCheck = await checkSqliteVec(dataDir);
+  if (sqliteCheck) {
     // better-sqlite3 cannot load under this Node: the server cannot start
     // either, and --fix cannot rebuild a native module for the user.
     degraded = true;
@@ -1030,7 +1031,9 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       exitCode,
       version: getVersion(),
       install_channel: detectInstallChannel(),
-      checks: fixableChecks,
+      // The ABI-mismatch check is not fixable, so it is not in fixableChecks;
+      // include it so a degraded --json report names its cause.
+      checks: sqliteCheck ? [...fixableChecks, sqliteCheck] : fixableChecks,
       fixes,
     };
     // Machine shape on stdout; the human diagnostic above stays on stderr.
@@ -1055,10 +1058,11 @@ function checkCoreEmbeddings(dataDir: string): void {
 }
 
 /**
- * Returns true when the SQLite native module itself cannot load under the
- * running Node (ABI mismatch, #220/#654) — a hard failure for the server.
+ * Returns a failed, non-fixable check when the SQLite native module itself
+ * cannot load under the running Node (ABI mismatch, #220/#654) — a hard
+ * failure for the server. Returns null otherwise.
  */
-async function checkSqliteVec(dataDir: string): Promise<boolean> {
+async function checkSqliteVec(dataDir: string): Promise<DoctorCheck | null> {
   out('');
   out('[wigolo doctor] Core sqlite-vec:');
   let opened = false;
@@ -1078,7 +1082,7 @@ async function checkSqliteVec(dataDir: string): Promise<boolean> {
       // actionable part — print every line, not just the first.
       out('  sqlite:        FAILED — native module built for a different Node.js');
       for (const line of (err as Error).message.split('\n')) out(`    ${line}`);
-      return true;
+      return { name: 'sqlite', status: 'failed', fixable: false, detail: (err as Error).message };
     }
     out(`  extension:     (check failed: ${errorLine(err)})`);
   } finally {
@@ -1086,7 +1090,7 @@ async function checkSqliteVec(dataDir: string): Promise<boolean> {
       try { closeDatabase(); } catch { /* ignore */ }
     }
   }
-  return false;
+  return null;
 }
 
 function checkCacheStats(dataDir: string): void {

@@ -410,6 +410,29 @@ describe('runDoctor', () => {
       expect(outBuffer).toMatch(/Overall: DEGRADED/);
     });
 
+    it('names the ABI mismatch as a non-fixable sqlite check in the --json report', async () => {
+      vi.mocked(initDatabase).mockImplementationOnce(() => {
+        throw explainNativeLoadError(
+          new Error('was compiled against a different Node.js version using NODE_MODULE_VERSION 137.'),
+        );
+      });
+      const writes: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      try {
+        await runDoctor('/tmp/.wigolo', { json: true });
+      } finally {
+        spy.mockRestore();
+      }
+      const report = JSON.parse(writes.find((w) => w.trim().startsWith('{')) ?? '{}');
+      expect(report.status).toBe('degraded');
+      const sqlite = report.checks.find((c: { name: string }) => c.name === 'sqlite');
+      expect(sqlite).toMatchObject({ status: 'failed', fixable: false });
+      expect(sqlite.detail).toContain('different Node.js version');
+    });
+
     it('gives a cold `npx playwright --version` 30s before timing out', async () => {
       await runDoctor('/tmp/.wigolo');
       const call = vi.mocked(spawnSync).mock.calls.find(
