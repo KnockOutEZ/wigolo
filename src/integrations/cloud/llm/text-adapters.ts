@@ -9,11 +9,24 @@
 
 import type { LLMProvider } from './types.js';
 
+/** Optional image attached to a text call, for vision-capable models. */
+export interface TextCallImage {
+  /** Base64-encoded image bytes, without a `data:` URI prefix. */
+  data: string;
+  /** IANA media type, e.g. 'image/png' or 'image/jpeg'. */
+  mediaType: string;
+}
+
 export interface TextCallOpts {
   prompt: string;
   model: string;
   maxTokens?: number;
   signal?: AbortSignal;
+  /**
+   * When set, the prompt is sent as a multimodal message with this image.
+   * Supported on anthropic/openai/gemini; ignored by groq (text-only).
+   */
+  image?: TextCallImage;
 }
 
 export interface TextCallResult {
@@ -29,11 +42,24 @@ export async function callAnthropicText(opts: TextCallOpts, apiKey: string): Pro
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const client = new Anthropic({ apiKey });
   const start = Date.now();
+  const content = opts.image
+    ? [
+        {
+          type: 'image' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: opts.image.mediaType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+            data: opts.image.data,
+          },
+        },
+        { type: 'text' as const, text: opts.prompt },
+      ]
+    : opts.prompt;
   const response = await client.messages.create(
     {
       model: opts.model,
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-      messages: [{ role: 'user', content: opts.prompt }],
+      messages: [{ role: 'user', content }],
     },
     { signal: opts.signal },
   );
@@ -53,11 +79,20 @@ export async function callOpenAIText(opts: TextCallOpts, apiKey: string): Promis
   const { default: OpenAI } = await import('openai');
   const client = new OpenAI({ apiKey });
   const start = Date.now();
+  const content = opts.image
+    ? [
+        { type: 'text' as const, text: opts.prompt },
+        {
+          type: 'image_url' as const,
+          image_url: { url: `data:${opts.image.mediaType};base64,${opts.image.data}` },
+        },
+      ]
+    : opts.prompt;
   const response = await client.chat.completions.create(
     {
       model: opts.model,
       max_completion_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-      messages: [{ role: 'user', content: opts.prompt }],
+      messages: [{ role: 'user', content }],
     },
     { signal: opts.signal },
   );
@@ -77,9 +112,20 @@ export async function callGeminiText(opts: TextCallOpts, apiKey: string): Promis
   const { GoogleGenAI } = await import('@google/genai');
   const client = new GoogleGenAI({ apiKey });
   const start = Date.now();
+  const contents = opts.image
+    ? [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: opts.image.mediaType, data: opts.image.data } },
+            { text: opts.prompt },
+          ],
+        },
+      ]
+    : opts.prompt;
   const response = await client.models.generateContent({
     model: opts.model,
-    contents: opts.prompt,
+    contents,
     config: {
       maxOutputTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       abortSignal: opts.signal,

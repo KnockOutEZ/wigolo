@@ -14,6 +14,26 @@ interface PageState {
   // challenge carries `cf-mitigated: challenge` here even when the body has no
   // legacy markers.
   headers: Record<string, string>;
+  // --- solve-ladder integration knobs (default: inert) ----------------------
+  // Bounding box the mock's locator(...).boundingBox() returns, so
+  // locateChallengeWidget resolves a clickable widget for the auto-pass rung.
+  // null = no widget (locate throws → caught as null), the default.
+  widgetBox: { x: number; y: number; width: number; height: number } | null;
+  // Cookies context().cookies() returns — but ONLY after the auto-pass rung has
+  // engaged a CDP session (cdpEngaged). Before that (and in the challenge-
+  // completion auto-poll, which never opens a CDP session) it returns []. This
+  // is what forces the CLEARED path through the LADDER's auto-pass rung rather
+  // than the earlier auto-poll: the clearance cookie is only observable once the
+  // ladder rung has driven its trusted gesture.
+  cookies: { name: string; value: string; domain: string; expires: number }[];
+  // Set true the first time context().newCDPSession() is called (the ladder
+  // auto-pass rung opens one; the auto-poll never does).
+  cdpEngaged: boolean;
+  // When set, content() returns `bodies[0]` until a CDP session has been opened
+  // (the auto-poll phase — a persistent challenge it can never clear), then
+  // `bodies[1]` once cdpEngaged (the ladder auto-pass rung has driven its gesture
+  // and the page has hydrated). null = use the plain sequential `bodies` reader.
+  cdpGatedBodies: null | { before: string; after: string };
 }
 
 const state: PageState = {
@@ -22,6 +42,10 @@ const state: PageState = {
   gotoRejectsTimeout: false,
   contentCalls: 0,
   headers: { 'content-type': 'text/html' },
+  widgetBox: null,
+  cookies: [],
+  cdpEngaged: false,
+  cdpGatedBodies: null,
 };
 
 function makeTimeoutErr() {
@@ -31,46 +55,100 @@ function makeTimeoutErr() {
 }
 
 vi.mock('playwright', () => {
+  // A single per-context CDP + cookie mock, shared by both the auto-poll and the
+  // solve-ladder auto-pass rung on a given page. cookies() only reveals the
+  // seeded clearance once a CDP session has been opened (state.cdpEngaged), which
+  // only the ladder rung does — this is what routes the CLEARED assertion through
+  // the ladder harvest rather than the earlier auto-poll clearance path.
+  const makeContext = () => ({
+    close: vi.fn().mockResolvedValue(undefined),
+    cookies: vi.fn().mockImplementation(() =>
+      Promise.resolve(state.cdpEngaged ? state.cookies : []),
+    ),
+    newCDPSession: vi.fn().mockImplementation(() => {
+      state.cdpEngaged = true;
+      return Promise.resolve({
+        send: vi.fn().mockResolvedValue(undefined),
+        detach: vi.fn().mockResolvedValue(undefined),
+      });
+    }),
+  });
+  // A locator whose boundingBox reflects state.widgetBox — null by default so
+  // locateChallengeWidget finds no widget (the inert case existing tests rely on).
+  const makeLocator = () => ({
+    first: vi.fn().mockReturnValue({
+      boundingBox: vi.fn().mockImplementation(() => Promise.resolve(state.widgetBox)),
+    }),
+  });
   const launch = vi.fn().mockResolvedValue({
-    newContext: vi.fn().mockResolvedValue({
-      close: vi.fn().mockResolvedValue(undefined),
-      newPage: vi.fn().mockImplementation(() => ({
-        goto: vi.fn().mockImplementation(() => {
-          if (state.gotoRejectsTimeout) return Promise.reject(makeTimeoutErr());
-          return Promise.resolve({
-            status: () => state.status,
-            url: () => 'https://blocked.example/',
-            headers: () => state.headers,
-          });
-        }),
-        waitForLoadState: vi.fn().mockResolvedValue(undefined),
-        waitForFunction: vi.fn().mockResolvedValue(undefined),
-        // settlePage reads content metrics (stability poller) and, after the
-        // gate, the DOM verdict. Branch on the injected source: the verdict
-        // source is the only one containing 'hasContent'. These tests assert
-        // challenge classification over the final html, not the verdict values,
-        // so a permissive default verdict is fine.
-        evaluate: vi.fn().mockImplementation((src: string) => {
-          if (typeof src === 'string' && src.includes('hasContent')) {
-            return Promise.resolve({ hasContent: true, hasSpaRoot: false, nearEmpty: false });
-          }
-          return Promise.resolve({ textLen: 1000, nodes: 8 });
-        }),
-        content: vi.fn().mockImplementation(() => {
-          const idx = Math.min(state.contentCalls, state.bodies.length - 1);
-          state.contentCalls += 1;
-          return Promise.resolve(state.bodies[idx]);
-        }),
-        screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
-        setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-      })),
+    newContext: vi.fn().mockImplementation(() => {
+      const ctx = makeContext();
+      return Promise.resolve({
+        ...ctx,
+        newPage: vi.fn().mockImplementation(() => ({
+          goto: vi.fn().mockImplementation(() => {
+            if (state.gotoRejectsTimeout) return Promise.reject(makeTimeoutErr());
+            return Promise.resolve({
+              status: () => state.status,
+              url: () => 'https://blocked.example/',
+              headers: () => state.headers,
+            });
+          }),
+          waitForLoadState: vi.fn().mockResolvedValue(undefined),
+          waitForFunction: vi.fn().mockResolvedValue(undefined),
+          // settlePage reads content metrics (stability poller) and, after the
+          // gate, the DOM verdict. Branch on the injected source: the verdict
+          // source is the only one containing 'hasContent'. These tests assert
+          // challenge classification over the final html, not the verdict values,
+          // so a permissive default verdict is fine.
+          evaluate: vi.fn().mockImplementation((src: unknown) => {
+            if (typeof src === 'string' && src.includes('hasContent')) {
+              return Promise.resolve({ hasContent: true, hasSpaRoot: false, nearEmpty: false });
+            }
+            // readAdvertisedUa passes a function (() => navigator.userAgent). The
+            // ladder-cleared harvest needs a real UA string to persist a clearance,
+            // so return one for the function form; keep the metrics object for the
+            // string-injected stability/verdict probes.
+            if (typeof src === 'function') {
+              return Promise.resolve('Mozilla/5.0 (Test) Chrome/142.0.0.0');
+            }
+            return Promise.resolve({ textLen: 1000, nodes: 8 });
+          }),
+          content: vi.fn().mockImplementation(() => {
+            state.contentCalls += 1;
+            if (state.cdpGatedBodies) {
+              return Promise.resolve(
+                state.cdpEngaged ? state.cdpGatedBodies.after : state.cdpGatedBodies.before,
+              );
+            }
+            const idx = Math.min(state.contentCalls - 1, state.bodies.length - 1);
+            return Promise.resolve(state.bodies[idx]);
+          }),
+          screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
+          setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
+          // The solve-ladder auto-pass rung reaches for these; the auto-poll and
+          // existing tests never do (widgetBox=null → no widget located).
+          context: vi.fn().mockReturnValue(ctx),
+          locator: vi.fn().mockImplementation(() => makeLocator()),
+          close: vi.fn().mockResolvedValue(undefined),
+        })),
+      });
     }),
     close: vi.fn().mockResolvedValue(undefined),
   });
   const stub = { launch };
   return { chromium: stub, firefox: stub, webkit: stub };
 });
+
+// The ladder-cleared harvest persists a minted clearance via the cache store.
+// Mock it so the CLEARED integration test can assert the harvest threads the
+// current egress route as `solvedRoute` — no real SQLite write.
+const recordDomainClearanceMock = vi.fn();
+const clearDomainClearanceMock = vi.fn();
+vi.mock('../../../src/cache/store.js', () => ({
+  recordDomainClearance: (...args: unknown[]) => recordDomainClearanceMock(...args),
+  clearDomainClearance: (...args: unknown[]) => clearDomainClearanceMock(...args),
+}));
 
 // The browser tier's pre-navigation SSRF re-check (guardResolvedHost) resolves
 // the target host via `node:dns`. Mock it to resolve SYNCHRONOUSLY to a benign
@@ -119,9 +197,18 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
     state.gotoRejectsTimeout = false;
     state.contentCalls = 0;
     state.headers = { 'content-type': 'text/html' };
+    state.widgetBox = null;
+    state.cookies = [];
+    state.cdpEngaged = false;
+    state.cdpGatedBodies = null;
+    recordDomainClearanceMock.mockClear();
+    clearDomainClearanceMock.mockClear();
   });
   afterEach(() => {
     vi.useRealTimers();
+    // A test that opted into the auto-pass rung must not leave it on for the
+    // next one — the default is off.
+    delete process.env.WIGOLO_AUTO_PASS;
     resetConfig();
   });
 
@@ -439,6 +526,107 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
       reason: 'challenge_shell',
       settled_by: expect.any(String),
     });
+    await pool.shutdown();
+  });
+
+  // --- solve-ladder integration (real pool path, not injected pure fns) -------
+
+  // A DataDome-shaped behavioral interstitial: `id="cmsg"` is a POSITIVE
+  // behavioral marker (classifyChallenge → 'behavioral'), no clickable widget and
+  // no image, so the ladder runs NO rung and the honest block path fires. Body is
+  // substantial so the near-empty throw can't pre-empt the classification.
+  const BEHAVIORAL_INTERSTITIAL =
+    '<html lang="en"><head><title>Verify</title></head>' +
+    '<body style="margin:0"><p id="cmsg">Please enable JS and disable any ad blocker. ' +
+    'This managed interstitial has no checkbox and no image puzzle to solve. '.repeat(12) +
+    '</p></body></html>';
+
+  it('LADDER behavioral: a never-clearing behavioral challenge fast-fails with challengeClass="behavioral"', async () => {
+    // The real pool path must CLASSIFY the never-clearing body (not default it)
+    // and, because behavioral runs no solve rung, surface the class on the block.
+    vi.useFakeTimers();
+    process.env.WIGOLO_CHALLENGE_COMPLETION_MS = '5000';
+    resetConfig();
+    state.status = 403;
+    state.bodies = [BEHAVIORAL_INTERSTITIAL, BEHAVIORAL_INTERSTITIAL];
+
+    const pool = new MultiBrowserPool();
+    const p = pool.fetchWithBrowser('https://blocked.example/');
+    const captured = p.catch((e) => e);
+    await vi.advanceTimersByTimeAsync(8000);
+    const err = (await captured) as ChallengeBlockedError;
+
+    expect(err).toBeInstanceOf(ChallengeBlockedError);
+    // classifyChallenge actually ran on the fail path — the class is 'behavioral',
+    // not left undefined/defaulted.
+    expect(err.challengeClass).toBe('behavioral');
+    // No rung engaged for behavioral, so no clearance was ever recorded.
+    expect(recordDomainClearanceMock).not.toHaveBeenCalled();
+    delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
+    await pool.shutdown();
+  });
+
+  it('LADDER cleared: an interactive challenge the auto-pass rung clears records the clearance with solvedRoute = current route', async () => {
+    // WHY (reviewer-flagged regression): the ladder-solved harvest must thread
+    // the CURRENT egress route into recordDomainClearance.solvedRoute. This drives
+    // the REAL pool path: the auto-poll cannot see the clearance cookie (no CDP
+    // session), times out, and the LADDER's auto-pass rung opens a CDP session
+    // — which reveals the cookie — and clears. The rung is OPT-IN (it adds time
+    // to an already-blocked fetch), so this test enables it explicitly.
+    process.env.WIGOLO_AUTO_PASS = 'auto';
+    resetConfig();
+    vi.useFakeTimers();
+    process.env.WIGOLO_CHALLENGE_COMPLETION_MS = '3000';
+    resetConfig();
+    state.status = 403;
+    // BEFORE any CDP session (the auto-poll phase): a near-empty interactive
+    // interstitial — the auto-poll can never clear it (markers present, no cookie
+    // visible without CDP), so it times out and hands off to the ladder. AFTER the
+    // ladder auto-pass rung opens its CDP session: the page has hydrated to real
+    // content, so the ladder's clearance poll clears and the post-clear near-empty
+    // guard sees a substantial body (no false relabel). The cf_clearance cookie is
+    // also revealed only post-CDP, so the harvest has a clearance to persist.
+    state.cdpGatedBodies = {
+      before:
+        '<html><head><title>Just a moment...</title></head><body>' +
+        '<div class="cf-turnstile"></div><div id="challenge-form">Verifying…</div></body></html>',
+      after:
+        '<html><head><title>Docs</title></head><body><article>' +
+        'Real hydrated content after the interactive widget was passed. '.repeat(40) +
+        '</article></body></html>',
+    };
+    // A tiny widget near the origin → a short Bézier path (few waypoints).
+    state.widgetBox = { x: 20, y: 20, width: 40, height: 40 };
+    state.cookies = [
+      { name: 'cf_clearance', value: 'minted-token', domain: 'blocked.example', expires: 9999999999 },
+    ];
+
+    const pool = new MultiBrowserPool();
+    const p = pool.fetchWithBrowser('https://blocked.example/');
+    const captured = p.then(
+      (res) => ({ res }),
+      (err) => ({ err }),
+    );
+    // Drive the auto-poll to its deadline, the ladder auto-pass Bézier + clearance
+    // poll, and the post-goto settle. Advance in chunks so each queued timer fires.
+    for (let i = 0; i < 12; i++) {
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    const outcome = await captured;
+
+    // It cleared through the ladder auto-pass rung (did not throw).
+    expect('err' in outcome ? outcome.err : undefined).toBeUndefined();
+    // The regression under test: the harvest threaded the current route.
+    expect(recordDomainClearanceMock).toHaveBeenCalledTimes(1);
+    const arg = recordDomainClearanceMock.mock.calls[0];
+    expect(arg[0]).toBe('blocked.example');
+    expect(arg[1]).toMatchObject({
+      cookie: 'cf_clearance=minted-token',
+      tier: 'browser',
+      // No proxy configured in this test → the current route is 'direct'.
+      solvedRoute: 'direct',
+    });
+    delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
     await pool.shutdown();
   });
 });

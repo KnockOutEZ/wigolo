@@ -6,25 +6,37 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "logos:mine": "node scripts/logo-wall/mine.mjs",
+    "logos:fetch": "node scripts/logo-wall/fetch-logos.mjs",
+    "logos:check": "node scripts/logo-wall/fetch-logos.mjs --check",
+    "test": "vitest run && node --test scripts/logo-wall/*.test.mjs scripts/sync-content.test.mjs",
+    "predev": "node scripts/sync-content.mjs",
+    "prebuild": "node scripts/sync-content.mjs",
+    "indexnow": "node scripts/indexnow.mjs"
   },
   "dependencies": {
-    "highlight.js": "^11.11.1",
+    "fumadocs-core": "16.15.13",
+    "fumadocs-mdx": "15.4.3",
+    "fumadocs-ui": "16.15.13",
     "motion": "^12.42.2",
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "rehype-slug": "^6.0.0",
-    "remark-gfm": "^4.0.1"
+    "simple-icons": "^16.32.0",
+    "svg-path-bbox": "^2.1.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/mdx": "2.0.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
-    "typescript": "^5"
+    "pngjs": "^7.0.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5",
+    "vitest": "^4.1.6"
   }
 }

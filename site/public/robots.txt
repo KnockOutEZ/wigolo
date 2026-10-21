@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://knockoutez.github.io/wigolo/sitemap.xml

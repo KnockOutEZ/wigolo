@@ -198,7 +198,7 @@ export default function Tools() {
         <h2 className={styles.title}>
           Your agent is smart. Its web access isn&apos;t.
         </h2>
-        <a href={`${BASE_PATH}/docs/tools`} className={styles.headLink}>
+        <a href={`${BASE_PATH}/docs/tools/`} className={styles.headLink}>
           Full tool reference
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path

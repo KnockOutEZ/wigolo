@@ -74,6 +74,23 @@ describe('config', () => {
     expect(config.dataDir).toContain('.wigolo');
   });
 
+  describe('proxyBypassOnChallenge configuration', () => {
+    // Defaults OFF: silently retrying direct defeats an operator's configured
+    // proxy and leaks their real IP to the origin. That is a consent decision,
+    // so it must be opted into rather than inherited.
+    it('defaults to false — never bypasses a configured proxy unasked', () => {
+      delete process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE;
+      resetConfig();
+      expect(getConfig().proxyBypassOnChallenge).toBe(false);
+    });
+
+    it('reads WIGOLO_PROXY_BYPASS_ON_CHALLENGE=true to opt in', () => {
+      process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'true';
+      resetConfig();
+      expect(getConfig().proxyBypassOnChallenge).toBe(true);
+    });
+  });
+
   describe('stealth (anti-bot fingerprint hardening) configuration', () => {
     it('defaults WIGOLO_STEALTH to auto', () => {
       delete process.env.WIGOLO_STEALTH;
@@ -103,6 +120,159 @@ describe('config', () => {
       process.env.WIGOLO_STEALTH = 'ON';
       resetConfig();
       expect(getConfig().stealth).toBe('on');
+    });
+  });
+
+  describe('humanize (behavioral realism) configuration', () => {
+    // Defaults OFF: the pass is reactive (escalation path only) so it never
+    // slows a successful fetch, but it adds ~1.2s to one that ends up blocked
+    // anyway, for a lever that did not measure as changing a wall outcome.
+    it('defaults WIGOLO_HUMANIZE to off', () => {
+      delete process.env.WIGOLO_HUMANIZE;
+      resetConfig();
+      expect(getConfig().humanize).toBe('off');
+    });
+
+    it('reads WIGOLO_HUMANIZE=auto to opt into the escalation-path pass', () => {
+      process.env.WIGOLO_HUMANIZE = 'auto';
+      resetConfig();
+      expect(getConfig().humanize).toBe('auto');
+    });
+
+    it('reads WIGOLO_HUMANIZE=on', () => {
+      process.env.WIGOLO_HUMANIZE = 'on';
+      resetConfig();
+      expect(getConfig().humanize).toBe('on');
+    });
+
+    it('reads WIGOLO_HUMANIZE=off', () => {
+      process.env.WIGOLO_HUMANIZE = 'off';
+      resetConfig();
+      expect(getConfig().humanize).toBe('off');
+    });
+
+    it('normalizes an unknown WIGOLO_HUMANIZE value to the safe off default', () => {
+      process.env.WIGOLO_HUMANIZE = 'aggressive';
+      resetConfig();
+      expect(getConfig().humanize).toBe('off');
+    });
+
+    it('is case-insensitive for WIGOLO_HUMANIZE', () => {
+      process.env.WIGOLO_HUMANIZE = 'ON';
+      resetConfig();
+      expect(getConfig().humanize).toBe('on');
+    });
+
+    afterEach(() => {
+      delete process.env.WIGOLO_HUMANIZE;
+    });
+  });
+
+  describe('browser identity (channel + headful) configuration', () => {
+    // Defaults to the BUNDLED engine so every install renders through the same
+    // pinned browser instead of whatever build happens to be on the host.
+    it('defaults WIGOLO_BROWSER_CHANNEL to chromium (bundled)', () => {
+      delete process.env.WIGOLO_BROWSER_CHANNEL;
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chromium');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=auto to opt into an installed browser', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'auto';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('auto');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=chrome', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'chrome';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chrome');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=chromium', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'chromium';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chromium');
+    });
+
+    it('normalizes an unknown WIGOLO_BROWSER_CHANNEL to chromium', () => {
+      // A typo must not silently opt the host into launching its own installed
+      // browser — it falls back to the pinned bundled engine.
+      process.env.WIGOLO_BROWSER_CHANNEL = 'firefox';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chromium');
+    });
+
+    it('is case-insensitive for WIGOLO_BROWSER_CHANNEL', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'Chrome';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chrome');
+    });
+
+    it('defaults WIGOLO_BROWSER_HEADFUL to false (never pop a window)', () => {
+      delete process.env.WIGOLO_BROWSER_HEADFUL;
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(false);
+    });
+
+    it('reads WIGOLO_BROWSER_HEADFUL=1 as true', () => {
+      process.env.WIGOLO_BROWSER_HEADFUL = '1';
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(true);
+    });
+
+    it('reads WIGOLO_BROWSER_HEADFUL=false as false', () => {
+      process.env.WIGOLO_BROWSER_HEADFUL = 'false';
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(false);
+    });
+  });
+
+  describe('stealthDriver (driver-level hardening) configuration', () => {
+    // Defaults to the STANDARD driver: the hardened one has no launch-time
+    // fallback, so a driver that imports but cannot launch would hard-fail the
+    // fetch instead of degrading.
+    it('defaults WIGOLO_STEALTH_DRIVER to playwright (standard driver)', () => {
+      delete process.env.WIGOLO_STEALTH_DRIVER;
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('playwright');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=auto to opt into the hardened driver', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'auto';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('auto');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=patchright', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'patchright';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('patchright');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=playwright', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('playwright');
+    });
+
+    it('normalizes an unknown WIGOLO_STEALTH_DRIVER value to the safe playwright default', () => {
+      // A typo must not silently select the hardened driver, which has no
+      // launch-time fallback.
+      process.env.WIGOLO_STEALTH_DRIVER = 'undetected';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('playwright');
+    });
+
+    it('is case-insensitive for WIGOLO_STEALTH_DRIVER', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'PatchRight';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('patchright');
+    });
+
+    afterEach(() => {
+      delete process.env.WIGOLO_STEALTH_DRIVER;
+      resetConfig();
     });
   });
 

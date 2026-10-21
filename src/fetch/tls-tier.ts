@@ -527,8 +527,20 @@ const REAL_FORM_PATTERN = /<form[\s>][\s\S]*?<(?:input|button|select|textarea)[\
 // Approximate the visible text length of an HTML body: strip script/style and
 // tags, collapse whitespace. Cheap and bounded — the caller only cares whether
 // the result is tiny (interstitial) or substantial (real page).
-function approxVisibleTextLength(html: string): number {
-  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+/**
+ * Approximate rendered-text length.
+ *
+ * Bounded to the first 32KB by DEFAULT, which is correct for the interstitial
+ * detectors (`isNearEmptyBody`, `isChallengeSkeleton`): a challenge shell is
+ * tiny, so a leading slice sees all of it and a huge real document is not worth
+ * scanning in full.
+ *
+ * `whole: true` measures the ENTIRE document, which the density rule needs — a
+ * ratio computed on a leading slice is meaningless, because any modern page
+ * opens with 32KB+ of head assets carrying no text.
+ */
+function approxVisibleTextLength(html: string, opts?: { whole?: boolean }): number {
+  const slice = !opts?.whole && html.length > 32768 ? html.slice(0, 32768) : html;
   const stripped = slice
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -559,6 +571,41 @@ function approxVisibleTextLength(html: string): number {
 export function isNearEmptyBody(html: string | null | undefined): boolean {
   if (!html) return true;
   return approxVisibleTextLength(html) < CHALLENGE_SKELETON_MAX_TEXT;
+}
+
+/** Below this size a document is too small for the density ratio to mean
+ *  anything (a 30-byte error page's ratio is noise). Real bot walls ship a
+ *  large scaffold of scripts/styles/widget markup. */
+const WALL_MIN_HTML_BYTES = 1000;
+/** Visible-text-to-markup ratio below which a document carries essentially no
+ *  human-readable content. Measured across real traffic: genuine pages and
+ *  substantive error pages sit at ~0.28-0.93; vendor bot walls sit at ~0.006 —
+ *  two orders of magnitude apart, so the boundary is not finely tuned. */
+const WALL_MAX_TEXT_DENSITY = 0.05;
+
+/**
+ * GENERAL, vendor-agnostic bot-wall SHAPE: a large document that is almost
+ * entirely markup (scripts, styles, widget scaffolding) with essentially no
+ * human-readable text.
+ *
+ * This exists because a marker catalog only ever recognises walls we have
+ * already met — every new vendor or template variant silently leaks its block
+ * page as "content" until someone adds another string. Shape generalises where
+ * markers cannot: whoever served it, a wall has no readable content.
+ *
+ * Deliberately NOT sufficient on its own — callers pair it with an anti-bot
+ * STATUS. A thin 2xx body is the normal shape of an un-hydrated SPA shell, and
+ * treating that as a wall would break ordinary pages.
+ */
+export function isLowContentDensity(html: string | null | undefined): boolean {
+  if (!html || html.length < WALL_MIN_HTML_BYTES) return false;
+  // Measured over the WHOLE document, deliberately NOT a leading slice. Any
+  // modern page opens with 32KB+ of <head> scripts and stylesheets carrying
+  // almost no text, so judging density on a prefix calls a large REAL page
+  // empty and relabels a genuine 403 as a bot wall. Mirrors the same rule in
+  // challenge-classify.ts, which documents the walmart case (405KB page: <600
+  // visible chars in its first 32KB, 2,777 overall).
+  return approxVisibleTextLength(html, { whole: true }) / html.length < WALL_MAX_TEXT_DENSITY;
 }
 
 export function isChallengeSkeleton(html: string | null | undefined): boolean {
@@ -659,6 +706,14 @@ export function isAntiBotSignal(statusCode: number, html: string | null | undefi
 export function isChallengeShell(statusCode: number, html: string | null | undefined): boolean {
   if (!html) return false;
   if (isAntiBotStatus(statusCode) && hasChallengeBody(html)) return true;
+  // GENERAL, vendor-agnostic wall rule (see isLowContentDensity). The marker
+  // list above is a catalog of known vendor templates, so each new vendor or
+  // variant leaks its block page as "content" until a string is added. Shape
+  // generalises: an anti-bot STATUS carrying a large all-scaffolding body with
+  // no readable text is a wall whoever served it. Both halves are required —
+  // the status alone would swallow substantive 403s (an admin page must pass
+  // through), and low density alone would swallow un-hydrated SPA shells.
+  if (isAntiBotStatus(statusCode) && isLowContentDensity(html)) return true;
   const is2xx = statusCode >= 200 && statusCode < 300;
   if (is2xx && hasChallengeBody(html) && isChallengeSkeleton(html)) return true;
   return false;

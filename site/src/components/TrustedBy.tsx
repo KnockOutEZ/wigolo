@@ -5,6 +5,7 @@ const AGENTS = [
   "cursor",
   "codex",
   "gemini cli",
+  "opencode",
   "vs code",
   "windsurf",
   "zed",

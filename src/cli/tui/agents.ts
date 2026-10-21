@@ -86,7 +86,7 @@ const opencode: AgentDescriptor = {
   detect: ({ home }) =>
     binaryInPath('opencode') !== null ||
     dirExists(join(home, '.config', 'opencode')),
-  configPath: ({ home }) => join(home, '.config', 'opencode', 'config.json'),
+  configPath: ({ home }) => join(home, '.config', 'opencode', 'opencode.json'),
 };
 
 const antigravity: AgentDescriptor = {

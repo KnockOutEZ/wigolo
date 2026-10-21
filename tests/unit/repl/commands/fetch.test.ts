@@ -96,4 +96,23 @@ describe('executeFetch', () => {
     const result = await executeFetch({ command: 'fetch', positional: ['https://ex.com'], flags: {} }, deps);
     expect(result.error).toContain('timeout');
   });
+
+  it('surfaces solve-ladder provenance on a blocked_by_challenge stage error', async () => {
+    // WHY: the MCP tool output carries challenge_class/solve_method on a blocked
+    // fetch; the REPL/CLI surface must match, not drop them in the error envelope.
+    // A behavioral block is the honest ceiling: classified 'behavioral', no solve.
+    vi.mocked(handleFetch).mockResolvedValue({
+      ok: false,
+      error: 'blocked_by_challenge',
+      error_reason: "The site's bot protection served a challenge page that could not be cleared automatically",
+      stage: 'fetch',
+      http_status: 403,
+      challenge_class: 'behavioral',
+      solve_method: null,
+    } as any);
+    const result = await executeFetch({ command: 'fetch', positional: ['https://blocked.example'], flags: {} }, deps);
+    expect(result.error).toContain('bot protection');
+    expect(result.challenge_class).toBe('behavioral');
+    expect(result.solve_method).toBeNull();
+  });
 });

@@ -35,14 +35,23 @@ import {
   CLEARANCE_COOKIE_NAME,
   clearanceCookieValue,
   isClearanceFresh,
-  uaMatchesTier,
+  isClearanceReusable,
   parsedClearanceCookie,
   type ClearanceTier,
 } from './clearance-reuse.js';
 import { ChallengeBlockedError } from './browser-pool.js';
+import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import {
+  isRedditUrl,
+  fetchViaRedditApi,
+  RedditTokenManager,
+  RedditRateLimitError,
+  type RedditCredentials,
+} from './reddit-api.js';
+import { redditApiConfigured } from '../config.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError, ContentCompleteness } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
@@ -142,6 +151,8 @@ export interface BrowserFetchArgs {
   signal?: AbortSignal;
   stealth?: boolean;
   injectedCookies?: Array<{ name: string; value: string; domain: string; path?: string }>;
+  /** Force a proxy-free browser launch for this fetch (managed-challenge direct-retry). */
+  forceNoProxy?: boolean;
 }
 
 export interface BrowserPoolInterface {
@@ -380,6 +391,11 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   }
 }
 
+/** A fetch outcome is a StageError (not content) when it carries a string `error`. */
+function isStageError(x: RawFetchResult | StageError): x is StageError {
+  return 'error' in x && typeof (x as { error?: unknown }).error === 'string';
+}
+
 function isKnownSpaDomain(host: string): boolean {
   const lower = host.toLowerCase();
   if (KNOWN_SPA_DOMAINS.has(lower)) return true;
@@ -479,6 +495,10 @@ export class SmartRouter {
   private readonly browserAcquirer: BrowserAcquirer;
   private readonly clearanceStore: ClearanceStore;
   private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
+  /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
+   * route and reused so the app-only token is minted at most once per window.
+   * Keyed on the resolved client id so a credential change re-mints. */
+  private redditTokenManager: { key: string; mgr: RedditTokenManager } | null = null;
 
   constructor(httpClient: HttpClient, browserPool: BrowserPoolInterface);
   constructor(options: SmartRouterOptions);
@@ -531,11 +551,13 @@ export class SmartRouter {
   }
 
   /**
-   * The stored clearance for `host` when it is fresh AND presentable by `tier`,
-   * else null. Purges an EXPIRED entry as a side-effect so a dead cookie is not
-   * carried forward. A UA mismatch (e.g. a Firefox-minted clearance for the
-   * Chromium browser tier) returns null WITHOUT clearing — the entry may still
-   * be valid for another tier.
+   * The stored clearance for `host` when it is fresh AND presentable by `tier`
+   * AND route-identity-matched to the current egress, else null. Purges an
+   * EXPIRED entry as a side-effect so a dead cookie is not carried forward. A UA
+   * mismatch (e.g. a Firefox-minted clearance for the Chromium browser tier) OR
+   * a route mismatch (a clearance solved direct being replayed behind a proxy,
+   * or vice-versa) returns null WITHOUT clearing — the entry may still be valid
+   * for another tier / another egress route.
    */
   private clearanceFor(host: string, tier: ClearanceTier): DomainClearance | null {
     let stored: DomainClearance | null;
@@ -545,12 +567,22 @@ export class SmartRouter {
       return null;
     }
     if (!stored) return null;
-    if (!isClearanceFresh(stored, Date.now())) {
+    // Expiry is checked here rather than left to the composite below because it
+    // is the only gate with a SIDE EFFECT: a dead cookie is purged so it is not
+    // replayed next time. Every other gate is a pure refusal.
+    const now = Date.now();
+    if (!isClearanceFresh(stored, now)) {
       try { this.clearanceStore.clear(host); } catch { /* best-effort */ }
       return null;
     }
-    if (!uaMatchesTier(stored.ua, tier)) return null;
-    if (clearanceCookieValue(stored.cookie) == null) return null;
+    // The remaining gates (UA-presentable by this tier, route-identity matched,
+    // carries a real cf_clearance) live in ONE composite predicate so a caller
+    // cannot accidentally skip one. Route identity matters because a
+    // cf_clearance is bound to the {IP + UA + TLS} of the egress it was solved
+    // on (FlareSolverr #871): a mismatch hard-refuses reuse but does NOT clear —
+    // the clearance may still be valid for its own route.
+    const currentRoute = getConfig().proxyUrl ?? 'direct';
+    if (!isClearanceReusable(stored, tier, currentRoute, now)) return null;
     return stored;
   }
 
@@ -720,9 +752,22 @@ export class SmartRouter {
       // safe here: the browser pool normalises a cleared result to 200 and drops
       // the stale cf-mitigated header, so the guard only fires on a genuine
       // still-challenge; normal content passes through unchanged.
-      return this.guardChallengeShell(await this.browserPool.fetchWithBrowser(url, browserOptions));
+      const guarded = this.guardChallengeShell(await this.browserPool.fetchWithBrowser(url, browserOptions));
+      // A guarded still-challenge (StageError) is a managed-challenge block just
+      // like a thrown ChallengeBlockedError — give it the same direct-retry.
+      if (isStageError(guarded) && guarded.error === 'blocked_by_challenge') {
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
+      }
+      return guarded;
     } catch (err) {
       if (err instanceof ChallengeBlockedError) {
+        // Managed-challenge direct-retry (T3-H): a datacenter proxy converts
+        // many managed-challenge passes into blocks; direct residential-grade
+        // egress often clears. When a proxy is in use, try ONE proxy-free
+        // browser fetch before the escape-hatch/fast-fail below.
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
         // Terminal browser challenge-block. Before returning the fast-fail, try
         // the opt-in escape-hatch rungs (solver → hosted reader) IF configured.
         // Unconfigured rungs no-op and never load the module (default path).
@@ -733,9 +778,58 @@ export class SmartRouter {
           error_reason: err.message,
           stage: 'fetch',
           hint: err.hint,
+          // Surface the underlying anti-bot status (403/429/503) when known so a
+          // hard challenge-block reaches the crawl adaptive-cooldown. Undefined
+          // when no reliable status exists — never invented.
+          ...(err.httpStatus !== undefined ? { http_status: err.httpStatus } : {}),
+          // Solve-ladder provenance: the classified challenge class, plus a null
+          // solve method (no rung cleared it — the honest block).
+          ...(err.challengeClass !== undefined ? { challenge_class: err.challengeClass } : {}),
+          solve_method: null,
         };
       }
       throw err;
+    }
+  }
+
+  /**
+   * Managed-challenge direct-retry (T3-H). When a proxy IS in use and the
+   * browser tier hit a managed-challenge block, attempt ONE additional direct
+   * (no-proxy) browser fetch — a datacenter proxy often blocks a managed
+   * challenge that direct residential-grade egress would clear, and wigolo
+   * cannot know the proxy's ASN type. Returns the cleared content on success,
+   * or null to fall through to the normal fast-fail. No-op (returns null,
+   * NO extra fetch) when: the knob is off, no proxy is configured, or this call
+   * is already a no-proxy attempt.
+   */
+  private async retryDirectOnChallenge(
+    url: string,
+    browserOptions: BrowserFetchArgs,
+  ): Promise<RawFetchResult | null> {
+    const cfg = getConfig();
+    if (
+      !this.browserPool ||
+      browserOptions.forceNoProxy ||
+      !cfg.proxyBypassOnChallenge ||
+      !cfg.useProxy ||
+      !cfg.proxyUrl ||
+      browserOptions.cdpUrl
+    ) {
+      return null;
+    }
+    const logger = createLogger('fetch');
+    logger.info('managed-challenge block behind a proxy — retrying once with direct egress', { url });
+    try {
+      const direct = this.guardChallengeShell(
+        await this.browserPool.fetchWithBrowser(url, { ...browserOptions, forceNoProxy: true }),
+      );
+      if (isStageError(direct)) return null; // still blocked — fall through to fast-fail
+      logger.info('direct-egress retry cleared the managed challenge', { url });
+      return direct;
+    } catch {
+      // A direct retry that itself errors (incl. another ChallengeBlockedError)
+      // falls through to the normal fast-fail path — never surface a new throw.
+      return null;
     }
   }
 
@@ -786,14 +880,64 @@ export class SmartRouter {
   private guardChallengeShell(raw: RawFetchResult): RawFetchResult | StageError {
     if (isChallengeResponse(raw.statusCode, raw.html, raw.headers)) {
       const err = new ChallengeBlockedError(raw.url);
+      // Prefer any class the browser tier's ladder already assigned; otherwise
+      // classify the shell body here so a lower-tier (HTTP/TLS) block still
+      // reports its challenge class. solve_method is null — no rung cleared it.
+      const challengeClass = raw.challenge_class ?? classifyChallenge(raw.html);
       return {
         error: err.code,
         error_reason: err.message,
         stage: 'fetch',
         hint: err.hint,
+        // Carry the anti-bot status of the shell result (403/429/503) so the
+        // crawl cooldown sees it. A challenge served at 2xx has no anti-bot
+        // status to thread, so leave it unset there.
+        ...(isAntiBotStatus(raw.statusCode) ? { http_status: raw.statusCode } : {}),
+        ...(challengeClass !== undefined ? { challenge_class: challengeClass } : {}),
+        solve_method: null,
       };
     }
     return raw;
+  }
+
+  /**
+   * Try the opt-in Reddit OAuth-API path. Returns the mapped RawFetchResult on
+   * success, or null when the URL shape is unsupported by the API (caller falls
+   * through to the normal ladder). On a token/network/rate-limit failure it also
+   * returns null so the caller degrades gracefully to the honest normal ladder
+   * rather than hard-failing the whole fetch.
+   */
+  private async tryRedditApi(url: string, config: Config, signal?: AbortSignal): Promise<RawFetchResult | null> {
+    const logger = createLogger('fetch');
+    const creds: RedditCredentials = {
+      // redditApiConfigured() guaranteed both are non-null before this call.
+      clientId: config.redditClientId as string,
+      clientSecret: config.redditClientSecret as string,
+      userAgent: config.redditUserAgent,
+    };
+    // Reuse a token manager keyed on the client id so the app-only token is
+    // minted once per validity window; re-mint if the credential changed.
+    if (!this.redditTokenManager || this.redditTokenManager.key !== creds.clientId) {
+      this.redditTokenManager = { key: creds.clientId, mgr: new RedditTokenManager(creds) };
+    }
+    try {
+      return await fetchViaRedditApi(url, this.redditTokenManager.mgr, creds, undefined, signal);
+    } catch (err) {
+      if (err instanceof RedditRateLimitError) {
+        logger.info('reddit-api rate limited — falling through to normal ladder', {
+          url,
+          retryAfterSeconds: err.retryAfterSeconds,
+        });
+        return null;
+      }
+      // Never log the error object verbatim (could echo an auth header from a
+      // fetch impl); log only the message string.
+      logger.warn('reddit-api fetch failed — falling through to normal ladder', {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
@@ -807,6 +951,23 @@ export class SmartRouter {
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
+
+    // Opt-in Reddit OAuth-API escape hatch. reddit.com blocks wigolo at the
+    // IP-reputation edge, so when Reddit app credentials are configured AND this
+    // is a Reddit URL, fetch via the sanctioned API instead of the normal ladder
+    // (which honestly hits the block). Credentials absent → this never fires and
+    // the normal ladder runs. A screenshot/actions request can't be served by
+    // the API, so those fall through to the browser tier.
+    if (
+      isRedditUrl(url) &&
+      redditApiConfigured(config) &&
+      !screenshot &&
+      !(actions && actions.length > 0)
+    ) {
+      const redditResult = await this.tryRedditApi(url, config, options.signal);
+      if (redditResult !== null) return redditResult;
+      logger.debug('reddit-api path did not apply — falling through to normal ladder', { url });
+    }
 
     // Stealth mode: static fetch first, escalate to Playwright when content is thin.
     if (mode === 'stealth') {

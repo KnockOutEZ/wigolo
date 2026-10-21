@@ -95,7 +95,7 @@ Also `WigoloSearchTool` / `WigoloFetchTool` as LangChain `BaseTool`s for agents 
 ## CrewAI — `wigolo-crewai`
 
 ```bash
-pip install wigolo-crewai[crewai]
+pip install 'wigolo-crewai[crewai]'
 ```
 
 ```python

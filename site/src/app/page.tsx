@@ -3,10 +3,13 @@ import Nav from "@/components/Nav";
 import Hero from "@/components/Hero";
 import FeatureMarquee from "@/components/FeatureMarquee";
 import Stats from "@/components/Stats";
+import LogoWall from "@/components/LogoWall";
+import SponsorStrip from "@/components/SponsorStrip";
 import HowItWorks from "@/components/HowItWorks";
 import TrustedBy from "@/components/TrustedBy";
 import Tools from "@/components/Tools";
 import OpenSource from "@/components/OpenSource";
+import Sponsors from "@/components/Sponsors";
 import Testimonials from "@/components/Testimonials";
 import Parity from "@/components/Parity";
 import StartShipping from "@/components/StartShipping";
@@ -23,6 +26,8 @@ export default function Home() {
         <Hero />
         <FeatureMarquee />
         <Stats />
+        <LogoWall />
+        <SponsorStrip placement="site-strip" />
         <HowItWorks />
         <TrustedBy />
         <Tools />
@@ -32,6 +37,7 @@ export default function Home() {
         <StartShipping />
         <Quickstart />
         <Feedback />
+        <Sponsors />
       </main>
       <Footer />
     </>

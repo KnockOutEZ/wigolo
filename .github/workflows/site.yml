@@ -3,7 +3,7 @@ name: Deploy site to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "docs/**", "examples/**", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:
@@ -22,17 +22,27 @@ jobs:
       run:
         working-directory: site
     env:
-      NEXT_PUBLIC_BASE_PATH: /wigolo
-      NEXT_PUBLIC_SITE_URL: https://knockoutez.github.io/wigolo
+      NEXT_PUBLIC_SITE_URL: https://wigolo.app
       NEXT_PUBLIC_WEB3FORMS_KEY: ${{ secrets.WEB3FORMS_KEY }}
+      # Umami website ID. A repo *variable*, not a secret — it ships in the
+      # client bundle either way. Unset → no analytics tag at all, and the /go/
+      # hop still forwards. See site/README.md § Analytics.
+      NEXT_PUBLIC_UMAMI_ID: ${{ vars.UMAMI_WEBSITE_ID }}
+      # Public, read-only Umami dashboard linked from /sponsors/ as live traffic.
+      NEXT_PUBLIC_UMAMI_SHARE_URL: ${{ vars.UMAMI_SHARE_URL }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the sitemap's <lastmod> is each page's last commit.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm ci
+      - run: npm test
+      - run: npm run logos:check
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

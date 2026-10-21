@@ -105,6 +105,7 @@ vi.mock('playwright', () => {
 });
 
 import { MultiBrowserPool } from '../../../src/fetch/browser-pool.js';
+import { _setStealthDriverForTests, type StealthDriverLauncher } from '../../../src/fetch/stealth.js';
 
 function resetState() {
   state.contextsCreated = 0;
@@ -122,11 +123,65 @@ function resetState() {
 
 describe('browser-pool dedicated stealth context', () => {
   beforeEach(() => {
+    // Restore the suite-wide pin (tests/setup.ts) so a test that opted into
+    // 'auto' cannot leave the NEXT test resolving the real optional driver.
+    process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
     resetConfig();
     resetState();
   });
   afterEach(async () => {
+    process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
     resetConfig();
+    _setStealthDriverForTests(undefined);
+  });
+
+  it('dedicated stealth launch uses the driver-hardened launcher when present (auto)', async () => {
+    // The suite pins WIGOLO_STEALTH_DRIVER=playwright so no test accidentally
+    // loads the REAL optional driver (tests/setup.ts). This test is the explicit
+    // opt-in: switch to 'auto' and inject a MOCK hardened launcher.
+    process.env.WIGOLO_STEALTH_DRIVER = 'auto';
+    resetConfig();
+    // Simulate the optional driver being installed. Its launcher reuses the
+    // playwright-mock browser factory so the rest of the fetch flow is intact.
+    const hardenedLaunch = vi.fn().mockImplementation(() => Promise.resolve(makeBrowser()));
+    _setStealthDriverForTests({ launch: hardenedLaunch } as unknown as StealthDriverLauncher);
+
+    const pool = new MultiBrowserPool();
+    const result = await pool.fetchWithBrowser('https://blocked.example', { stealth: true });
+    expect(result.method).toBe('browser');
+    // The hardened driver's launch was used for the dedicated throwaway browser.
+    expect(hardenedLaunch).toHaveBeenCalledTimes(1);
+
+    await pool.shutdown();
+  });
+
+  it('WIGOLO_STEALTH_DRIVER=playwright never consults the hardened driver', async () => {
+    process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
+    resetConfig();
+    // A poison launcher: if it were consulted, the assertion on the standard
+    // playwright mock (browsersLaunched) would still hold but hardenedLaunch
+    // would fire. It must NOT fire in `playwright` mode.
+    const hardenedLaunch = vi.fn().mockImplementation(() => Promise.resolve(makeBrowser()));
+    _setStealthDriverForTests({ launch: hardenedLaunch } as unknown as StealthDriverLauncher);
+
+    const pool = new MultiBrowserPool();
+    const result = await pool.fetchWithBrowser('https://blocked.example', { stealth: true });
+    expect(result.method).toBe('browser');
+    expect(hardenedLaunch).not.toHaveBeenCalled();
+    // The standard playwright mock launched the throwaway browser instead.
+    expect(state.browsersLaunched).toBe(1);
+
+    await pool.shutdown();
+  });
+
+  it('falls back silently to the standard launcher when the driver is absent', async () => {
+    _setStealthDriverForTests(null); // optional dep not installed
+    const pool = new MultiBrowserPool();
+    const result = await pool.fetchWithBrowser('https://blocked.example', { stealth: true });
+    expect(result.method).toBe('browser');
+    // Standard playwright mock did the launch.
+    expect(state.browsersLaunched).toBe(1);
+    await pool.shutdown();
   });
 
   it('stealth:true creates a DEDICATED context that is CLOSED (not returned to the pool) at end', async () => {

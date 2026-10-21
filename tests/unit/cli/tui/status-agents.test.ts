@@ -63,6 +63,113 @@ describe('readConnectedAgents', () => {
     expect(codex?.configured).toBe(true);
   });
 
+  it('reports opencode as configured from its global opencode.json file', () => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      JSON.stringify({
+        mcp: {
+          wigolo: {
+            type: 'local',
+            command: ['npx', '-y', 'wigolo'],
+            enabled: true,
+          },
+        },
+      }),
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    const opencode = result.find(a => a.id === 'opencode');
+    expect(opencode?.configured).toBe(true);
+    expect(opencode?.path).toBe(join(opencodeDir, 'opencode.json'));
+  });
+
+  it('reports opencode as configured when opencode.json uses JSONC syntax', () => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      `{
+        // OpenCode accepts comments and trailing commas.
+        "mcp": {
+          "wigolo": {
+            "type": "local",
+            "command": ["npx", "-y", "wigolo"],
+            "enabled": true,
+          },
+        },
+      }`,
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    expect(result.find(a => a.id === 'opencode')?.configured).toBe(true);
+  });
+
+  it('reports a BOM-prefixed OpenCode JSONC config as connected', () => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      '\ufeff{"mcp":{"wigolo":{"type":"local","command":["npx","-y","wigolo"],"enabled":true}}}\n',
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    expect(result.find(a => a.id === 'opencode')?.configured).toBe(true);
+  });
+
+  it('does not report a disabled OpenCode MCP entry as connected', () => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      JSON.stringify({
+        mcp: {
+          wigolo: {
+            type: 'local',
+            command: ['npx', '-y', 'wigolo'],
+            enabled: false,
+          },
+        },
+      }),
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    expect(result.find(a => a.id === 'opencode')?.configured).toBe(false);
+  });
+
+  it.each(['false', 0, null])('rejects a non-boolean OpenCode enabled value: %j', (enabled) => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      JSON.stringify({
+        mcp: {
+          wigolo: { type: 'local', command: ['npx', '-y', 'wigolo'], enabled },
+        },
+      }),
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    expect(result.find(a => a.id === 'opencode')?.configured).toBe(false);
+  });
+
+  it('does not report the legacy OpenCode command shape as connected', () => {
+    const opencodeDir = join(tmpHome, '.config', 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(
+      join(opencodeDir, 'opencode.json'),
+      JSON.stringify({
+        mcp: {
+          wigolo: { type: 'local', command: 'npx', args: ['-y', 'wigolo'] },
+        },
+      }),
+    );
+
+    const result = readConnectedAgents({ home: tmpHome });
+    expect(result.find(a => a.id === 'opencode')?.configured).toBe(false);
+  });
+
   it('reports an agent as configured=false when the config file is corrupt', () => {
     const cursorDir = join(tmpHome, '.cursor');
     mkdirSync(cursorDir, { recursive: true });

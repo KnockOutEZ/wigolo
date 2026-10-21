@@ -1114,3 +1114,49 @@ describe.skipIf(!wreqJsAvailable)('tls-tier: real wreq-js binary stdio safety', 
     expect(stdoutWrites).toBe(0);
   }, 20000);
 });
+
+describe('tls-tier: GENERAL vendor-agnostic bot-wall shape (isLowContentDensity)', () => {
+  // WHY this exists: the CHALLENGE_MARKERS list is a catalog of vendor templates
+  // we have already met, so every new vendor/variant leaks its block page as
+  // "content" until someone adds another string. Shape generalises — a wall is a
+  // large all-scaffolding document with no human-readable text, whoever served
+  // it. Live-measured density: real/substantive pages 0.28-0.93, vendor walls
+  // ~0.006 (two orders of magnitude apart).
+  const wall =
+    '<html><head><title>Denied</title>' +
+    '<style>' + '.a{color:#fff;padding:1px}'.repeat(60) + '</style>' +
+    '<script>' + 'var x=1;function f(){return x;}'.repeat(60) + '</script>' +
+    '</head><body><div class="blocked"></div><p>Denied</p></body></html>';
+
+  it('classifies a wall-shaped body at an anti-bot status as a challenge WITHOUT any vendor marker', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    expect(wall).not.toContain('px-captcha');
+    expect(wall).not.toContain('cf-browser-verification');
+    expect(isLowContentDensity(wall)).toBe(true);
+    expect(shell(403, wall)).toBe(true);
+    expect(shell(429, wall)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: the same wall shape at 2xx stays FALSE (an un-hydrated SPA shell looks identical)', async () => {
+    const { isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    // Status is the other half of the gate; without it a thin 200 body would be
+    // treated as a wall and ordinary SPA pages would break.
+    expect(shell(200, wall)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a SUBSTANTIVE 403 page passes through (admin/permission pages are real content)', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    const substantive =
+      '<html><body><h1>Forbidden</h1><p>' +
+      'You do not have permission to view this resource, and here is a genuine explanation. '.repeat(12) +
+      '</p></body></html>';
+    expect(isLowContentDensity(substantive)).toBe(false);
+    expect(shell(403, substantive)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a tiny body is below the size floor (its ratio is noise)', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    expect(isLowContentDensity('<html><body>no markers</body></html>')).toBe(false);
+    expect(shell(403, '<html><body>no markers</body></html>')).toBe(false);
+  });
+});

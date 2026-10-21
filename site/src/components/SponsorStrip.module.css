@@ -1,0 +1,38 @@
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px 20px;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.link {
+  display: inline-flex;
+  opacity: 0.8;
+  transition: opacity 0.2s var(--ease);
+}
+.link:hover {
+  opacity: 1;
+}
+.logo {
+  display: block;
+  height: 22px;
+  width: auto;
+}
+.compact {
+  justify-content: flex-start;
+  gap: 8px 12px;
+}
+.compact .logo {
+  height: 18px;
+}
+.home {
+  padding-bottom: 72px;
+}

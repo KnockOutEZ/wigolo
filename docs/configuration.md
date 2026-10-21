@@ -103,9 +103,21 @@ Core tools never need an LLM. Configuring one adds answer synthesis (`format: "a
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` | unset | Per-provider keys, read from env. |
 | `WIGOLO_LLM_API_KEY` | unset | Generic key slot (used by `init --provider=...`; stored in the OS keychain, never passed as a flag). |
 | `WIGOLO_LLM_MODEL` | provider default | Override the model name. |
-| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any OpenAI-compatible endpoint. |
+| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any keyless OpenAI-compatible server (Ollama, vLLM, LM Studio). |
+| `OPENAI_BASE_URL` | OpenAI | With `WIGOLO_LLM_PROVIDER=openai`, send requests to another OpenAI-compatible service that takes an API key. |
 | `WIGOLO_LLM_CACHE_TTL_DAYS` | `7` | Cache lifetime for LLM outputs. |
 | `WIGOLO_LLM_MAX_CALLS_PER_REQUEST` | `1` | Hard cap on LLM calls per tool request. |
+
+### Using an OpenAI-compatible provider
+
+Any service that speaks the OpenAI API works through the `openai` provider: set its base URL, its key, and one of its model names.
+
+```bash
+export WIGOLO_LLM_PROVIDER=openai
+export OPENAI_BASE_URL=https://api.example.com/v1   # the service's OpenAI-compatible endpoint
+export OPENAI_API_KEY=sk-...                        # your key for that service
+export WIGOLO_LLM_MODEL=model-name                  # one of its model ids
+```
 
 ### Keyless local ladder
 

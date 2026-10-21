@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { agentHandlers, getAgentHandler } from '../../../../src/cli/agents/registry.js';
 
 describe('agentHandlers', () => {
-  it('contains exactly the 9 expected agents', () => {
+  it('contains exactly the 10 expected agents', () => {
     const ids = agentHandlers.map((h) => h.id);
     expect(ids).toContain('claude-code');
     expect(ids).toContain('cursor');
@@ -13,7 +13,8 @@ describe('agentHandlers', () => {
     expect(ids).toContain('codex');
     expect(ids).toContain('antigravity');
     expect(ids).toContain('cline');
-    expect(ids).toHaveLength(9);
+    expect(ids).toContain('opencode');
+    expect(ids).toHaveLength(10);
   });
 
   it('each handler has required fields', () => {
