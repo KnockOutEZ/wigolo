@@ -204,12 +204,12 @@ async function fetchWithRedirects(
         // set and the connect query with a private address — which would sail through here
         // unpinned and reinstate the rebinding path this change exists to close.
         //
-        // Retryable, because at crawl scale a transient resolver blip is far more common than an
-        // attack, and the retry budget is bounded. Flip to `false` for fail-fast on bad hostnames.
+        // Not retryable: DNS failures never were (EAI_AGAIN/ENOTFOUND aren't in the retry set),
+        // and dead hostnames are common at crawl scale, so retrying would only add backoff.
         if (!resolved.addresses?.length) {
           throw new HttpFetchError(
             `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
-            true,
+            false,
           );
         }
         // PIN the socket to what we just validated. Without this the connection resolves DNS a

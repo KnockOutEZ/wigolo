@@ -34,6 +34,11 @@ describe('fail closed when there is nothing to pin to', () => {
     );
   }, 30000);
 
+  it('fails fast on an unresolvable hostname rather than burning the retry budget', async () => {
+    const err = await httpFetch('http://nothing-resolves-here.invalid/').catch((e: unknown) => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  }, 30000);
+
   it('MUST-PASS control: a hostname that does resolve is still fetched normally', async () => {
     // Without this, a change that refused *everything* would pass the test above and look correct.
     const res = await httpFetch(`http://localhost:${port}/`);
