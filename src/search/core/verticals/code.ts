@@ -8,8 +8,8 @@ import { CratesIoEngine } from '../../engines/crates-io.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
-// Code-focused vertical. GitHub-code + StackOverflow are the canonical
-// code-intent engines; DuckDuckGo + DevDocs + Brave (when configured) add
+// Code-focused vertical. GitHub-code (when a token is configured) +
+// StackOverflow are the canonical code-intent engines; DuckDuckGo + DevDocs + Brave (when configured) add
 // general developer-search breadth so database/library queries like
 // "pgvector HNSW ef_search tuning" reach blog posts and vendor docs.
 //
@@ -24,13 +24,20 @@ let cached: EngineEntry[] | null = null;
 export function getCodeEngines(): EngineEntry[] {
   if (cached) return cached;
 
-  const entries: EngineEntry[] = [
-    {
+  const entries: EngineEntry[] = [];
+
+  // GitHub's code-search API rejects unauthenticated requests (401), so the
+  // engine only joins the pool when a token is configured — same as Brave.
+  if (getConfig().githubToken) {
+    entries.push({
       engine: wrapWithRetryAndBreaker(new GithubCodeEngine()),
       weight: 1.2,
       supportsDateFilter: false,
       quality: 'medium',
-    },
+    });
+  }
+
+  entries.push(
     {
       engine: wrapWithRetryAndBreaker(new StackOverflowEngine()),
       weight: 1.0,
@@ -49,7 +56,7 @@ export function getCodeEngines(): EngineEntry[] {
       supportsDateFilter: false,
       quality: 'medium',
     },
-  ];
+  );
 
   if (getConfig().braveApiKey) {
     entries.push({
