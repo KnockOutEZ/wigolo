@@ -2,10 +2,50 @@
 
 ## Unreleased
 
-- docs: add commercial licensing terms (LICENSING.md); AGPL-3.0 unchanged.
-- feat(serve): print a one-line notice linking the commercial licensing terms when `wigolo serve` binds a non-loopback host; loopback binds and the MCP stdio path stay silent.
-- fix(search)!: the MCP `search` tool no longer emits a separate `[wigolo notice] …` text block before the JSON payload. The response is always a single JSON text block, and the synthesis warning moves into the payload as a `notice` field (replacing `warning`; combined with any existing `notice`), matching `format=stream_answer`. Callers that read `content[1]` or the `warning` field should read `content[0]` and `notice` instead. The REST API is unchanged.
-- **Breaking:** Node 20 is no longer supported; wigolo now requires Node 22 or newer and supports Node 26. better-sqlite3 moves to 12.11.x (Node 26 prebuilds), which no longer ships a Windows prebuild for Node 20, and Node 20 is end-of-life.
+## v0.3.0 — 2026-10-21
+
+Node 26 support, a large batch of contributor fixes, remote reranking, three keyless academic search engines, and hardened SSRF protection.
+
+### ⚠️ Breaking
+- **Node 22 or newer is required; Node 20 is no longer supported** (it is end-of-life). better-sqlite3 moves to 12.11.x, which ships Node 26 prebuilds but no Windows prebuild for Node 20. Node 22, 24 and 26 are tested in CI. (#657, fixes #237)
+- **MCP `search` returns a single JSON text block.** The separate `[wigolo notice] …` block is gone, and the synthesis warning moves into the payload as a `notice` field (replacing `warning`; combined with any existing `notice`), matching `format=stream_answer`. Callers that read `content[1]` or `warning` should read `content[0]` and `notice`. The REST API is unchanged. (#658, fixes #651)
+
+### Added
+- Remote/self-hosted reranker: `WIGOLO_RERANKER=remote` with a Cohere-style `/rerank` endpoint (`WIGOLO_RERANK_API_BASE`, optional `WIGOLO_RERANK_API_KEY`; plain HTTP is allowed for loopback only). (#642, fixes #631)
+- OpenAlex, DBLP and OpenReview as keyless secondary engines in the papers vertical. (#235)
+- crates.io search engine (#191) and a JobPosting named schema for `extract` (#192).
+- MCP tool annotations (read-only, open-world and similar hints) on all tools. (#251)
+- `agent` sends MCP progress notifications for completed steps when `stream: true`. (#250, fixes #248)
+- Anti-bot solve ladder with opt-in rungs (trusted-input interactive pass, AI vision solve, hosted scraping browser, human-solve fallback) and a background/windowless browser. (#260)
+- `wigolo serve` prints a commercial-licensing notice when bound to a non-loopback host. (#635)
+- `WIGOLO_SEARXNG_URL` is now read (it is the name every hint already used); `SEARXNG_URL` still works. Warmup skips the local SearXNG install when a URL is set or `SEARXNG_MODE=docker`. (#658, fixes #645)
+
+### Fixed
+- `serve` no longer exits on an unhandled `TimeoutError` when a challenge poll's signal is already aborted. (#658, fixes #630)
+- Readable error when better-sqlite3 was built for a different Node than the one running wigolo, also reported by `doctor` (including `--json`). (#657, fixes #220 and #654)
+- `doctor`: no more 80-character error truncation, a 30s timeout for cold `npx playwright`, and "installed, failed to launch" reported separately from "not installed". (#657, fixes #653)
+- The `search_engines` parameter is honoured by the core search backend and included in the cache key. (#521, fixes #303)
+- The GitHub code engine only runs when `WIGOLO_GITHUB_TOKEN` is set, instead of tripping its own breaker. (#658, fixes #649)
+- Tracking-parameter stripping in dedup is case-insensitive. (#658, fixes #633)
+- The extraction fallback uses the configured LLM model instead of always sending `gpt-4o-mini`, so `OPENAI_BASE_URL` gateways work for extraction too. (#658)
+- Crawl scope follows the seed's post-redirect origin (apex → www). (#265, fixes #263)
+- REST maps tool failures on the machine error code, not the prose, so they no longer all return 500. (#264, fixes #262)
+- `config --set` accepts the documented `settingsPath` keys. (#277, fixes #256)
+- The setup wizard derives required fields from the schema; a keychain-stored key no longer sends users back through setup. (#279, fixes #257)
+- Citation claims are no longer split at decimal numbers. (#278, fixes #274)
+- Better CJK ranking: bigram tokenisation keeps lexical and rare-term signals for Chinese, Japanese and Korean queries. (#232, fixes #230)
+- The ARM64 Docker image includes the tokenizer binary, so vector search no longer silently degrades. (#253, fixes #231)
+- Windows: concurrent skill installs no longer fail on lock-directory `EPERM`. (#658)
+- Cache expiry is timezone-independent (#209); section requests keep the full-page cache (#229); token-authenticated remote MCP clients are allowed (#219); OpenCode MCP configuration is wired (#204).
+- `sharp` is declared as a direct dependency (#658, fixes #652), and the skill packs carry the package version (#658, fixes #632).
+
+### Security
+- SSRF: plain-HTTP fetches pin the socket to the validated IP, which closes the DNS-rebinding window. The pin fails closed on unresolvable or mismatched hosts. The TLS and browser tiers follow in #207. (#402, #210)
+- Dependency updates for disclosed advisories: ajv, ws, protobufjs, vite. (#216)
+- fastembed v3, which downloads models from Hugging Face instead of the retiring Qdrant GCS bucket. (#644, fixes #643)
+
+### Docs
+- Commercial licensing terms (LICENSING.md); AGPL-3.0 is unchanged. Docker `-full` image tags corrected (#280, fixes #255).
 
 ## v0.2.0 — 2026-07-17
 
