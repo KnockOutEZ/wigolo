@@ -122,8 +122,10 @@ export interface Config {
   githubToken: string | null;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'json' | 'text';
-  reranker: 'onnx' | 'none' | 'custom';
+  reranker: 'onnx' | 'remote' | 'none' | 'custom';
   rerankerModel: string;
+  rerankApiBase: string | null;
+  rerankApiKey: string | null;
   rerankerMaxLength: number;
   rerankerReadyTimeoutMs: number;
   rerankerRequestTimeoutMs: number;
@@ -681,6 +683,8 @@ export function getConfig(): Config {
       return raw as Config['reranker'];
     })(),
     rerankerModel: envStr('WIGOLO_RERANKER_MODEL', 'bge-reranker-v2-m3', settings, 'rerankerModel') ?? 'bge-reranker-v2-m3',
+    rerankApiBase: envStr('WIGOLO_RERANK_API_BASE', null, settings, 'rerankApiBase'),
+    rerankApiKey: resolveKeychainSecret('WIGOLO_RERANK_API_KEY', 'rerankApiKey'),
     rerankerMaxLength: envInt('WIGOLO_RERANKER_MAX_LENGTH', 512, settings, 'rerankerMaxLength'),
     rerankerReadyTimeoutMs: envInt('WIGOLO_RERANKER_READY_TIMEOUT_MS', 60_000, settings, 'rerankerReadyTimeoutMs'),
     rerankerRequestTimeoutMs: envInt('WIGOLO_RERANKER_REQUEST_TIMEOUT_MS', 30_000, settings, 'rerankerRequestTimeoutMs'),

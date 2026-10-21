@@ -277,6 +277,24 @@ describe('config', () => {
   });
 
   describe('reranker configuration', () => {
+    it('keeps ONNX as the default', () => {
+      delete process.env.WIGOLO_RERANKER;
+      resetConfig();
+      expect(getConfig().reranker).toBe('onnx');
+    });
+
+    it('reads remote endpoint, model, key, and timeout from env', () => {
+      process.env.WIGOLO_RERANKER = 'remote';
+      process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+      process.env.WIGOLO_RERANK_API_KEY = 'test-token';
+      process.env.WIGOLO_RERANKER_MODEL = 'test-reranker';
+      process.env.WIGOLO_RERANKER_REQUEST_TIMEOUT_MS = '1234';
+      resetConfig();
+      expect(getConfig()).toMatchObject({
+        reranker: 'remote', rerankApiBase: 'http://127.0.0.1:8082/v1',
+        rerankApiKey: 'test-token', rerankerModel: 'test-reranker', rerankerRequestTimeoutMs: 1234,
+      });
+    });
     it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
       process.env.WIGOLO_RERANKER = 'none';
       resetConfig();

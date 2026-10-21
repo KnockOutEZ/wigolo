@@ -301,6 +301,24 @@ async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupR
 async function installReranker(
   reporter: WarmupReporter,
 ): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  const mode = getConfig().reranker;
+  if (mode === 'none' || mode === 'custom') {
+    reporter.note('Reranker: skipped (disabled)');
+    return {};
+  }
+  if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', 'Checking remote reranker');
+    try {
+      const provider = await getRerankProvider();
+      reporter.success('reranker', `remote configured (${provider.modelId}); no local model warmup needed`);
+      return { reranker: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('reranker', message);
+      return { reranker: 'failed', rerankerError: message };
+    }
+  }
   reporter.start('reranker', 'Downloading ML reranker model (cross-encoder)');
   try {
     const provider = await getRerankProvider();

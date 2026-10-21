@@ -41,7 +41,7 @@ vi.mock('../../src/providers/rerank-provider.js', () => ({
 // Config mock: force reranker to 'onnx' so the fold gate fires in a clean test
 // environment regardless of WIGOLO_RERANKER env var. The reranker-none test
 // overrides configReranker to 'none' for the duration of that single test.
-let configReranker: 'onnx' | 'none' | 'custom' = 'onnx';
+let configReranker: 'onnx' | 'remote' | 'none' | 'custom' = 'onnx';
 vi.mock('../../src/config.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/config.js')>();
   return {
@@ -189,7 +189,8 @@ describe('rerank-fold — D4 junk-floor mechanism fixture (degraded single-junk 
 });
 
 describe('rerank-fold wiring', () => {
-  it('balanced: cross-encoder demotes the content-irrelevant result below the relevant one', async () => {
+  it.each(['onnx', 'remote'] as const)('balanced: %s reranker demotes the irrelevant result', async (mode) => {
+    configReranker = mode;
     rerankScores['OFFTOPIC uniqq'] = -5;
     rerankScores['ONTOPIC uniqq'] = 5;
     seedEngines();
@@ -215,7 +216,7 @@ describe('rerank-fold wiring', () => {
     }
   });
 
-  it('reranker !== onnx: fold not applied even on balanced', async () => {
+  it('reranker none: fold not applied even on balanced', async () => {
     configReranker = 'none';
     rerankScores['OFFTOPIC uniqq'] = -5;
     rerankScores['ONTOPIC uniqq'] = 5;
