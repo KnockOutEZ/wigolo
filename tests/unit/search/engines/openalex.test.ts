@@ -187,11 +187,11 @@ describe('OpenAlexEngine', () => {
     expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('encodes search, per_page and mailto into the request', async () => {
+  it('encodes search and per_page into the request, with no shared mailto', async () => {
     const { calls } = captureFetch(oaBody([]));
     await new OpenAlexEngine().search('graph neural', { maxResults: 15 });
     expect(calls[0].url).toContain('search=graph+neural');
     expect(calls[0].url).toContain('per_page=15');
-    expect(calls[0].url).toContain('mailto=');
+    expect(calls[0].url).not.toContain('mailto=');
   });
 });

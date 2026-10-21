@@ -57,12 +57,11 @@ export class OpenAlexEngine implements SearchEngine {
     const timeoutMs = options.timeoutMs ?? 10000;
     const maxResults = options.maxResults ?? 10;
 
-    // `mailto` opts into OpenAlex's faster "polite pool" and identifies the
-    // client, as their usage policy requests. Keyless either way.
+    // No `mailto`: the polite pool wants a contact the operator actually reads,
+    // and a shared placeholder address would speak for every install at once.
     const params = new URLSearchParams({
       search: query,
       per_page: String(maxResults),
-      mailto: 'wigolo@users.noreply.github.com',
     });
     const url = `https://api.openalex.org/works?${params}`;
     log.debug('openalex search', { query });
