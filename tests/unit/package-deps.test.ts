@@ -30,10 +30,10 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
     expect(pkg.overrides?.protobufjs).toBeUndefined();
   });
 
-  it('engines.node is still >=20', () => {
+  it('engines.node is >=22 (better-sqlite3 12.10+ ships no win32 prebuild for Node 20)', () => {
     const node = (pkg as { engines?: { node?: string } }).engines?.node;
     expect(node).toBeDefined();
-    expect(node).toMatch(/>=20/);
+    expect(node).toMatch(/>=22/);
   });
 });
 

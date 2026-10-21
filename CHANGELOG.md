@@ -4,6 +4,7 @@
 
 - docs: add commercial licensing terms (LICENSING.md); AGPL-3.0 unchanged.
 - feat(serve): print a one-line notice linking the commercial licensing terms when `wigolo serve` binds a non-loopback host; loopback binds and the MCP stdio path stay silent.
+- **Breaking:** Node 20 is no longer supported; wigolo now requires Node 22 or newer and supports Node 26. better-sqlite3 moves to 12.11.x (Node 26 prebuilds), which no longer ships a Windows prebuild for Node 20, and Node 20 is end-of-life.
 
 ## v0.2.0 — 2026-07-17
 
