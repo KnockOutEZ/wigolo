@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { getConfig } from '../config.js';
+import { getConfig, type Config } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { probeBrowser, type BrowserName } from '../fetch/browser-probe.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
@@ -367,12 +367,27 @@ export async function installEmbeddings(reporter: WarmupReporter = noopReporter)
   }
 }
 
-async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+async function runSearxngPhase(
+  config: Pick<Config, 'dataDir' | 'searxngUrl' | 'searxngMode'>,
+  reporter: WarmupReporter,
+): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+  const { dataDir } = config;
   const state = getBootstrapState(dataDir);
   if (state?.status === 'ready') {
     reporter.start('searxng', 'Checking search engine (searxng)');
     reporter.success('searxng', 'already set up');
     return { searxng: 'ready' };
+  }
+
+  // An external instance or docker mode needs no local Python install, so the
+  // Python gate (and the native bootstrap behind it) does not apply.
+  if (config.searxngUrl || config.searxngMode === 'docker') {
+    reporter.start('searxng', 'Checking search engine (searxng)');
+    reporter.success(
+      'searxng',
+      config.searxngUrl ? 'using external instance — nothing to install' : 'docker mode — started on demand',
+    );
+    return { searxng: 'skipped' };
   }
 
   if (!checkPythonAvailable()) {
@@ -448,7 +463,7 @@ export async function runWarmup(
     searxngResult = { searxng: 'skipped' };
     reporterImpl.note('Search engine sidecar: skipped — using multi-engine core backend');
   } else {
-    searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
+    searxngResult = await runSearxngPhase(config, reporterImpl);
   }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};

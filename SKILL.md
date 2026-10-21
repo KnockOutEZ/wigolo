@@ -404,7 +404,7 @@ Top environment variables. All optional — defaults are safe.
 | Variable | Default | Purpose |
 |---|---|---|
 | `WIGOLO_DATA_DIR` | `~/.wigolo` | Cache DB, search engine state, plugins, embeddings |
-| `SEARXNG_URL` | unset | Point at an existing search engine (skips native bootstrap) |
+| `WIGOLO_SEARXNG_URL` | unset | Point at an existing search engine (skips native bootstrap); legacy `SEARXNG_URL` also accepted |
 | `SEARXNG_MODE` | `native` | `native` runs local Python search engine; `docker` runs container |
 | `WIGOLO_CHROME_PROFILE_PATH` | unset | Chrome profile for `use_auth: true` |
 | `WIGOLO_CDP_URL` | unset | Chrome DevTools endpoint (e.g. `http://localhost:9222`) |

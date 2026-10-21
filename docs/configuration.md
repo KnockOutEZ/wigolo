@@ -53,7 +53,7 @@ What the backends mean:
 - **`searxng`** — the optional/legacy aggregator sidecar only. Higher long-tail recall on some queries, slower cold start; wigolo manages the sidecar process for you.
 - **`hybrid`** — runs `core` first and falls back to the aggregator (merging results) only when a quality signal fires; the merged response names the signal in `fallback_signal`.
 
-The legacy sidecar has its own knobs when you opt in: `SEARXNG_URL` (use an external instance), `SEARXNG_MODE` (`native` or `docker`), `SEARXNG_PORT` (default `8888`).
+The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use an external instance; the legacy `SEARXNG_URL` is still accepted as a fallback), `SEARXNG_MODE` (`native` or `docker`), `SEARXNG_PORT` (default `8888`).
 
 ## Fetch and browser engine
 
