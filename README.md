@@ -17,11 +17,17 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
 [![follow on X](https://img.shields.io/badge/follow-%40yourtowhid-000000?logo=x&logoColor=white)](https://x.com/yourtowhid)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/BkUUgz2bNF)
 
 <a href="https://trendshift.io/repositories/79424?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-79424" target="_blank"><img src="https://trendshift.io/api/badge/repositories/79424" alt="wigolo on Trendshift" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/79424?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-79424" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/79424/daily?language=TypeScript" alt="KnockOutEZ%2Fwigolo | Trendshift" width="250" height="55"/></a>
 
-[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
+<sub>sponsored by</sub><br>
+<a href="https://wigolo.app/go/testmu/?ref=readme-top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg"><img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" height="20"></picture></a>
+
+[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Discord](https://discord.gg/BkUUgz2bNF) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Licensing](LICENSING.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
+
+**Join the community on [Discord](https://discord.gg/BkUUgz2bNF)** — questions, help, and what's being built next.
 
 New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid"><b>@yourtowhid on X</b></a> for all of it and new ways to use wigolo, and reach out there for collaborations or feedback · also on <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a>
 
@@ -127,25 +133,6 @@ Here's what one real result looks like, dissected. It includes the failed engine
 </picture>
 
 </div>
-
-## Sponsors
-
-Thank you to the sponsors below, who help keep wigolo maintained and free for everyone to use. Their support goes straight into the work.
-
-<div align="center">
-
-<a href="https://knockoutez.github.io/wigolo/go/testmu/?ref=readme">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg">
-<img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" width="240">
-</picture>
-</a>
-
-<sub>**[TestMu AI](https://knockoutez.github.io/wigolo/go/testmu/?ref=readme)** (formerly LambdaTest) is the world's first full-stack agentic AI quality engineering platform, trusted by 18,000+ enterprises.</sub>
-
-</div>
-
-**wigolo is free for all and is meant to stay that way.** If you or your company would like to help keep it maintained, there's room for more sponsors — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**, or see [SPONSORS.md](SPONSORS.md) for the terms. A one-off via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez) is welcome too.
 
 ## Benchmark
 
@@ -257,7 +244,7 @@ docker run -p 3333:3333 -v wigolo-data:/data \
   ghcr.io/knockoutez/wigolo serve --host 0.0.0.0
 ```
 
-The slim image lazy-loads models into the volume; `:full` preinstalls the browser engine. Also on Docker Hub as `towhid69420/wigolo`. → [installation & all channels](docs/installation.md)
+The slim image lazy-loads models into the volume; `ghcr.io/knockoutez/wigolo:latest-full` preinstalls the browser engine. Versioned releases use the same `-full` suffix (for example, `0.2.1-full`). Also on Docker Hub as `towhid69420/wigolo`. → [installation & all channels](docs/installation.md)
 
 ### Agent skills
 
@@ -340,7 +327,7 @@ export WIGOLO_EAGER_WARMUP=1                        # pay the ~1s model load up 
 **[docs/](docs/README.md)** — the complete manual:
 [getting started](docs/getting-started.md) · [installation & channels](docs/installation.md) · [configuration](docs/configuration.md) · [tools reference](docs/tools.md) · [CLI & shell](docs/cli.md) · [REST API](docs/rest-api.md) · [SDKs & integrations](docs/sdks.md) · [self-hosting](docs/self-hosting.md) · [agent skills](docs/skills.md) · [plugins](docs/plugins.md) · [troubleshooting & FAQ](docs/troubleshooting.md) · [privacy & security](docs/privacy-security.md)
 
-**[examples/](examples/README.md)** — runnable, each with a README (and most with a terminal recording): one-shot CLI, NDJSON shell pipelines, REST via curl, TypeScript & Python SDKs, Vercel AI SDK tools, pointing self-hosted n8n at a remote wigolo, watch-with-webhook, and writing your own search-engine plugin. The docs are also rendered on the site at **[knockoutez.github.io/wigolo/docs](https://knockoutez.github.io/wigolo/docs/)**.
+**[examples/](examples/README.md)** — runnable, each with a README (and most with a terminal recording): one-shot CLI, NDJSON shell pipelines, REST via curl, TypeScript & Python SDKs, Vercel AI SDK tools, pointing self-hosted n8n at a remote wigolo, watch-with-webhook, and writing your own search-engine plugin. The docs are also rendered on the site at **[wigolo.app/docs](https://wigolo.app/docs/)**.
 
 ## Beta & feedback
 
@@ -350,7 +337,7 @@ wigolo is in **public beta**. Everything documented here works and is held to a 
 - 💡 **[Request a feature](https://github.com/KnockOutEZ/wigolo/issues/new?template=feature_request.yml)** — something it should do
 - 💬 **[Ask anything](https://github.com/KnockOutEZ/wigolo/discussions)** — questions, setups, show & tell
 
-If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (there's no paid tier and never will be), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
+If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (the open-source version is the full product; commercial licenses fund it, not gated features), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
 
 ## Troubleshooting
 
@@ -360,6 +347,7 @@ If wigolo earns a place in your setup, three things keep it going: a ⭐ **star*
 - **Browser won't launch on Linux** — `wigolo warmup --browser` installs the OS libraries (or prints the exact command).
 - **Native build error / unusual Node** — use an LTS: **Node 20, 22, or 24**.
 - **Behind a proxy** — `USE_PROXY=true` + `PROXY_URL`; add `NODE_EXTRA_CA_CERTS` for TLS-inspecting proxies.
+- **Your agent asks permission on every call** — allow the tools in your client, then restart it; rules are read at session start. [Details](docs/troubleshooting.md#your-agent-keeps-asking-permission).
 
 The full guide covers per-symptom fixes, a "what still works when X fails" map, platform notes (incl. linux-arm64), and offline installs: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
@@ -368,7 +356,7 @@ The full guide covers per-symptom fixes, a "what still works when X fails" map, 
 <details>
 <summary><b>Free? What's the catch?</b></summary>
 
-No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's sustained by donations, and the AGPL license legally prevents a switch into a closed hosted product.
+No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's funded by commercial licenses and sponsors, and the AGPL legally prevents a switch into a closed hosted product.
 
 </details>
 
@@ -394,9 +382,9 @@ wigolo reads the public web the way a browser does: robots.txt respected by defa
 </details>
 
 <details>
-<summary><b>AGPL — can I use this at work?</b></summary>
+<summary><b>Can I use this at work?</b></summary>
 
-Yes, freely, company-wide. The license only bites if you *modify wigolo and run it as a network service*, in which case you must publish those modifications; using it as a local dev tool carries zero obligation. For commercial-licensing questions, reach out.
+Yes. If you're a company or building a commercial product on wigolo, please take a commercial license or sponsor the project. See [LICENSING.md](LICENSING.md).
 
 </details>
 
@@ -417,18 +405,39 @@ That's the on-device brain: a full browser engine plus the ranking and embedding
 
 Homebrew, `curl | sh`, and the single-file binary are covered in the [installation guide](docs/installation.md). Use one channel per machine; they all share `~/.wigolo`.
 
+## Sponsors
+
+Thank you to the sponsors below, who help keep wigolo maintained and free for everyone to use. Their support goes straight into the work.
+
+<div align="center">
+
+<a href="https://wigolo.app/go/testmu/?ref=readme">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg">
+<img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" height="32">
+</picture>
+</a>
+
+<sub>**[TestMu AI](https://wigolo.app/go/testmu/?ref=readme)** (formerly LambdaTest) is the world's first full-stack agentic AI quality engineering platform, trusted by 18,000+ enterprises.</sub>
+
+</div>
+
+**wigolo is free for everyone.** If you or your company would like to help keep it maintained, there's room for more sponsors — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**, or see [what sponsorship includes](https://wigolo.app/sponsors/) and the terms in [SPONSORS.md](SPONSORS.md). A one-off via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez) is welcome too.
+
 ## Contributing
 
 Bug reports, feature requests, and PRs are all welcome; see **[CONTRIBUTING.md](CONTRIBUTING.md)**. Keep tool handlers thin, add tests, and run the suite before opening a PR. The friendliest entry point is the plugin system for custom search engines and extractors: [add a search engine in ~100 lines](docs/plugins.md), with a template in [`examples/plugin-search-engine`](examples/plugin-search-engine).
 
 ## License
 
-**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host, including inside a company. The one obligation: if you run a **modified** version as a network service, you must publish your modified source under the same license. That keeps wigolo open while preventing a closed, hosted fork. See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name. For commercial-licensing questions, reach out.
+Free and open source under the **[GNU AGPL-3.0](LICENSE)**, and it'll stay that way. If you're a company, or you're making money with wigolo, please take a commercial license or sponsor the project. That's what keeps it maintained. See **[LICENSING.md](LICENSING.md)**.
+
+See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name.
 
 <div align="center">
 <br>
 
-wigolo is free and actively maintained, and it's meant to stay that way.
+wigolo is open source, free, and actively maintained.
 If it saves you a metered search bill, a ⭐, a sharp issue, or a **[☕ coffee](https://buymeacoffee.com/knockoutez)** helps keep it sustainable.
 
 <sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a> · <a href="mailto:ktowhid20@gmail.com">ktowhid20@gmail.com</a> · <a href="https://x.com/yourtowhid">X</a> · <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a></sub>

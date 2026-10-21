@@ -8,12 +8,14 @@ import {
   UNKNOWN_PLACEMENT,
   getSponsor,
   normalizePlacement,
-  sponsorCountPath,
   sponsorGoPath,
   sponsorGoUrl,
+  sponsorReleaseLine,
   sponsorTargetUrl,
   type Sponsor,
 } from '../../site/src/lib/sponsors';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const testmu = (): Sponsor => {
   const s = getSponsor('testmu');
@@ -122,22 +124,78 @@ describe('hop URLs', () => {
   it('builds an absolute URL for surfaces GitHub serves', () => {
     // A relative link in the README would resolve against github.com and 404,
     // so README links must be absolute.
-    expect(sponsorGoUrl('testmu', 'readme', 'https://knockoutez.github.io/wigolo')).toBe(
-      'https://knockoutez.github.io/wigolo/go/testmu/?ref=readme',
+    expect(sponsorGoUrl('testmu', 'readme', 'https://wigolo.app')).toBe(
+      'https://wigolo.app/go/testmu/?ref=readme',
     );
   });
 
   it('does not double the slash when the site URL has a trailing one', () => {
-    expect(sponsorGoUrl('testmu', 'readme', 'https://knockoutez.github.io/wigolo/')).toBe(
-      'https://knockoutez.github.io/wigolo/go/testmu/?ref=readme',
+    expect(sponsorGoUrl('testmu', 'readme', 'https://wigolo.app/')).toBe(
+      'https://wigolo.app/go/testmu/?ref=readme',
     );
   });
 
-  it('keeps the counted path free of the query string', () => {
-    // GoatCounter groups by path; leaving `?ref=` in would fragment one
-    // placement across every stray param a visitor arrives with.
-    const path = sponsorCountPath('testmu', 'readme');
-    expect(path).toBe('/go/testmu/readme');
-    expect(path).not.toContain('?');
+});
+
+describe('published sponsor links', () => {
+  it('tag every README and SPONSORS.md hop with a known sponsor and a published placement', () => {
+    // A typo'd ref would pass the redirect but collapse that surface into
+    // "unknown" — its clicks would vanish from the sponsor's report.
+    const hops = ['README.md', 'SPONSORS.md'].flatMap((f) =>
+      [...readFileSync(join(process.cwd(), f), 'utf8').matchAll(/\/go\/([a-z0-9-]+)\/\?ref=([a-z0-9-]+)/g)].map(
+        (m) => ({ file: f, slug: m[1], ref: m[2] }),
+      ),
+    );
+    expect(hops.length).toBeGreaterThan(0);
+    for (const h of hops) {
+      expect(getSponsor(h.slug), `${h.file}: ${h.slug}`).toBeDefined();
+      expect(normalizePlacement(h.ref), `${h.file}: ${h.ref}`).toBe(h.ref);
+    }
+  });
+
+  it('puts the README top strip above the fold, before the first section', () => {
+    // The strip is only worth selling if it sits in the header block, not
+    // below the demo where most visitors never scroll.
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+    const strip = readme.indexOf('ref=readme-top');
+    expect(strip).toBeGreaterThan(-1);
+    expect(strip).toBeLessThan(readme.indexOf('\n## '));
+  });
+});
+
+describe('sponsorReleaseLine', () => {
+  it('links each sponsor through the hop tagged as a release placement', () => {
+    const line = sponsorReleaseLine('https://wigolo.app');
+    for (const s of SPONSORS) {
+      expect(line).toContain(`[${s.name}](https://wigolo.app/go/${s.slug}/?ref=release)`);
+    }
+  });
+});
+
+describe('sponsor logos', () => {
+  // Intrinsic size from the file itself: PNG IHDR, or an SVG's width/height.
+  const sizeOf = (file: string): { width: number; height: number } => {
+    const buf = readFileSync(file);
+    if (buf.subarray(1, 4).toString() === 'PNG') {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    const svg = buf.toString('utf8');
+    const w = svg.match(/<svg[^>]*\bwidth="(\d+(?:\.\d+)?)"/);
+    const h = svg.match(/<svg[^>]*\bheight="(\d+(?:\.\d+)?)"/);
+    return { width: Number(w?.[1]), height: Number(h?.[1]) };
+  };
+
+  it('ship both themes in both the README assets and the site, at the declared size', () => {
+    // A missing file is a broken image on GitHub or the site; a wrong size
+    // squashes the logo or shifts the page while it loads.
+    for (const s of SPONSORS) {
+      for (const path of [s.logo.light, s.logo.dark]) {
+        const file = path.replace(/^\/sponsors\//, '');
+        for (const dir of ['assets/sponsors', 'site/public/sponsors']) {
+          const size = sizeOf(join(process.cwd(), dir, file));
+          expect(size.width / size.height, `${dir}/${file}`).toBeCloseTo(s.logo.width / s.logo.height, 2);
+        }
+      }
+    }
   });
 });

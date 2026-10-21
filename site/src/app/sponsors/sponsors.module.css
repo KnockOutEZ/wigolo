@@ -1,0 +1,74 @@
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 24px 28px;
+}
+.value {
+  font-family: var(--font-display);
+  font-size: clamp(36px, 4.4vw, 56px);
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.label {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.list {
+  display: grid;
+  gap: 14px;
+  max-width: 72ch;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.list li {
+  padding-left: 22px;
+  position: relative;
+}
+.list li::before {
+  content: "—";
+  position: absolute;
+  left: 0;
+  color: var(--muted-2);
+}
+.list strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+.sponsor {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+.sponsorLogo {
+  height: 32px;
+  width: auto;
+}
+.sponsorText {
+  flex: 1 1 320px;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.contact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  align-items: center;
+  margin-top: 28px;
+}
+.link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

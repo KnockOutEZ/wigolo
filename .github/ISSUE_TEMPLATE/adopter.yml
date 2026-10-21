@@ -1,0 +1,43 @@
+name: Add us to the adopters list
+description: Using wigolo at your company or in a project? Get listed in ADOPTERS.md and on the website.
+title: "Adopter: "
+labels: ["adopter"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for using wigolo. Entries appear in [ADOPTERS.md](https://github.com/KnockOutEZ/wigolo/blob/main/ADOPTERS.md) and, with a logo, in the "Used by" row on wigolo.app. Only request a listing for an organization you're allowed to speak for.
+  - type: input
+    id: organization
+    attributes:
+      label: Organization
+      placeholder: "Acme Inc."
+    validations:
+      required: true
+  - type: input
+    id: website
+    attributes:
+      label: Website
+      placeholder: "https://acme.example"
+    validations:
+      required: true
+  - type: textarea
+    id: usage
+    attributes:
+      label: How do you use wigolo?
+      description: One or two lines — shown in ADOPTERS.md.
+      placeholder: "Web search and page fetching for our internal coding agents."
+    validations:
+      required: true
+  - type: textarea
+    id: logo
+    attributes:
+      label: Logo (optional)
+      description: Drag in an SVG, or a PNG at least 256 px tall. Leave empty to be listed by name only.
+  - type: checkboxes
+    id: permission
+    attributes:
+      label: Permission
+      options:
+        - label: I'm authorized to have this organization's name and logo listed publicly.
+          required: true

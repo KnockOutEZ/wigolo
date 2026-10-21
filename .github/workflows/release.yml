@@ -71,7 +71,14 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "release $GITHUB_REF_NAME already exists — skipping"
           else
-            gh release create "$GITHUB_REF_NAME" --generate-notes
+            # Sponsor credit, prepended to the generated notes (the registry is
+            # site/src/lib/sponsors.ts). Empty when there are no sponsors.
+            SPONSOR_NOTES="$(npx tsx scripts/release-sponsor-notes.ts)"
+            if [ -n "$SPONSOR_NOTES" ]; then
+              gh release create "$GITHUB_REF_NAME" --generate-notes --notes "$SPONSOR_NOTES"
+            else
+              gh release create "$GITHUB_REF_NAME" --generate-notes
+            fi
           fi
 
       # ---------------------------------------------------------------------

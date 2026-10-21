@@ -1,0 +1,42 @@
+/* Docs UI only — imported by app/docs/layout.tsx, never by marketing pages.
+   `source(none)` keeps Tailwind from scanning the whole site; fumadocs-ui's
+   preset registers its own sources. */
+@import "tailwindcss" source(none);
+@source "../../components/docs";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Fumadocs tokens, mapped onto the site's own tokens (globals.css). */
+@theme inline {
+  --color-fd-background: var(--bg);
+  --color-fd-foreground: var(--ink);
+  --color-fd-muted: var(--bg-warm);
+  --color-fd-muted-foreground: var(--muted);
+  --color-fd-popover: var(--surface);
+  --color-fd-popover-foreground: var(--ink-2);
+  --color-fd-card: var(--surface);
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-border: var(--line);
+  --color-fd-primary: var(--factory-purple);
+  --color-fd-primary-foreground: var(--white);
+  --color-fd-secondary: var(--factory-stage);
+  --color-fd-secondary-foreground: var(--factory-purple);
+  --color-fd-accent: var(--line-2);
+  --color-fd-accent-foreground: var(--ink);
+  --color-fd-ring: var(--accent-purple);
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --fd-layout-width: var(--maxw);
+  /* The sticky marketing nav sits above the docs layout. Fumadocs offsets its
+     sticky sidebar and TOC by the banner height, so declare the nav as one. */
+  --fd-banner-height: var(--nav-h);
+}
+
+.wigolo-docs h1,
+.wigolo-docs h2,
+.wigolo-docs h3 {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}

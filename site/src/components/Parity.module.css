@@ -115,6 +115,7 @@
 .meter {
   margin-top: 40px;
   width: 100%;
+  height: auto;
   border: 1px solid var(--line);
   border-radius: 10px;
 }

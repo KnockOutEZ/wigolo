@@ -14,10 +14,15 @@
 /** Where a sponsor link was rendered. A closed set — see `normalizePlacement`. */
 export const PLACEMENTS = [
   "readme",
+  "readme-top",
   "site-home",
+  "site-strip",
   "site-footer",
   "sponsors-page",
   "docs",
+  "release",
+  "discord",
+  "x",
 ] as const;
 
 export type Placement = (typeof PLACEMENTS)[number];
@@ -33,8 +38,12 @@ export interface Sponsor {
   description: string;
   /** The sponsor's canonical destination, with their own UTMs left intact. */
   url: string;
-  /** Logo paths relative to the site's /public and the repo's /assets. */
-  logo: { light: string; dark: string };
+  /**
+   * Logo paths relative to the site's /public and the repo's /assets, plus the
+   * file's intrinsic size — logos differ in shape, and the pages reserve space
+   * from it so nothing shifts while they load.
+   */
+  logo: { light: string; dark: string; width: number; height: number };
   /** Human label for how long they've supported the project. */
   since: string;
 }
@@ -49,6 +58,8 @@ export const SPONSORS: readonly Sponsor[] = [
     logo: {
       light: "/sponsors/testmu-ai.svg",
       dark: "/sponsors/testmu-ai-dark.svg",
+      width: 513,
+      height: 80,
     },
     since: "2026",
   },
@@ -106,8 +117,21 @@ export const sponsorGoUrl = (
 ): string =>
   `${siteUrl.replace(/\/$/, "")}${sponsorGoPath(slug, placement)}`;
 
-/** Analytics path for a click, kept stable and free of the query string. */
-export const sponsorCountPath = (
-  slug: string,
-  placement: Placement | typeof UNKNOWN_PLACEMENT,
-): string => `/go/${slug}/${placement}`;
+
+/**
+ * One markdown line thanking every sponsor, prepended to each GitHub Release's
+ * generated notes (see .github/workflows/release.yml). Empty with no sponsors.
+ */
+export const sponsorReleaseLine = (siteUrl: string): string =>
+  SPONSORS.length === 0
+    ? ""
+    : `**Sponsored by** ${SPONSORS.map(
+        (s) => `[${s.name}](${sponsorGoUrl(s.slug, "release", siteUrl)})`,
+      ).join(" · ")} — thank you for keeping wigolo free for everyone.`;
+
+/** Every sponsor logo renders at the same height; kept as a helper so call sites stay uniform. */
+export const logoHeight = (_sponsor: Sponsor, base: number): number => base;
+
+/** Matching width for `logoHeight`, from the logo's intrinsic aspect ratio. */
+export const logoWidth = (sponsor: Sponsor, base: number): number =>
+  Math.round((logoHeight(sponsor, base) * sponsor.logo.width) / sponsor.logo.height);

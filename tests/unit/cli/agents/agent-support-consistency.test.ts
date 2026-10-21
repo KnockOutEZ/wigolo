@@ -83,7 +83,7 @@ describe('agent support seams stay consistent', () => {
       'docs/installation.md',
       'site/src/components/Quickstart.tsx',
       'site/src/components/TrustedBy.tsx',
-      'site/public/llms.txt',
+      'site/src/content/llms-preamble.md',
       'examples/quickstart-claude-code/README.md',
     ];
     const missing = surfaces.filter((path) => (

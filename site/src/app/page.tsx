@@ -3,6 +3,8 @@ import Nav from "@/components/Nav";
 import Hero from "@/components/Hero";
 import FeatureMarquee from "@/components/FeatureMarquee";
 import Stats from "@/components/Stats";
+import LogoWall from "@/components/LogoWall";
+import SponsorStrip from "@/components/SponsorStrip";
 import HowItWorks from "@/components/HowItWorks";
 import TrustedBy from "@/components/TrustedBy";
 import Tools from "@/components/Tools";
@@ -24,16 +26,18 @@ export default function Home() {
         <Hero />
         <FeatureMarquee />
         <Stats />
+        <LogoWall />
+        <SponsorStrip placement="site-strip" />
         <HowItWorks />
         <TrustedBy />
         <Tools />
         <OpenSource />
-        <Sponsors />
         <Testimonials />
         <Parity />
         <StartShipping />
         <Quickstart />
         <Feedback />
+        <Sponsors />
       </main>
       <Footer />
     </>

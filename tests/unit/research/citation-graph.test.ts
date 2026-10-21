@@ -98,6 +98,36 @@ describe('buildCitationGraph', () => {
     expect(graph[1].source_indices).toEqual([0]);
   });
 
+  // Regression: decimal points must not truncate claim text (issue #274).
+  it('preserves decimal numbers inside citation claim text', () => {
+    const sources = Array.from({ length: 7 }, (_, i) =>
+      mkSource({ url: `https://example.com/${i}` }),
+    );
+    const graph = buildCitationGraph(
+      'Revenue reached $62.3 billion in Q4 FY2026, up 75 percent [7].',
+      sources,
+    );
+    expect(graph.length).toBe(1);
+    expect(graph[0].claim).toContain('$62.3 billion');
+    expect(graph[0].claim).not.toMatch(/^3 billion/);
+    expect(graph[0].source_indices).toEqual([6]);
+    expect(graph[0].confidence).toBe('high');
+  });
+
+  it('preserves multiple decimals in one sentence and still splits multi-sentence text', () => {
+    const sources = [mkSource(), mkSource()];
+    const graph = buildCitationGraph(
+      'Revenue hit $62.3 billion with 27.7 percent growth [1]. Margin improved to $5.8 billion [2].',
+      sources,
+    );
+    expect(graph.length).toBe(2);
+    expect(graph[0].claim).toContain('$62.3 billion');
+    expect(graph[0].claim).toContain('27.7 percent');
+    expect(graph[0].source_indices).toEqual([0]);
+    expect(graph[1].claim).toContain('$5.8 billion');
+    expect(graph[1].source_indices).toEqual([1]);
+  });
+
   it('caps output at 50 entries', () => {
     const sentences = Array.from({ length: 80 }, (_, i) => `Sentence ${i} contains enough words to pass the length check.`).join(' ');
     const graph = buildCitationGraph(sentences, []);

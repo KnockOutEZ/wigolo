@@ -1,6 +1,6 @@
 # Sponsors
 
-**wigolo is free for all, and it is meant to stay that way.**
+**wigolo is free for everyone.**
 
 There is no paid tier, no metered plan, and no feature held back for people who
 pay. The core tools need no API keys and send nothing to a third party. That is
@@ -11,18 +11,19 @@ keep it that way.
 
 ### TestMu AI
 
-<a href="https://knockoutez.github.io/wigolo/go/testmu/?ref=sponsors-page">
+<a href="https://wigolo.app/go/testmu/?ref=sponsors-page">
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg">
-<img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" width="240">
+<img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" height="40">
 </picture>
 </a>
 
-[TestMu AI](https://knockoutez.github.io/wigolo/go/testmu/?ref=sponsors-page)
+[TestMu AI](https://wigolo.app/go/testmu/?ref=sponsors-page)
 (formerly LambdaTest) is the world's first full-stack agentic AI quality
 engineering platform, trusted by 18,000+ enterprises.
 
 TestMu AI is wigolo's first sponsor. Thanks for the support.
+
 
 ## Want to sponsor wigolo?
 
@@ -49,11 +50,22 @@ time to answer issues from people running wigolo in production.
 
 ### What a sponsor gets
 
-- A logo and a one-line description in the **README sponsors section**.
-- The same placement on the **[project website](https://knockoutez.github.io/wigolo/)**
-  and on this page.
+- A logo in the **README header**, above the fold on the repository page,
+  plus a logo and one-line description in the README sponsors section near
+  the end.
+- On the **[project website](https://wigolo.app/)** homepage: a "sponsored by"
+  line under the logo wall near the top, and a card in the sponsors section.
+  Also on the [sponsor page](https://wigolo.app/sponsors/).
+- A credit at the top of **every GitHub release**'s notes.
+- Where it fits the sponsor's product, a **sponsored setup example** in the
+  docs and examples — for instance the model provider in the answer-synthesis
+  setup, or the proxy in the proxy setup — clearly labeled as sponsored and
+  always paired with how to use any other provider instead.
+- The same placement on this page.
 - A link on every placement, with its reach measured — figures available on
   request, see [Measurement](#measurement) below.
+- Annual sponsors get a commercial license included; see
+  [LICENSING.md](LICENSING.md).
 
 ### How sponsorship and the project stay separate
 
@@ -66,7 +78,9 @@ conversation each time.
 - **The roadmap and the code stay independent.** Nothing is built, ranked,
   prioritised, or benchmarked differently because of sponsorship, and a
   sponsor's own service gets no special standing in search results, adapters,
-  or docs.
+  defaults, or recommendations. A sponsor may appear in a setup example in the
+  docs; that example is labeled as sponsored and shows how to swap in any
+  other provider, and nothing is ever marked as the recommended choice.
 - **Non-exclusive.** Other sponsors are welcome, including ones in the same
   market.
 - **The sponsors section stays the project's to run** — its placements, tiers,
@@ -93,18 +107,22 @@ placement it came from, so each placement can be told apart.
 
 What is measured:
 
-- **Clicks, by placement, over time**, from the project's own counter.
-- **Reach, as a proxy for impressions** — repository traffic and the site's
-  pageviews. README impressions can't be counted accurately, because GitHub
-  proxies and caches images; repo views are the stand-in, and they're described
-  as exactly that.
-- **What is never collected** — no cookies, no third-party tracking script, no
-  local storage, and nothing stored about the individual visitor. The counter
-  records that a click on a placement happened, not who made it.
+- **Clicks, by placement, over time** — each hop records a `sponsor_click`
+  event (sponsor and placement) in the site's analytics.
+- **Reach, as a proxy for impressions** — repository traffic, the site's
+  pageviews, and Google Search Console impressions for the site's pages. README
+  impressions can't be counted accurately, because GitHub proxies and caches
+  images; repo views are the stand-in, and they're described as exactly that.
+- **What is collected** — anonymous page views and events, grouped into
+  sessions without cookies or local storage, with URL query strings left out.
+  The site uses Umami and honours Do Not Track, and its traffic is public:
+  [live site stats](https://cloud.umami.is/share/PPqf7cwX1Qzh3n2D). The wigolo
+  tool itself sends nothing to the site; this covers the website only.
 
-The implementation is in [`site/src/lib/sponsors.ts`](site/src/lib/sponsors.ts)
-and the interstitial in [`site/src/app/go/[slug]/`](site/src/app/go/) — read it
-if you'd like to know exactly what is recorded.
+The implementation is in [`site/src/lib/sponsors.ts`](site/src/lib/sponsors.ts),
+[`site/src/lib/analytics.ts`](site/src/lib/analytics.ts) and the interstitial in
+[`site/src/app/go/[slug]/`](site/src/app/go/) — read it if you'd like to know
+exactly what is recorded.
 
 ## Notes for contributors
 

@@ -11,7 +11,7 @@
     "type": "git",
     "url": "https://github.com/KnockOutEZ/wigolo"
   },
-  "homepage": "https://github.com/KnockOutEZ/wigolo",
+  "homepage": "https://wigolo.app",
   "license": "AGPL-3.0-only",
   "server": {
     "type": "node",
