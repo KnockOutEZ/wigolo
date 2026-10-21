@@ -79,7 +79,7 @@ describe('warmup --firefox flag', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
+    process.env = { ...originalEnv, WIGOLO_RERANKER: 'onnx' };
     resetConfig();
     vi.clearAllMocks();
     vi.mocked(runCommand).mockResolvedValue(ok);

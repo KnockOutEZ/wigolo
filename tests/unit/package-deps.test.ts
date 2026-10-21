@@ -94,3 +94,17 @@ describe('package.json: onnxruntime-node converges via natural alignment (issues
     expect([...versions]).toEqual(['1.21.0']);
   });
 });
+
+// #652: brand-palette imports sharp directly. Relying on it arriving
+// transitively via @huggingface/transformers breaks under strict installers
+// (pnpm, Yarn PnP) and whenever that package stops depending on it.
+describe('package.json: directly imported runtime deps are declared', () => {
+  it('declares sharp (imported by src/extraction/brand-palette.ts)', () => {
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'extraction', 'brand-palette.ts'),
+      'utf-8',
+    );
+    expect(src).toMatch(/from 'sharp'/);
+    expect(pkg.dependencies?.sharp).toBeDefined();
+  });
+});

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { getConfig } from '../config.js';
+import { getConfig, type Config } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { probeBrowser, type BrowserName } from '../fetch/browser-probe.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
@@ -301,6 +301,24 @@ async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupR
 async function installReranker(
   reporter: WarmupReporter,
 ): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  const mode = getConfig().reranker;
+  if (mode === 'none' || mode === 'custom') {
+    reporter.note('Reranker: skipped (disabled)');
+    return {};
+  }
+  if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', 'Checking remote reranker');
+    try {
+      const provider = await getRerankProvider();
+      reporter.success('reranker', `remote configured (${provider.modelId}); no local model warmup needed`);
+      return { reranker: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('reranker', message);
+      return { reranker: 'failed', rerankerError: message };
+    }
+  }
   reporter.start('reranker', 'Downloading ML reranker model (cross-encoder)');
   try {
     const provider = await getRerankProvider();
@@ -367,12 +385,27 @@ export async function installEmbeddings(reporter: WarmupReporter = noopReporter)
   }
 }
 
-async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+async function runSearxngPhase(
+  config: Pick<Config, 'dataDir' | 'searxngUrl' | 'searxngMode'>,
+  reporter: WarmupReporter,
+): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+  const { dataDir } = config;
   const state = getBootstrapState(dataDir);
   if (state?.status === 'ready') {
     reporter.start('searxng', 'Checking search engine (searxng)');
     reporter.success('searxng', 'already set up');
     return { searxng: 'ready' };
+  }
+
+  // An external instance or docker mode needs no local Python install, so the
+  // Python gate (and the native bootstrap behind it) does not apply.
+  if (config.searxngUrl || config.searxngMode === 'docker') {
+    reporter.start('searxng', 'Checking search engine (searxng)');
+    reporter.success(
+      'searxng',
+      config.searxngUrl ? 'using external instance — nothing to install' : 'docker mode — started on demand',
+    );
+    return { searxng: 'skipped' };
   }
 
   if (!checkPythonAvailable()) {
@@ -448,7 +481,7 @@ export async function runWarmup(
     searxngResult = { searxng: 'skipped' };
     reporterImpl.note('Search engine sidecar: skipped — using multi-engine core backend');
   } else {
-    searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
+    searxngResult = await runSearxngPhase(config, reporterImpl);
   }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};

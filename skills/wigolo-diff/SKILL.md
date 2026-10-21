@@ -5,7 +5,7 @@ description: |
 license: AGPL-3.0-only
 metadata:
   author: KnockOutEZ
-  version: 0.1.43-beta.2
+  version: 0.2.1
   homepage: https://github.com/KnockOutEZ/wigolo
   repository: https://github.com/KnockOutEZ/wigolo
 ---

@@ -47,6 +47,13 @@ describe('rerankResults with provider', () => {
     expect(out[0].relevance_score).toBe(0.98);
   });
 
+  it('uses the provider in remote mode', async () => {
+    vi.mocked(getConfig).mockReturnValue(cfg({ reranker: 'remote' }));
+    rerankMock.mockResolvedValue(scored([[1, 0.9], [0, 0.2]]));
+    const out = await rerankResults('q', [makeResult('A', 0.8), makeResult('B', 0.3)]);
+    expect(out.map((r) => r.title)).toEqual(['B', 'A']);
+  });
+
   it('falls back to passthrough on provider error', async () => {
     vi.mocked(getConfig).mockReturnValue(cfg({}));
     rerankMock.mockRejectedValue(new Error('boom'));

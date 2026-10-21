@@ -7,6 +7,7 @@
  * but it is no longer wired in.
  */
 import { createLogger } from '../logger.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('providers');
 export interface RerankCandidate {
@@ -77,17 +78,22 @@ export async function withFetchRetry<T>(
 
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
-  cached = import('../search/reranker/transformers-rerank-provider.js')
-    .then(async (m) => {
-      const p = new m.TransformersRerankProvider();
-      await withFetchRetry(() => p.warmup());
-      log.info('rerank provider ready', {
-        provider: 'rerank',
-        impl: 'transformers',
-        modelId: p.modelId,
-      });
-      return p;
-    })
+  const config = getConfig();
+  cached = (async () => {
+    if (config.reranker === 'remote') {
+      const { RemoteRerankProvider } = await import('../search/reranker/remote-rerank-provider.js');
+      return new RemoteRerankProvider(config);
+    }
+    const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
+    const provider = new TransformersRerankProvider();
+    await withFetchRetry(() => provider.warmup());
+    log.info('rerank provider ready', {
+      provider: 'rerank',
+      impl: 'transformers',
+      modelId: provider.modelId,
+    });
+    return provider;
+  })()
     .catch((err) => {
       cached = null;
       throw err;

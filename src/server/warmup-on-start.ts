@@ -1,5 +1,6 @@
 import { createLogger } from '../logger.js';
 import { getEmbeddingService } from '../embedding/embed.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('server');
 
@@ -97,6 +98,7 @@ async function warmEmbed(): Promise<void> {
 }
 
 async function warmRerank(): Promise<void> {
+  if (getConfig().reranker !== 'onnx') return;
   const start = Date.now();
   try {
     const mod = await import('../providers/rerank-provider.js');

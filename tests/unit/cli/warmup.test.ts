@@ -194,6 +194,35 @@ describe('runWarmup', () => {
     expect(result.searxngError).toBe('pip failed');
   });
 
+  it('skips the Python gate when an external search engine URL is configured', async () => {
+    // WHY: an external instance needs no local Python; warmup must not report
+    // no_python or attempt a native bootstrap (#645).
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo', searchBackend: null, searxngUrl: 'http://searxng:8080',
+    } as ReturnType<typeof getConfig>);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(false);
+
+    const result = await runWarmup(['--searxng']);
+
+    expect(result.searxng).toBe('skipped');
+    expect(checkPythonAvailable).not.toHaveBeenCalled();
+    expect(bootstrapNativeSearxng).not.toHaveBeenCalled();
+  });
+
+  it('skips the Python gate in docker mode', async () => {
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo', searchBackend: null, searxngUrl: null, searxngMode: 'docker',
+    } as ReturnType<typeof getConfig>);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(false);
+
+    const result = await runWarmup(['--searxng']);
+
+    expect(result.searxng).toBe('skipped');
+    expect(checkPythonAvailable).not.toHaveBeenCalled();
+  });
+
   it('reports no python available (with --searxng)', async () => {
     vi.mocked(getBootstrapState).mockReturnValue(null);
     vi.mocked(checkPythonAvailable).mockReturnValue(false);
@@ -467,6 +496,13 @@ describe('warmup --reranker', () => {
 
     expect(rerankMock).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
+  });
+
+  it('does not invoke remote inference during warmup', async () => {
+    vi.mocked(getConfig).mockReturnValue({ ...coreConfig, reranker: 'remote' } as never);
+    const result = await runWarmup(['--reranker']);
+    expect(result.reranker).toBe('ok');
+    expect(rerankMock).not.toHaveBeenCalled();
   });
 
   it('--all flag includes reranker warmup', async () => {

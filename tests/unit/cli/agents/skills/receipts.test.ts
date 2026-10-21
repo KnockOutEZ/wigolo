@@ -274,3 +274,48 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     }
   }, 30_000);
 });
+
+describe('withReceiptsLock — Windows pending-delete contention', () => {
+  function mockLockMkdirFailingOnce(code: string) {
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      let failed = false;
+      return {
+        ...actual,
+        mkdirSync: ((p: string, opts?: unknown) => {
+          if (!failed && String(p).endsWith('receipts.lock')) {
+            failed = true;
+            throw Object.assign(new Error(`${code}: mkdir '${p}'`), { code });
+          }
+          return actual.mkdirSync(p, opts as never);
+        }) as typeof actual.mkdirSync,
+      };
+    });
+  }
+
+  afterEach(() => {
+    vi.doUnmock('node:fs');
+  });
+
+  it('retries an EPERM from mkdir on win32 (lock dir mid-removal) instead of throwing', async () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    mockLockMkdirFailingOnce('EPERM');
+    try {
+      const { withReceiptsLock } = await load();
+      expect(withReceiptsLock((store) => ({ store, result: 'ok' }))).toBe('ok');
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it('still throws an EPERM from mkdir off Windows', async () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    mockLockMkdirFailingOnce('EPERM');
+    try {
+      const { withReceiptsLock } = await load();
+      expect(() => withReceiptsLock((store) => ({ store, result: 'ok' }))).toThrow('EPERM');
+    } finally {
+      platform.mockRestore();
+    }
+  });
+});

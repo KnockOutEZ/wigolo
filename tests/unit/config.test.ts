@@ -47,6 +47,22 @@ describe('config', () => {
     expect(config.respectRobotsTxt).toBe(true);
   });
 
+  it('reads WIGOLO_SEARXNG_URL, preferring it over the legacy SEARXNG_URL', () => {
+    // WHY: every user-facing hint says WIGOLO_SEARXNG_URL; config used to read
+    // only SEARXNG_URL, so following the hint silently did nothing (#645).
+    delete process.env.SEARXNG_URL;
+    process.env.WIGOLO_SEARXNG_URL = 'http://wigolo-searxng:8080';
+    expect(getConfig().searxngUrl).toBe('http://wigolo-searxng:8080');
+
+    process.env.SEARXNG_URL = 'http://legacy-searxng:8080';
+    resetConfig();
+    expect(getConfig().searxngUrl).toBe('http://wigolo-searxng:8080');
+
+    delete process.env.WIGOLO_SEARXNG_URL;
+    resetConfig();
+    expect(getConfig().searxngUrl).toBe('http://legacy-searxng:8080');
+  });
+
   it('reads env var overrides', () => {
     process.env.FETCH_TIMEOUT_MS = '5000';
     process.env.MAX_BROWSERS = '5';
@@ -277,6 +293,24 @@ describe('config', () => {
   });
 
   describe('reranker configuration', () => {
+    it('keeps ONNX as the default', () => {
+      delete process.env.WIGOLO_RERANKER;
+      resetConfig();
+      expect(getConfig().reranker).toBe('onnx');
+    });
+
+    it('reads remote endpoint, model, key, and timeout from env', () => {
+      process.env.WIGOLO_RERANKER = 'remote';
+      process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+      process.env.WIGOLO_RERANK_API_KEY = 'test-token';
+      process.env.WIGOLO_RERANKER_MODEL = 'test-reranker';
+      process.env.WIGOLO_RERANKER_REQUEST_TIMEOUT_MS = '1234';
+      resetConfig();
+      expect(getConfig()).toMatchObject({
+        reranker: 'remote', rerankApiBase: 'http://127.0.0.1:8082/v1',
+        rerankApiKey: 'test-token', rerankerModel: 'test-reranker', rerankerRequestTimeoutMs: 1234,
+      });
+    });
     it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
       process.env.WIGOLO_RERANKER = 'none';
       resetConfig();
