@@ -3,6 +3,11 @@ import type { RerankCandidate, RerankProvider, RerankResult } from '../../provid
 
 type RemoteResult = { index?: unknown; relevance_score?: unknown; score?: unknown };
 
+/** A key sent to this machine never crosses a network, so plain http is fine there. */
+function isLoopback(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
 /** Cohere-style POST /rerank adapter for a configured model service. */
 export class RemoteRerankProvider implements RerankProvider {
   readonly modelId: string;
@@ -20,8 +25,8 @@ export class RemoteRerankProvider implements RerankProvider {
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new Error('WIGOLO_RERANK_API_BASE must be an http(s) URL without credentials, query, or fragment');
     }
-    if (config.rerankApiKey && parsed.protocol !== 'https:') {
-      throw new Error('WIGOLO_RERANK_API_KEY requires HTTPS');
+    if (config.rerankApiKey && parsed.protocol !== 'https:' && !isLoopback(parsed.hostname)) {
+      throw new Error('WIGOLO_RERANK_API_KEY requires HTTPS unless the endpoint is on loopback');
     }
     this.url = `${base}/rerank`;
     this.modelId = config.rerankerModel;
@@ -63,7 +68,8 @@ export class RemoteRerankProvider implements RerankProvider {
     if (!payload || typeof payload !== 'object' || !('results' in payload) || !Array.isArray(payload.results)) {
       throw new Error('Remote rerank response must contain a results array');
     }
-    if (payload.results.length !== topN) throw new Error('Remote rerank returned an unexpected number of results');
+    // Some servers ignore top_n and score every document, so only too few results is an error.
+    if (payload.results.length < topN) throw new Error('Remote rerank returned fewer results than requested');
     const seen = new Set<number>();
     const scored = payload.results.map((item: unknown): RerankResult => {
       if (!item || typeof item !== 'object') throw new Error('Remote rerank result must be an object');
@@ -80,6 +86,6 @@ export class RemoteRerankProvider implements RerankProvider {
       }
       return { id: candidates[i].id, score: value };
     });
-    return scored.sort((a, b) => b.score - a.score);
+    return scored.sort((a, b) => b.score - a.score).slice(0, topN);
   }
 }

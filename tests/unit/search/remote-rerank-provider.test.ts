@@ -63,12 +63,25 @@ describe('RemoteRerankProvider', () => {
     expect(() => new RemoteRerankProvider(config({ rerankApiBase: 'file:///tmp/x' }))).toThrow('http(s)');
   });
 
-  it('requires HTTPS for credentials while allowing keyless HTTP', () => {
+  it('requires HTTPS for credentials off loopback while allowing keyless HTTP', () => {
     const remote = { rerankApiBase: 'http://192.168.1.20:8082/v1' };
     expect(() => new RemoteRerankProvider(config({ ...remote, rerankApiKey: 'secret' }))).toThrow('requires HTTPS');
-    expect(() => new RemoteRerankProvider(config({ rerankApiKey: 'secret' }))).toThrow('requires HTTPS');
     expect(() => new RemoteRerankProvider(config(remote))).not.toThrow();
     expect(() => new RemoteRerankProvider(config({ rerankApiBase: 'https://rerank.example/v1', rerankApiKey: 'secret' }))).not.toThrow();
+  });
+
+  it('allows credentials over plain HTTP to a loopback endpoint', () => {
+    for (const base of ['http://127.0.0.1:8082/v1', 'http://localhost:8082/v1', 'http://[::1]:8082/v1']) {
+      expect(() => new RemoteRerankProvider(config({ rerankApiBase: base, rerankApiKey: 'secret' }))).not.toThrow();
+    }
+  });
+
+  it('keeps the top_n best when a service ignores top_n and scores every document', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply([
+      { index: 0, score: 0.2 },
+      { index: 1, score: 0.9 },
+    ])));
+    expect(await new RemoteRerankProvider(config()).rerank('q', candidates, 1)).toEqual([{ id: 'second', score: 0.9 }]);
   });
 
   it('reports HTTP status without reading or exposing the response body', async () => {
@@ -90,7 +103,7 @@ describe('RemoteRerankProvider', () => {
     const cases: Array<[Response, string]> = [
       [new Response('{invalid'), 'invalid JSON'],
       [new Response('{}'), 'results array'],
-      [reply([{ index: 0, score: 0.9 }]), 'number of results'],
+      [reply([{ index: 0, score: 0.9 }]), 'fewer results'],
       [reply([{ index: 0, score: 0.9 }, { index: 0, score: 0.8 }]), 'duplicate index'],
       [reply([{ index: 2, score: 0.9 }, { index: 1, score: 0.8 }]), 'out-of-range index'],
       [reply([{ index: 0.5, score: 0.9 }, { index: 1, score: 0.8 }]), 'out-of-range index'],
