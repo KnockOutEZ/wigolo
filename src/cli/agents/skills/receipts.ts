@@ -220,7 +220,10 @@ function acquireLock(): { token: string } {
       if (readOwner(lock) === token) return { token };
       continue;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      // Windows answers EPERM, not EEXIST, while another process is mid-way
+      // through removing the lock dir; that is contention, so wait and retry.
+      if (code !== 'EEXIST' && !(code === 'EPERM' && process.platform === 'win32')) throw err;
     }
 
     // Lock held — check staleness (crash-orphan recovery).
