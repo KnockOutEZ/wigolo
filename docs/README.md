@@ -12,6 +12,7 @@ Everything the server returns is transparent: per-result evidence scores, per-en
 | [Installation](./installation.md) | Every install channel — npm, Docker, MCP bundle, registries — plus the agent auto-wire matrix and uninstall. |
 | [Configuration](./configuration.md) | Resolution order, the settings TUI, and grouped env-var tables for search, fetch, models, LLM providers, cache, and serve. |
 | [Tools](./tools.md) | The 10 tools with parameters, response fields, and worked examples. |
+| [Arabic queries](./arabic.md) | How Arabic queries are normalized before they reach the search engines. |
 | [CLI](./cli.md) | Full command reference: management commands, one-shot tools, the interactive shell, and the `--json` contract. |
 | [REST API](./rest-api.md) | `wigolo serve`, endpoints, the fail-closed auth model, resource limits, and a live curl quickstart. |
 | [SDKs](./sdks.md) | TypeScript and Python clients, plus LangChain, CrewAI, LlamaIndex, and Vercel AI SDK integrations. |
