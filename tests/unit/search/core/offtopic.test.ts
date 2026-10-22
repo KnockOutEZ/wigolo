@@ -111,6 +111,8 @@ describe('isForeignScriptBatch', () => {
     // "تثبيت docker" is a technical query whose answers are legitimately in
     // English — the query's language does not pin the answer's language.
     expect(isForeignScriptBatch('تثبيت docker', [chromePage])).toBe(false);
+    // Non-ASCII Latin letters count too (æ is U+00E6, Latin letter).
+    expect(isForeignScriptBatch('ما معنى æ', [chromePage])).toBe(false);
   });
 });
 

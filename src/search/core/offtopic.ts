@@ -78,7 +78,8 @@ export function isForeignScriptBatch(query: string, results: AlignableResult[]):
   );
 }
 
-const LATIN_RE = /[A-Za-z]/;
+// Unicode-aware: æ, ø, œ, ؕ… any Latin-script letter counts, not just A-Z.
+const LATIN_RE = /\p{Script=Latin}/u;
 
 // Scripts the shared ranking tokenizer ALREADY covers (Han, Kana, Hangul).
 // Their alignment is meaningful, so the demotion below must not change
