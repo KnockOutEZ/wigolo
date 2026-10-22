@@ -17,6 +17,7 @@ import type {
 } from '../../types.js';
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
+import { isForeignScriptBatch, demoteUnalignedResults } from './offtopic.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
@@ -209,6 +210,9 @@ export class CoreSearchProvider implements SearchProvider {
     let items: SearchResultItem[] = [];
     let enginesUsed: string[] = [];
     let allDegraded = false;
+    // Set when the engine pool answered in a different script than the query
+    // and the payload was dropped (surfaced as a warning on the response).
+    let foreignScriptPayload = false;
     let searchElapsed = 0;
     let fetchElapsed = 0;
     let contentFetched = false;
@@ -237,11 +241,23 @@ export class CoreSearchProvider implements SearchProvider {
           if (typeof input.max_results === 'number' && input.max_results >= 0) {
             filtered = filtered.slice(0, input.max_results);
           }
-          items = filtered.map((r) => ({ ...r, cached: true, cached_at: cached.searched_at }));
-          enginesUsed = cached.engines_used;
-          servedFromCache = true;
-          cachedAt = cached.searched_at;
-          contentFetched = items.some((i) => typeof i.markdown_content === 'string' && i.markdown_content.length > 0);
+          // Cache READ guard: a payload written in a DIFFERENT script than
+          // the query (the classic "engine answered in another language"
+          // poison) is junk that count-based health checks cannot see — the
+          // rows are well-formed, just off-language. Serve it as a MISS so
+          // the query re-runs against the live engine pool instead of
+          // replaying the poisoned entry for the rest of its TTL.
+          if (isForeignScriptBatch(displayQuery, filtered)) {
+            log.debug('cached search payload is in a foreign script — treating as a miss', {
+              query: displayQuery,
+            });
+          } else {
+            items = filtered.map((r) => ({ ...r, cached: true, cached_at: cached.searched_at }));
+            enginesUsed = cached.engines_used;
+            servedFromCache = true;
+            cachedAt = cached.searched_at;
+            contentFetched = items.some((i) => typeof i.markdown_content === 'string' && i.markdown_content.length > 0);
+          }
         }
       } catch (err) {
         log.debug('cache lookup failed', { error: String(err) });
@@ -419,10 +435,71 @@ export class CoreSearchProvider implements SearchProvider {
       queriesExecuted.length = 0;
       queriesExecuted.push(...dispatchQueries);
 
+      // Off-topic ENGINE filter: an engine whose ENTIRE batch was answered in
+      // a different script than the query contributed junk, not signal (e.g.
+      // one engine answering an Arabic query with unrelated English pages
+      // while the other engines timed out). Drop that engine's rows — but
+      // keep any URL a healthy engine also returned, so a corroborated page
+      // survives.
+      const offScriptUrls = new Set<string>();
+      const offScriptEngines: string[] = [];
+      for (let d = 0; d < dispatches.length; d++) {
+        const dispatchQuery = dispatchQueries[d] ?? queries[0] ?? '';
+        for (const o of dispatches[d].outcomes ?? []) {
+          if (!o.ok || o.results.length === 0) continue;
+          if (!isForeignScriptBatch(dispatchQuery, o.results)) continue;
+          offScriptEngines.push(o.engine);
+          for (const r of o.results) offScriptUrls.add(r.url);
+        }
+      }
+      for (let d = 0; d < dispatches.length; d++) {
+        const dispatchQuery = dispatchQueries[d] ?? queries[0] ?? '';
+        for (const o of dispatches[d].outcomes ?? []) {
+          if (!o.ok || o.results.length === 0) continue;
+          if (isForeignScriptBatch(dispatchQuery, o.results)) continue;
+          // A healthy engine corroborates these URLs — keep them.
+          for (const r of o.results) offScriptUrls.delete(r.url);
+        }
+      }
+
+      const filteredDispatches =
+        offScriptUrls.size > 0
+          ? dispatches.map((d) => ({
+              ...d,
+              results: d.results.filter((r) => !offScriptUrls.has(r.url)),
+            }))
+          : dispatches;
+
+      // FAIL OPEN: if dropping the off-script engine's rows would empty the
+      // pool, keep the original rows instead. A noisy result set is still
+      // more useful than an empty answer, and the downstream score floor /
+      // relevance gates get the final say.
+      const filteredPoolSize = filteredDispatches.reduce((n, d) => n + d.results.length, 0);
+      const effectiveDispatches =
+        filteredPoolSize === 0 && dispatches.some((d) => d.results.length > 0)
+          ? dispatches
+          : filteredDispatches;
+
+      if (offScriptEngines.length > 0 && effectiveDispatches !== dispatches) {
+        poolReasons.add('engine_offtopic');
+        log.debug('dropped off-script engine batch(es)', {
+          engines: [...new Set(offScriptEngines)],
+          dropped_urls: offScriptUrls.size,
+        });
+      }
+
       let fused =
-        dispatches.length === 1
-          ? dispatches[0].results
-          : fuseRankedLists(dispatches.map((d) => d.results));
+        effectiveDispatches.length === 1
+          ? effectiveDispatches[0].results
+          : fuseRankedLists(effectiveDispatches.map((d) => d.results));
+
+      // Unaligned-row demotion: for a non-Latin-script query, a row that
+      // shares no content token with the query is noise (another language,
+      // another topic). Those rows are demoted (not dropped — a degraded
+      // pool may have produced nothing else) so the score floor can trim
+      // them and the on-topic rows keep the top slots. Latin-script queries
+      // are untouched.
+      fused = demoteUnalignedResults(displayQuery, fused);
 
       // Low-recall expansion (S11c): only fire when single-query, result
       // count is at or below threshold, and category is not 'images'. Image
@@ -709,6 +786,18 @@ export class CoreSearchProvider implements SearchProvider {
 
       searchElapsed = Date.now() - start;
 
+      // Foreign-script payload guard: if EVERY result was answered in a
+      // different script than the query, the engine pool answered in the
+      // wrong language (the classic "Arabic query answered with Chrome
+      // download pages" shape). Returning that payload is worse than
+      // returning nothing — surface an explicit warning instead of noise.
+      if (items.length > 0 && isForeignScriptBatch(displayQuery, items)) {
+        poolReasons.add('foreign_script_payload');
+        foreignScriptPayload = true;
+        items = [];
+        log.debug('dropped foreign-script result payload', { query: displayQuery });
+      }
+
       // fast tier short-circuits content fetch; ultra-fast already returned
       // before reaching this block. Image search also skips fetch — the
       // per-result `url` is the source page, not the asset, and callers who
@@ -759,10 +848,19 @@ export class CoreSearchProvider implements SearchProvider {
       }
 
       if (items.length > 0) {
-        try {
-          cacheSearchResults(cacheKey, items, enginesUsed);
-        } catch (err) {
-          log.debug('search cache write failed', { error: String(err) });
+        // Cache WRITE guard: never persist a payload that was answered in a
+        // different script than the query. A poisoned entry would be replayed
+        // for the whole TTL and is far more damaging than a cache miss.
+        if (!isForeignScriptBatch(displayQuery, items)) {
+          try {
+            cacheSearchResults(cacheKey, items, enginesUsed);
+          } catch (err) {
+            log.debug('search cache write failed', { error: String(err) });
+          }
+        } else {
+          log.debug('skipping search cache write — payload answered in a foreign script', {
+            query: displayQuery,
+          });
         }
       }
     }
@@ -863,6 +961,10 @@ export class CoreSearchProvider implements SearchProvider {
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';
+    }
+
+    if (foreignScriptPayload) {
+      data.warning = 'no on-topic results: the engine pool answered in a different language';
     }
 
     if (ultraFastMiss) {
