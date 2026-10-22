@@ -13,6 +13,7 @@ import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
+import { preprocessQueryForSearch } from '../search/query.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore } from '../integrations/cloud/llm/run.js';
@@ -116,7 +117,10 @@ export async function runResearchPipeline(
           effEngines.map(async (engine) => {
             if (signal.aborted) return;
             try {
-              const rs = await engine.search(subQuery, engineOpts);
+              const rs = await engine.search(
+                preprocessQueryForSearch(subQuery).searchQuery,
+                engineOpts,
+              );
               for (const r of rs) results.push(r);
               usedHere.add(engine.name);
             } catch (err) {
