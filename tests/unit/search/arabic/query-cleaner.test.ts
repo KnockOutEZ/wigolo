@@ -82,6 +82,19 @@ describe('cleanQueryForSearch', () => {
     const out = cleanQueryForSearch('من هو زيد');
     expect(out.searchQuery.length).toBeGreaterThan(0);
   });
+
+  it('keeps a subject that CONTAINS a scaffolding word mid-sentence', () => {
+    // "من الفراعنة" is part of the subject, not trailing question
+    // scaffolding — the cleaner must not cut the query at the first "من".
+    const out = cleanQueryForSearch('تاريخ مصر من الفراعنة إلى اليوم');
+    expect(out.searchQuery).toContain('الفراعنة');
+    expect(out.searchQuery).toContain('اليوم');
+  });
+
+  it('matches vocalized (harakat-carrying) question prefixes', () => {
+    const out = cleanQueryForSearch('مَنْ هِيَ ذات النطاقين وماذا تعرف عنها؟');
+    expect(out.searchQuery).toBe('ذات النطاقين');
+  });
 });
 
 describe('preprocessQueryForSearch', () => {
