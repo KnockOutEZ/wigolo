@@ -82,6 +82,16 @@ describe('buildSearchCacheKey', () => {
     expect(bare).toBe(empty);
     expect(bare).toBe(blanks);
   });
+
+  it('separates the single- and multi-query dispatch modes', () => {
+    // Two Arabic inputs can normalise to one query ("من هو طه حسين" and
+    // "من هي طه حسين" -> "طه حسين"). A later single-input call for that
+    // same query runs extra variants a multi-input call never does, so the
+    // two dispatch modes must not share one cache entry.
+    const single = buildSearchCacheKey('طه حسين', { single_query_dispatch: true });
+    const multi = buildSearchCacheKey('طه حسين', { single_query_dispatch: false });
+    expect(single).not.toBe(multi);
+  });
 });
 
 describe('cache miss on filter mismatch', () => {
