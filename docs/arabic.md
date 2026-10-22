@@ -47,8 +47,13 @@ Two safety rules keep the cleaner from ever hurting a query:
 Normalization runs at the search dispatch boundary, so it applies to every
 search path (the `search` tool, the research pipeline, the REST API) without
 callers having to opt in. The **original** wording is still what the
-response echoes back in `query`, so downstream consumers still see the
-question exactly as it was asked.
+response echoes back, so downstream consumers still see the question exactly
+as it was asked — the contract differs per tool:
+
+- **`search`** echoes the original wording in the response's `query` field.
+- **`research`** has no `query` field: the wording it was given is kept in
+  `input.question`, and the individual normalized sub-queries are reported in
+  `sub_queries`.
 
 The cleaner itself lives in `src/search/arabic/query-cleaner.ts` and is
 exposed through `preprocessQueryForSearch()` in `src/search/query.ts`.
