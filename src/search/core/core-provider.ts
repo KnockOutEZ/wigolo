@@ -205,7 +205,10 @@ export class CoreSearchProvider implements SearchProvider {
     const isSingleQuery = preprocessedQueryCount === 1 && queries.length === 1;
     // Cache key includes filter params (sub-ticket 2.3) — without this,
     // include_domains / max_results / exclude_domains are silently ignored
-    // on cache hits.
+    // on cache hits. Dispatch mode is part of the key too: a single-input
+    // call also runs quoted-term / low-recall variants that a multi-input
+    // call never does, so a multi-input call must not satisfy a
+    // single-input cache hit (they'd disagree on the extras).
     const cacheKey = buildSearchCacheKey(queries.join(' | '), {
       category: input.category,
       include_domains: input.include_domains,
@@ -219,6 +222,7 @@ export class CoreSearchProvider implements SearchProvider {
       search_depth: depth,
       reranker: getConfig().reranker,
       search_engines: input.search_engines,
+      single_query_dispatch: isSingleQuery,
     });
 
     let items: SearchResultItem[] = [];
