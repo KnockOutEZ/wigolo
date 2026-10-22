@@ -106,6 +106,12 @@ describe('isForeignScriptBatch', () => {
     expect(isForeignScriptBatch('من في على', [chromePage])).toBe(false);
     expect(isForeignScriptBatch('سيدة الشاشة العربية', [])).toBe(false);
   });
+
+  it('never fires for a MIXED-script query (Arabic + a Latin term)', () => {
+    // "تثبيت docker" is a technical query whose answers are legitimately in
+    // English — the query's language does not pin the answer's language.
+    expect(isForeignScriptBatch('تثبيت docker', [chromePage])).toBe(false);
+  });
 });
 
 describe('demoteUnalignedResults', () => {
@@ -124,5 +130,19 @@ describe('demoteUnalignedResults', () => {
       { title: "Women's Clothing", snippet: 'Shop dresses', url: 'u1', relevance_score: 0.6 },
     ];
     expect(demoteUnalignedResults('pgvector hnsw tuning', rows)[0].relevance_score).toBe(0.6);
+  });
+
+  it('never touches a mixed-script query (Arabic + a Latin term)', () => {
+    const rows = [
+      { title: 'Docker', snippet: 'Install Docker', url: 'u1', relevance_score: 0.6 },
+    ];
+    expect(demoteUnalignedResults('تثبيت docker', rows)[0].relevance_score).toBe(0.6);
+  });
+
+  it('never touches a CJK query (the tokenizer already covers it)', () => {
+    const rows = [
+      { title: '日本語', snippet: 'テスト', url: 'u1', relevance_score: 0.6 },
+    ];
+    expect(demoteUnalignedResults('日本語 テスト', rows)[0].relevance_score).toBe(0.6);
   });
 });

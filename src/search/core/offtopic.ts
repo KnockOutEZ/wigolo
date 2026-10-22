@@ -69,10 +69,21 @@ export function isForeignScriptBatch(query: string, results: AlignableResult[]):
   if (!hasContentTokens(query)) return false;
   const script = detectNonLatinScript(query);
   if (!script) return false; // Latin query — the existing gates own this.
+  // MIXED-script query (e.g. Arabic + "docker"): the Latin part is a
+  // content token of its own, so an all-Latin result set is a legitimate
+  // answer — the query's language does not pin the answer's language.
+  if (LATIN_RE.test(query)) return false;
   return results.every(
     (r) => !containsScript(`${r.title ?? ''} ${r.snippet ?? ''}`, script),
   );
 }
+
+const LATIN_RE = /[A-Za-z]/;
+
+// Scripts the shared ranking tokenizer ALREADY covers (Han, Kana, Hangul).
+// Their alignment is meaningful, so the demotion below must not change
+// their ranking.
+const TOKENIZER_COVERED_SCRIPTS = new Set(['han', 'kana', 'hangul']);
 
 /**
  * Sink the rows that cannot be about the query instead of dropping them: for
@@ -80,14 +91,17 @@ export function isForeignScriptBatch(query: string, results: AlignableResult[]):
  * query is almost certainly noise (another language, another topic). It is
  * demoted (score x factor) rather than removed — a degraded pool may have
  * produced nothing else — so the score floor can trim it and the on-topic
- * rows keep the top slots. Latin-script queries are untouched.
+ * rows keep the top slots. Latin-script queries are untouched, and so are
+ * the scripts the tokenizer already handles (CJK).
  */
 export function demoteUnalignedResults<
   T extends AlignableResult & { relevance_score: number },
 >(query: string, results: T[], factor = 0.05): T[] {
   if (!results || results.length === 0) return results;
   if (!hasContentTokens(query)) return results;
-  if (!detectNonLatinScript(query)) return results;
+  const script = detectNonLatinScript(query);
+  if (!script) return results;
+  if (TOKENIZER_COVERED_SCRIPTS.has(script)) return results;
   return results.map((r) =>
     lexicalAlignment(query, r.title ?? '', r.snippet ?? '') === 0
       ? { ...r, relevance_score: r.relevance_score * factor }
