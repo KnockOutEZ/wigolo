@@ -11,6 +11,12 @@ interface State {
   browsersClosed: number;
   // Contexts a CDP-attached browser already has (connectOverCDP only).
   cdpExistingContexts: number;
+  // Fault injection for the fallback and cleanup paths.
+  cdpConnectFails: boolean;
+  cdpNewContextFails: boolean;
+  headersFail: boolean;
+  // When set, page.goto waits on this promise (to hold fetches in flight).
+  gotoGate: Promise<void> | null;
 }
 
 const state: State = {
@@ -19,14 +25,21 @@ const state: State = {
   contextsClosed: 0,
   browsersClosed: 0,
   cdpExistingContexts: 0,
+  cdpConnectFails: false,
+  cdpNewContextFails: false,
+  headersFail: false,
+  gotoGate: null,
 };
 
 function makePage() {
   return {
-    goto: vi.fn().mockResolvedValue({
-      status: () => 200,
-      url: () => 'https://example.com',
-      headers: () => ({ 'content-type': 'text/html' }),
+    goto: vi.fn().mockImplementation(async () => {
+      if (state.gotoGate) await state.gotoGate;
+      return {
+        status: () => 200,
+        url: () => 'https://example.com',
+        headers: () => ({ 'content-type': 'text/html' }),
+      };
     }),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
@@ -36,7 +49,8 @@ function makePage() {
         : Promise.resolve({ textLen: 1000, nodes: 8 })),
     content: vi.fn().mockResolvedValue('<html><body>ok</body></html>'),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
-    setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
+    setExtraHTTPHeaders: vi.fn().mockImplementation(() =>
+      state.headersFail ? Promise.reject(new Error('headers failed')) : Promise.resolve(undefined)),
     on: vi.fn(),
     close: vi.fn().mockResolvedValue(undefined),
   };
@@ -55,12 +69,13 @@ function makeContext() {
   };
 }
 
-function makeBrowser(existingContexts = 0) {
+function makeBrowser(existingContexts = 0, newContextFails = false) {
   const existing = Array.from({ length: existingContexts }, () => makeContext());
   return {
     version: vi.fn().mockReturnValue('142.0.7444.0'),
     contexts: vi.fn().mockReturnValue(existing),
     newContext: vi.fn().mockImplementation((options?: Record<string, unknown>) => {
+      if (newContextFails) return Promise.reject(new Error('newContext failed'));
       state.newContextOptions.push(options);
       return Promise.resolve(makeContext());
     }),
@@ -74,7 +89,9 @@ function makeBrowser(existingContexts = 0) {
 vi.mock('playwright', () => {
   const launch = vi.fn().mockImplementation(() => Promise.resolve(makeBrowser()));
   const connectOverCDP = vi.fn().mockImplementation(() =>
-    Promise.resolve(makeBrowser(state.cdpExistingContexts)));
+    state.cdpConnectFails
+      ? Promise.reject(new Error('connect refused'))
+      : Promise.resolve(makeBrowser(state.cdpExistingContexts, state.cdpNewContextFails)));
   const stub = { launch, connectOverCDP };
   return { chromium: stub, firefox: stub, webkit: stub };
 });
@@ -91,8 +108,13 @@ describe('browser-pool applies the auth storage state (#526)', () => {
     state.contextsClosed = 0;
     state.browsersClosed = 0;
     state.cdpExistingContexts = 0;
+    state.cdpConnectFails = false;
+    state.cdpNewContextFails = false;
+    state.headersFail = false;
+    state.gotoGate = null;
   });
   afterEach(() => {
+    delete process.env.MAX_BROWSERS;
     resetConfig();
   });
 
@@ -161,6 +183,79 @@ describe('browser-pool applies the auth storage state (#526)', () => {
 
     expect(result.method).toBe('browser');
     expect(state.newContextOptions).toEqual([]);
+    await pool.shutdown();
+  });
+
+  it('keeps the storage state when the CDP connection fails and the fetch falls back to a local browser', async () => {
+    state.cdpConnectFails = true;
+    const pool = new MultiBrowserPool();
+    const result = await pool.fetchWithBrowser('https://example.com', {
+      cdpUrl: 'http://127.0.0.1:9222',
+      storageStatePath: STATE_PATH,
+    });
+
+    expect(result.method).toBe('browser');
+    expect(state.newContextOptions).toEqual([{ acceptDownloads: true, storageState: STATE_PATH }]);
+    expect(state.contextsClosed).toBe(1);
+    await pool.shutdown();
+  });
+
+  it('when a CDP context cannot be created, closes that connection and cleans up the local fallback context', async () => {
+    state.cdpNewContextFails = true;
+    const pool = new MultiBrowserPool();
+    await pool.fetchWithBrowser('https://example.com', {
+      cdpUrl: 'http://127.0.0.1:9222',
+      storageStatePath: STATE_PATH,
+    });
+
+    // The CDP connection was closed, and the seeded fallback context was closed
+    // too (before, the finally closed only the CDP connection).
+    expect(state.browsersClosed).toBe(1);
+    expect(state.newContextOptions).toEqual([{ acceptDownloads: true, storageState: STATE_PATH }]);
+    expect(state.contextsClosed).toBe(1);
+    await pool.shutdown();
+  });
+
+  it('releases the pooled fallback context back to the pool after a CDP context failure without a storage state', async () => {
+    state.cdpNewContextFails = true;
+    const pool = new MultiBrowserPool();
+    await pool.fetchWithBrowser('https://example.com', { cdpUrl: 'http://127.0.0.1:9222' });
+    await pool.fetchWithBrowser('https://example.com/again');
+
+    // The second fetch reuses the context the first released.
+    expect(state.newContextOptions).toEqual([{ acceptDownloads: true }]);
+    await pool.shutdown();
+  });
+
+  it('bounds concurrent authenticated contexts at maxBrowsers', async () => {
+    process.env.MAX_BROWSERS = '1';
+    resetConfig();
+    let open!: () => void;
+    state.gotoGate = new Promise<void>((resolve) => { open = resolve; });
+    const pool = new MultiBrowserPool();
+
+    const first = pool.fetchWithBrowser('https://example.com/a', { storageStatePath: STATE_PATH });
+    const second = pool.fetchWithBrowser('https://example.com/b', { storageStatePath: STATE_PATH });
+    await new Promise((r) => setTimeout(r, 20));
+    // The second fetch waits for a slot instead of opening another context.
+    expect(state.contextsCreated).toBe(1);
+
+    open();
+    await Promise.all([first, second]);
+    expect(state.contextsCreated).toBe(2);
+    expect(state.contextsClosed).toBe(2);
+    await pool.shutdown();
+  });
+
+  it('closes the authenticated context when setting the request headers fails', async () => {
+    state.headersFail = true;
+    const pool = new MultiBrowserPool();
+    await expect(pool.fetchWithBrowser('https://example.com', {
+      storageStatePath: STATE_PATH,
+      headers: { 'x-test': '1' },
+    })).rejects.toThrow('headers failed');
+
+    expect(state.contextsClosed).toBe(1);
     await pool.shutdown();
   });
 });

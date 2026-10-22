@@ -615,6 +615,25 @@ export class MultiBrowserPool {
     return browser.newContext(storageStatePath ? { storageState: storageStatePath } : undefined);
   }
 
+  /**
+   * A context of its own on the shared browser, seeded with the auth storage
+   * state. Never pooled (the state is one caller's cookies), so it bypasses the
+   * pool's activeCount; it takes a dedicated-fetch slot instead, so a burst of
+   * authenticated fetches waits at maxBrowsers like a burst of stealth ones.
+   * On success the caller owns the slot and the context and releases both in
+   * its cleanup; on failure the slot is released here.
+   */
+  private async openAuthContext(type: BrowserType, storageStatePath: string): Promise<BrowserContext> {
+    await this.acquireStealthSlot();
+    try {
+      const browser = await this.launchBrowser(type);
+      return await browser.newContext({ acceptDownloads: true, storageState: storageStatePath });
+    } catch (err) {
+      this.releaseStealthSlot();
+      throw err;
+    }
+  }
+
   async fetchWithBrowser(url: string, options: BrowserFetchOptions = {}): Promise<RawFetchResult> {
     // Bail out immediately if the caller's budget is already exhausted.
     if (options.signal?.aborted) throw options.signal.reason;
@@ -672,6 +691,17 @@ export class MultiBrowserPool {
     // on the stealth path (resolveStealthUA); the pooled/CDP default is read
     // from the live page below when we actually mint a clearance.
     let advertisedUa: string | null = null;
+    // A context on the local browser: the pooled one, or, for a fetch carrying an
+    // auth storage state, a dedicated context seeded with it (never pooled). Used
+    // by the auth branch below and by the CDP / hosted-browser fallbacks, so a
+    // failed remote connection never degrades an authenticated fetch to anonymous.
+    const localContext = async (type: BrowserType): Promise<BrowserContext> => {
+      if (!options.storageStatePath) return this.acquireForType(type);
+      const authCtx = await this.openAuthContext(type, options.storageStatePath);
+      dedicated = true;
+      stealthSlotHeld = true;
+      return authCtx;
+    };
 
     // OFF by default: only reach the hosted scraping-browser rung when it is
     // explicitly configured (`scrapingBrowserWss`) AND the caller did not already
@@ -698,7 +728,12 @@ export class MultiBrowserPool {
           cdpUrl: redactUrl(options.cdpUrl),
           error: err instanceof Error ? err.message : String(err),
         });
-        ctx = await this.acquireForType(resolvedType);
+        // connectOverCDP may have succeeded before the context failed. Drop that
+        // connection now: left set, the finally would close it and never release
+        // or close the local fallback context below.
+        await cdpBrowser?.close().catch(() => {});
+        cdpBrowser = null;
+        ctx = await localContext(resolvedType);
       }
     } else if (scrapingWss) {
       // Hosted scraping-browser rung (opt-in). Reuse the P8 connector: it
@@ -726,11 +761,11 @@ export class MultiBrowserPool {
           });
           await scrapingHandle.close().catch(() => {});
           cdpBrowser = null;
-          ctx = await this.acquireForType(resolvedType);
+          ctx = await localContext(resolvedType);
         }
       } else {
         // Off / bad scheme / connect failed → graceful fall back to launch.
-        ctx = await this.acquireForType(resolvedType);
+        ctx = await localContext(resolvedType);
       }
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
@@ -804,9 +839,7 @@ export class MultiBrowserPool {
       // pooled context it would be handed to every later fetch that reuses that
       // context, so this fetch gets its own context on the shared browser, closed
       // in the finally like a dedicated stealth context (the browser stays up).
-      const browser = await this.launchBrowser(resolvedType);
-      ctx = await browser.newContext({ acceptDownloads: true, storageState: options.storageStatePath });
-      dedicated = true;
+      ctx = await localContext(resolvedType);
     } else {
       resolvedType = this.resolveType(options.browserType, url);
       log.debug('fetching with browser', { url, type: resolvedType });
@@ -863,10 +896,6 @@ export class MultiBrowserPool {
       page.on('download', (dl) => { capturedDownload = dl; });
     }
 
-    if (options.headers) {
-      await page.setExtraHTTPHeaders(options.headers);
-    }
-
     let statusCode = 200;
     let contentType = '';
     let responseHeaders: Record<string, string> = {};
@@ -888,6 +917,12 @@ export class MultiBrowserPool {
     let ladderSolveMethod: SolveMethod | null | undefined;
 
     try {
+      // Inside the try so a rejection still runs the cleanup in the finally
+      // (closing a dedicated context, or releasing a pooled one).
+      if (options.headers) {
+        await page.setExtraHTTPHeaders(options.headers);
+      }
+
       // Pre-navigation fetch-time SSRF re-check. `guardFetchUrl` (applied
       // upstream on input + every redirect hop before a fetch reaches the
       // browser tier) only validates the LITERAL host, so a public hostname
@@ -1324,8 +1359,8 @@ export class MultiBrowserPool {
       } else if (dedicated) {
         // Dedicated stealth or auth-state context: close the per-fetch context
         // (and the stealth path's throwaway browser) — NEVER release it to the
-        // shared pool — guaranteed on abort too, then free the stealth slot for
-        // the next waiter.
+        // shared pool — guaranteed on abort too, then free the dedicated-fetch
+        // slot for the next waiter.
         await ctx.close().catch(() => {});
         if (dedicatedBrowser) {
           await dedicatedBrowser.close().catch(() => {});
