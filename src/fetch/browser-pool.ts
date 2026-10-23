@@ -463,15 +463,27 @@ export class MultiBrowserPool {
   // Acquire a dedicated-stealth concurrency slot. Resolves immediately when a
   // slot is free, otherwise queues until a release frees one. Default limit is
   // config.maxBrowsers so the hardened path shares the same overall cap as the
-  // pooled path.
-  private acquireStealthSlot(): Promise<void> {
+  // pooled path. When the caller's signal aborts, a queued waiter leaves the
+  // queue and rejects, so it never takes a slot a later release frees.
+  private acquireStealthSlot(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const limit = getConfig().maxBrowsers;
     if (this.stealthActive < limit) {
       this.stealthActive++;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.stealthWaitQueue.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        const i = this.stealthWaitQueue.indexOf(waiter);
+        if (i !== -1) this.stealthWaitQueue.splice(i, 1);
+        reject(signal!.reason);
+      };
+      const waiter = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      this.stealthWaitQueue.push(waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -623,8 +635,12 @@ export class MultiBrowserPool {
    * On success the caller owns the slot and the context and releases both in
    * its cleanup; on failure the slot is released here.
    */
-  private async openAuthContext(type: BrowserType, storageStatePath: string): Promise<BrowserContext> {
-    await this.acquireStealthSlot();
+  private async openAuthContext(
+    type: BrowserType,
+    storageStatePath: string,
+    signal?: AbortSignal,
+  ): Promise<BrowserContext> {
+    await this.acquireStealthSlot(signal);
     try {
       const browser = await this.launchBrowser(type);
       return await browser.newContext({ acceptDownloads: true, storageState: storageStatePath });
@@ -697,7 +713,7 @@ export class MultiBrowserPool {
     // failed remote connection never degrades an authenticated fetch to anonymous.
     const localContext = async (type: BrowserType): Promise<BrowserContext> => {
       if (!options.storageStatePath) return this.acquireForType(type);
-      const authCtx = await this.openAuthContext(type, options.storageStatePath);
+      const authCtx = await this.openAuthContext(type, options.storageStatePath, options.signal);
       dedicated = true;
       stealthSlotHeld = true;
       return authCtx;
@@ -770,7 +786,7 @@ export class MultiBrowserPool {
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
       // Bound concurrency BEFORE launching so a burst cannot exceed the cap.
-      await this.acquireStealthSlot();
+      await this.acquireStealthSlot(options.signal);
       stealthSlotHeld = true;
       dedicated = true;
       log.debug('fetching with browser (anti-bot fingerprint hardening)', { url, type: resolvedType });
@@ -866,10 +882,14 @@ export class MultiBrowserPool {
     } catch (err) {
       // newPage runs before the main try/finally. On the dedicated stealth path
       // a throw here would leak the semaphore slot + orphan the throwaway
-      // browser exactly like the setup above; clean those up and rethrow. The
-      // pooled/CDP paths keep their prior behavior (the context is not
-      // dedicated, so only the rethrow applies).
-      if (dedicated) {
+      // browser exactly like the setup above; clean those up and rethrow. A
+      // CDP or hosted browser connection is closed the same way the finally
+      // would close it. The pooled path keeps its prior behavior (only the
+      // rethrow applies).
+      if (cdpBrowser) {
+        await cdpBrowser.close().catch(() => {});
+        cdpBrowser = null;
+      } else if (dedicated) {
         await ctx.close().catch(() => {});
         await dedicatedBrowser?.close().catch(() => {});
         dedicatedBrowser = null;

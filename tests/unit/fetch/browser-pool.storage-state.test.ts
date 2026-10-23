@@ -15,6 +15,7 @@ interface State {
   cdpConnectFails: boolean;
   cdpNewContextFails: boolean;
   headersFail: boolean;
+  newPageFails: boolean;
   // When set, page.goto waits on this promise (to hold fetches in flight).
   gotoGate: Promise<void> | null;
 }
@@ -28,6 +29,7 @@ const state: State = {
   cdpConnectFails: false,
   cdpNewContextFails: false,
   headersFail: false,
+  newPageFails: false,
   gotoGate: null,
 };
 
@@ -64,7 +66,8 @@ function makeContext() {
       state.contextsClosed++;
       return Promise.resolve(undefined);
     }),
-    newPage: vi.fn().mockImplementation(() => Promise.resolve(makePage())),
+    newPage: vi.fn().mockImplementation(() =>
+      state.newPageFails ? Promise.reject(new Error('newPage failed')) : Promise.resolve(makePage())),
     cookies: vi.fn().mockResolvedValue([]),
   };
 }
@@ -111,6 +114,7 @@ describe('browser-pool applies the auth storage state (#526)', () => {
     state.cdpConnectFails = false;
     state.cdpNewContextFails = false;
     state.headersFail = false;
+    state.newPageFails = false;
     state.gotoGate = null;
   });
   afterEach(() => {
@@ -256,6 +260,50 @@ describe('browser-pool applies the auth storage state (#526)', () => {
     })).rejects.toThrow('headers failed');
 
     expect(state.contextsClosed).toBe(1);
+    await pool.shutdown();
+  });
+
+  it('drops a queued authenticated fetch when its signal aborts, without taking a slot', async () => {
+    process.env.MAX_BROWSERS = '1';
+    resetConfig();
+    let open!: () => void;
+    state.gotoGate = new Promise<void>((resolve) => { open = resolve; });
+    const pool = new MultiBrowserPool();
+
+    const first = pool.fetchWithBrowser('https://example.com/a', { storageStatePath: STATE_PATH });
+    const controller = new AbortController();
+    const second = pool.fetchWithBrowser('https://example.com/b', {
+      storageStatePath: STATE_PATH,
+      signal: controller.signal,
+    });
+    const secondSettled = second.then(() => 'resolved', () => 'rejected');
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort(new Error('caller gave up'));
+
+    // The queued fetch rejects while the first one still holds the only slot.
+    expect(await secondSettled).toBe('rejected');
+    await expect(second).rejects.toThrow('caller gave up');
+    expect(state.contextsCreated).toBe(1);
+
+    open();
+    await first;
+    // The aborted waiter did not keep the released slot: a new fetch gets it.
+    state.gotoGate = null;
+    await pool.fetchWithBrowser('https://example.com/c', { storageStatePath: STATE_PATH });
+    expect(state.contextsCreated).toBe(2);
+    expect(state.contextsClosed).toBe(2);
+    await pool.shutdown();
+  });
+
+  it('closes the CDP connection when opening the page fails', async () => {
+    state.newPageFails = true;
+    const pool = new MultiBrowserPool();
+    await expect(pool.fetchWithBrowser('https://example.com', {
+      cdpUrl: 'http://127.0.0.1:9222',
+      storageStatePath: STATE_PATH,
+    })).rejects.toThrow('newPage failed');
+
+    expect(state.browsersClosed).toBe(1);
     await pool.shutdown();
   });
 });
