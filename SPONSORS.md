@@ -25,6 +25,19 @@ engineering platform, trusted by 18,000+ enterprises.
 TestMu AI is wigolo's first sponsor. Thanks for the support.
 
 
+### Helodata
+
+<a href="https://wigolo.app/go/helodata/?ref=sponsors-page">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/helodata-dark.svg">
+<img alt="Helodata" src="assets/sponsors/helodata.svg" height="40">
+</picture>
+</a>
+
+[Helodata](https://wigolo.app/go/helodata/?ref=sponsors-page) is proxy
+infrastructure for AI applications, web scraping and automation: residential,
+ISP, mobile and datacenter proxies across 195+ countries and regions.
+
 ## Want to sponsor wigolo?
 
 There is room for more companies and individuals alongside the sponsors above.
