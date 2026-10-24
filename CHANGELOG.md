@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.3.1 — 2026-10-24
+
+Re-cut of v0.3.0 so the release ships its single-file binaries.
+
+### Fixed
+- Release binaries are attached again. The macOS x64 build ran on the retired `macos-13` runner, sat queued until it was cancelled, and that skipped attaching any binaries to v0.3.0; it now builds on `macos-15-intel`. (#664)
+
 ## v0.3.0 — 2026-10-21
 
 Node 26 support, a large batch of contributor fixes, remote reranking, three keyless academic search engines, and hardened SSRF protection.
