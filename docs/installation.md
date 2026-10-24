@@ -43,7 +43,7 @@ docker compose -f packaging/compose.serve.yml up
 
 The compose file binds `0.0.0.0` inside the container, which is a non-loopback bind: the daemon **fails closed** and refuses to start until you set `WIGOLO_API_TOKEN` (uncomment the line in the file) or explicitly opt into open access. Details in [self-hosting](./self-hosting.md).
 
-The published browser-preloaded image is `ghcr.io/knockoutez/wigolo:latest-full`; versioned releases use the same `-full` suffix (for example, `0.3.0-full`). It is useful for `--rm`/no-volume runs where first-use browser downloads would repeat:
+The published browser-preloaded image is `ghcr.io/knockoutez/wigolo:latest-full`; versioned releases use the same `-full` suffix (for example, `0.3.1-full`). It is useful for `--rm`/no-volume runs where first-use browser downloads would repeat:
 
 ```bash
 docker run -i --rm ghcr.io/knockoutez/wigolo:latest-full
