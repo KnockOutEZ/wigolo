@@ -66,6 +66,21 @@ describe('fetch tool — blocked flag', () => {
     expect(res.data.http_status).toBe(403);
   });
 
+  it('flags a block banner from a tier that reports a placeholder status (stealth mode)', async () => {
+    const stealth = { ...raw(REDDIT_403, 200), statusUnknown: true };
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(stealth));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toEqual({ reason: 'block_page' });
+  });
+
+  it('does not flag the same banner when the 200 is the origin\'s real status', async () => {
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(raw(REDDIT_403, 200)));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toBeUndefined();
+  });
+
   it('leaves blocked absent on a normal page', async () => {
     const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(raw(SHORT_OK, 200)));
     expect(res.ok).toBe(true);

@@ -163,7 +163,9 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     // cache-only mode, where no live refetch is possible) still warns the caller.
     ...(cached.contentCompleteness ? { content_completeness: cached.contentCompleteness } : {}),
   };
-  const blocked = detectBlockedPage(cached.httpStatus ?? 200, cached.rawHtml);
+  const blocked = detectBlockedPage(cached.httpStatus ?? 200, cached.rawHtml, undefined, {
+    statusUnknown: cached.httpStatus == null,
+  });
   if (blocked) out.blocked = blocked;
   capAuxFields(out, input.max_content_chars);
   return out;
@@ -428,7 +430,9 @@ export async function handleFetch(
     // A block page that still came back as content (a bot wall served over the
     // HTTP/TLS tier, a 403 banner) keeps its markdown but is flagged so callers
     // don't have to text-sniff it.
-    const blocked = detectBlockedPage(raw.statusCode, raw.html, raw.headers);
+    const blocked = detectBlockedPage(raw.statusCode, raw.html, raw.headers, {
+      statusUnknown: raw.statusUnknown,
+    });
     if (blocked) out.blocked = blocked;
 
     capAuxFields(out, input.max_content_chars);

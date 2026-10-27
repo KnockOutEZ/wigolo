@@ -37,6 +37,16 @@ describe('detectBlockedPage', () => {
       const html = '<html><body><p>Please enable JavaScript to continue.</p></body></html>';
       expect(detectBlockedPage(403, html)).toEqual({ reason: 'js_required' });
     });
+
+    it('flags the same notice when inline markup splits it', () => {
+      const html = '<html><body><p>Please enable <b>JavaScript</b> to continue.</p></body></html>';
+      expect(detectBlockedPage(404, html)).toEqual({ reason: 'js_required' });
+    });
+
+    it('flags a block banner when the status is only a placeholder (stealth mode)', () => {
+      const html = blockPage('reddit-403.html');
+      expect(detectBlockedPage(200, html, undefined, { statusUnknown: true })).toEqual({ reason: 'block_page' });
+    });
   });
 
   describe('normal pages (negative controls)', () => {
@@ -83,6 +93,25 @@ describe('detectBlockedPage', () => {
 
     it('does not flag a short real 404 that has a generic noscript notice', () => {
       expect(detectBlockedPage(404, blockPage('short-404-noscript.html'))).toBeUndefined();
+    });
+
+    it('does not flag a block banner on a 200 the origin really returned', () => {
+      expect(detectBlockedPage(200, blockPage('reddit-403.html'))).toBeUndefined();
+    });
+
+    it('does not flag a quoted block phrase when the status is only a placeholder', () => {
+      const html = blockPage('short-quote.html');
+      expect(detectBlockedPage(200, html, undefined, { statusUnknown: true })).toBeUndefined();
+    });
+
+    it('does not flag an ordinary short page when the status is only a placeholder', () => {
+      const html = blockPage('short-ok.html');
+      expect(detectBlockedPage(200, html, undefined, { statusUnknown: true })).toBeUndefined();
+    });
+
+    it('does not flag a JavaScript-required shell when the status is only a placeholder', () => {
+      const html = spaShell('noscript-required.html');
+      expect(detectBlockedPage(200, html, undefined, { statusUnknown: true })).toBeUndefined();
     });
   });
 });

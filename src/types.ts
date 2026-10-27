@@ -233,6 +233,12 @@ export interface RawFetchResult {
   contentType: string;
   statusCode: number;
   /**
+   * True when `statusCode` is a placeholder because the tier never observed the
+   * origin's status (the stealth escalation and the direct CDP rung report 200).
+   * A 2xx here does not mean the origin answered OK.
+   */
+  statusUnknown?: boolean;
+  /**
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
