@@ -1,0 +1,64 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { detectBlockedPage } from '../../../src/fetch/blocked-page.js';
+
+const fixture = (dir: string, name: string) =>
+  readFileSync(join(__dirname, '../../fixtures', dir, name), 'utf-8');
+const blockPage = (name: string) => fixture('blocked-pages', name);
+const spaShell = (name: string) => fixture('spa-shells', name);
+
+describe('detectBlockedPage', () => {
+  describe('block pages', () => {
+    it('flags the Reddit "blocked by network security" 403 as block_page', () => {
+      expect(detectBlockedPage(403, blockPage('reddit-403.html'))).toEqual({ reason: 'block_page' });
+    });
+
+    it('flags the Quora 404 "enable Javascript" stub as js_required', () => {
+      expect(detectBlockedPage(404, blockPage('quora-404-enable-js.html'))).toEqual({ reason: 'js_required' });
+    });
+
+    it('flags the Cloudflare "Attention Required!" 403 as challenge', () => {
+      expect(detectBlockedPage(403, blockPage('cloudflare-403-blocked.html'))).toEqual({ reason: 'challenge' });
+    });
+
+    it('flags a 200 response marked by the cf-mitigated header as challenge', () => {
+      const html = blockPage('short-ok.html');
+      expect(detectBlockedPage(200, html, { 'cf-mitigated': 'challenge' })).toEqual({ reason: 'challenge' });
+    });
+  });
+
+  describe('normal pages (negative controls)', () => {
+    it('does not flag a short ordinary 200 page', () => {
+      expect(detectBlockedPage(200, blockPage('short-ok.html'))).toBeUndefined();
+    });
+
+    it('does not flag a short real 404 page', () => {
+      expect(detectBlockedPage(404, blockPage('short-404.html'))).toBeUndefined();
+    });
+
+    it('does not flag a thin 200 page', () => {
+      expect(detectBlockedPage(200, spaShell('thin-content.html'))).toBeUndefined();
+    });
+
+    it('does not flag a 200 SPA shell that asks for JavaScript', () => {
+      expect(detectBlockedPage(200, spaShell('noscript-required.html'))).toBeUndefined();
+    });
+
+    it('does not flag a full article that quotes a block phrase', () => {
+      const html = spaShell('normal-page.html').replace(
+        '</article>',
+        '<p>One reader reported seeing "blocked by network security" on another site.</p></article>',
+      );
+      expect(detectBlockedPage(200, html)).toBeUndefined();
+    });
+
+    it('does not flag a substantive 403 page', () => {
+      expect(detectBlockedPage(403, spaShell('normal-page.html'))).toBeUndefined();
+    });
+
+    it('returns undefined for an empty body', () => {
+      expect(detectBlockedPage(403, '')).toBeUndefined();
+    });
+  });
+});

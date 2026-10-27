@@ -163,6 +163,18 @@ export interface FetchOutput {
    * Absent when no challenge was involved.
    */
   solve_method?: SolveMethod | null;
+  /**
+   * Set when the returned body is a block page rather than the real content:
+   * a bot challenge, a "you've been blocked" banner, or an "enable JavaScript"
+   * stub served with an error status. The content is still returned — this
+   * only tells the caller not to trust it. Absent on normal pages.
+   */
+  blocked?: BlockedInfo;
+}
+
+/** Why a fetched body was flagged as a block page — see FetchOutput.blocked. */
+export interface BlockedInfo {
+  reason: 'challenge' | 'block_page' | 'js_required';
 }
 
 /**
