@@ -26,6 +26,17 @@ describe('detectBlockedPage', () => {
       const html = blockPage('short-ok.html');
       expect(detectBlockedPage(200, html, { 'cf-mitigated': 'challenge' })).toEqual({ reason: 'challenge' });
     });
+
+    it('flags a response with no body at all when the cf-mitigated header marks a challenge', () => {
+      // a PDF served through the TLS tier has empty html but keeps its headers
+      expect(detectBlockedPage(200, '', { 'cf-mitigated': 'challenge' })).toEqual({ reason: 'challenge' });
+      expect(detectBlockedPage(200, undefined, { 'CF-Mitigated': 'challenge' })).toEqual({ reason: 'challenge' });
+    });
+
+    it('flags "enable JavaScript to continue" on an error status as js_required', () => {
+      const html = '<html><body><p>Please enable JavaScript to continue.</p></body></html>';
+      expect(detectBlockedPage(403, html)).toEqual({ reason: 'js_required' });
+    });
   });
 
   describe('normal pages (negative controls)', () => {
@@ -57,8 +68,21 @@ describe('detectBlockedPage', () => {
       expect(detectBlockedPage(403, spaShell('normal-page.html'))).toBeUndefined();
     });
 
-    it('returns undefined for an empty body', () => {
+    it('returns undefined for an empty body without a challenge header', () => {
       expect(detectBlockedPage(403, '')).toBeUndefined();
+      expect(detectBlockedPage(200, '', {})).toBeUndefined();
+    });
+
+    it('does not flag a short 200 page that quotes a block phrase', () => {
+      expect(detectBlockedPage(200, blockPage('short-quote.html'))).toBeUndefined();
+    });
+
+    it('still flags the same phrase as block_page on an error status', () => {
+      expect(detectBlockedPage(403, blockPage('short-quote.html'))).toEqual({ reason: 'block_page' });
+    });
+
+    it('does not flag a short real 404 that has a generic noscript notice', () => {
+      expect(detectBlockedPage(404, blockPage('short-404-noscript.html'))).toBeUndefined();
     });
   });
 });
