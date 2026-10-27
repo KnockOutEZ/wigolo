@@ -113,4 +113,30 @@ describe('fetch tool — blocked flag', () => {
     expect(res.data.cached).toBe(true);
     expect(res.data.blocked).toEqual({ reason: 'block_page' });
   });
+
+  it('does not take a missing status on an old cache row for a placeholder status', async () => {
+    getCachedContentMock.mockReturnValue({
+      id: 2,
+      url: 'https://www.reddit.com/r/x',
+      normalizedUrl: 'https://www.reddit.com/r/x',
+      title: 'Blocked',
+      markdown: BLOCK_MARKDOWN,
+      rawHtml: REDDIT_403,
+      metadata: '{}',
+      links: '[]',
+      images: '[]',
+      fetchMethod: 'browser',
+      extractorUsed: 'defuddle',
+      contentHash: 'def',
+      fetchedAt: '2026-10-27T00:00:00Z',
+      expiresAt: null,
+      // a row from before the status column existed
+      httpStatus: null,
+    } as CachedContent);
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(raw(SHORT_OK, 200)));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.cached).toBe(true);
+    expect(res.data.blocked).toBeUndefined();
+  });
 });

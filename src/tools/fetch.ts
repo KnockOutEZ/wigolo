@@ -163,9 +163,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     // cache-only mode, where no live refetch is possible) still warns the caller.
     ...(cached.contentCompleteness ? { content_completeness: cached.contentCompleteness } : {}),
   };
-  const blocked = detectBlockedPage(cached.httpStatus ?? 200, cached.rawHtml, undefined, {
-    statusUnknown: cached.httpStatus == null,
-  });
+  const blocked = detectBlockedPage(cached.httpStatus ?? 200, cached.rawHtml);
   if (blocked) out.blocked = blocked;
   capAuxFields(out, input.max_content_chars);
   return out;
