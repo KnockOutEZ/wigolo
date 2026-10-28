@@ -41,7 +41,7 @@ export function getEmbedProvider(): Promise<EmbedProvider> {
       idle = createIdleUnload({
         timeoutMs: config.embeddingIdleTimeoutMs,
         label: 'embed',
-        onIdle: () => disposeEmbedProvider(),
+        onIdle: () => disposeEmbedProvider(p),
       });
       return withIdleUnload(p, idle);
     })
@@ -65,8 +65,12 @@ export function _resetEmbedProviderForTest(): void {
  * Best-effort release of the cached embed provider. Fastembed exposes no
  * explicit dispose, so dropping the reference is what frees the model; a
  * provider that grows one later is called here.
+ *
+ * `expected` binds the release to the provider that armed the clock. A handle
+ * retained from an older provider therefore cannot tear down a newer one.
  */
-export async function disposeEmbedProvider(): Promise<void> {
+export async function disposeEmbedProvider(expected?: EmbedProvider): Promise<void> {
+  if (expected && instance !== expected) return;
   idle?.cancel();
   idle = null;
   const provider = instance;

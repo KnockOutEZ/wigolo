@@ -109,7 +109,7 @@ export function getRerankProvider(): Promise<RerankProvider> {
     idle = createIdleUnload({
       timeoutMs: config.rerankerIdleTimeoutMs,
       label: 'rerank',
-      onIdle: () => disposeRerankProvider(),
+      onIdle: () => disposeRerankProvider(provider),
     });
     return withIdleUnload(provider, idle);
   })().catch((err) => {
@@ -129,8 +129,10 @@ export function _resetRerankProviderForTest(): void {
 
 // Best-effort disposal of the cached rerank provider's native resources.
 // Called from CLI shutdown, and from the idle countdown, to release the ONNX
-// session.
-export async function disposeRerankProvider(): Promise<void> {
+// session. `expected` binds the release to the provider that armed the clock,
+// so a stale handle cannot dispose a newer provider.
+export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
+  if (expected && instance !== expected) return;
   idle?.cancel();
   idle = null;
   const provider = instance;

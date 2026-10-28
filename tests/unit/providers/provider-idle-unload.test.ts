@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   rerank: vi.fn(async () => [{ id: '0', score: 1 }]),
   rerankDispose: vi.fn(async () => undefined),
   embed: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
+  embedDispose: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/config.js', () => ({
@@ -32,6 +33,9 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => ({
     async warmup(): Promise<void> {}
     embed(texts: string[]): Promise<Float32Array[]> {
       return h.embed(texts);
+    }
+    dispose(): Promise<void> {
+      return h.embedDispose();
     }
   },
 }));
@@ -116,6 +120,24 @@ describe('rerank provider idle unload', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(h.rerankDispose).toHaveBeenCalledTimes(1);
   });
+
+  it('does not let a retained handle dispose a newer provider', async () => {
+    const first = await getRerankProvider();
+    await first.rerank('q', candidate);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.rerankDispose).toHaveBeenCalledTimes(1);
+
+    const second = await getRerankProvider();
+    await second.rerank('q', candidate);
+    await vi.advanceTimersByTimeAsync(999);
+
+    await first.rerank('q', candidate);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('embed provider idle unload', () => {
@@ -123,6 +145,7 @@ describe('embed provider idle unload', () => {
     vi.useFakeTimers();
     h.config.embeddingIdleTimeoutMs = 2000;
     h.embed.mockClear();
+    h.embedDispose.mockClear();
   });
 
   afterEach(() => {
@@ -163,5 +186,27 @@ describe('embed provider idle unload', () => {
 
     const fresh = await getEmbedProvider();
     expect(fresh).not.toBe(provider);
+  });
+
+  it('does not let a retained handle dispose a newer provider', async () => {
+    const first = await getEmbedProvider();
+    await first.embed(['one']);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.embedDispose).toHaveBeenCalledTimes(1);
+
+    const second = await getEmbedProvider();
+    await second.embed(['two']);
+    await vi.advanceTimersByTimeAsync(1999);
+
+    // A caller still holds the released handle and re-arms its old clock.
+    await first.embed(['stale']);
+    await vi.advanceTimersByTimeAsync(1);
+
+    // The newer provider's own countdown fires; the stale clock must not add
+    // a second release and must not cancel this one.
+    expect(h.embedDispose).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(h.embedDispose).toHaveBeenCalledTimes(2);
   });
 });
