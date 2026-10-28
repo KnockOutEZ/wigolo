@@ -9,7 +9,18 @@ const h = vi.hoisted(() => ({
   embed: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
   embedDispose: vi.fn(async () => undefined),
   embedDisposed: [] as unknown[],
+  // Held open by a test so a dispose can land while an initialization is still
+  // pending. Null means warmup resolves at once, as before.
+  rerankWarmupGate: null as Promise<void> | null,
+  embedWarmupGate: null as Promise<void> | null,
 }));
+
+/** A warmup gate a test can hold shut and then open. */
+function heldGate(): { promise: Promise<void>; open: () => void } {
+  let open: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => { open = resolve; });
+  return { promise, open };
+}
 
 vi.mock('../../../src/config.js', () => ({
   getConfig: () => h.config,
@@ -18,7 +29,9 @@ vi.mock('../../../src/config.js', () => ({
 vi.mock('../../../src/search/reranker/transformers-rerank-provider.js', () => ({
   TransformersRerankProvider: class {
     readonly modelId = 'test-reranker';
-    async warmup(): Promise<void> {}
+    async warmup(): Promise<void> {
+      if (h.rerankWarmupGate) await h.rerankWarmupGate;
+    }
     rerank(query: string, candidates: unknown[], topK?: number): Promise<unknown> {
       return h.rerank.call(null, query, candidates, topK) as Promise<unknown>;
     }
@@ -33,7 +46,9 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => ({
   FastembedEmbedProvider: class {
     readonly modelId = 'test-embed';
     readonly dim = 384;
-    async warmup(): Promise<void> {}
+    async warmup(): Promise<void> {
+      if (h.embedWarmupGate) await h.embedWarmupGate;
+    }
     embed(texts: string[]): Promise<Float32Array[]> {
       return h.embed(texts);
     }
@@ -61,6 +76,7 @@ describe('rerank provider idle unload', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     h.config.rerankerIdleTimeoutMs = 1000;
+    h.rerankWarmupGate = null;
     h.rerank.mockClear();
     h.rerankDispose.mockClear();
     h.rerankDisposed.length = 0;
@@ -169,12 +185,65 @@ describe('rerank provider idle unload', () => {
     const fresh = await getRerankProvider();
     expect(fresh).not.toBe(provider);
   });
+
+  it('rejects a pending warmup when the factory is disposed during initialization', async () => {
+    // Nothing is published yet, so a full dispose used to return early and the
+    // warmup still handed its provider out after shutdown.
+    const gate = heldGate();
+    h.rerankWarmupGate = gate.promise;
+
+    const pending = getRerankProvider();
+    await disposeRerankProvider();
+
+    gate.open();
+    await expect(pending).rejects.toThrow(/disposed during initialization/);
+    const dropped = h.rerankDisposed[0];
+    expect(dropped).toBeDefined();
+    expect(h.rerankDispose).toHaveBeenCalledTimes(1);
+
+    // The next lookup is a fresh provider, not the one that was dropped.
+    await getRerankProvider();
+    await disposeRerankProvider();
+    expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+    expect(h.rerankDisposed[1]).not.toBe(dropped);
+  });
+
+  it('does not let a stale completion publish over a newer provider', async () => {
+    const gate = heldGate();
+    h.rerankWarmupGate = gate.promise;
+
+    const staleLookup = getRerankProvider();
+    // Let the mocked module finish resolving before the next lookup starts, so
+    // both lookups build from the same mock. The warmup stays gated.
+    await vi.advanceTimersByTimeAsync(0);
+    await disposeRerankProvider();
+
+    // A newer lookup runs without the gate, so it completes first.
+    h.rerankWarmupGate = null;
+    const newerLookup = getRerankProvider();
+
+    gate.open();
+    await expect(staleLookup).rejects.toThrow(/disposed during initialization/);
+    const staleProvider = h.rerankDisposed[0];
+    expect(staleProvider).toBeDefined();
+
+    const newer = await newerLookup;
+    expect(await getRerankProvider()).toBe(newer);
+
+    // The factory state still belongs to the newer provider, so a dispose
+    // releases it and never the stale one.
+    await disposeRerankProvider();
+    expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+    expect(h.rerankDisposed[1]).not.toBe(staleProvider);
+    expect(h.rerankDisposed.filter((p) => p === staleProvider)).toHaveLength(1);
+  });
 });
 
 describe('embed provider idle unload', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     h.config.embeddingIdleTimeoutMs = 2000;
+    h.embedWarmupGate = null;
     h.embed.mockClear();
     h.embedDispose.mockClear();
     h.embedDisposed.length = 0;
@@ -255,5 +324,66 @@ describe('embed provider idle unload', () => {
 
     const fresh = await getEmbedProvider();
     expect(fresh).not.toBe(provider);
+  });
+
+  it('rejects a pending warmup when the factory is disposed during initialization', async () => {
+    // Same guard as the rerank factory: nothing is published yet, so a full
+    // dispose used to return early and the warmup still handed its provider out.
+    const gate = heldGate();
+    h.embedWarmupGate = gate.promise;
+
+    const pending = getEmbedProvider();
+    await disposeEmbedProvider();
+
+    gate.open();
+    await expect(pending).rejects.toThrow(/disposed during initialization/);
+    const dropped = h.embedDisposed[0];
+    expect(dropped).toBeDefined();
+    expect(h.embedDispose).toHaveBeenCalledTimes(1);
+
+    // The next lookup is a fresh provider, not the one that was dropped.
+    await getEmbedProvider();
+    await disposeEmbedProvider();
+    expect(h.embedDispose).toHaveBeenCalledTimes(2);
+    expect(h.embedDisposed[1]).not.toBe(dropped);
+  });
+
+  it('does not let a stale completion publish over a newer provider', async () => {
+    const gate = heldGate();
+    h.embedWarmupGate = gate.promise;
+
+    const staleLookup = getEmbedProvider();
+    // Let the mocked module finish resolving before the next lookup starts, so
+    // both lookups build from the same mock. The warmup stays gated.
+    await vi.advanceTimersByTimeAsync(0);
+    await disposeEmbedProvider();
+
+    // A newer lookup runs without the gate, so it completes first.
+    h.embedWarmupGate = null;
+    const newerLookup = getEmbedProvider();
+
+    gate.open();
+    await expect(staleLookup).rejects.toThrow(/disposed during initialization/);
+    const staleProvider = h.embedDisposed[0];
+    expect(staleProvider).toBeDefined();
+
+    const newer = await newerLookup;
+    expect(await getEmbedProvider()).toBe(newer);
+
+    // The factory state still belongs to the newer provider, so a dispose
+    // releases it and never the stale one.
+    await disposeEmbedProvider();
+    expect(h.embedDispose).toHaveBeenCalledTimes(2);
+    expect(h.embedDisposed[1]).not.toBe(staleProvider);
+    expect(h.embedDisposed.filter((p) => p === staleProvider)).toHaveLength(1);
+  });
+
+  it('arms the countdown after warmup when no embed call follows', async () => {
+    // The factory warms the model eagerly, so the countdown must start at
+    // creation. A caller that only awaits the factory would otherwise keep the
+    // weights resident for the life of the process.
+    await getEmbedProvider();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.embedDispose).toHaveBeenCalledTimes(1);
   });
 });

@@ -39,6 +39,14 @@ let handle: RerankProvider | null = null;
 let idle: IdleUnload | null = null;
 
 /**
+ * Bumped whenever the factory state is thrown away: a full dispose, or the test
+ * reset. A factory call remembers the value at entry, so a completion from an
+ * older generation belongs to a lookup that was dropped and cannot publish over
+ * the one that replaced it.
+ */
+let generation = 0;
+
+/**
  * True when an error looks like a transient network/fetch blip a retry can
  * recover — the field reranker "fetch failed" during model download, plus common
  * socket/DNS/gateway cousins. Deterministic errors (bad model, bad shape) must
@@ -92,6 +100,7 @@ function withIdleUnload(provider: RerankProvider, clock: IdleUnload): RerankProv
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
   const config = getConfig();
+  const startedAt = generation;
   cached = (async () => {
     let provider: RerankProvider;
     if (config.reranker === 'remote') {
@@ -107,6 +116,13 @@ export function getRerankProvider(): Promise<RerankProvider> {
         modelId: provider.modelId,
       });
     }
+    if (generation !== startedAt) {
+      // A full dispose landed while this warmup was in flight. The factory
+      // state belongs to a newer generation now, so this provider can only be
+      // released — never published — and the lookup that waited on it fails.
+      await releaseRerankProvider(provider);
+      throw new Error('rerank provider disposed during initialization');
+    }
     instance = provider;
     idle = createIdleUnload({
       timeoutMs: config.rerankerIdleTimeoutMs,
@@ -120,14 +136,19 @@ export function getRerankProvider(): Promise<RerankProvider> {
     handle = wrapped;
     return wrapped;
   })().catch((err) => {
-    cached = null;
-    instance = null;
+    // Clear the cache only while this generation still owns it, so a newer
+    // lookup is never clobbered by an older lookup's failure.
+    if (generation === startedAt) {
+      cached = null;
+      instance = null;
+    }
     throw err;
   });
   return cached;
 }
 
 export function _resetRerankProviderForTest(): void {
+  generation += 1;
   idle?.cancel();
   idle = null;
   cached = null;
@@ -150,13 +171,17 @@ async function releaseRerankProvider(provider: RerankProvider): Promise<void> {
 // session. `expected` binds the release to the provider that armed the clock,
 // so a stale handle cannot dispose a newer provider. The stale handle still
 // releases its own provider, which may have reloaded its model meanwhile.
+// A full dispose also invalidates an initialization still in flight, so its
+// completion can no longer publish itself: it releases only what it built.
 export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
   if (expected && instance !== expected && expected !== handle) {
     // Stale handle: release only the provider it belongs to. The current
-    // factory state and countdown stay as they are.
+    // factory state and countdown stay as they are, and the generation is not
+    // bumped — this handle belongs to a lookup that was already replaced.
     await releaseRerankProvider(expected);
     return;
   }
+  generation += 1;
   idle?.cancel();
   idle = null;
   const provider = instance;
