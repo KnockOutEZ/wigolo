@@ -23,6 +23,8 @@ export interface EmbedProvider {
 let cached: Promise<EmbedProvider> | null = null;
 /** The real provider behind `cached`. `cached` may hand out an idle wrapper. */
 let instance: EmbedProvider | null = null;
+/** The handle `cached` returned when idle tracking wrapped the provider. */
+let handle: EmbedProvider | null = null;
 let idle: IdleUnload | null = null;
 
 function withIdleUnload(provider: EmbedProvider, clock: IdleUnload): EmbedProvider {
@@ -43,7 +45,9 @@ export function getEmbedProvider(): Promise<EmbedProvider> {
         label: 'embed',
         onIdle: () => disposeEmbedProvider(p),
       });
-      return withIdleUnload(p, idle);
+      const wrapped = withIdleUnload(p, idle);
+      handle = wrapped;
+      return wrapped;
     })
     .catch(err => {
       // Clear cache on any failure (import or warmup) so the next call retries.
@@ -59,6 +63,17 @@ export function _resetEmbedProviderForTest(): void {
   idle = null;
   cached = null;
   instance = null;
+  handle = null;
+}
+
+/** Release a specific provider. Errors stay inside this best-effort helper. */
+async function releaseEmbedProvider(provider: EmbedProvider): Promise<void> {
+  try {
+    const disposable = provider as unknown as { dispose?: () => Promise<void> };
+    if (typeof disposable.dispose === 'function') await disposable.dispose();
+  } catch (err) {
+    log.debug('embed dispose failed', { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 /**
@@ -67,20 +82,23 @@ export function _resetEmbedProviderForTest(): void {
  * provider that grows one later is called here.
  *
  * `expected` binds the release to the provider that armed the clock. A handle
- * retained from an older provider therefore cannot tear down a newer one.
+ * retained from an older provider therefore cannot tear down a newer one. Such
+ * a stale handle still releases the provider behind it, because that provider
+ * may have reloaded its model after the handle re-armed the old clock.
  */
 export async function disposeEmbedProvider(expected?: EmbedProvider): Promise<void> {
-  if (expected && instance !== expected) return;
+  if (expected && instance !== expected && expected !== handle) {
+    // Stale handle: release only the provider it belongs to. The current
+    // factory state and countdown stay as they are.
+    await releaseEmbedProvider(expected);
+    return;
+  }
   idle?.cancel();
   idle = null;
   const provider = instance;
   instance = null;
+  handle = null;
   cached = null;
   if (!provider) return;
-  try {
-    const disposable = provider as unknown as { dispose?: () => Promise<void> };
-    if (typeof disposable.dispose === 'function') await disposable.dispose();
-  } catch (err) {
-    log.debug('embed dispose failed', { error: err instanceof Error ? err.message : String(err) });
-  }
+  await releaseEmbedProvider(provider);
 }

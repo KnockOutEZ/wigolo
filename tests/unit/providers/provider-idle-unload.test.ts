@@ -5,8 +5,10 @@ const h = vi.hoisted(() => ({
   config: { reranker: 'onnx', rerankerIdleTimeoutMs: 1000, embeddingIdleTimeoutMs: 2000 },
   rerank: vi.fn(async () => [{ id: '0', score: 1 }]),
   rerankDispose: vi.fn(async () => undefined),
+  rerankDisposed: [] as unknown[],
   embed: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
   embedDispose: vi.fn(async () => undefined),
+  embedDisposed: [] as unknown[],
 }));
 
 vi.mock('../../../src/config.js', () => ({
@@ -21,6 +23,7 @@ vi.mock('../../../src/search/reranker/transformers-rerank-provider.js', () => ({
       return h.rerank.call(null, query, candidates, topK) as Promise<unknown>;
     }
     dispose(): Promise<void> {
+      h.rerankDisposed.push(this);
       return h.rerankDispose();
     }
   },
@@ -35,6 +38,7 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => ({
       return h.embed(texts);
     }
     dispose(): Promise<void> {
+      h.embedDisposed.push(this);
       return h.embedDispose();
     }
   },
@@ -59,6 +63,7 @@ describe('rerank provider idle unload', () => {
     h.config.rerankerIdleTimeoutMs = 1000;
     h.rerank.mockClear();
     h.rerankDispose.mockClear();
+    h.rerankDisposed.length = 0;
   });
 
   afterEach(() => {
@@ -133,17 +138,36 @@ describe('rerank provider idle unload', () => {
     await first.rerank('q', candidate);
     await vi.advanceTimersByTimeAsync(1000);
     expect(h.rerankDispose).toHaveBeenCalledTimes(1);
+    const firstProvider = h.rerankDisposed[0];
 
     const second = await getRerankProvider();
     await second.rerank('q', candidate);
     await vi.advanceTimersByTimeAsync(999);
 
+    // A retained handle re-arms its old clock.
     await first.rerank('q', candidate);
     await vi.advanceTimersByTimeAsync(1);
 
+    // The newer provider's own countdown fires. The stale clock must not
+    // cancel it and must not release the newer provider.
     expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+    const secondProvider = h.rerankDisposed[1];
+    expect(secondProvider).not.toBe(firstProvider);
+
+    // The stale clock fires next. It releases only its own provider.
     await vi.advanceTimersByTimeAsync(999);
-    expect(h.rerankDispose).toHaveBeenCalledTimes(2);
+    expect(h.rerankDispose).toHaveBeenCalledTimes(3);
+    expect(h.rerankDisposed[2]).toBe(firstProvider);
+    expect(h.rerankDisposed.filter((p) => p === secondProvider)).toHaveLength(1);
+  });
+
+  it('clears the cache when its own handle is released', async () => {
+    const provider = await getRerankProvider();
+    await disposeRerankProvider(provider);
+    expect(h.rerankDispose).toHaveBeenCalledTimes(1);
+
+    const fresh = await getRerankProvider();
+    expect(fresh).not.toBe(provider);
   });
 });
 
@@ -153,6 +177,7 @@ describe('embed provider idle unload', () => {
     h.config.embeddingIdleTimeoutMs = 2000;
     h.embed.mockClear();
     h.embedDispose.mockClear();
+    h.embedDisposed.length = 0;
   });
 
   afterEach(() => {
@@ -200,6 +225,7 @@ describe('embed provider idle unload', () => {
     await first.embed(['one']);
     await vi.advanceTimersByTimeAsync(2000);
     expect(h.embedDispose).toHaveBeenCalledTimes(1);
+    const firstProvider = h.embedDisposed[0];
 
     const second = await getEmbedProvider();
     await second.embed(['two']);
@@ -210,10 +236,24 @@ describe('embed provider idle unload', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     // The newer provider's own countdown fires; the stale clock must not add
-    // a second release and must not cancel this one.
+    // a release for the newer provider and must not cancel this one.
     expect(h.embedDispose).toHaveBeenCalledTimes(2);
+    const secondProvider = h.embedDisposed[1];
+    expect(secondProvider).not.toBe(firstProvider);
 
+    // The stale clock fires next and releases only its own provider.
     await vi.advanceTimersByTimeAsync(1999);
-    expect(h.embedDispose).toHaveBeenCalledTimes(2);
+    expect(h.embedDispose).toHaveBeenCalledTimes(3);
+    expect(h.embedDisposed[2]).toBe(firstProvider);
+    expect(h.embedDisposed.filter((p) => p === secondProvider)).toHaveLength(1);
+  });
+
+  it('clears the cache when its own handle is released', async () => {
+    const provider = await getEmbedProvider();
+    await disposeEmbedProvider(provider);
+    expect(h.embedDispose).toHaveBeenCalledTimes(1);
+
+    const fresh = await getEmbedProvider();
+    expect(fresh).not.toBe(provider);
   });
 });

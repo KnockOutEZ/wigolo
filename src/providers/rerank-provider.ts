@@ -34,6 +34,8 @@ export interface RerankProvider {
 let cached: Promise<RerankProvider> | null = null;
 /** The real provider behind `cached`. `cached` may hand out an idle wrapper. */
 let instance: RerankProvider | null = null;
+/** The handle `cached` returned when idle tracking wrapped the provider. */
+let handle: RerankProvider | null = null;
 let idle: IdleUnload | null = null;
 
 /**
@@ -114,7 +116,9 @@ export function getRerankProvider(): Promise<RerankProvider> {
     // The model is already loaded by the eager warmup above. Start the
     // countdown now, or it would wait for a rerank() call that may never come.
     idle.touch();
-    return withIdleUnload(provider, idle);
+    const wrapped = withIdleUnload(provider, idle);
+    handle = wrapped;
+    return wrapped;
   })().catch((err) => {
     cached = null;
     instance = null;
@@ -128,24 +132,37 @@ export function _resetRerankProviderForTest(): void {
   idle = null;
   cached = null;
   instance = null;
+  handle = null;
 }
 
-// Best-effort disposal of the cached rerank provider's native resources.
-// Called from CLI shutdown, and from the idle countdown, to release the ONNX
-// session. `expected` binds the release to the provider that armed the clock,
-// so a stale handle cannot dispose a newer provider.
-export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
-  if (expected && instance !== expected) return;
-  idle?.cancel();
-  idle = null;
-  const provider = instance;
-  instance = null;
-  cached = null;
-  if (!provider) return;
+/** Release a specific provider. Errors stay inside this best-effort helper. */
+async function releaseRerankProvider(provider: RerankProvider): Promise<void> {
   try {
     const disposable = provider as unknown as { dispose?: () => Promise<void> };
     if (typeof disposable.dispose === 'function') await disposable.dispose();
   } catch (err) {
     log.debug('rerank dispose failed', { error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+// Best-effort disposal of the cached rerank provider's native resources.
+// Called from CLI shutdown, and from the idle countdown, to release the ONNX
+// session. `expected` binds the release to the provider that armed the clock,
+// so a stale handle cannot dispose a newer provider. The stale handle still
+// releases its own provider, which may have reloaded its model meanwhile.
+export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
+  if (expected && instance !== expected && expected !== handle) {
+    // Stale handle: release only the provider it belongs to. The current
+    // factory state and countdown stay as they are.
+    await releaseRerankProvider(expected);
+    return;
+  }
+  idle?.cancel();
+  idle = null;
+  const provider = instance;
+  instance = null;
+  handle = null;
+  cached = null;
+  if (!provider) return;
+  await releaseRerankProvider(provider);
 }
