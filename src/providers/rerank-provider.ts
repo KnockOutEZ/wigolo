@@ -8,6 +8,7 @@
  */
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
+import { createIdleUnload, withIdleTracking, type IdleUnload } from './idle-unload.js';
 
 const log = createLogger('providers');
 export interface RerankCandidate {
@@ -31,6 +32,9 @@ export interface RerankProvider {
 }
 
 let cached: Promise<RerankProvider> | null = null;
+/** The real provider behind `cached`. `cached` may hand out an idle wrapper. */
+let instance: RerankProvider | null = null;
+let idle: IdleUnload | null = null;
 
 /**
  * True when an error looks like a transient network/fetch blip a retry can
@@ -76,46 +80,67 @@ export async function withFetchRetry<T>(
   throw lastErr;
 }
 
+/**
+ * Wrap a provider so every call restarts the idle countdown.
+ */
+function withIdleUnload(provider: RerankProvider, clock: IdleUnload): RerankProvider {
+  return withIdleTracking(provider, clock, 'rerank');
+}
+
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
   const config = getConfig();
   cached = (async () => {
+    let provider: RerankProvider;
     if (config.reranker === 'remote') {
       const { RemoteRerankProvider } = await import('../search/reranker/remote-rerank-provider.js');
-      return new RemoteRerankProvider(config);
+      provider = new RemoteRerankProvider(config);
+    } else {
+      const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
+      provider = new TransformersRerankProvider();
+      await withFetchRetry(() => (provider as unknown as { warmup(): Promise<void> }).warmup());
+      log.info('rerank provider ready', {
+        provider: 'rerank',
+        impl: 'transformers',
+        modelId: provider.modelId,
+      });
     }
-    const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
-    const provider = new TransformersRerankProvider();
-    await withFetchRetry(() => provider.warmup());
-    log.info('rerank provider ready', {
-      provider: 'rerank',
-      impl: 'transformers',
-      modelId: provider.modelId,
+    instance = provider;
+    idle = createIdleUnload({
+      timeoutMs: config.rerankerIdleTimeoutMs,
+      label: 'rerank',
+      onIdle: () => disposeRerankProvider(),
     });
-    return provider;
-  })()
-    .catch((err) => {
-      cached = null;
-      throw err;
-    });
+    return withIdleUnload(provider, idle);
+  })().catch((err) => {
+    cached = null;
+    instance = null;
+    throw err;
+  });
   return cached;
 }
 
 export function _resetRerankProviderForTest(): void {
+  idle?.cancel();
+  idle = null;
   cached = null;
+  instance = null;
 }
 
 // Best-effort disposal of the cached rerank provider's native resources.
-// Called from CLI shutdown to release the ONNX session before process exit.
+// Called from CLI shutdown, and from the idle countdown, to release the ONNX
+// session.
 export async function disposeRerankProvider(): Promise<void> {
-  if (!cached) return;
+  idle?.cancel();
+  idle = null;
+  const provider = instance;
+  instance = null;
+  cached = null;
+  if (!provider) return;
   try {
-    const provider = await cached;
     const disposable = provider as unknown as { dispose?: () => Promise<void> };
     if (typeof disposable.dispose === 'function') await disposable.dispose();
   } catch (err) {
     log.debug('rerank dispose failed', { error: err instanceof Error ? err.message : String(err) });
-  } finally {
-    cached = null;
   }
 }
