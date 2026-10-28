@@ -102,8 +102,15 @@ describe('rerank provider idle unload', () => {
     expect(h.rerankDispose).not.toHaveBeenCalled();
   });
 
-  it('stays loaded when the timeout is disabled', async () => {
-    h.config.rerankerIdleTimeoutMs = 0;
+  it('unloads a model that warmup loaded and no call followed', async () => {
+    // The onnx branch warms the model eagerly, so the countdown must start at
+    // creation or the weights wait for a rerank() call that may never come.
+    await getRerankProvider();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.rerankDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays loaded when the timeout is disabled', async () => {    h.config.rerankerIdleTimeoutMs = 0;
     const provider = await getRerankProvider();
     await provider.rerank('q', candidate);
 

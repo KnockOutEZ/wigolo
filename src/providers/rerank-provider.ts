@@ -111,6 +111,9 @@ export function getRerankProvider(): Promise<RerankProvider> {
       label: 'rerank',
       onIdle: () => disposeRerankProvider(provider),
     });
+    // The model is already loaded by the eager warmup above. Start the
+    // countdown now, or it would wait for a rerank() call that may never come.
+    idle.touch();
     return withIdleUnload(provider, idle);
   })().catch((err) => {
     cached = null;

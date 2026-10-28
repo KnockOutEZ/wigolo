@@ -26,6 +26,7 @@ vi.mock('../../../src/providers/vector-store.js', () => ({
 }));
 
 import { backfillEmbeddings } from '../../../src/cache/backfill-embeddings.js';
+import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { initDatabase, closeDatabase, isVecExtensionLoaded } from '../../../src/cache/db.js';
 
 function seed(db: ReturnType<typeof initDatabase>, rows: Array<{ url: string; title: string | null; markdown: string | null; content_hash?: string }>) {
@@ -112,8 +113,7 @@ describe('backfillEmbeddings', () => {
     expect(upsertSpy).not.toHaveBeenCalled();
   });
 
-  it('honors --limit', async () => {
-    const db = initDatabase(join(dir, 'wigolo.db'));
+  it('honors --limit', async () => {    const db = initDatabase(join(dir, 'wigolo.db'));
     if (!isVecExtensionLoaded()) {
       closeDatabase();
       return;
@@ -128,5 +128,28 @@ describe('backfillEmbeddings', () => {
     const r = await backfillEmbeddings({ dataDir: dir, limit: 2 });
     expect(r.scanned).toBe(2);
     expect(r.embedded).toBe(2);
+  });
+
+  it('reacquires the embed provider for each batch', async () => {
+    const db = initDatabase(join(dir, 'wigolo.db'));
+    if (!isVecExtensionLoaded()) {
+      closeDatabase();
+      return;
+    }
+    seed(db, [
+      { url: 'https://a.example/1', title: 'A', markdown: 'a body' },
+      { url: 'https://b.example/2', title: 'B', markdown: 'b body' },
+    ]);
+    closeDatabase();
+
+    // The idle timer can release the model between batches, so each batch
+    // asks the factory for the current provider.
+    vi.mocked(getEmbedProvider).mockClear();
+    const r = await backfillEmbeddings({ dataDir: dir, batchSize: 1 });
+
+    expect(r.embedded).toBe(2);
+    expect(embedSpy).toHaveBeenCalledTimes(2);
+    // One resolution before the scan, then one per batch.
+    expect(vi.mocked(getEmbedProvider)).toHaveBeenCalledTimes(3);
   });
 });

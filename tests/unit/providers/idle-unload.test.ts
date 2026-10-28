@@ -100,6 +100,32 @@ describe('createIdleUnload', () => {
     expect(onIdle).not.toHaveBeenCalled();
   });
 
+  it('touch arms the countdown without a tracked call', async () => {
+    const onIdle = vi.fn();
+    const clock = createIdleUnload({ timeoutMs: 100, onIdle });
+
+    // A provider that loads eagerly needs a countdown before its first call.
+    clock.touch();
+    expect(clock.isArmed()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(99);
+    expect(onIdle).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it('touch stays disabled when the timeout is not positive', async () => {
+    const onIdle = vi.fn();
+    const clock = createIdleUnload({ timeoutMs: 0, onIdle });
+
+    clock.touch();
+    expect(clock.isArmed()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onIdle).not.toHaveBeenCalled();
+  });
+
   it('swallows a rejecting onIdle instead of raising an unhandled rejection', async () => {
     const onIdle = vi.fn(async () => {
       throw new Error('dispose blew up');

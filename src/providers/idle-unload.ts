@@ -33,6 +33,8 @@ export interface IdleUnload {
   end(): void;
   /** Stop the countdown. A later `begin()` or `end()` arms it again. */
   cancel(): void;
+  /** Arm the countdown without a tracked call. For a provider loaded eagerly. */
+  touch(): void;
   /** True while a countdown is scheduled. For tests and diagnostics. */
   isArmed(): boolean;
 }
@@ -80,6 +82,9 @@ export function createIdleUnload(opts: IdleUnloadOptions): IdleUnload {
     },
     cancel(): void {
       clear();
+    },
+    touch(): void {
+      arm();
     },
     isArmed(): boolean {
       return timer !== null;
