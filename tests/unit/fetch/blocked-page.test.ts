@@ -95,6 +95,12 @@ describe('detectBlockedPage', () => {
       expect(detectBlockedPage(404, blockPage('short-404-noscript.html'))).toBeUndefined();
     });
 
+    it('does not flag a short 403 from a sign-in gate, on purpose', () => {
+      // "Access denied, sign in to view" is a login wall, not a bot check: the
+      // page asks for credentials the caller can supply, so it is not a block page.
+      expect(detectBlockedPage(403, blockPage('signin-403.html'))).toBeUndefined();
+    });
+
     it('does not flag a block banner on a 200 the origin really returned', () => {
       expect(detectBlockedPage(200, blockPage('reddit-403.html'))).toBeUndefined();
     });

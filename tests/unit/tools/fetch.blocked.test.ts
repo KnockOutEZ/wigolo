@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CachedContent, RawFetchResult } from '../../../src/types.js';
+import { cacheContent } from '../../../src/cache/store.js';
 
 const getCachedContentMock = vi.fn<() => CachedContent | undefined>(() => undefined);
 vi.mock('../../../src/cache/store.js', () => ({
@@ -53,6 +54,7 @@ function raw(html: string, statusCode: number): RawFetchResult {
 describe('fetch tool — blocked flag', () => {
   beforeEach(() => {
     extractMock.mockClear();
+    vi.mocked(cacheContent).mockClear();
     getCachedContentMock.mockReset();
     getCachedContentMock.mockReturnValue(undefined);
   });
@@ -86,6 +88,42 @@ describe('fetch tool — blocked flag', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error('expected success');
     expect(res.data.blocked).toBeUndefined();
+  });
+
+  it('does not cache a block page reported with a placeholder status (stealth mode)', async () => {
+    const stealth = { ...raw(REDDIT_403, 200), statusUnknown: true };
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(stealth));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toEqual({ reason: 'block_page' });
+    // a replay from the cache could not tell the 200 is a placeholder
+    expect(cacheContent).not.toHaveBeenCalled();
+  });
+
+  it('does not cache a page flagged only by the cf-mitigated header', async () => {
+    const challenged = { ...raw(SHORT_OK, 200), headers: { 'cf-mitigated': 'challenge' } };
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(challenged));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toEqual({ reason: 'challenge' });
+    // the cache does not store headers, so a replay would lose the flag
+    expect(cacheContent).not.toHaveBeenCalled();
+  });
+
+  it('does not cache a real 403 block page either', async () => {
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(raw(REDDIT_403, 403)));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toEqual({ reason: 'block_page' });
+    expect(cacheContent).not.toHaveBeenCalled();
+  });
+
+  it('still caches a normal page', async () => {
+    const res = await handleFetch({ url: 'https://www.reddit.com/r/x' }, routerReturning(raw(SHORT_OK, 200)));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected success');
+    expect(res.data.blocked).toBeUndefined();
+    expect(cacheContent).toHaveBeenCalledTimes(1);
   });
 
   it('flags a cached block page served from the cache', async () => {
