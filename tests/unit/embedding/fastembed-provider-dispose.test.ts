@@ -8,7 +8,11 @@ const h = vi.hoisted(() => ({
   // Held open by a test so an `embed()` stays in flight; `dispose()` must
   // settle that call before it releases the session.
   embedGate: null as null | { resolve: () => void; promise: Promise<void> },
+  // Held open by a test so a deferred session release stays pending; a second
+  // `embed()` can then start inside that window.
+  releaseGate: null as null | { resolve: () => void; promise: Promise<void> },
   sessionRelease: vi.fn(async () => {
+    if (h.releaseGate) await h.releaseGate.promise;
     h.order.push('release');
   }),
   // Records the observed order of events. The generator records its own
@@ -38,6 +42,12 @@ function heldGate(): { resolve: () => void; promise: Promise<void> } {
   return { resolve, promise };
 }
 
+// Flush every pending microtask: a macrotask boundary runs after the whole
+// microtask queue, so settlement checks cannot race the implementation.
+function flush(): Promise<void> {
+  return new Promise<void>((r) => { setTimeout(r, 0); });
+}
+
 vi.mock('fastembed', () => ({
   FlagEmbedding: {
     init: vi.fn(async () => {
@@ -62,6 +72,7 @@ describe('FastembedEmbedProvider.dispose', () => {
     h.initCalls = 0;
     h.gate = null;
     h.embedGate = null;
+    h.releaseGate = null;
     h.order.length = 0;
     h.sessionRelease.mockClear();
   });
@@ -145,8 +156,11 @@ describe('FastembedEmbedProvider.dispose', () => {
     const inFlight = provider.embed(['second']);
     // Start the release without awaiting it: it must wait for the call above.
     const disposing = provider.dispose();
+    let disposedSettled = false;
+    void disposing.then(() => { disposedSettled = true; });
 
     await Promise.resolve();
+    expect(disposedSettled).toBe(false);
     expect(h.sessionRelease).not.toHaveBeenCalled();
 
     h.embedGate.resolve();
@@ -154,6 +168,48 @@ describe('FastembedEmbedProvider.dispose', () => {
 
     // The resident model is released once, and only after the embed settles.
     expect(h.order).toEqual(['embed resolved', 'embed resolved', 'release']);
+    expect(h.sessionRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the drain waiter armed when an embed starts during a deferred release', async () => {
+    h.gate = heldGate();
+    const provider = new FastembedEmbedProvider();
+    // Start a load, then release while it is still loading: its resolve lands
+    // after the release, so its session is deferred, not published.
+    const first = provider.embed(['first']);
+    const disposing = provider.dispose();
+    let disposedSettled = false;
+    void disposing.then(() => { disposedSettled = true; });
+
+    // Hold the deferred release open so a new embed can start inside it.
+    h.releaseGate = heldGate();
+    h.gate.resolve();
+    for (let i = 0; i < 50 && h.sessionRelease.mock.calls.length === 0; i++) {
+      await Promise.resolve();
+    }
+    // Fail here, not on a hung suite, if the deferred release never starts.
+    expect(h.sessionRelease).toHaveBeenCalledTimes(1);
+
+    // The stale session is now released for real. A second embed starts while
+    // that release is still pending.
+    h.embedGate = heldGate();
+    const second = provider.embed(['second']);
+
+    await Promise.resolve();
+    expect(disposedSettled).toBe(false);
+
+    // The deferred release finished, but the second embed is still in flight.
+    // The waiter must stay armed, so the release stays pending.
+    h.releaseGate.resolve();
+    await flush();
+    expect(disposedSettled).toBe(false);
+    expect(h.sessionRelease).toHaveBeenCalledTimes(1);
+
+    // The second embed settles, and only then does the release finish.
+    h.embedGate.resolve();
+    await Promise.all([first, second, disposing]);
+
+    expect(disposedSettled).toBe(true);
     expect(h.sessionRelease).toHaveBeenCalledTimes(1);
   });
 });
