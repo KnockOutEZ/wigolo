@@ -8,6 +8,7 @@
  */
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
+import { createIdleUnload, withIdleTracking, type IdleUnload } from './idle-unload.js';
 
 const log = createLogger('providers');
 export interface RerankCandidate {
@@ -31,6 +32,19 @@ export interface RerankProvider {
 }
 
 let cached: Promise<RerankProvider> | null = null;
+/** The real provider behind `cached`. `cached` may hand out an idle wrapper. */
+let instance: RerankProvider | null = null;
+/** The handle `cached` returned when idle tracking wrapped the provider. */
+let handle: RerankProvider | null = null;
+let idle: IdleUnload | null = null;
+
+/**
+ * Bumped whenever the factory state is thrown away: a full dispose, or the test
+ * reset. A factory call remembers the value at entry, so a completion from an
+ * older generation belongs to a lookup that was dropped and cannot publish over
+ * the one that replaced it.
+ */
+let generation = 0;
 
 /**
  * True when an error looks like a transient network/fetch blip a retry can
@@ -76,46 +90,104 @@ export async function withFetchRetry<T>(
   throw lastErr;
 }
 
+/**
+ * Wrap a provider so every call restarts the idle countdown.
+ */
+function withIdleUnload(provider: RerankProvider, clock: IdleUnload): RerankProvider {
+  return withIdleTracking(provider, clock, 'rerank');
+}
+
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
   const config = getConfig();
+  const startedAt = generation;
   cached = (async () => {
+    let provider: RerankProvider;
     if (config.reranker === 'remote') {
       const { RemoteRerankProvider } = await import('../search/reranker/remote-rerank-provider.js');
-      return new RemoteRerankProvider(config);
+      provider = new RemoteRerankProvider(config);
+    } else {
+      const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
+      provider = new TransformersRerankProvider();
+      await withFetchRetry(() => (provider as unknown as { warmup(): Promise<void> }).warmup());
+      log.info('rerank provider ready', {
+        provider: 'rerank',
+        impl: 'transformers',
+        modelId: provider.modelId,
+      });
     }
-    const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
-    const provider = new TransformersRerankProvider();
-    await withFetchRetry(() => provider.warmup());
-    log.info('rerank provider ready', {
-      provider: 'rerank',
-      impl: 'transformers',
-      modelId: provider.modelId,
+    if (generation !== startedAt) {
+      // A full dispose landed while this warmup was in flight. The factory
+      // state belongs to a newer generation now, so this provider can only be
+      // released — never published — and the lookup that waited on it fails.
+      await releaseRerankProvider(provider);
+      throw new Error('rerank provider disposed during initialization');
+    }
+    instance = provider;
+    idle = createIdleUnload({
+      timeoutMs: config.rerankerIdleTimeoutMs,
+      label: 'rerank',
+      onIdle: () => disposeRerankProvider(provider),
     });
-    return provider;
-  })()
-    .catch((err) => {
+    // The model is already loaded by the eager warmup above. Start the
+    // countdown now, or it would wait for a rerank() call that may never come.
+    idle.touch();
+    const wrapped = withIdleUnload(provider, idle);
+    handle = wrapped;
+    return wrapped;
+  })().catch((err) => {
+    // Clear the cache only while this generation still owns it, so a newer
+    // lookup is never clobbered by an older lookup's failure.
+    if (generation === startedAt) {
       cached = null;
-      throw err;
-    });
+      instance = null;
+    }
+    throw err;
+  });
   return cached;
 }
 
 export function _resetRerankProviderForTest(): void {
+  generation += 1;
+  idle?.cancel();
+  idle = null;
   cached = null;
+  instance = null;
+  handle = null;
 }
 
-// Best-effort disposal of the cached rerank provider's native resources.
-// Called from CLI shutdown to release the ONNX session before process exit.
-export async function disposeRerankProvider(): Promise<void> {
-  if (!cached) return;
+/** Release a specific provider. Errors stay inside this best-effort helper. */
+async function releaseRerankProvider(provider: RerankProvider): Promise<void> {
   try {
-    const provider = await cached;
     const disposable = provider as unknown as { dispose?: () => Promise<void> };
     if (typeof disposable.dispose === 'function') await disposable.dispose();
   } catch (err) {
     log.debug('rerank dispose failed', { error: err instanceof Error ? err.message : String(err) });
-  } finally {
-    cached = null;
   }
+}
+
+// Best-effort disposal of the cached rerank provider's native resources.
+// Called from CLI shutdown, and from the idle countdown, to release the ONNX
+// session. `expected` binds the release to the provider that armed the clock,
+// so a stale handle cannot dispose a newer provider. The stale handle still
+// releases its own provider, which may have reloaded its model meanwhile.
+// A full dispose also invalidates an initialization still in flight, so its
+// completion can no longer publish itself: it releases only what it built.
+export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
+  if (expected && instance !== expected && expected !== handle) {
+    // Stale handle: release only the provider it belongs to. The current
+    // factory state and countdown stay as they are, and the generation is not
+    // bumped — this handle belongs to a lookup that was already replaced.
+    await releaseRerankProvider(expected);
+    return;
+  }
+  generation += 1;
+  idle?.cancel();
+  idle = null;
+  const provider = instance;
+  instance = null;
+  handle = null;
+  cached = null;
+  if (!provider) return;
+  await releaseRerankProvider(provider);
 }

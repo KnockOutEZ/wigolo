@@ -1,4 +1,4 @@
-import type { EmbedProvider } from '../providers/embed-provider.js';
+import { getEmbedProvider, type EmbedProvider } from '../providers/embed-provider.js';
 import {
   getVectorStore,
   type VectorStore,
@@ -9,7 +9,7 @@ import {
   getAllEmbeddings,
   normalizeUrl,
 } from '../cache/store.js';
-import { FastembedEmbedProvider } from './fastembed-provider.js';
+import { FASTEMBED_EMBED_MODEL_ID } from './fastembed-provider.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('embedding');
@@ -50,7 +50,8 @@ const RETRY_MEMO_MS = 60_000;
 const MAX_LOAD_ATTEMPTS = 3;
 
 export class EmbeddingService {
-  private provider: EmbedProvider;
+  /** Caller-supplied provider. Production leaves this null and uses the factory. */
+  private readonly injectedProvider: EmbedProvider | null;
   private store: VectorStore | null = null;
   private knownUrls = new Set<string>();
   private available = false;
@@ -63,7 +64,7 @@ export class EmbeddingService {
   private latchedOff = false;
 
   constructor(provider?: EmbedProvider) {
-    this.provider = provider ?? new FastembedEmbedProvider();
+    this.injectedProvider = provider ?? null;
   }
 
   /**
@@ -131,11 +132,16 @@ export class EmbeddingService {
       attempt: this.loadAttempts,
     });
     try {
-      await this.provider.embed(['embedding service probe']);
+      // An injected provider is used as-is. Production resolves through
+      // `getEmbedProvider()` on every use: that factory owns the idle timer, so
+      // a release is visible on the next call and only one model stays
+      // resident across the process.
+      const provider = this.injectedProvider ?? (await getEmbedProvider());
+      await provider.embed(['embedding service probe']);
       this.providerVerified = true;
       log.info('embedding provider verified', {
-        modelId: this.provider.modelId,
-        dim: this.provider.dim,
+        modelId: provider.modelId,
+        dim: provider.dim,
       });
       return true;
     } catch (err) {
@@ -207,14 +213,15 @@ export class EmbeddingService {
     }
 
     try {
-      const [vector] = await this.provider.embed([markdown]);
+      const provider = this.injectedProvider ?? (await getEmbedProvider());
+      const [vector] = await provider.embed([markdown]);
       if (!vector || vector.length === 0) {
         log.warn('embedding returned empty vector', { url });
         return;
       }
 
       const buffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-      const model = this.provider.modelId;
+      const model = provider.modelId;
       const dims = vector.length;
 
       let normalizedUrl: string;
@@ -275,7 +282,8 @@ export class EmbeddingService {
     if (!(await this.ensureProviderReady())) return [];
 
     try {
-      const [queryVector] = await this.provider.embed([queryText]);
+      const provider = this.injectedProvider ?? (await getEmbedProvider());
+      const [queryVector] = await provider.embed([queryText]);
       if (!queryVector || queryVector.length === 0) {
         log.warn('query embedding failed: empty vector');
         return [];
@@ -318,7 +326,10 @@ export class EmbeddingService {
 
   private async migrateLegacyEmbeddings(): Promise<void> {
     if (!this.store) return;
-    const legacy = getAllEmbeddings(this.provider.modelId);
+    // Do NOT resolve the provider here: init() must stay off the ONNX runtime
+    // (design D2). The bundled model id is the only value a legacy row can hold.
+    const modelId = this.injectedProvider?.modelId ?? FASTEMBED_EMBED_MODEL_ID;
+    const legacy = getAllEmbeddings(modelId);
     if (legacy.length === 0) {
       this.cachedSize = 0;
       return;

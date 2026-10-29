@@ -68,6 +68,9 @@ export async function initModelWithArchiveRetry<T>(
   }
 }
 
+/** Model id of the bundled fastembed model. */
+export const FASTEMBED_EMBED_MODEL_ID = 'BGE-small-en-v1.5';
+
 /**
  * Native ONNX embedding provider using fastembed-rs Node bindings.
  *
@@ -78,16 +81,32 @@ export async function initModelWithArchiveRetry<T>(
 export class FastembedEmbedProvider implements EmbedProvider {
   private model: FlagEmbedding | null = null;
   private modelPromise: Promise<FlagEmbedding> | null = null;
+  /** Bumped by `dispose()`; a load that resolves late must not store weights. */
+  private loadGeneration = 0;
+  /** Generation of the in-flight load in `modelPromise`. */
+  private modelPromiseGeneration = -1;
   readonly modelId: string;
   readonly dim: number;
 
   constructor() {
-    this.modelId = 'BGE-small-en-v1.5';
+    this.modelId = FASTEMBED_EMBED_MODEL_ID;
     this.dim = 384;
   }
 
   async warmup(): Promise<void> {
     await this.getModel();
+  }
+
+  /**
+   * Release the resident ONNX model. The next call loads it again from the
+   * cache. A load that is still in flight is discarded, so a late resolve
+   * cannot hold the weights after the release.
+   */
+  async dispose(): Promise<void> {
+    this.loadGeneration += 1;
+    this.model = null;
+    this.modelPromise = null;
+    this.modelPromiseGeneration = -1;
   }
 
   private getModel(): Promise<FlagEmbedding> {
@@ -96,7 +115,8 @@ export class FastembedEmbedProvider implements EmbedProvider {
     log.info('Loading embedding model', { modelId: this.modelId });
     const dataDir = getConfig().dataDir;
     const cacheDir = ensureFastembedCacheDir(dataDir);
-    this.modelPromise = import('fastembed')
+    const generation = this.loadGeneration;
+    const promise = import('fastembed')
       .then(({ FlagEmbedding, EmbeddingModel }) =>
         initModelWithArchiveRetry(
           () => FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir }),
@@ -104,14 +124,20 @@ export class FastembedEmbedProvider implements EmbedProvider {
         ),
       )
       .then(m => {
+      if (generation !== this.loadGeneration) return m;
       this.model = m;
       log.info('Embedding model ready', { modelId: this.modelId, dim: this.dim });
       return m;
     }).catch(err => {
-      this.modelPromise = null;
+      if (this.modelPromiseGeneration === generation) {
+        this.modelPromise = null;
+        this.modelPromiseGeneration = -1;
+      }
       throw err;
     });
-    return this.modelPromise;
+    this.modelPromise = promise;
+    this.modelPromiseGeneration = generation;
+    return promise;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
