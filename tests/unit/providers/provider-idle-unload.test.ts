@@ -188,14 +188,21 @@ describe('rerank provider idle unload', () => {
 
   it('rejects a pending warmup when the factory is disposed during initialization', async () => {
     // Nothing is published yet, so a full dispose used to return early and the
-    // warmup still handed its provider out after shutdown.
+    // warmup still handed its provider out after shutdown. It now waits for the
+    // load, so this test starts the dispose without awaiting it.
     const gate = heldGate();
     h.rerankWarmupGate = gate.promise;
 
     const pending = getRerankProvider();
-    await disposeRerankProvider();
+    let disposeSettled = false;
+    const disposing = disposeRerankProvider().then(() => { disposeSettled = true; });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(disposeSettled).toBe(false);
 
     gate.open();
+    await disposing;
+    expect(disposeSettled).toBe(true);
     await expect(pending).rejects.toThrow(/disposed during initialization/);
     const dropped = h.rerankDisposed[0];
     expect(dropped).toBeDefined();
@@ -216,16 +223,23 @@ describe('rerank provider idle unload', () => {
     // Let the mocked module finish resolving before the next lookup starts, so
     // both lookups build from the same mock. The warmup stays gated.
     await vi.advanceTimersByTimeAsync(0);
-    await disposeRerankProvider();
+
+    // The full dispose now waits for the gated load, so start it without
+    // awaiting it and open the gate before joining.
+    let disposeSettled = false;
+    const disposing = disposeRerankProvider().then(() => { disposeSettled = true; });
 
     // A newer lookup runs without the gate, so it completes first.
     h.rerankWarmupGate = null;
     const newerLookup = getRerankProvider();
 
     gate.open();
+    await disposing;
+    expect(disposeSettled).toBe(true);
     await expect(staleLookup).rejects.toThrow(/disposed during initialization/);
     const staleProvider = h.rerankDisposed[0];
     expect(staleProvider).toBeDefined();
+    expect(h.rerankDispose).toHaveBeenCalledTimes(1);
 
     const newer = await newerLookup;
     expect(await getRerankProvider()).toBe(newer);
