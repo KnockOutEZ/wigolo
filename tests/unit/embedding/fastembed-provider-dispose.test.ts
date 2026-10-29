@@ -135,4 +135,25 @@ describe('FastembedEmbedProvider.dispose', () => {
     expect(h.order).toEqual(['embed resolved', 'release']);
     expect(h.sessionRelease).toHaveBeenCalledTimes(1);
   });
+
+  it('waits for an in-flight embed on a resident model, then releases it', async () => {
+    const provider = new FastembedEmbedProvider();
+    // Make the model resident first, so the drain has a session to guard.
+    await provider.embed(['first']);
+
+    h.embedGate = heldGate();
+    const inFlight = provider.embed(['second']);
+    // Start the release without awaiting it: it must wait for the call above.
+    const disposing = provider.dispose();
+
+    await Promise.resolve();
+    expect(h.sessionRelease).not.toHaveBeenCalled();
+
+    h.embedGate.resolve();
+    await Promise.all([inFlight, disposing]);
+
+    // The resident model is released once, and only after the embed settles.
+    expect(h.order).toEqual(['embed resolved', 'embed resolved', 'release']);
+    expect(h.sessionRelease).toHaveBeenCalledTimes(1);
+  });
 });

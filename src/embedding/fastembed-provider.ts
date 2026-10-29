@@ -162,7 +162,9 @@ export class FastembedEmbedProvider implements EmbedProvider {
       .then(async m => {
       if (generation !== this.loadGeneration) {
         // A resolve that landed after the release is never published. If no
-        // call is using it, release it now. Otherwise the last in-flight embed
+        // embed is in flight, release it now. The count covers the whole
+        // provider, not only this model. A busy provider therefore defers the
+        // release, even when this model is idle, and the last in-flight embed
         // releases it in its finally block, after it stops using the session.
         if (this.embedsInFlight === 0) {
           await this.releaseSession(m);
@@ -205,7 +207,10 @@ export class FastembedEmbedProvider implements EmbedProvider {
         for (const model of deferred) {
           await this.releaseSession(model);
         }
-        if (this.drainWaiter) {
+        // The deferred releases above await, so a new embed can start and
+        // raise the count again. Keep the waiter armed in that case: the embed
+        // that brings the count back to zero resolves it.
+        if (this.embedsInFlight === 0 && this.drainWaiter) {
           const waiter = this.drainWaiter;
           this.drainWaiter = null;
           waiter.resolve();
