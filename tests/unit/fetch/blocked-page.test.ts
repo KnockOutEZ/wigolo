@@ -47,6 +47,16 @@ describe('detectBlockedPage', () => {
       const html = blockPage('reddit-403.html');
       expect(detectBlockedPage(200, html, undefined, { statusUnknown: true })).toEqual({ reason: 'block_page' });
     });
+
+    it('flags the 401 "enable JS" stub by DataDome\'s block flag as challenge', () => {
+      // a 401 is not one of the anti-bot statuses the shared classifier trusts DataDome's headers on
+      const headers = { 'x-dd-b': '1', 'x-datadome': 'protected' };
+      expect(detectBlockedPage(401, blockPage('datadome-401.html'), headers)).toEqual({ reason: 'challenge' });
+    });
+
+    it('flags the same stub as js_required when the headers are gone', () => {
+      expect(detectBlockedPage(401, blockPage('datadome-401.html'))).toEqual({ reason: 'js_required' });
+    });
   });
 
   describe('normal pages (negative controls)', () => {
@@ -93,6 +103,22 @@ describe('detectBlockedPage', () => {
 
     it('does not flag a short real 404 that has a generic noscript notice', () => {
       expect(detectBlockedPage(404, blockPage('short-404-noscript.html'))).toBeUndefined();
+    });
+
+    it('does not flag a short real 404 just because DataDome protects the site', () => {
+      const html = blockPage('short-404.html');
+      expect(detectBlockedPage(404, html, { 'x-datadome': 'protected' })).toBeUndefined();
+      expect(detectBlockedPage(404, html, { 'x-dd-b': '0' })).toBeUndefined();
+    });
+
+    it('does not use DataDome\'s block flag on a 200', () => {
+      expect(detectBlockedPage(200, blockPage('short-ok.html'), { 'x-dd-b': '1' })).toBeUndefined();
+    });
+
+    it('does not flag a substantive 401 page that carries the DataDome block flag', () => {
+      // on a status the shared classifier does not cover, the flag only counts together with a near-empty body
+      const html = `<html><body><p>${'The account page needs a sign-in. '.repeat(40)}</p></body></html>`;
+      expect(detectBlockedPage(401, html, { 'x-dd-b': '1' })).toBeUndefined();
     });
 
     it('does not flag a short 403 from a sign-in gate, on purpose', () => {

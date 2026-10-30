@@ -2,13 +2,28 @@ import type { BlockedInfo } from '../types.js';
 import { isChallengeResponse, isNearEmptyBody } from './tls-tier.js';
 import { detectAntiBotBlock } from '../extraction/site-extractors/reddit.js';
 
-// "enable JavaScript and refresh" / "enable JavaScript to continue": the page says it cannot go on
-// without JavaScript. A generic <noscript> notice ("for the best experience") does not say that.
-const JS_WALL = /javascript[^.]{0,60}(?:\band\s+(?:re)?(?:fresh|load)\b|\bto\s+(?:continue|proceed)\b)/i;
+// "enable JavaScript and refresh" / "enable JS to continue" / "enable JS and disable any ad blocker": the
+// page says it cannot go on without JavaScript. A generic <noscript> notice ("for the best experience")
+// does not say that.
+const JS_WALL = /\b(?:javascript|js)\b[^.]{0,60}(?:\band\s+(?:(?:re)?(?:fresh|load)|disable)\b|\bto\s+(?:continue|proceed)\b)/i;
 
 export interface BlockedPageOptions {
   /** The status code is a placeholder: the fetch tier never saw the origin's status. */
   statusUnknown?: boolean;
+}
+
+/**
+ * DataDome's explicit block flag. Only `x-dd-b` counts here, so a near-empty real 404 from a site that
+ * DataDome protects stays unflagged.
+ */
+function hasDataDomeBlockFlag(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== 'x-dd-b') continue;
+    const v = (value ?? '').trim();
+    if (v !== '' && v !== '0') return true;
+  }
+  return false;
 }
 
 /** The visible text of a page, so a notice split by inline markup (`enable <b>JavaScript</b>`) still reads as one. */
@@ -60,6 +75,9 @@ export function detectBlockedPage(
 
   const text = visibleText(html);
   if (statusCode >= 400) {
+    // The shared classifier trusts DataDome's headers only on 403, 429 and 503, but it also answers
+    // with a 401 and a near-empty "enable JS" stub.
+    if (hasDataDomeBlockFlag(headers)) return { reason: 'challenge' };
     if (detectAntiBotBlock(html)) return { reason: 'block_page' };
     if (JS_WALL.test(text)) return { reason: 'js_required' };
     return undefined;
