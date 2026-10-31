@@ -8,7 +8,8 @@ name: Author Guard
 # a rebase of the PR branch.
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # `edited` covers a base change, which can change the commit list without a push.
+    types: [opened, reopened, synchronize, edited]
 
 # `pull_request`, not `pull_request_target`: nothing from the PR is checked out
 # or run, and no secrets are needed.
@@ -27,8 +28,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_COUNT: ${{ github.event.pull_request.commits }}
         run: |
           set -euo pipefail
+
+          # The PR commits endpoint lists at most 250 commits, so a larger PR
+          # cannot be fully checked here.
+          if [ "$COMMIT_COUNT" -gt 250 ]; then
+            echo "::error title=Too many commits to check::PR #${PR_NUMBER} has ${COMMIT_COUNT} commits; this check can only verify 250. Split the PR or check its authors by hand."
+            exit 1
+          fi
 
           bad=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate \
             --jq '.[] | select((.commit.author.email | ascii_downcase) == "noreply@anthropic.com")
