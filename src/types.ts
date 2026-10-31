@@ -96,6 +96,16 @@ export interface FetchOutput {
   cached_at?: string;
   stale?: boolean;
   js_required?: boolean;
+  /**
+   * Non-fatal advisory from the router about how this response was produced.
+   * Today the only producer is the lazy browser-acquisition budget: when a
+   * browser-tier escalation cannot acquire the engine in time, the router
+   * returns the best lower-tier content it already had and attaches a note
+   * saying the engine is still installing. Without this field the caller
+   * receives a plain 200 and cannot tell a placeholder body from a real page.
+   * Absent on responses that have nothing to report.
+   */
+  warning?: string;
   error?: string;
   action_results?: ActionResult[];
   changed?: boolean;

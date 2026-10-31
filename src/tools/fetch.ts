@@ -392,6 +392,12 @@ export async function handleFetch(
       // 5xx pages that may extract to a usable HTML body.
       ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
       ...(raw.jsRequired ? { js_required: true } : {}),
+      // The router reports a degraded-but-usable capture as a lower-tier body
+      // plus a note (today: the browser engine was still installing, so the
+      // HTTP shell is the best available content). Dropping the note made that
+      // fallback indistinguishable from a normal 200, so the caller trusted a
+      // placeholder body. Surface it verbatim; never synthesize one here.
+      ...(raw.warning ? { warning: raw.warning } : {}),
       // Stable fingerprint of the FULL extracted body — computed on
       // extraction.markdown BEFORE the presentation budget clips the returned
       // `markdown`. Change-detection consumers (watch scheduler, diff) key off

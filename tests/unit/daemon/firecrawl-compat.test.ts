@@ -111,6 +111,29 @@ describe('firecrawl-compat — scrape', () => {
     expect(body.data.metadata.statusCode).toBe(200);
   });
 
+  it('forwards the router advisory as metadata.warning', async () => {
+    // A degraded capture (browser still installing) must not read as clean
+    // content through the compat surface either.
+    mockHandleFetch.mockResolvedValue({
+      ok: true,
+      data: {
+        url: 'https://example.com/',
+        title: 'Example',
+        markdown: 'shell body',
+        metadata: {},
+        links: [],
+        images: [],
+        cached: false,
+        warning: 'browser engine installing in background (~1-2 min); retry shortly',
+      },
+    });
+    const { handleCompatRequest } = await importShim();
+    const { ctx, captured } = makeCtx('/v1/scrape');
+    await handleCompatRequest(fakeReq('POST', { url: 'https://example.com/' }), FAKE_RES, ctx);
+    const body = captured[0].body as { data: { metadata: Record<string, unknown> } };
+    expect(body.data.metadata.warning).toBe('browser engine installing in background (~1-2 min); retry shortly');
+  });
+
   it('does NOT leak wigolo-unique fields into the scrape response', async () => {
     mockHandleFetch.mockResolvedValue({
       ok: true,

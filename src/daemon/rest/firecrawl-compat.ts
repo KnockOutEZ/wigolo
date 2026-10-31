@@ -290,6 +290,9 @@ function mapFetchToScrape(out: FetchOutput): { markdown: string; metadata: Recor
   if (typeof out.http_status === 'number') metadata.statusCode = out.http_status;
   if (out.metadata.description) metadata.description = out.metadata.description;
   if (out.metadata.language) metadata.language = out.metadata.language;
+  // Pass the router advisory through. A compat caller sees the same degraded
+  // capture the native tool reports, so a shell body does not read as content.
+  if (out.warning) metadata.warning = out.warning;
   return { markdown: out.markdown ?? '', metadata };
 }
 
