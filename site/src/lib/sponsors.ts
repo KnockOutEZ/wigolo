@@ -63,6 +63,20 @@ export const SPONSORS: readonly Sponsor[] = [
     },
     since: "2026",
   },
+  {
+    slug: "helodata",
+    name: "Helodata",
+    description:
+      "Helodata is proxy infrastructure for AI applications, web scraping and automation: residential, ISP, mobile and datacenter proxies across 195+ countries and regions.",
+    url: "https://helodata.com/?utm_source=wigolo&utm_medium=sponsor",
+    logo: {
+      light: "/sponsors/helodata.svg",
+      dark: "/sponsors/helodata-dark.svg",
+      width: 360,
+      height: 80,
+    },
+    since: "2026",
+  },
 ];
 
 export const getSponsor = (slug: string): Sponsor | undefined =>
