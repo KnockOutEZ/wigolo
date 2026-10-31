@@ -17,6 +17,7 @@ import type {
 } from '../../types.js';
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
+import { preprocessQueryForSearch } from '../query.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
@@ -157,7 +158,7 @@ export class CoreSearchProvider implements SearchProvider {
 
   async search(input: SearchInput, ctx: SearchContext): Promise<StageResult<SearchOutput>> {
     const isArray = Array.isArray(input.query);
-    const queries = isArray
+    let queries = isArray
       ? normalizeArrayQueries(input.query as string[])
       : typeof input.query === 'string' && input.query.trim() !== ''
         ? [input.query.trim()]
@@ -188,9 +189,26 @@ export class CoreSearchProvider implements SearchProvider {
     // Display query is the first input string (back-compat) so consumers can
     // still echo what was asked; arrays just join with " | " for clarity.
     const displayQuery = isArray ? (input.query as string[]).filter(Boolean).join(' | ') : queries[0];
+    // Query normalization (Arabic question scaffolding / function words)
+    // happens BEFORE the engines see the query. `displayQuery` above keeps
+    // the original wording for the response; from here on `queries` is the
+    // engine-facing form (unchanged for non-Arabic queries).
+    //
+    // Normalization can collapse two distinct inputs into one ("من هو طه حسين"
+    // and "من هي طه حسين" both become "طه حسين"), so the normalized list is
+    // de-duplicated before it feeds the cache key and the dispatch. The
+    // PRE-normalization count is kept for the single-query gates: a caller
+    // that sent two queries stays a multi-query call even when they
+    // normalize to the same string.
+    const preprocessedQueryCount = queries.length;
+    queries = [...new Set(queries.map((q) => preprocessQueryForSearch(q).searchQuery))];
+    const isSingleQuery = preprocessedQueryCount === 1 && queries.length === 1;
     // Cache key includes filter params (sub-ticket 2.3) — without this,
     // include_domains / max_results / exclude_domains are silently ignored
-    // on cache hits.
+    // on cache hits. Dispatch mode is part of the key too: a single-input
+    // call also runs quoted-term / low-recall variants that a multi-input
+    // call never does, so a multi-input call must not satisfy a
+    // single-input cache hit (they'd disagree on the extras).
     const cacheKey = buildSearchCacheKey(queries.join(' | '), {
       category: input.category,
       include_domains: input.include_domains,
@@ -204,6 +222,7 @@ export class CoreSearchProvider implements SearchProvider {
       search_depth: depth,
       reranker: getConfig().reranker,
       search_engines: input.search_engines,
+      single_query_dispatch: isSingleQuery,
     });
 
     let items: SearchResultItem[] = [];
@@ -285,7 +304,7 @@ export class CoreSearchProvider implements SearchProvider {
       // carries several tokens; skipped when the token(s) already equal the
       // whole query (no new signal to gain).
       const errorTokens =
-        category !== 'images' && queries.length === 1
+        category !== 'images' && isSingleQuery
           ? extractErrorTokens(queries[0])
           : [];
       const errorTokenVariant =
@@ -299,7 +318,7 @@ export class CoreSearchProvider implements SearchProvider {
       // load. Prefer the error-token variant and suppress the rare-term + entity
       // variants in that case so an error query stays at exactly two dispatches.
       const rareVariant =
-        category !== 'images' && queries.length === 1 && errorTokens.length === 0
+        category !== 'images' && isSingleQuery && errorTokens.length === 0
           ? buildRareTermVariant(queries[0])
           : null;
       // Brand-collision dual-dispatch: when a single-query call is an
@@ -314,7 +333,7 @@ export class CoreSearchProvider implements SearchProvider {
       // recall lever there and the entity rewrite would anchor the wrong head.
       const entityVariant =
         category !== 'images' &&
-        queries.length === 1 &&
+        isSingleQuery &&
         errorTokens.length === 0 &&
         detectEntityCollision(queries[0]) !== null
           ? entityQualifiedRewrite(queries[0])
@@ -330,7 +349,7 @@ export class CoreSearchProvider implements SearchProvider {
       // when error-intent owns the query, and on multi-query/image callers.
       const collisionVariant =
         category !== 'images' &&
-        queries.length === 1 &&
+        isSingleQuery &&
         errorTokens.length === 0 &&
         entityVariant === null
           ? topCollisionRewrite(queries[0])
@@ -431,7 +450,7 @@ export class CoreSearchProvider implements SearchProvider {
       // applies, so the rewrite is silent on terminal stop-word queries.
       if (
         category !== 'images' &&
-        queries.length === 1 &&
+        isSingleQuery &&
         fused.length <= LOW_RECALL_THRESHOLD
       ) {
         const rewrite = expandQuery(queries[0]);
@@ -623,7 +642,7 @@ export class CoreSearchProvider implements SearchProvider {
       // mix error and non-error sub-queries), so damping the merged pool on one
       // sub-query's token would suppress on-topic results from its siblings.
       const errorIntentTokens =
-        queries.length === 1 ? extractErrorTokens(queries[0]) : [];
+        isSingleQuery ? extractErrorTokens(queries[0]) : [];
       if (errorIntentTokens.length > 0) {
         processed = [...processed]
           .map((r) => {
