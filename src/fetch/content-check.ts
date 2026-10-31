@@ -113,3 +113,25 @@ export function contentAppearsEmpty(html: string): boolean {
 
   return false;
 }
+
+/**
+ * True when the HTML carries structural markers of a client-rendered shell.
+ *
+ * This is NOT a routing predicate. `contentAppearsEmpty` answers "should we
+ * escalate?", so a short body is reason enough: a wrong escalate costs a
+ * retry. A machine-facing `js_required` flag answers "does this page need
+ * JavaScript?", so a short body is NOT reason enough. A 150-character status
+ * page is complete without JS, and labelling it `js_required` makes a caller
+ * retry a page that will never change.
+ *
+ * So this predicate deliberately drops the visible-text length shortcut and
+ * reports shell markers only. It is the honest predicate for the response
+ * flag; `contentAppearsEmpty` remains the routing predicate.
+ */
+export function looksLikeShell(html: string): boolean {
+  if (hasSpaShellIndicator(html)) return true;
+  if (hasNoscriptRequired(html)) return true;
+  if (hasHighScriptRatio(html)) return true;
+
+  return false;
+}

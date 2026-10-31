@@ -30,6 +30,10 @@ const FULL_HTML = `
 // as an SPA shell and escalates to the browser tier.
 const SPA_SHELL_HTML = `<html><head></head><body><div id="root"></div></body></html>`;
 
+// Short but complete: no shell markers, no scripts, real prose. The router
+// still escalates on length, but the body does not need JavaScript.
+const SHORT_COMPLETE_HTML = `<html><head><title>Status</title></head><body><h1>Service status</h1><p>All systems operational.</p></body></html>`;
+
 function makeHttpResult(html: string, url: string): Awaited<ReturnType<HttpClient['fetch']>> {
   return { url, finalUrl: url, html, contentType: 'text/html; charset=utf-8', statusCode: 200, headers: {} };
 }
@@ -81,6 +85,30 @@ describe('handleFetch: router warning visibility', () => {
     // It is still an honest success: the bytes are the best available.
     expect(out.data.fetch_method).toBe('http');
     expect(out.data.markdown).not.toContain('Real Content');
+  });
+
+  it('does not label a short but complete page as js_required', async () => {
+    // Regression guard for the false positive that a length-only check causes:
+    // contentAppearsEmpty() is a routing predicate, and a short body is enough
+    // to escalate. That is not enough to claim the page needs JavaScript.
+    const url = 'https://warning-test.example/status';
+    const httpClient: HttpClient = { fetch: vi.fn(async () => makeHttpResult(SHORT_COMPLETE_HTML, url)) };
+    const router = new SmartRouter({
+      httpClient,
+      browserPool,
+      pdfProbe: async () => false,
+      browserAcquirer: makeAcquirer('unavailable'),
+    });
+
+    const out = await handleFetch({ url, force_refresh: true } as any, router);
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    // The advisory still applies: the browser was wanted and is not ready.
+    expect(out.data.warning).toBe(BROWSER_INSTALLING_NOTE);
+    // But the body is complete, so it must not be flagged as a JS shell.
+    expect('js_required' in out.data).toBe(false);
+    expect(out.data.markdown).toContain('All systems operational');
   });
 
   it('omits warning and js_required on an ordinary HTTP fetch', async () => {

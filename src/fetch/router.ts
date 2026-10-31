@@ -1,6 +1,6 @@
 import { getConfig, type Config } from '../config.js';
 import { createLogger } from '../logger.js';
-import { contentAppearsEmpty } from './content-check.js';
+import { contentAppearsEmpty, looksLikeShell } from './content-check.js';
 import { getAuthOptions } from './auth.js';
 import { fetchWithPlaywright, shouldEscalate } from './playwright-tier.js';
 import { describeFetchError } from './error-describe.js';
@@ -720,10 +720,12 @@ export class SmartRouter {
           ...fallback,
           warning: BROWSER_INSTALLING_NOTE,
           // The escalation happened because the browser was the only tier that
-          // could render this page. When the lower-tier body is itself a shell,
-          // say so: the note explains why the fetch degraded, and this flag
-          // tells the caller the body is a placeholder rather than content.
-          ...(contentAppearsEmpty(fallback.html) ? { jsRequired: true } : {}),
+          // could render this page. When the lower-tier body carries shell
+          // markers, say so: the note explains why the fetch degraded, and this
+          // flag tells the caller the body is a placeholder rather than content.
+          // Use the shell predicate, not contentAppearsEmpty: a merely short
+          // page must not be labelled as needing JavaScript.
+          ...(looksLikeShell(fallback.html) ? { jsRequired: true } : {}),
         });
       }
       logger.info('browser engine not ready within budget and no lower-tier content — failing with actionable error', { url });
@@ -1030,7 +1032,7 @@ export class SmartRouter {
           warning: BROWSER_INSTALLING_NOTE,
           // Same contract as the browserFetch fallback: a shell body returned
           // because the engine is still installing must not read as content.
-          ...(contentAppearsEmpty(staticResult.html) ? { jsRequired: true } : {}),
+          ...(looksLikeShell(staticResult.html) ? { jsRequired: true } : {}),
         });
       }
       try {
@@ -1085,7 +1087,9 @@ export class SmartRouter {
       this.ensureStats(domain);
       const raw = this.toRawFetchResult(result);
       // Don't probe content of a 304 — body is empty by spec, not a SPA shell.
-      raw.jsRequired = result.statusCode === 304 ? false : contentAppearsEmpty(result.html);
+      // Use the structural predicate so the flag means the same thing in every
+      // mode: "this body carries shell markers", not "this body is short".
+      raw.jsRequired = result.statusCode === 304 ? false : looksLikeShell(result.html);
       return raw;
     }
 
