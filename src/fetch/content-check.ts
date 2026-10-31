@@ -117,13 +117,21 @@ export function contentAppearsEmpty(html: string): boolean {
   return false;
 }
 
-// An empty client-render mount. The ID is not limited to root/app/__next:
-// bundles mount wherever they like, and an empty mount in a thin body is a
-// shell in either case.
-const EMPTY_CLIENT_MOUNT = /<div[^>]+id=["'][^"']+["'][^>]*>\s*<\/div>/i;
+// An empty client-render mount. A custom bundle can mount into its own id, so
+// the check cannot be limited to root/app/__next. An empty div is weak evidence
+// on its own, though: static pages ship placeholders for comment widgets and
+// search boxes. A canonical framework id is always a signature. Any other id
+// counts only when the page has no readable text to speak of.
+const EMPTY_CLIENT_MOUNT = /<div[^>]+id=["']([^"']+)["'][^>]*>\s*<\/div>/gi;
+const CANONICAL_MOUNT_IDS = new Set(['root', 'app', '__next']);
 
-function hasEmptyClientMount(html: string): boolean {
-  return EMPTY_CLIENT_MOUNT.test(html);
+function hasEmptyClientMount(html: string, visibleTextLength: number): boolean {
+  for (const match of html.matchAll(EMPTY_CLIENT_MOUNT)) {
+    const id = (match[1] ?? '').toLowerCase();
+    if (CANONICAL_MOUNT_IDS.has(id)) return true;
+    if (visibleTextLength < VISIBLE_TEXT_THRESHOLD) return true;
+  }
+  return false;
 }
 
 /**
@@ -142,7 +150,7 @@ export function looksLikeShell(html: string): boolean {
   const visibleText = extractVisibleTextExcludingNoscript(html);
   if (visibleText.length >= SUBSTANTIVE_BODY_THRESHOLD) return false;
 
-  if (hasEmptyClientMount(html)) return true;
+  if (hasEmptyClientMount(html, visibleText.length)) return true;
   if (hasSpaShellIndicator(html)) return true;
   if (hasNoscriptRequired(html)) return true;
   if (hasHighScriptRatio(html)) return true;

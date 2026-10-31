@@ -94,10 +94,17 @@ describe('looksLikeShell', () => {
   });
 
   it('flags an empty mount under an arbitrary id when the body is thin', () => {
-    // The mirror case: a custom bundle mounts into its own id. With almost no
-    // readable body, that is still a shell.
+    // The mirror case: a custom bundle mounts into its own id. With no
+    // readable body at all, that is still a shell.
     const html = '<html><body><div id="sfx-widget"></div></body></html>';
     expect(looksLikeShell(html)).toBe(true);
+  });
+
+  it('rejects a short readable page that has an empty placeholder div', () => {
+    // A page can sit under the substantive cutoff and still read fine. An empty
+    // widget div is a placeholder here, not evidence that the body is a shell.
+    const html = `<html><body><h1>Bin collection</h1><p>${'Bins are collected on Tuesday. Put them out before 6am. '.repeat(5)}</p><div id="comments-widget"></div></body></html>`;
+    expect(looksLikeShell(html)).toBe(false);
   });
 
   it('rejects a served article whose inline script dominates the markup', () => {
