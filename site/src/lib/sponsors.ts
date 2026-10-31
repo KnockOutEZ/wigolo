@@ -63,6 +63,20 @@ export const SPONSORS: readonly Sponsor[] = [
     },
     since: "2026",
   },
+  {
+    slug: "fluxion",
+    name: "Fluxion AI",
+    description:
+      "Fluxion AI provides reliable, cost-efficient access to GPT, Claude, and other leading AI models through one unified API. Save up to 70% compared with official API pricing — and get $1 in API credits when you sign up through this link.",
+    url: "https://fluxionai.world/register?source=github&campaign=github-wigolo&promo=WIGOLO",
+    logo: {
+      light: "/sponsors/fluxion-ai.png",
+      dark: "/sponsors/fluxion-ai-dark.png",
+      width: 799,
+      height: 160,
+    },
+    since: "2026",
+  },
 ];
 
 export const getSponsor = (slug: string): Sponsor | undefined =>
