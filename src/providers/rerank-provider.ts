@@ -172,7 +172,10 @@ async function releaseRerankProvider(provider: RerankProvider): Promise<void> {
 // so a stale handle cannot dispose a newer provider. The stale handle still
 // releases its own provider, which may have reloaded its model meanwhile.
 // A full dispose also invalidates an initialization still in flight, so its
-// completion can no longer publish itself: it releases only what it built.
+// completion can no longer publish itself: it releases only what it built, and
+// it waits for that load instead of returning while the ONNX session is still
+// being created. Exiting early is what surfaces the macOS `mutex lock failed`
+// abort during process teardown.
 export async function disposeRerankProvider(expected?: RerankProvider): Promise<void> {
   if (expected && instance !== expected && expected !== handle) {
     // Stale handle: release only the provider it belongs to. The current
@@ -181,6 +184,7 @@ export async function disposeRerankProvider(expected?: RerankProvider): Promise<
     await releaseRerankProvider(expected);
     return;
   }
+  const pending = cached;
   generation += 1;
   idle?.cancel();
   idle = null;
@@ -188,6 +192,22 @@ export async function disposeRerankProvider(expected?: RerankProvider): Promise<
   instance = null;
   handle = null;
   cached = null;
-  if (!provider) return;
-  await releaseRerankProvider(provider);
+  if (provider) {
+    await releaseRerankProvider(provider);
+    return;
+  }
+  if (!pending) return;
+  // No published provider yet, so the only thing to release is what the load
+  // produces. Its stale-generation branch releases the provider it built and
+  // rejects for the dropped lookup; that rejection is not ours, and the
+  // release already happened there, so the two paths cannot double-release.
+  // A success path hands out the idle-wrapped handle; that is released here.
+  // `TransformersRerankProvider.dispose()` is idempotent, so a second call
+  // through this helper is safe even if the provider was already released.
+  try {
+    const produced = await pending;
+    await releaseRerankProvider(produced);
+  } catch {
+    // Rejected by the factory's stale branch, which released what it built.
+  }
 }

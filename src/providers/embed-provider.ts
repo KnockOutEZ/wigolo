@@ -101,9 +101,9 @@ async function releaseEmbedProvider(provider: EmbedProvider): Promise<void> {
 }
 
 /**
- * Best-effort release of the cached embed provider. Fastembed exposes no
- * explicit dispose, so dropping the reference is what frees the model; a
- * provider that grows one later is called here.
+ * Best-effort release of the cached embed provider. The provider releases its
+ * ONNX session in `dispose()` — dropping the reference alone does not free
+ * the model.
  *
  * `expected` binds the release to the provider that armed the clock. A handle
  * retained from an older provider therefore cannot tear down a newer one. Such
