@@ -80,7 +80,10 @@ function hasNoscriptRequired(html: string): boolean {
   if (!noscriptMatches) return false;
   const looksLikeJsWarning = noscriptMatches.some((tag) => {
     const inner = tag.replace(/<[^>]+>/g, '').toLowerCase();
-    return inner.includes('javascript') || inner.includes('enable');
+    // Match JavaScript terms only. A bare "enable" also appears in notices
+    // such as "Enable images for the optional preview", which is not a
+    // JavaScript warning and must not escalate the page or set the flag.
+    return /\bjavascript\b|\bjs\b/.test(inner);
   });
   if (!looksLikeJsWarning) return false;
   // (b) gate: ignore the marker when the body has substantive content.
@@ -114,21 +117,32 @@ export function contentAppearsEmpty(html: string): boolean {
   return false;
 }
 
+// An empty client-render mount. The ID is not limited to root/app/__next:
+// bundles mount wherever they like, and an empty mount in a thin body is a
+// shell in either case.
+const EMPTY_CLIENT_MOUNT = /<div[^>]+id=["'][^"']+["'][^>]*>\s*<\/div>/i;
+
+function hasEmptyClientMount(html: string): boolean {
+  return EMPTY_CLIENT_MOUNT.test(html);
+}
+
 /**
- * True when the HTML carries structural markers of a client-rendered shell.
+ * True when the page is a client-rendered shell.
  *
- * This is NOT a routing predicate. `contentAppearsEmpty` answers "should we
- * escalate?", so a short body is reason enough: a wrong escalate costs a
- * retry. A machine-facing `js_required` flag answers "does this page need
- * JavaScript?", so a short body is NOT reason enough. A 150-character status
- * page is complete without JS, and labelling it `js_required` makes a caller
- * retry a page that will never change.
+ * Two conditions must hold: the readable body is thin, and the markup carries
+ * a client-render signature. Each half alone produces false claims.
+ *   - Thin alone: a 150-character status page is complete without JavaScript.
+ *   - Signature alone: a complete article can contain an empty widget mount.
  *
- * So this predicate deliberately drops the visible-text length shortcut and
- * reports shell markers only. It is the honest predicate for the response
- * flag; `contentAppearsEmpty` remains the routing predicate.
+ * This predicate feeds the machine-facing `js_required` flag, so it must be
+ * stricter than `contentAppearsEmpty`. That one only decides whether to try
+ * the browser tier, where a wrong guess costs a retry, not a false claim.
  */
 export function looksLikeShell(html: string): boolean {
+  const visibleText = extractVisibleTextExcludingNoscript(html);
+  if (visibleText.length >= SUBSTANTIVE_BODY_THRESHOLD) return false;
+
+  if (hasEmptyClientMount(html)) return true;
   if (hasSpaShellIndicator(html)) return true;
   if (hasNoscriptRequired(html)) return true;
   if (hasHighScriptRatio(html)) return true;

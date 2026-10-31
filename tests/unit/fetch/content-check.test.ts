@@ -84,4 +84,37 @@ describe('looksLikeShell', () => {
   it('rejects a normal substantive page', () => {
     expect(looksLikeShell(fixture('normal-page.html'))).toBe(false);
   });
+
+  it('rejects a complete article that contains an empty widget mount', () => {
+    // A mount point can sit in a fully server-rendered page: a comments widget,
+    // a search box. The article is readable without JavaScript, so the empty
+    // div alone must not set the flag.
+    const html = `<html><body><main><h1>Release notes</h1><p>${'The release fixes three defects and adds two tests. '.repeat(20)}</p><div id="comments-widget"></div></main></body></html>`;
+    expect(looksLikeShell(html)).toBe(false);
+  });
+
+  it('flags an empty mount under an arbitrary id when the body is thin', () => {
+    // The mirror case: a custom bundle mounts into its own id. With almost no
+    // readable body, that is still a shell.
+    const html = '<html><body><div id="sfx-widget"></div></body></html>';
+    expect(looksLikeShell(html)).toBe(true);
+  });
+
+  it('rejects a served article whose inline script dominates the markup', () => {
+    // A high script ratio is only a shell signal when the body is thin. A docs
+    // page can ship a large inline bundle and still be complete.
+    const html = `<html><body><main><p>${'Complete server-rendered documentation text. '.repeat(20)}</p></main><script>${'var x=1;'.repeat(400)}</script></body></html>`;
+    expect(looksLikeShell(html)).toBe(false);
+  });
+
+  it('rejects a noscript notice that is not about JavaScript', () => {
+    // "Enable images" is not a JavaScript warning. The page is complete.
+    const html = '<html><body><p>Gallery</p><noscript>Enable images for the optional preview</noscript></body></html>';
+    expect(looksLikeShell(html)).toBe(false);
+  });
+
+  it('still flags a genuine noscript JavaScript warning', () => {
+    const html = '<html><body><noscript>You need to enable JavaScript to use this app.</noscript></body></html>';
+    expect(looksLikeShell(html)).toBe(true);
+  });
 });
