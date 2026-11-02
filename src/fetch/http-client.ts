@@ -3,6 +3,7 @@ import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import { createPinnedAgent } from './pinned-dispatcher.js';
+import { hasProxyDispatcher } from './proxy-dispatcher.js';
 import type { Agent } from 'undici';
 
 export interface HttpFetchOptions {
@@ -170,6 +171,11 @@ async function fetchWithRedirects(
   // inside this function, so closing on the way out is safe.
   const agents: Agent[] = [];
 
+  // Proxy and pin are mutually exclusive for a hop, and the choice is made explicitly here: a
+  // per-request pinned Agent would override the global proxy dispatcher, so honouring the pin
+  // would silently drop the proxy and send the request direct. Through a proxy the proxy resolves
+  // the name, so pinning cannot apply either way.
+  const proxyActive = hasProxyDispatcher();
   try {
   while (true) {
     // Per HOP, not per request: an IP-literal hop takes no pin, and leaving the previous hop's
@@ -207,18 +213,31 @@ async function fetchWithRedirects(
         // Not retryable: DNS failures never were (EAI_AGAIN/ENOTFOUND aren't in the retry set),
         // and dead hostnames are common at crawl scale, so retrying would only add backoff.
         if (!resolved.addresses?.length) {
-          throw new HttpFetchError(
-            `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
-            false,
-          );
+          // Behind a proxy the proxy resolves the name, so a local answer can legitimately be
+          // missing and pinning cannot apply. Fail closed only on the direct path.
+          if (!proxyActive) {
+            throw new HttpFetchError(
+              `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
+              false,
+            );
+          }
+          logger.debug('no local resolution; leaving name resolution to the proxy', {
+            host: rhost,
+          });
+        } else if (proxyActive) {
+          // Explicit choice: the proxy resolves the name, so the validated address set cannot be
+          // pinned onto the socket. The validation above still ran, so a host that resolved to a
+          // blocked address was rejected before reaching this point.
+          logger.debug('proxy active; skipping connection pinning', { host: rhost });
+        } else {
+          // PIN the socket to what we just validated. Without this the connection resolves DNS a
+          // second time, and an attacker controlling the resolver can answer with a public IP for
+          // the check above and a private one for the connect (DNS rebinding). Pinning removes the
+          // second resolution, so there is no window to race. Literal IPs need no pinning — there
+          // is no name to re-resolve.
+          pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
+          agents.push(pinnedAgent);
         }
-        // PIN the socket to what we just validated. Without this the connection resolves DNS a
-        // second time, and an attacker controlling the resolver can answer with a public IP for
-        // the check above and a private one for the connect (DNS rebinding). Pinning removes the
-        // second resolution, so there is no window to race. Literal IPs need no pinning — there
-        // is no name to re-resolve.
-        pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
-        agents.push(pinnedAgent);
       }
     }
 
