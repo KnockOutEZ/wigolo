@@ -274,7 +274,13 @@ interface TypePool {
   browser: Browser | null;
   pool: BrowserContext[];
   activeCount: number;
-  waitQueue: Array<(ctx: BrowserContext) => void>;
+  // Waiters carry what they need: an authenticated caller cannot take a pooled
+  // context, and a failed launch must be able to reject its caller.
+  waitQueue: Array<{
+    storageStatePath?: string;
+    resolve: (ctx: BrowserContext) => void;
+    reject: (error: unknown) => void;
+  }>;
   idleTimers: Map<BrowserContext, ReturnType<typeof setTimeout>>;
 }
 
@@ -430,22 +436,67 @@ export class MultiBrowserPool {
       return ctx;
     }
 
-    if (wantsAuth || typePool.activeCount < maxBrowsers) {
-      typePool.activeCount++;
+    if (typePool.activeCount < maxBrowsers) {
+      return this.createContext(
+        typePool,
+        type,
+        wantsAuth ? storageStatePath : undefined,
+      );
+    }
+
+    return new Promise<BrowserContext>((resolve, reject) => {
+      typePool.waitQueue.push({
+        storageStatePath: wantsAuth ? storageStatePath : undefined,
+        resolve,
+        reject,
+      });
+    });
+  }
+
+  /**
+   * Create a context, counting a slot first and giving it back on failure.
+   *
+   * The previous revision incremented `activeCount` and awaited without a
+   * `try`, so a failed launch or `newContext` leaked the slot, and an
+   * authenticated caller bypassed the cap entirely.
+   */
+  private async createContext(
+    typePool: TypePool,
+    type: BrowserType,
+    storageStatePath?: string,
+  ): Promise<BrowserContext> {
+    typePool.activeCount++;
+    try {
       const browser = await this.launchBrowser(type);
       // acceptDownloads lets a PDF (or other binary) response be captured as a
       // download rather than triggering an unhandled navigation error. Harmless
       // for normal navigations — no download event fires.
       const ctx = await browser.newContext(
-        wantsAuth ? { acceptDownloads: true, storageState: storageStatePath } : { acceptDownloads: true },
+        storageStatePath
+          ? { acceptDownloads: true, storageState: storageStatePath }
+          : { acceptDownloads: true },
       );
-      if (wantsAuth) this.authSeeded.add(ctx);
+      if (storageStatePath) this.authSeeded.add(ctx);
       return ctx;
+    } catch (error) {
+      // Hand the freed slot to a queued caller: returning only the count would
+      // leave it waiting for capacity that is already available.
+      typePool.activeCount = Math.max(0, typePool.activeCount - 1);
+      this.dispatchWaiter(typePool, type);
+      throw error;
     }
+  }
 
-    return new Promise<BrowserContext>((resolve) => {
-      typePool.waitQueue.push(resolve);
-    });
+  /** Give a free slot to the next waiter, seeding its context when it needs auth. */
+  private dispatchWaiter(typePool: TypePool, type: BrowserType): void {
+    if (typePool.waitQueue.length === 0) return;
+    if (typePool.activeCount >= getConfig().maxBrowsers) return;
+
+    const waiter = typePool.waitQueue.shift()!;
+    void this.createContext(typePool, type, waiter.storageStatePath).then(
+      waiter.resolve,
+      waiter.reject,
+    );
   }
 
   protected releaseForType(type: BrowserType, ctx: BrowserContext): void {
@@ -455,16 +506,27 @@ export class MultiBrowserPool {
 
     // A context created from an auth state file is closed rather than pooled:
     // keeping it alive would either leak those cookies into the next fetch or
-    // silently drop them.
+    // silently drop them. The freed slot goes to the next waiter, which gets a
+    // freshly seeded context rather than this one.
     if (this.authSeeded.delete(ctx)) {
       typePool.activeCount = Math.max(0, typePool.activeCount - 1);
       ctx.close().catch(() => {});
+      this.dispatchWaiter(typePool, type);
       return;
     }
 
     if (typePool.waitQueue.length > 0) {
-      const resolve = typePool.waitQueue.shift()!;
-      resolve(ctx);
+      const head = typePool.waitQueue[0];
+      if (!head.storageStatePath) {
+        typePool.waitQueue.shift();
+        head.resolve(ctx);
+        return;
+      }
+      // The waiter needs a seeded context, so this one cannot serve it: free the
+      // slot and let it create its own instead of stalling behind capacity.
+      typePool.activeCount = Math.max(0, typePool.activeCount - 1);
+      ctx.close().catch(() => {});
+      this.dispatchWaiter(typePool, type);
       return;
     }
 
@@ -1685,4 +1747,7 @@ export class BrowserPool extends MultiBrowserPool {
     this.releaseForType(this.singleType, ctx);
   }
 }
+
+
+
 
