@@ -280,6 +280,9 @@ interface TypePool {
 
 export class MultiBrowserPool {
   private readonly pools = new Map<BrowserType, TypePool>();
+  // Contexts seeded from an auth state file. They are closed on release instead
+  // of returning to the pool so their cookies cannot leak into another fetch.
+  private readonly authSeeded = new Set<BrowserContext>();
   private readonly selector: BrowserSelector;
   private readonly configuredTypes: BrowserType[];
   private shutdownCalled = false;
@@ -405,12 +408,19 @@ export class MultiBrowserPool {
     }
   }
 
-  protected async acquireForType(type: BrowserType): Promise<BrowserContext> {
+  protected async acquireForType(
+    type: BrowserType,
+    storageStatePath?: string,
+  ): Promise<BrowserContext> {
     const config = getConfig();
     const maxBrowsers = config.maxBrowsers;
     const typePool = this.pools.get(type)!;
+    // An authenticated fetch owns its context. Pooled contexts may carry cookies
+    // from an unrelated request, and a context seeded from an auth state file
+    // must not be handed back into the pool afterwards.
+    const wantsAuth = Boolean(storageStatePath);
 
-    if (typePool.pool.length > 0) {
+    if (!wantsAuth && typePool.pool.length > 0) {
       const ctx = typePool.pool.pop()!;
       const timer = typePool.idleTimers.get(ctx);
       if (timer !== undefined) {
@@ -420,13 +430,17 @@ export class MultiBrowserPool {
       return ctx;
     }
 
-    if (typePool.activeCount < maxBrowsers) {
+    if (wantsAuth || typePool.activeCount < maxBrowsers) {
       typePool.activeCount++;
       const browser = await this.launchBrowser(type);
       // acceptDownloads lets a PDF (or other binary) response be captured as a
       // download rather than triggering an unhandled navigation error. Harmless
       // for normal navigations — no download event fires.
-      return browser.newContext({ acceptDownloads: true });
+      const ctx = await browser.newContext(
+        wantsAuth ? { acceptDownloads: true, storageState: storageStatePath } : { acceptDownloads: true },
+      );
+      if (wantsAuth) this.authSeeded.add(ctx);
+      return ctx;
     }
 
     return new Promise<BrowserContext>((resolve) => {
@@ -438,6 +452,15 @@ export class MultiBrowserPool {
     const config = getConfig();
     const idleTimeoutMs = config.browserIdleTimeoutMs;
     const typePool = this.pools.get(type)!;
+
+    // A context created from an auth state file is closed rather than pooled:
+    // keeping it alive would either leak those cookies into the next fetch or
+    // silently drop them.
+    if (this.authSeeded.delete(ctx)) {
+      typePool.activeCount = Math.max(0, typePool.activeCount - 1);
+      ctx.close().catch(() => {});
+      return;
+    }
 
     if (typePool.waitQueue.length > 0) {
       const resolve = typePool.waitQueue.shift()!;
@@ -641,6 +664,12 @@ export class MultiBrowserPool {
     }
 
     let ctx: BrowserContext;
+    // Seeded onto every context this fetch creates. A CDP-attached browser's
+    // existing context (contexts[0]) is reused as-is and cannot take it, so an
+    // auth state only applies when we create the context ourselves.
+    const authContextOptions = options.storageStatePath
+      ? { storageState: options.storageStatePath }
+      : undefined;
     let cdpBrowser: Browser | null = null;
     let resolvedType: BrowserType;
     // A dedicated stealth fetch owns its context (and a throwaway browser) and
@@ -674,13 +703,13 @@ export class MultiBrowserPool {
         log.info('connecting via CDP', { cdpUrl: redactUrl(options.cdpUrl) });
         cdpBrowser = await chromium.connectOverCDP(options.cdpUrl);
         const contexts = cdpBrowser.contexts();
-        ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+        ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext(authContextOptions);
       } catch (err) {
         log.warn('CDP connection failed, falling back to launch', {
           cdpUrl: redactUrl(options.cdpUrl),
           error: err instanceof Error ? err.message : String(err),
         });
-        ctx = await this.acquireForType(resolvedType);
+        ctx = await this.acquireForType(resolvedType, options.storageStatePath);
       }
     } else if (scrapingWss) {
       // Hosted scraping-browser rung (opt-in). Reuse the P8 connector: it
@@ -699,7 +728,7 @@ export class MultiBrowserPool {
         cdpBrowser = scrapingHandle.browser;
         try {
           const contexts = cdpBrowser.contexts();
-          ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+          ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext(authContextOptions);
         } catch (err) {
           // This runs BEFORE the main try/finally, so a context failure here
           // would strand the hosted browser — and a hosted one keeps running
@@ -709,11 +738,11 @@ export class MultiBrowserPool {
           });
           await scrapingHandle.close().catch(() => {});
           cdpBrowser = null;
-          ctx = await this.acquireForType(resolvedType);
+          ctx = await this.acquireForType(resolvedType, options.storageStatePath);
         }
       } else {
         // Off / bad scheme / connect failed → graceful fall back to launch.
-        ctx = await this.acquireForType(resolvedType);
+        ctx = await this.acquireForType(resolvedType, options.storageStatePath);
       }
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
@@ -759,7 +788,7 @@ export class MultiBrowserPool {
           launchedMajor !== null
             ? resolveStealthUA(process.platform, launchedMajor)
             : resolveStealthUA();
-        ctx = await dedicatedBrowser.newContext(stealthContextOptions(advertisedUa));
+        ctx = await dedicatedBrowser.newContext({ ...stealthContextOptions(advertisedUa), ...authContextOptions });
         // Guard for context stubs without addInitScript (unit-test mocks).
         if (typeof (ctx as { addInitScript?: unknown }).addInitScript === 'function') {
           await ctx.addInitScript(STEALTH_INIT_SCRIPT);
@@ -780,7 +809,7 @@ export class MultiBrowserPool {
     } else {
       resolvedType = this.resolveType(options.browserType, url);
       log.debug('fetching with browser', { url, type: resolvedType });
-      ctx = await this.acquireForType(resolvedType);
+      ctx = await this.acquireForType(resolvedType, options.storageStatePath);
     }
 
     // Seed reused anti-bot clearance cookies BEFORE navigation so a solved
@@ -1656,3 +1685,4 @@ export class BrowserPool extends MultiBrowserPool {
     this.releaseForType(this.singleType, ctx);
   }
 }
+
