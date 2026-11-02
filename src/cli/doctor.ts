@@ -477,7 +477,18 @@ export interface DoctorFix {
 
 /** The machine-readable doctor report emitted under `--json`. */
 export interface DoctorReport {
-  status: 'ok' | 'degraded';
+  /**
+   * `ok` = every check passed.
+   *
+   * `ok_with_warnings` = the run is not degraded, but at least one check reports
+   * `failed`. A fresh install hits this: the browser and the embeddings model
+   * install on first use, so doctor reports them `failed` yet exits 0 (the D5
+   * lazy contract). Naming the state stops a `failed` check from sitting next
+   * to a bare `ok`.
+   *
+   * `degraded` = doctor found a fault it cannot ignore. Exit code 1.
+   */
+  status: 'ok' | 'ok_with_warnings' | 'degraded';
   exitCode: number;
   /** Running package version — for cross-channel support triage. */
   version: string;
@@ -1019,11 +1030,22 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     degraded = nonFixableDegraded || anyFixableStillFailed;
   }
 
-  const status: DoctorReport['status'] = degraded ? 'degraded' : 'ok';
+  // A check can report `failed` while the run stays non-degraded: the browser
+  // and the embeddings model install on first use, and the D5 lazy contract
+  // keeps a fresh install at exit 0. A bare `ok` next to `failed` checks
+  // contradicts itself for anyone parsing this report, so name the state.
+  const reportChecks = sqliteCheck ? [...fixableChecks, sqliteCheck] : fixableChecks;
+  const failedChecks = reportChecks.filter((c) => c.status === 'failed');
+  const status: DoctorReport['status'] = degraded
+    ? 'degraded'
+    : failedChecks.length > 0
+      ? 'ok_with_warnings'
+      : 'ok';
   const exitCode = degraded ? 1 : 0;
 
   out('');
-  out(`[wigolo doctor] Overall: ${degraded ? 'DEGRADED' : 'OK'}`);
+  const warningSuffix = status === 'ok_with_warnings' ? ` (warnings: ${failedChecks.map((c) => c.name).join(', ')})` : '';
+  out(`[wigolo doctor] Overall: ${degraded ? 'DEGRADED' : `OK${warningSuffix}`}`);
 
   if (opts?.json) {
     const report: DoctorReport = {
@@ -1033,7 +1055,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       install_channel: detectInstallChannel(),
       // The ABI-mismatch check is not fixable, so it is not in fixableChecks;
       // include it so a degraded --json report names its cause.
-      checks: sqliteCheck ? [...fixableChecks, sqliteCheck] : fixableChecks,
+      checks: reportChecks,
       fixes,
     };
     // Machine shape on stdout; the human diagnostic above stays on stderr.
