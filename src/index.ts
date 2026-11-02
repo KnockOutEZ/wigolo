@@ -21,6 +21,7 @@ import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { runTool } from './cli/tool-run.js';
 import { getConfig } from './config.js';
+import { installProxyDispatcher } from './fetch/proxy-dispatcher.js';
 import { shutdownCli } from './cli/shutdown.js';
 
 async function exitCli(code: number): Promise<void> {
@@ -49,6 +50,9 @@ process.on('SIGABRT', () => process.exit(process.exitCode ?? 0));
  * unhandled top-level rejection would have.
  */
 export async function main(): Promise<void> {
+  // Route the global `fetch` (search engines, HTTP client) through the configured
+  // proxy before any command runs; the browser tier reads its own proxy options.
+  installProxyDispatcher();
   const rawArgs = process.argv.slice(2);
   if (rawArgs.includes('--wait-for-index')) {
     process.env.WIGOLO_WAIT_FOR_INDEX = '1';
