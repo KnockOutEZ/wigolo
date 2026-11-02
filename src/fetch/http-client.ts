@@ -3,7 +3,7 @@ import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import { createPinnedAgent } from './pinned-dispatcher.js';
-import { hasProxyDispatcher } from './proxy-dispatcher.js';
+import { shouldProxyHop } from './proxy-dispatcher.js';
 import type { Agent } from 'undici';
 
 export interface HttpFetchOptions {
@@ -171,11 +171,6 @@ async function fetchWithRedirects(
   // inside this function, so closing on the way out is safe.
   const agents: Agent[] = [];
 
-  // Proxy and pin are mutually exclusive for a hop, and the choice is made explicitly here: a
-  // per-request pinned Agent would override the global proxy dispatcher, so honouring the pin
-  // would silently drop the proxy and send the request direct. Through a proxy the proxy resolves
-  // the name, so pinning cannot apply either way.
-  const proxyActive = hasProxyDispatcher();
   try {
   while (true) {
     // Per HOP, not per request: an IP-literal hop takes no pin, and leaving the previous hop's
@@ -195,6 +190,11 @@ async function fetchWithRedirects(
     // IPs — already validated. Same allowPrivate policy as the literal guard.
     {
       const rhost = new URL(currentUrl).hostname;
+      // Proxy and pin are mutually exclusive for a hop, and the proxy decision is per hop: a
+      // per-request pinned Agent overrides the global dispatcher (so honouring the pin would drop
+      // the proxy), while hops the proxy agent sends direct still need pinning and the
+      // fail-closed check because nothing else resolves their name.
+      const viaProxy = shouldProxyHop(currentUrl);
       const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
       if (!isIpLiteral) {
         const resolved = await guardResolvedHost(rhost, 'target url', {
@@ -215,7 +215,7 @@ async function fetchWithRedirects(
         if (!resolved.addresses?.length) {
           // Behind a proxy the proxy resolves the name, so a local answer can legitimately be
           // missing and pinning cannot apply. Fail closed only on the direct path.
-          if (!proxyActive) {
+          if (!viaProxy) {
             throw new HttpFetchError(
               `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
               false,
@@ -224,7 +224,7 @@ async function fetchWithRedirects(
           logger.debug('no local resolution; leaving name resolution to the proxy', {
             host: rhost,
           });
-        } else if (proxyActive) {
+        } else if (viaProxy) {
           // Explicit choice: the proxy resolves the name, so the validated address set cannot be
           // pinned onto the socket. The validation above still ran, so a host that resolved to a
           // blocked address was rejected before reaching this point.
@@ -408,3 +408,4 @@ async function fetchWithRedirects(
     }
   }
 }
+
