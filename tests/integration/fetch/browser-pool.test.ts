@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as http from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { resetConfig } from '../../../src/config.js';
 import { BrowserPool } from '../../../src/fetch/browser-pool.js';
@@ -169,6 +172,37 @@ describe('BrowserPool', () => {
 
       expect(result.contentType).toContain('text/html');
       expect(result.headers).toBeDefined();
+    }, 30000);
+
+    it('sends the storage state cookies, and only on that fetch (#526)', async () => {
+      process.env.MAX_BROWSERS = '3';
+      resetConfig();
+
+      server = await startServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(`<html><body><p id="cookie">cookie=[${req.headers.cookie ?? ''}]</p></body></html>`);
+      });
+      const dir = mkdtempSync(join(tmpdir(), 'wigolo-auth-'));
+      const statePath = join(dir, 'state.json');
+      writeFileSync(statePath, JSON.stringify({
+        cookies: [{
+          name: 'session', value: 'abc123', domain: '127.0.0.1', path: '/',
+          expires: -1, httpOnly: true, secure: false, sameSite: 'Lax',
+        }],
+        origins: [],
+      }));
+
+      try {
+        pool = new BrowserPool();
+        const url = `http://127.0.0.1:${getPort(server)}/`;
+        const authed = await pool.fetchWithBrowser(url, { storageStatePath: statePath });
+        expect(authed.html).toContain('cookie=[session=abc123]');
+
+        const anonymous = await pool.fetchWithBrowser(url);
+        expect(anonymous.html).toContain('cookie=[]');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }, 30000);
   });
 
