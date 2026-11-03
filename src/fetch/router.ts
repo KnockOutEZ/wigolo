@@ -995,6 +995,7 @@ export class SmartRouter {
           html: staticResult.html,
           contentType: 'text/html',
           statusCode: 200,
+          statusUnknown: true,
           method: 'http',
           headers: {},
         };
@@ -1017,6 +1018,7 @@ export class SmartRouter {
           html: staticResult.html,
           contentType: 'text/html',
           statusCode: 200,
+          statusUnknown: true,
           method: 'http',
           headers: {},
           warning: BROWSER_INSTALLING_NOTE,
@@ -1030,6 +1032,7 @@ export class SmartRouter {
           html: pw.html,
           contentType: 'text/html',
           statusCode: 200,
+          statusUnknown: true,
           method: 'browser',
           headers: {},
           escalated: true,
