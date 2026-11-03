@@ -62,6 +62,7 @@ The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use 
 | `FETCH_TIMEOUT_MS` | `10000` | Per-request HTTP timeout. |
 | `FETCH_MAX_RETRIES` | `2` | HTTP retry budget. |
 | `MAX_REDIRECTS` | `5` | Redirect ceiling. |
+| `WIGOLO_MAX_RESPONSE_BYTES` | `20971520` (20 MB) | Largest response body a fetch will buffer. Bigger responses fail with `response_too_large` instead of exhausting memory. `0` disables the cap. |
 | `MAX_BROWSERS` | `3` | Browser-engine pool size for JS-rendered pages. |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list of browser families to pool. |
 | `BROWSER_IDLE_TIMEOUT` | `60000` | Idle ms before a pooled browser is released. |

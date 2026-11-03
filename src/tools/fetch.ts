@@ -14,6 +14,7 @@ import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { resolveMode } from '../util/mode.js';
 import { createLogger } from '../logger.js';
 import { guardFetchUrl } from '../watch/ssrf.js';
+import { isResponseTooLarge } from '../fetch/read-capped.js';
 
 const log = createLogger('fetch');
 
@@ -454,7 +455,7 @@ export async function handleFetch(
     const described = describeFetchError(err);
     return {
       ok: false,
-      error: 'fetch_failed',
+      error: isResponseTooLarge(err) ? 'response_too_large' : 'fetch_failed',
       error_reason: described.reason,
       stage: 'fetch',
       ...(described.hint ? { hint: described.hint } : {}),
