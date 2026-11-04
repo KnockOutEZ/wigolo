@@ -168,6 +168,52 @@ describe('doctor — fresh-install lazy contract', () => {
   });
 });
 
+describe('doctor --json — status names the warning state', () => {
+  it('reports ok_with_warnings, not a bare ok, on a fresh install that exits 0', async () => {
+    mockFreshInstall();
+    const code = await runDoctor('/tmp/.wigolo-fresh', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    // The D5 lazy contract still holds: a missing browser is not an error.
+    expect(code).toBe(0);
+    expect(parsed.exitCode).toBe(0);
+    // But the report must not claim `ok` beside a failed check.
+    expect(parsed.status).toBe('ok_with_warnings');
+    const failed = (parsed.checks as { name: string; status: string }[])
+      .filter((c) => c.status === 'failed')
+      .map((c) => c.name);
+    expect(failed).toContain('browser');
+    expect(failed).toContain('embeddings');
+    // The human line names every warning contributor too.
+    expect(outBuffer).toMatch(/Overall: OK \(warnings: .*browser/);
+    expect(outBuffer).toMatch(/Overall: OK \(warnings: .*embeddings/);
+  });
+
+  it('keeps a plain ok when every check passes', async () => {
+    vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+      const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+      if (joined.includes('--version')) return okProc('Python 3.12.4');
+      return okProc();
+    });
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      return s.endsWith('fastembed') || s.endsWith('transformers') || s.includes('/fake/playwright/');
+    });
+    vi.mocked(readdirSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith('fastembed')) return ['models--BAAI--bge-small-en-v1.5'] as never;
+      if (s.endsWith('transformers')) return ['Xenova'] as never;
+      return [] as never;
+    });
+    vi.mocked(readFileSync).mockReturnValue('');
+
+    const code = await runDoctor('/tmp/.wigolo-warm', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    expect(code).toBe(0);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.checks.some((c: { status: string }) => c.status === 'failed')).toBe(false);
+  });
+});
+
 describe('doctor — POSITIVE: models present are reported installed', () => {
   it('reports BOTH embeddings and reranker installed when their (distinct) cache dirs are populated', async () => {
     // GUARD (spec nit 3): a wrong-dir presence check would pass the fresh-dir
