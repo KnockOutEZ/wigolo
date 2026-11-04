@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Remote embeddings: `WIGOLO_EMBEDDING_API_BASE` sends cache embeddings to an OpenAI-compatible `/embeddings` endpoint. `WIGOLO_EMBEDDING_API_KEY` holds an optional Bearer token. A keyless base can use plain HTTP. A key needs HTTPS unless the host is loopback. Wigolo skips the bundled model when the base exists. (fixes #674)
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
 
 ## v0.3.1 — 2026-10-24

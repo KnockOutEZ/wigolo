@@ -146,6 +146,16 @@ export interface Config {
   embeddingIdleTimeoutMs: number;
   embeddingMaxTextLength: number;
   /**
+   * Base URL for an OpenAI-compatible embeddings endpoint. When set, the embed
+   * factory sends `POST <base>/embeddings` and skips the on-device model.
+   * `null` keeps the bundled fastembed model.
+   */
+  embeddingApiBase: string | null;
+  /** Optional Bearer token for `embeddingApiBase`. Keychain or env only. */
+  embeddingApiKey: string | null;
+  /** Timeout for one remote embedding request, in milliseconds. */
+  embeddingRequestTimeoutMs: number;
+  /**
    * Search backend selector. Resolves `WIGOLO_SEARCH` env > persisted
    * `searchBackend` in config.json > built-in default (null = 'core').
    * `null` means "unset"; the search-provider factory treats it as 'core'.
@@ -725,6 +735,9 @@ export function getConfig(): Config {
     embeddingModel: envStr('WIGOLO_EMBEDDING_MODEL', 'BAAI/bge-small-en-v1.5', settings, 'embeddingModel') ?? 'BAAI/bge-small-en-v1.5',
     embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 1800000, settings, 'embeddingIdleTimeoutMs'),
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000, settings, 'embeddingMaxTextLength'),
+    embeddingApiBase: envStr('WIGOLO_EMBEDDING_API_BASE', null, settings, 'embeddingApiBase'),
+    embeddingApiKey: resolveKeychainSecret('WIGOLO_EMBEDDING_API_KEY', 'embeddingApiKey'),
+    embeddingRequestTimeoutMs: envInt('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS', 30_000, settings, 'embeddingRequestTimeoutMs'),
     searchBackend: envStr('WIGOLO_SEARCH', null, settings, 'searchBackend'),
     llmProvider: envStr('WIGOLO_LLM_PROVIDER', null, settings, 'llmProvider'),
     llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),

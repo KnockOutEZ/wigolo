@@ -471,6 +471,28 @@ describe('exported repair functions (S9 — reused by doctor --fix)', () => {
     expect(r.embeddings).toBe('ok');
   });
 
+  it('installEmbeddings probes a remote endpoint instead of loading the local model', async () => {
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo',
+      embeddingApiBase: 'http://127.0.0.1:8080/v1',
+      embeddingApiKey: null,
+      embeddingModel: 'test-embed',
+      embeddingRequestTimeoutMs: 500,
+    } as never);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ data: [{ index: 0, embedding: Array.from({ length: 384 }, () => 0.1) }] }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const r = await installEmbeddings();
+      expect(r.embeddings).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('wipeSearxngState is exported and runs without a reporter', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     // No throw, and it deletes the state/install/lock paths.
