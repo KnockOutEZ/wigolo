@@ -183,8 +183,9 @@ describe('doctor --json — status names the warning state', () => {
       .map((c) => c.name);
     expect(failed).toContain('browser');
     expect(failed).toContain('embeddings');
-    // The human line names the warning contributors too.
+    // The human line names every warning contributor too.
     expect(outBuffer).toMatch(/Overall: OK \(warnings: .*browser/);
+    expect(outBuffer).toMatch(/Overall: OK \(warnings: .*embeddings/);
   });
 
   it('keeps a plain ok when every check passes', async () => {
