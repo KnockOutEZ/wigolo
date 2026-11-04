@@ -525,6 +525,91 @@ describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1
     }
   });
 
+  describe('WIGOLO_SERVE_ALLOWED_ORIGINS allowlist', () => {
+    afterEach(() => {
+      delete process.env.WIGOLO_SERVE_ALLOWED_ORIGINS;
+    });
+
+    async function mcpStatus(
+      options: { apiToken?: string | null; allowedOrigins?: string[] },
+      headers: Record<string, string>,
+    ): Promise<number> {
+      const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+      const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: null, ...options });
+      try {
+        const url = await daemon.start();
+        return await postMcp(url, headers);
+      } finally {
+        await daemon.stop();
+      }
+    }
+
+    it('listed origin + valid token → allowed past the transport gate', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token', allowedOrigins: ['https://app.example.com'] },
+        { Authorization: 'Bearer secret-token', Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(200);
+    });
+
+    it('listed origin without a bearer token → 401', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token', allowedOrigins: ['https://app.example.com'] },
+        { Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(401);
+    });
+
+    it('listed origin with a wrong bearer token → 401', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token', allowedOrigins: ['https://app.example.com'] },
+        { Authorization: 'Bearer wrong', Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(401);
+    });
+
+    it('unlisted origin with a valid token → 403', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token', allowedOrigins: ['https://app.example.com'] },
+        { Authorization: 'Bearer secret-token', Origin: 'https://evil.example.com' },
+      );
+      expect(status).toBe(403);
+    });
+
+    it('listed origin is ignored when no API token is configured → 403', async () => {
+      const status = await mcpStatus(
+        { apiToken: null, allowedOrigins: ['https://app.example.com'] },
+        { Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(403);
+    });
+
+    it('no allowlist → browser Origin still 403 with a valid token (unchanged)', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token' },
+        { Authorization: 'Bearer secret-token', Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(403);
+    });
+
+    it('reads the allowlist from WIGOLO_SERVE_ALLOWED_ORIGINS', async () => {
+      process.env.WIGOLO_SERVE_ALLOWED_ORIGINS = ' https://other.example.com , https://app.example.com ';
+      const status = await mcpStatus(
+        { apiToken: 'secret-token' },
+        { Authorization: 'Bearer secret-token', Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(200);
+    });
+
+    it('wildcard entries are dropped, never matched', async () => {
+      const status = await mcpStatus(
+        { apiToken: 'secret-token', allowedOrigins: ['*', 'https://*.example.com'] },
+        { Authorization: 'Bearer secret-token', Origin: 'https://app.example.com' },
+      );
+      expect(status).toBe(403);
+    });
+  });
+
   it('NEGATIVE: GET /sse with a browser Origin → 403 (open mode)', async () => {
     const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
     const http = await import('node:http');

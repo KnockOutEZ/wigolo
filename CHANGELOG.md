@@ -4,6 +4,7 @@
 
 ### Added
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
+- `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact browser origins allowed on the MCP transport, for web-based MCP clients. It only applies when `WIGOLO_API_TOKEN` is set, and the bearer token is still required; unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
 
 ## v0.3.1 — 2026-10-24
 
