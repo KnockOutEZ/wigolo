@@ -9,6 +9,9 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('cache');
 
+/** sqlite-vec rejects a knn LIMIT above this value. */
+const KNN_MAX = 4096;
+
 /**
  * VectorStore backed by the sqlite-vec extension loaded into the shared
  * better-sqlite3 cache database.
@@ -140,7 +143,7 @@ export class SqliteVecStore implements VectorStore {
       LIMIT ?
     `);
 
-    let knnLimit = filter ? Math.max(limit * 5, 50) : limit;
+    let knnLimit = Math.min(filter ? Math.max(limit * 5, 50) : limit, KNN_MAX);
 
     for (;;) {
       let candidates: Array<{ rowid: number; distance: number }>;
@@ -211,8 +214,8 @@ export class SqliteVecStore implements VectorStore {
       if (results.length >= limit) return results;
       // A window that returned fewer rows than it asked for already covers
       // every vector in the store, so a wider window cannot add matches.
-      if (!filter || candidates.length < knnLimit) return results;
-      knnLimit *= 4;
+      if (!filter || candidates.length < knnLimit || knnLimit >= KNN_MAX) return results;
+      knnLimit = Math.min(knnLimit * 4, KNN_MAX);
     }
   }
 

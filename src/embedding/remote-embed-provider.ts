@@ -13,7 +13,12 @@ export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 type RemoteEmbedItem = { index?: unknown; embedding?: unknown };
 
-/** Read a response body, but never buffer more than `maxBytes`. */
+/**
+ * Read a response body as UTF-8 text and stop above `maxBytes`.
+ *
+ * The cap runs before any parse, so an oversized body cannot exhaust memory.
+ * A stream error keeps its own message and does not look like bad JSON.
+ */
 async function readCapped(response: Response, maxBytes: number): Promise<string> {
   const body = response.body;
   if (!body) return '';
