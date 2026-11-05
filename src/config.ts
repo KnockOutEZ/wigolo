@@ -419,6 +419,27 @@ function envInt(
   return fallback;
 }
 
+/**
+ * Parse a positive-integer env var or setting. A bad value throws at load, so
+ * the failure names the variable instead of surfacing later in a request.
+ */
+function envPositiveInt(
+  key: string,
+  fallback: number,
+  settings: Record<string, unknown>,
+  settingsKey?: string,
+): number {
+  const envVal = process.env[key];
+  const raw: unknown = envVal !== undefined ? envVal : settings[settingsKey ?? key];
+  if (raw === undefined || raw === null || raw === '') return fallback;
+
+  const parsed = typeof raw === 'number' ? raw : /^\d+$/.test(String(raw).trim()) ? Number(String(raw).trim()) : NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
+}
+
 function envFloat(
   key: string,
   fallback: number,
@@ -737,7 +758,7 @@ export function getConfig(): Config {
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000, settings, 'embeddingMaxTextLength'),
     embeddingApiBase: envStr('WIGOLO_EMBEDDING_API_BASE', null, settings, 'embeddingApiBase'),
     embeddingApiKey: resolveKeychainSecret('WIGOLO_EMBEDDING_API_KEY', 'embeddingApiKey'),
-    embeddingRequestTimeoutMs: envInt('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS', 30_000, settings, 'embeddingRequestTimeoutMs'),
+    embeddingRequestTimeoutMs: envPositiveInt('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS', 30_000, settings, 'embeddingRequestTimeoutMs'),
     searchBackend: envStr('WIGOLO_SEARCH', null, settings, 'searchBackend'),
     llmProvider: envStr('WIGOLO_LLM_PROVIDER', null, settings, 'llmProvider'),
     llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),

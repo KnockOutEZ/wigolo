@@ -9,7 +9,9 @@
 
 /** True for hostnames that never leave this machine. */
 export function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+  // The trailing dot is the fully qualified form of localhost and stays local.
+  return hostname === 'localhost' || hostname === 'localhost.'
+    || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(hostname);
 }
 
 export interface RemoteEndpointOptions {

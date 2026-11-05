@@ -317,6 +317,20 @@ describe('config', () => {
       expect(getConfig().reranker).toBe('none');
     });
 
+    it('rejects a non-positive embedding request timeout at load', () => {
+      for (const bad of ['-1', '0', 'abc']) {
+        process.env.WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS = bad;
+        resetConfig();
+        expect(() => getConfig()).toThrow('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS');
+      }
+    });
+
+    it('accepts a positive embedding request timeout', () => {
+      process.env.WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS = '5000';
+      resetConfig();
+      expect(getConfig().embeddingRequestTimeoutMs).toBe(5000);
+    });
+
     it('reads WIGOLO_RERANKER_MODEL config', () => {
       process.env.WIGOLO_RERANKER_MODEL = 'custom-model';
       resetConfig();

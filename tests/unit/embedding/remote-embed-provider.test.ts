@@ -105,7 +105,7 @@ describe('RemoteEmbedProvider', () => {
   });
 
   it('allows credentials over plain HTTP to a loopback endpoint', () => {
-    for (const base of ['http://127.0.0.1:8080/v1', 'http://localhost:8080/v1', 'http://[::1]:8080/v1']) {
+    for (const base of ['http://127.0.0.1:8080/v1', 'http://localhost:8080/v1', 'http://localhost.:8080/v1', 'http://[::1]:8080/v1']) {
       expect(() => new RemoteEmbedProvider(config({ embeddingApiBase: base, embeddingApiKey: 'secret' }))).not.toThrow();
     }
   });

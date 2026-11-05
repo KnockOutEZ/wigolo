@@ -81,6 +81,30 @@ describe('SqliteVecStore', () => {
     expect(r.map(x => x.id)).toEqual(['a']);
   });
 
+  it('widens the KNN window until the filter finds enough rows', async () => {
+    // 60 stale rows rank closer than the one current-model row, so a fixed
+    // window of 50 would return nothing for the current model.
+    const stale: VectorRecord[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      stale.push({
+        id: `stale-${i}`,
+        vector: new Float32Array([1, 0, 0, 0]),
+        metadata: { url: `https://stale/${i}`, contentHash: `h${i}`, modelId: 'old-model' },
+      });
+    }
+    await store.upsert(stale);
+    await store.upsert([
+      {
+        id: 'current',
+        vector: new Float32Array([0.5, 0.5, 0, 0]),
+        metadata: { url: 'https://current', contentHash: 'hc', modelId: 'new-model' },
+      },
+    ]);
+
+    const results = await store.search(new Float32Array([1, 0, 0, 0]), 1, { modelId: 'new-model' });
+    expect(results.map(x => x.id)).toEqual(['current']);
+  });
+
   it('filters by url and contentHash', async () => {
     await store.upsert([
       { id: 'a', vector: new Float32Array([1, 0, 0, 0]), metadata: { url: 'https://a', contentHash: 'h1', modelId: 'm' } },

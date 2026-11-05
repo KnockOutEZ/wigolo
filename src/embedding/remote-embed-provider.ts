@@ -97,11 +97,13 @@ export class RemoteEmbedProvider implements EmbedProvider {
       throw new Error(`Remote embedding HTTP ${response.status}`);
     }
 
+    // Read the body outside the parse try so a stream error keeps its own
+    // message. Only a JSON syntax error becomes 'invalid JSON'.
+    const text = await readCapped(response, MAX_RESPONSE_BYTES);
     let payload: unknown;
     try {
-      payload = JSON.parse(await readCapped(response, MAX_RESPONSE_BYTES));
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith('Remote embedding response exceeded')) throw err;
+      payload = JSON.parse(text);
+    } catch {
       throw new Error('Remote embedding returned invalid JSON');
     }
     if (!payload || typeof payload !== 'object' || !('data' in payload) || !Array.isArray(payload.data)) {

@@ -122,6 +122,14 @@ export WIGOLO_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 
 `warmup` sends one short probe request. Cache writes and `find_similar` use the remote endpoint from then on.
 
+### Changing the endpoint or the model
+
+The vector store tags each row with a model id. That id combines the model name with the endpoint host and path. `find_similar` scores only rows that carry the active model id.
+
+A change to `WIGOLO_EMBEDDING_API_BASE` or `WIGOLO_EMBEDDING_MODEL` therefore hides every row from the old provider. `wigolo backfill` selects only URLs with no vector row, so it does not repair them. Call the `fetch` tool with `force_refresh: true` to embed one URL again. A plain fetch returns from cache before the embed step runs.
+
+The model id does not change when the weights behind the same endpoint and model name change. Rows from the old weights stay in the index. To re-embed them, fetch each URL with `force_refresh: true`. To drop every vector, run `wigolo --cleanup cache`, which also deletes the cached pages.
+
 ## LLM providers (optional)
 
 Core tools never need an LLM. Configuring one adds answer synthesis (`format: "answer"` on search), essay-grade research briefs, and a structured-extraction fallback.
