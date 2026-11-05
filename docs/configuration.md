@@ -158,6 +158,7 @@ Per-call `force_refresh: true` skips both and goes to the network. `wigolo cache
 | `WIGOLO_API_TOKEN` | unset | Bearer token required on the REST + MCP surface. **Required** for non-loopback binds. |
 | `WIGOLO_API_TOKEN_FILE` | unset | Read the token from a file (Docker/systemd secret pattern). |
 | `WIGOLO_SERVE_ALLOW_UNAUTHENTICATED` | unset | `1` opts into open remote access (same as `--allow-unauthenticated`). |
+| `WIGOLO_SERVE_ALLOWED_ORIGINS` | unset | Comma-separated exact browser origins (no wildcards) allowed on the MCP transport (`/mcp`, `/sse`, `/messages`), for web-based MCP clients. Honoured only when `WIGOLO_API_TOKEN` is set, and the bearer token is still required. Admin routes refuse any `Origin` regardless. |
 | `WIGOLO_SERVE_ALLOW_LOCAL_TARGETS` | unset | `1` lets a remote-exposed daemon fetch loopback/localhost URLs (blocked by default). |
 | `WIGOLO_SERVE_MAX_BODY_BYTES` | `1 MiB` (5 MiB for diff/extract) | Request-body cap. |
 | `WIGOLO_SERVE_MAX_CONCURRENCY` | `16` | In-flight request cap on `/v1`. |
