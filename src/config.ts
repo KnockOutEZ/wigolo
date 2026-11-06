@@ -21,8 +21,10 @@ export interface Config {
   fetchTimeoutMs: number;
   fetchMaxRetries: number;
   maxRedirects: number;
-  /** Largest response body (bytes) the fetch tiers will buffer before failing
-   * with `response_too_large`. 0 or less disables the cap. */
+  /** Largest response body (bytes) the HTTP and TLS fetch tiers will buffer
+   * before failing with `response_too_large`. 0 or less disables the cap.
+   * Browser-tier, Reddit API, escape-hatch and redirect-drain reads are not
+   * covered. */
   maxResponseBytes: number;
   fetchAllowPrivate: boolean;
   playwrightLoadTimeoutMs: number;

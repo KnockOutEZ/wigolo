@@ -7,6 +7,7 @@ import { tlsFetch, _resetTlsBackend, _setTlsBackendForTests } from '../../../src
 import { describeFetchError } from '../../../src/fetch/error-describe.js';
 import { readCapped, ResponseTooLargeError, isResponseTooLarge } from '../../../src/fetch/read-capped.js';
 
+/** Start a local HTTP server on a random port with the given handler. */
 function startServer(handler: http.RequestListener): Promise<http.Server> {
   return new Promise((resolve) => {
     const server = http.createServer(handler);
@@ -14,6 +15,7 @@ function startServer(handler: http.RequestListener): Promise<http.Server> {
   });
 }
 
+/** Close a test server, dropping any open keep-alive connections first. */
 function closeServer(server: http.Server): Promise<void> {
   return new Promise((resolve) => {
     server.closeAllConnections?.();
