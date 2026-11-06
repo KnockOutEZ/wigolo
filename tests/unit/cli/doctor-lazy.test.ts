@@ -79,6 +79,7 @@ let writeSpy: ReturnType<typeof vi.spyOn>;
 let stdoutSpy: ReturnType<typeof vi.spyOn>;
 const originalReranker = process.env.WIGOLO_RERANKER;
 const originalRerankBase = process.env.WIGOLO_RERANK_API_BASE;
+const originalEmbedBase = process.env.WIGOLO_EMBEDDING_API_BASE;
 
 beforeEach(() => {
   process.env.WIGOLO_RERANKER = 'onnx';
@@ -99,6 +100,8 @@ afterEach(() => {
   else process.env.WIGOLO_RERANKER = originalReranker;
   if (originalRerankBase === undefined) delete process.env.WIGOLO_RERANK_API_BASE;
   else process.env.WIGOLO_RERANK_API_BASE = originalRerankBase;
+  if (originalEmbedBase === undefined) delete process.env.WIGOLO_EMBEDDING_API_BASE;
+  else process.env.WIGOLO_EMBEDDING_API_BASE = originalEmbedBase;
   resetConfig();
   delete process.env.WIGOLO_SEARCH;
   writeSpy.mockRestore();
@@ -130,6 +133,15 @@ describe('doctor — fresh-install lazy contract', () => {
     await runDoctor('/tmp/.wigolo-remote');
     expect(outBuffer).toMatch(/ML reranker:\s+remote configured \(endpoint not probed\)/);
     expect(getRerankProviderMock).not.toHaveBeenCalled();
+  });
+  it('reports a configured remote embedding endpoint without checking the fastembed cache', async () => {
+    process.env.WIGOLO_EMBEDDING_API_BASE = 'http://127.0.0.1:8080/v1';
+    resetConfig();
+    mockFreshInstall();
+    await runDoctor('/tmp/.wigolo-remote-embed');
+    expect(outBuffer).toMatch(/Embeddings model:\s+remote configured \(endpoint not probed\)/);
+    expect(outBuffer).toMatch(/provider:\s+remote \(endpoint not probed\)/);
+    expect(getEmbedProviderMock).not.toHaveBeenCalled();
   });
   it('exits 0 on a fresh install (missing browser + models + no searxng bootstrap)', async () => {
     mockFreshInstall();

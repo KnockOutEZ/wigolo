@@ -52,8 +52,15 @@ export const searchCategory: CategoryDef = {
       settingsPath: 'embeddingModel',
       label: 'Embedding model',
       kind: 'text',
-      default: 'all-MiniLM-L6-v2',
-      help: 'Sentence-transformers model name',
+      default: 'BAAI/bge-small-en-v1.5',
+      help: 'Model name sent to a remote endpoint (the bundled provider ignores it)',
+    },
+    {
+      key: 'WIGOLO_EMBEDDING_API_BASE',
+      settingsPath: 'embeddingApiBase',
+      label: 'Remote embedding base URL',
+      kind: 'text',
+      help: 'Base URL ending in /v1. Wigolo sends POST /embeddings',
     },
   ],
 };

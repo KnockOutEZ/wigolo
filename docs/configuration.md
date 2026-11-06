@@ -91,7 +91,10 @@ For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL
 | `WIGOLO_RERANK_API_BASE` | unset | Remote service base URL; Wigolo sends `POST <base>/rerank`. Required for `remote`. |
 | `WIGOLO_RERANK_API_KEY` | unset | Optional Bearer token for the remote endpoint. Requires HTTPS unless the endpoint is on loopback (`localhost`, `127.x`, `[::1]`). Read from env or keychain; never persisted in `config.json`. |
 | `WIGOLO_RERANKER_REQUEST_TIMEOUT_MS` | `30000` | Remote request timeout in milliseconds. |
-| `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. |
+| `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. Also the model name sent to a remote endpoint. |
+| `WIGOLO_EMBEDDING_API_BASE` | unset | OpenAI-compatible base URL. Wigolo sends `POST <base>/embeddings`. When unset, the bundled fastembed model runs in-process. |
+| `WIGOLO_EMBEDDING_API_KEY` | unset | Optional Bearer token for the remote endpoint. Requires HTTPS unless the endpoint is on loopback (`localhost`, `127.x`, `[::1]`). Read from env or keychain. Never persisted in `config.json`. |
+| `WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS` | `30000` | Remote embedding request timeout in milliseconds. |
 | `WIGOLO_RELEVANCE_THRESHOLD` | `0` | Drop search results below this reranker score (0 = keep all). |
 
 The default ONNX model downloads once (during `init`/`warmup` or lazily on first use) and runs in-process. For a remote/self-hosted Cohere-style rerank endpoint:
@@ -104,6 +107,28 @@ export WIGOLO_RERANKER_MODEL=bge-reranker-v2-m3
 ```
 
 Wigolo sends `{ "model": "...", "query": "...", "documents": ["..."], "top_n": 2 }` to `/rerank`. The response must contain `results` with at least `top_n` entries shaped `{ "index": 0, "relevance_score": 0.9 }` (or `score`); if the service scores every document, Wigolo keeps the best `top_n`. Indexes refer to the original document order. This is a Cohere-style contract; OpenAI does not define a universal rerank API. Queries and candidate text are sent to the configured endpoint. Remote mode does not download the ONNX model. `warmup` and `doctor` check configuration without contacting the endpoint; the first rerank request verifies service availability. Search falls back to its existing ordering if the endpoint fails.
+
+## Remote embeddings
+
+To use a local or self-hosted embedding service, set `WIGOLO_EMBEDDING_API_BASE` to an OpenAI-compatible base URL. Wigolo sends `{ "model": "...", "input": ["..."] }` to `/embeddings`. The response must hold one vector per input in `data[].embedding`.
+
+Each vector must have 384 values. The sqlite-vec index uses that size. Wigolo rejects a wrong-size vector with a clear error. Remote mode does not download the fastembed model.
+
+```bash
+export WIGOLO_EMBEDDING_API_BASE=http://127.0.0.1:8080/v1
+export WIGOLO_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+# WIGOLO_EMBEDDING_API_KEY works over plain HTTP only on loopback; use HTTPS for any other host.
+```
+
+`warmup` sends one short probe request. Cache writes and `find_similar` use the remote endpoint from then on.
+
+### Changing the endpoint or the model
+
+The vector store tags each row with a model id. That id combines the model name with the endpoint host and path. `find_similar` scores only rows that carry the active model id.
+
+A change to `WIGOLO_EMBEDDING_API_BASE` or `WIGOLO_EMBEDDING_MODEL` therefore hides every row from the old provider. `wigolo backfill` selects only URLs with no vector row, so it does not repair them. The CLI has no command that re-embeds one URL. Use the MCP `fetch` tool with `force_refresh: true` instead. A plain fetch returns from cache before the embed step runs.
+
+The model id does not change when the weights behind the same endpoint and model name change. Rows from the old weights stay in the index. To re-embed them, call the MCP `fetch` tool with `force_refresh: true` for each URL. To drop every vector, run `wigolo config --cleanup cache`. That command also deletes the cached pages.
 
 ## LLM providers (optional)
 

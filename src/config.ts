@@ -146,6 +146,16 @@ export interface Config {
   embeddingIdleTimeoutMs: number;
   embeddingMaxTextLength: number;
   /**
+   * Base URL for an OpenAI-compatible embeddings endpoint. When set, the embed
+   * factory sends `POST <base>/embeddings` and skips the on-device model.
+   * `null` keeps the bundled fastembed model.
+   */
+  embeddingApiBase: string | null;
+  /** Optional Bearer token for `embeddingApiBase`. Keychain or env only. */
+  embeddingApiKey: string | null;
+  /** Timeout for one remote embedding request, in milliseconds. */
+  embeddingRequestTimeoutMs: number;
+  /**
    * Search backend selector. Resolves `WIGOLO_SEARCH` env > persisted
    * `searchBackend` in config.json > built-in default (null = 'core').
    * `null` means "unset"; the search-provider factory treats it as 'core'.
@@ -407,6 +417,27 @@ function envInt(
   const persisted = settings[sk];
   if (typeof persisted === 'number' && !isNaN(persisted)) return persisted;
   return fallback;
+}
+
+/**
+ * Parse a positive-integer env var or setting. A bad value throws at load, so
+ * the failure names the variable instead of surfacing later in a request.
+ */
+function envPositiveInt(
+  key: string,
+  fallback: number,
+  settings: Record<string, unknown>,
+  settingsKey?: string,
+): number {
+  const envVal = process.env[key];
+  const raw: unknown = envVal !== undefined ? envVal : settings[settingsKey ?? key];
+  if (raw === undefined || raw === null || raw === '') return fallback;
+
+  const parsed = typeof raw === 'number' ? raw : /^\d+$/.test(String(raw).trim()) ? Number(String(raw).trim()) : NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
 }
 
 function envFloat(
@@ -725,6 +756,9 @@ export function getConfig(): Config {
     embeddingModel: envStr('WIGOLO_EMBEDDING_MODEL', 'BAAI/bge-small-en-v1.5', settings, 'embeddingModel') ?? 'BAAI/bge-small-en-v1.5',
     embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 1800000, settings, 'embeddingIdleTimeoutMs'),
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000, settings, 'embeddingMaxTextLength'),
+    embeddingApiBase: envStr('WIGOLO_EMBEDDING_API_BASE', null, settings, 'embeddingApiBase'),
+    embeddingApiKey: resolveKeychainSecret('WIGOLO_EMBEDDING_API_KEY', 'embeddingApiKey'),
+    embeddingRequestTimeoutMs: envPositiveInt('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS', 30_000, settings, 'embeddingRequestTimeoutMs'),
     searchBackend: envStr('WIGOLO_SEARCH', null, settings, 'searchBackend'),
     llmProvider: envStr('WIGOLO_LLM_PROVIDER', null, settings, 'llmProvider'),
     llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),

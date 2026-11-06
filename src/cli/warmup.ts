@@ -366,6 +366,23 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
 }
 
 export async function installEmbeddings(reporter: WarmupReporter = noopReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
+  const config = getConfig();
+  if (config.embeddingApiBase) {
+    reporter.start('embeddings', 'Checking remote embeddings endpoint');
+    try {
+      const { RemoteEmbedProvider } = await import('../embedding/remote-embed-provider.js');
+      const provider = new RemoteEmbedProvider(config);
+      // The remote model needs no download. One probe proves the URL and the
+      // model name, and it verifies the 384-dimension contract.
+      await provider.warmup();
+      reporter.success('embeddings', `remote model ${provider.modelId} ready`);
+      return { embeddings: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('embeddings', message);
+      return { embeddings: 'failed', embeddingsError: message };
+    }
+  }
   reporter.start('embeddings', 'Downloading semantic embeddings model (fastembed)');
   try {
     const { FastembedEmbedProvider } = await import('../embedding/fastembed-provider.js');
