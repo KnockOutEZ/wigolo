@@ -42,6 +42,7 @@ wigolo config --cleanup cache              # cache|embeddings|models|browser|sea
 | --- | --- | --- |
 | `WIGOLO_SEARCH` | `core` | Backend selector: `core`, `searxng`, or `hybrid`. |
 | `BRAVE_API_KEY` | unset | Enables the optional Brave engines (general + images). |
+| `OUTCRAWL_API_KEY` | unset | Enables the optional Outcrawl search engine (general + code). |
 | `WIGOLO_GITHUB_TOKEN` | unset | Authenticates the GitHub code-search engine (higher rate limit, private-org hydration). |
 | `WIGOLO_RSS_FEEDS` | unset | Comma-separated feed URLs mixed into news-category results. |
 | `WIGOLO_MULTI_QUERY_MAX` | `10` | Cap on query variants accepted in one array-query search. |

@@ -158,17 +158,19 @@ describe('writePersistedConfig', () => {
     },
   );
 
-  it('strips denylisted secret settings keys (braveApiKey / githubToken)', () => {
+  it('strips denylisted secret settings keys (braveApiKey / outcrawlApiKey / githubToken)', () => {
     const path = join(dir, 'config.json');
     writePersistedConfig(path, {
       settings: {
         defaultBrowser: 'chromium',
         braveApiKey: 'brave-secret',
+        outcrawlApiKey: 'outcrawl-secret',
         githubToken: 'ghp_secret',
       },
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8'));
     expect(raw.settings.braveApiKey).toBeUndefined();
+    expect(raw.settings.outcrawlApiKey).toBeUndefined();
     expect(raw.settings.githubToken).toBeUndefined();
     // Non-secret key survives.
     expect(raw.settings.defaultBrowser).toBe('chromium');

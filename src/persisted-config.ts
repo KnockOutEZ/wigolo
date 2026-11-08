@@ -45,6 +45,7 @@ export type PersistedConfigPatch = Partial<Omit<PersistedConfig, 'version'>>;
  */
 export const SETTINGS_SECRETS_DENYLIST = new Set<string>([
   'braveApiKey',
+  'outcrawlApiKey',
   'githubToken',
   'rerankApiKey',
   'redditClientSecret',

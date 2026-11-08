@@ -11,6 +11,7 @@ describe('getCodeEngines', () => {
 
   beforeEach(async () => {
     delete process.env.BRAVE_API_KEY;
+    delete process.env.OUTCRAWL_API_KEY;
     process.env.WIGOLO_GITHUB_TOKEN = 'test-token';
     const { resetConfig } = await import('../../../../../src/config.js');
     resetConfig();
@@ -24,6 +25,7 @@ describe('getCodeEngines', () => {
     } else {
       process.env.BRAVE_API_KEY = originalBraveKey;
     }
+    delete process.env.OUTCRAWL_API_KEY;
     if (originalGithubToken === undefined) {
       delete process.env.WIGOLO_GITHUB_TOKEN;
     } else {
@@ -69,6 +71,15 @@ describe('getCodeEngines', () => {
     _resetCodeEnginesForTest();
     const names = getCodeEngines().map((e) => e.engine.name).sort();
     expect(names).toContain('brave');
+  });
+
+  it('adds outcrawl when OUTCRAWL_API_KEY is set', async () => {
+    process.env.OUTCRAWL_API_KEY = 'test-key';
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetCodeEnginesForTest();
+    const names = getCodeEngines().map((e) => e.engine.name).sort();
+    expect(names).toContain('outcrawl');
   });
 
   it('memoizes — two calls return the same array reference', () => {

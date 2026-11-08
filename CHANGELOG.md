@@ -4,6 +4,7 @@
 
 ### Added
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
+- Optional Outcrawl search engine for the general and code verticals, enabled by setting `OUTCRAWL_API_KEY`. Without a key nothing changes: the engine stays out of the pool and shows as `disabled` in `wigolo doctor`.
 
 ## v0.3.1 — 2026-10-24
 

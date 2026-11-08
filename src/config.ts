@@ -114,6 +114,7 @@ export interface Config {
   validateLinks: boolean;
   respectRobotsTxt: boolean;
   braveApiKey: string | null;
+  outcrawlApiKey: string | null;
   /** GitHub API personal access token. When set, the github-code adapter
    * passes it as a Bearer token so search calls run authenticated. Lifts
    * the 10 req/min unauthed cap to 30 req/min, eliminates the most common
@@ -669,6 +670,7 @@ export function getConfig(): Config {
     validateLinks: envBool('VALIDATE_LINKS', true, settings, 'validateLinks'),
     respectRobotsTxt: envBool('RESPECT_ROBOTS_TXT', true, settings, 'respectRobotsTxt'),
     braveApiKey: envStr('BRAVE_API_KEY', null, settings, 'braveApiKey'),
+    outcrawlApiKey: envStr('OUTCRAWL_API_KEY', null, settings, 'outcrawlApiKey'),
     githubToken: envStr('WIGOLO_GITHUB_TOKEN', null, settings, 'githubToken'),
     logLevel: (envStr('LOG_LEVEL', 'info', settings, 'logLevel') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json', settings, 'logFormat') as Config['logFormat']),

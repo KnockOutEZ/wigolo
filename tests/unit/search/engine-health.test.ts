@@ -25,6 +25,7 @@ describe('getEngineHealthSummary', () => {
   beforeEach(() => {
     process.env = { ...origEnv };
     delete process.env.BRAVE_API_KEY;
+    delete process.env.OUTCRAWL_API_KEY;
     delete process.env.WIGOLO_GITHUB_TOKEN;
     resetConfig();
     _resetGeneralEnginesForTest();
@@ -97,6 +98,14 @@ describe('getEngineHealthSummary', () => {
     expect(brave!.hint).toMatch(/BRAVE_API_KEY/);
   });
 
+  it('flags outcrawl as disabled when OUTCRAWL_API_KEY is missing (gated OUT of pool)', () => {
+    const summary = getEngineHealthSummary();
+    const outcrawl = summary.find((e) => e.name === 'outcrawl');
+    expect(outcrawl).toBeDefined();
+    expect(outcrawl!.status).toBe('disabled');
+    expect(outcrawl!.hint).toMatch(/OUTCRAWL_API_KEY/);
+  });
+
   it('flags brave-image as disabled when BRAVE_API_KEY is missing', () => {
     const summary = getEngineHealthSummary();
     const braveImg = summary.find((e) => e.name === 'brave-image');
@@ -126,6 +135,16 @@ describe('getEngineHealthSummary', () => {
     expect(brave?.status).toBe('ok');
     const braveImg = summary.find((e) => e.name === 'brave-image');
     expect(braveImg?.status).toBe('ok');
+  });
+
+  it('marks outcrawl as ok when OUTCRAWL_API_KEY is set', () => {
+    process.env.OUTCRAWL_API_KEY = 'test-key';
+    resetConfig();
+    _resetGeneralEnginesForTest();
+    _resetCodeEnginesForTest();
+    const summary = getEngineHealthSummary();
+    const outcrawl = summary.find((e) => e.name === 'outcrawl' && e.vertical === 'general');
+    expect(outcrawl?.status).toBe('ok');
   });
 
   it('marks github-code as ok when WIGOLO_GITHUB_TOKEN is set', () => {

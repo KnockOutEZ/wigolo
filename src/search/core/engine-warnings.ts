@@ -41,6 +41,7 @@ const ENGINE_AUTH_HINTS: Record<string, string> = {
   // detect below and convert to a `needs_key` warning code.
   'brave-image': 'set BRAVE_API_KEY to enable Brave image search',
   brave: 'set BRAVE_API_KEY to enable the Brave web engine',
+  outcrawl: 'set OUTCRAWL_API_KEY to enable the Outcrawl search engine',
 };
 
 /**

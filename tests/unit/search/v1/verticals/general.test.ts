@@ -10,6 +10,7 @@ describe('getGeneralEngines', () => {
 
   beforeEach(() => {
     delete process.env.BRAVE_API_KEY;
+    delete process.env.OUTCRAWL_API_KEY;
     _resetGeneralEnginesForTest();
     _resetBreakersForTest();
   });
@@ -20,6 +21,7 @@ describe('getGeneralEngines', () => {
     } else {
       process.env.BRAVE_API_KEY = originalBraveKey;
     }
+    delete process.env.OUTCRAWL_API_KEY;
     _resetGeneralEnginesForTest();
   });
 
@@ -66,6 +68,23 @@ describe('getGeneralEngines', () => {
     _resetGeneralEnginesForTest();
     const names = getGeneralEngines().map((e) => e.engine.name).sort();
     expect(names).toContain('brave');
+  });
+
+  it('adds outcrawl when OUTCRAWL_API_KEY is set', async () => {
+    process.env.OUTCRAWL_API_KEY = 'test-key';
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetGeneralEnginesForTest();
+    const names = getGeneralEngines().map((e) => e.engine.name).sort();
+    expect(names).toContain('outcrawl');
+  });
+
+  it('leaves outcrawl out of the pool when OUTCRAWL_API_KEY is unset', async () => {
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetGeneralEnginesForTest();
+    const names = getGeneralEngines().map((e) => e.engine.name);
+    expect(names).not.toContain('outcrawl');
   });
 
   it('memoizes — two calls return the same array reference', () => {
