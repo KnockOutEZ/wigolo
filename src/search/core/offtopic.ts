@@ -10,16 +10,22 @@
 // so every count-based health check passes, and the junk is then written to
 // the persistent search cache and replayed for the whole TTL.
 //
-// The gate here is: "the query is written in a non-Latin script and NOT ONE
-// result is written in that script" -> the engine answered in the wrong
-// language and the payload is noise.
+// The gate here is: "the query is written in Arabic and NOT ONE result is
+// written in Arabic" -> the engine answered in the wrong language and the
+// payload is noise.
 //
-// Latin-script queries are deliberately left untouched: their junk is
-// already handled by the existing (English-calibrated) gates, and changing
-// that behaviour would change the contract for every caller.
-//
-// The gate is script-generic: Arabic, Hebrew, Cyrillic, Greek, Devanagari,
-// Thai, Kana, Han and Hangul are all covered by the same rule.
+// SCOPE — Arabic only, deliberately:
+//   * Latin queries are untouched: their junk is already handled by the
+//     existing (English-calibrated) gates, and changing that behaviour would
+//     change the contract for every caller.
+//   * CJK (Han, Kana, Hangul) is untouched: the ranking tokenizer emits CJK
+//     tokens, so lexical alignment already judges those rows, and a CJK query
+//     answered by an English page is a legitimate cross-language answer.
+//     Gating it would empty the payload (and make every cached CJK answer a
+//     miss).
+//   * Hebrew, Cyrillic, Greek, Indic and Thai produce NO content tokens in the
+//     shared tokenizer, so `hasContentTokens()` is false for those queries and
+//     both gates below are already inert. They are not "covered" by this file.
 
 import { lexicalAlignment, hasContentTokens } from './lexical-alignment.js';
 
@@ -51,6 +57,14 @@ function detectNonLatinScript(text: string): string | null {
   return null;
 }
 
+// Unicode-aware: æ, ø, œ, … any Latin-script letter counts, not just A-Z.
+const LATIN_RE = /\p{Script=Latin}/u;
+
+// The only script these gates may act on. See the SCOPE note at the top of the
+// file: CJK is tokenizer-covered, so gating it would drop legitimate rows, and
+// the remaining non-Latin scripts never reach here (no content tokens).
+const GATED_SCRIPTS = new Set(['arabic']);
+
 function containsScript(text: string, script: string): boolean {
   for (const [re, name] of NON_LATIN_SCRIPTS) {
     if (name === script) return re.test(text);
@@ -59,16 +73,16 @@ function containsScript(text: string, script: string): boolean {
 }
 
 /**
- * True when the query is written in a non-Latin script and NOT ONE result in
- * the batch is written in that script — i.e. the engine answered in a
- * different language. Returns false for Latin-script queries, for
- * stopword-only queries, and for an empty batch.
+ * True when the query is written in Arabic and NOT ONE result in the batch is
+ * written in Arabic — i.e. the engine answered in a different language.
+ * Returns false for Latin-script queries, for scripts these gates do not own
+ * (CJK — see SCOPE), for stopword-only queries, and for an empty batch.
  */
 export function isForeignScriptBatch(query: string, results: AlignableResult[]): boolean {
   if (!results || results.length === 0) return false;
   if (!hasContentTokens(query)) return false;
   const script = detectNonLatinScript(query);
-  if (!script) return false; // Latin query — the existing gates own this.
+  if (!script || !GATED_SCRIPTS.has(script)) return false;
   // MIXED-script query (e.g. Arabic + "docker"): the Latin part is a
   // content token of its own, so an all-Latin result set is a legitimate
   // answer — the query's language does not pin the answer's language.
@@ -78,13 +92,11 @@ export function isForeignScriptBatch(query: string, results: AlignableResult[]):
   );
 }
 
-// Unicode-aware: æ, ø, œ, ؕ… any Latin-script letter counts, not just A-Z.
-const LATIN_RE = /\p{Script=Latin}/u;
-
 // Scripts the shared ranking tokenizer ALREADY covers (Han, Kana, Hangul).
 // Their alignment is meaningful, so the demotion below must not change
 // their ranking.
 const TOKENIZER_COVERED_SCRIPTS = new Set(['han', 'kana', 'hangul']);
+
 
 /**
  * Sink the rows that cannot be about the query instead of dropping them: for
@@ -103,6 +115,11 @@ export function demoteUnalignedResults<
   const script = detectNonLatinScript(query);
   if (!script) return results;
   if (TOKENIZER_COVERED_SCRIPTS.has(script)) return results;
+  // MIXED-script query (Arabic + a Latin term such as "docker"): the Latin
+  // part is a content token of its own, so an English row that shares no
+  // Arabic token can still be the right answer. Demoting it on the Arabic
+  // half alone is what sank relevant English pages.
+  if (LATIN_RE.test(query)) return results;
   return results.map((r) =>
     lexicalAlignment(query, r.title ?? '', r.snippet ?? '') === 0
       ? { ...r, relevance_score: r.relevance_score * factor }

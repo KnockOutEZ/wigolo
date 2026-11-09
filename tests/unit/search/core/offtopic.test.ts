@@ -13,9 +13,11 @@ import { tokenizeRankingText } from '../../../../src/search/core/text-tokenizer.
 // engine could answer an Arabic query with an unrelated English payload,
 // and that payload was then cached and replayed for the whole TTL.
 //
-// The fix is script-agnostic, and the gate is script-aware: a payload
-// answered entirely outside the query's script is noise. Latin-script
-// queries are deliberately untouched.
+// The fix is script-aware: a payload answered entirely outside the query's
+// script is noise — but only Arabic is gated. Latin queries are deliberately
+// untouched, CJK is already judged by lexical alignment (and a CJK query
+// answered in English is legitimate), and the other non-Latin scripts produce
+// no content tokens at all.
 
 const chromePage = {
   title: 'Google Chrome - The Fast & Secure Web Browser Built to be Yours',
@@ -114,6 +116,21 @@ describe('isForeignScriptBatch', () => {
     // Non-ASCII Latin letters count too (æ is U+00E6, Latin letter).
     expect(isForeignScriptBatch('ما معنى æ', [chromePage])).toBe(false);
   });
+
+  it('never fires for a CJK query (tokenizer-covered, cross-language answers are legitimate)', () => {
+    // Han/Kana/Hangul are emitted by the ranking tokenizer, so lexical
+    // alignment already judges those rows. Emptying the payload for a Chinese
+    // query answered in English would return nothing.
+    expect(isForeignScriptBatch('机器学习 教程', [chromePage])).toBe(false);
+    expect(isForeignScriptBatch('日本語 テスト', [chromePage])).toBe(false);
+    expect(isForeignScriptBatch('머신러닝 튜토리얼', [chromePage])).toBe(false);
+  });
+
+  it('never fires for a non-Arabic non-Latin script that carries a digit', () => {
+    // "ГОСТ 2020" HAS a content token (the digit), so the old gate flagged it
+    // as foreign even though no Cyrillic token can ever align.
+    expect(isForeignScriptBatch('ГОСТ 2020', [chromePage])).toBe(false);
+  });
 });
 
 describe('demoteUnalignedResults', () => {
@@ -139,6 +156,22 @@ describe('demoteUnalignedResults', () => {
       { title: 'Docker', snippet: 'Install Docker', url: 'u1', relevance_score: 0.6 },
     ];
     expect(demoteUnalignedResults('تثبيت docker', rows)[0].relevance_score).toBe(0.6);
+  });
+
+  it('keeps a relevant English row for a mixed-script query even without the Latin term', () => {
+    // Regression: the previous guard only skipped demotion when the row
+    // happened to contain "docker". A genuinely relevant page that says
+    // "Container install guide" was sunk to 0.04.
+    const rows = [
+      {
+        title: 'Container install guide',
+        snippet: 'Step-by-step setup and configuration',
+        url: 'u1',
+        relevance_score: 0.8,
+      },
+    ];
+    const out = demoteUnalignedResults('تثبيت docker', rows);
+    expect(out[0].relevance_score).toBe(0.8);
   });
 
   it('never touches a CJK query (the tokenizer already covers it)', () => {

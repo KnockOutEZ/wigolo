@@ -94,6 +94,12 @@ function bufferedMaxResults(maxResults: number | undefined): number | undefined 
   return maxResults + Math.ceil(maxResults * RECALL_BUFFER_RATIO);
 }
 
+// Warnings accumulate: a request can be degraded AND synthesize partly, and
+// overwriting the first message silently hides the earlier cause from callers.
+function appendWarning(target: { warning?: string }, message: string): void {
+  target.warning = target.warning ? `${target.warning}; ${message}` : message;
+}
+
 function normalizeArrayQueries(queries: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -960,11 +966,14 @@ export class CoreSearchProvider implements SearchProvider {
     }
 
     if (allDegraded) {
-      data.warning = 'all engines failed or no results';
+      appendWarning(data, 'all engines failed or no results');
     }
 
     if (foreignScriptPayload) {
-      data.warning = 'no on-topic results: the engine pool answered in a different language';
+      appendWarning(
+        data,
+        'no on-topic results: the engine pool answered in a different language',
+      );
     }
 
     if (ultraFastMiss) {
@@ -985,9 +994,7 @@ export class CoreSearchProvider implements SearchProvider {
           data.citations = synthResult.data.citations;
         }
         if (synthResult.data.warning) {
-          data.warning = synthResult.data.warning
-            ? (data.warning ? `${data.warning}; ${synthResult.data.warning}` : synthResult.data.warning)
-            : data.warning;
+          appendWarning(data, synthResult.data.warning);
         }
         if (synthResult.data.synthesis_status) {
           data.synthesis_status = synthResult.data.synthesis_status;
@@ -996,7 +1003,7 @@ export class CoreSearchProvider implements SearchProvider {
           data.synthesis_advice = synthResult.data.synthesis_advice;
         }
       } else {
-        data.warning = `synthesis failed: ${synthResult.error_reason}`;
+        appendWarning(data, `synthesis failed: ${synthResult.error_reason}`);
       }
 
       if (input.format === 'stream_answer') {
