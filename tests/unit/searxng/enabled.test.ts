@@ -4,12 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock it so searxngBackendAvailable can be exercised without touching the fs.
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   getBootstrapState: vi.fn(),
+  checkDockerAvailable: vi.fn(() => false),
 }));
 
 import { searxngConfigured, searxngBackendAvailable } from '../../../src/searxng/enabled.js';
-import { getBootstrapState } from '../../../src/searxng/bootstrap.js';
+import { getBootstrapState, checkDockerAvailable } from '../../../src/searxng/bootstrap.js';
 
-type Cfg = { searchBackend: string | null; searxngUrl: string | null; dataDir: string };
+type Cfg = { searchBackend: string | null; searxngUrl: string | null; dataDir: string; searxngMode?: 'native' | 'docker' };
 
 function cfg(overrides: Partial<Cfg> = {}): Cfg {
   return {
@@ -76,6 +77,28 @@ describe('searxngBackendAvailable', () => {
     vi.mocked(getBootstrapState).mockReturnValue(null);
     expect(searxngBackendAvailable(cfg({ searchBackend: 'hybrid' }))).toBe(false);
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'failed' });
+    expect(searxngBackendAvailable(cfg({ searchBackend: 'searxng' }))).toBe(false);
+  });
+
+  // #685: `warmup --searxng` in docker mode reports "started on demand", but the
+  // server treated docker mode as "not installed" and never started it — on
+  // Windows (no native sidecar) docker is the only way to run one.
+  it('WHY: is TRUE in docker mode when a container CLI is on PATH (started on demand)', () => {
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkDockerAvailable).mockReturnValue(true);
+    expect(searxngBackendAvailable(cfg({ searchBackend: 'searxng', searxngMode: 'docker' }))).toBe(true);
+  });
+
+  it('is FALSE in docker mode when no container CLI is found', () => {
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkDockerAvailable).mockReturnValue(false);
+    expect(searxngBackendAvailable(cfg({ searchBackend: 'searxng', searxngMode: 'docker' }))).toBe(false);
+  });
+
+  it('native mode still needs a ready install even when a container CLI exists', () => {
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkDockerAvailable).mockReturnValue(true);
+    expect(searxngBackendAvailable(cfg({ searchBackend: 'searxng', searxngMode: 'native' }))).toBe(false);
     expect(searxngBackendAvailable(cfg({ searchBackend: 'searxng' }))).toBe(false);
   });
 });

@@ -209,6 +209,11 @@ export async function resolveSearchBackend(): Promise<BackendResolution> {
     return { type: 'external', url: config.searxngUrl };
   }
 
+  // An explicit docker opt-in wins over a native install that merely could run.
+  if (config.searxngMode === 'docker' && checkDockerAvailable()) {
+    return { type: 'docker' };
+  }
+
   const dataDir = config.dataDir;
   const state = getBootstrapState(dataDir);
 
