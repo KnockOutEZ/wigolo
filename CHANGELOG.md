@@ -8,6 +8,7 @@
 ### Fixed
 - `search` no longer fails with "mapped is not iterable" when the query contains `constructor`. Lookup tables keyed by query words or page-supplied values (code-block language, JSON-LD `@type`, `og:type`) no longer match built-in object members such as `constructor` or `__proto__`. (fixes #683)
 - One-shot `wigolo search` (and the other one-shot tool commands) now query the search engine instance set in `WIGOLO_SEARXNG_URL` / `SEARXNG_URL`. Before, they only used the built-in engines, so `WIGOLO_SEARCH=searxng` or `hybrid` never sent a request to it. With the backend selected but no URL set, the result now says why the instance wasn't used. (#685)
+- With `SEARXNG_MODE=docker` and no `WIGOLO_SEARXNG_URL`, the MCP server now starts the search engine container on demand instead of reporting it as not installed and using the fallback engines. An explicit `docker` mode also wins over a native install when Python happens to be present. When the search engine instance errors, results now carry a warning with the reason instead of silently coming from the fallback engines. (fixes #685)
 
 ## v0.3.1 — 2026-10-24
 

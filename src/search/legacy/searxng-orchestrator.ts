@@ -3,6 +3,7 @@ import type {
   SearchOutput,
   SearchResultItem,
   RawSearchResult,
+  SearchEngine,
   StageResult,
 } from '../../types.js';
 import type { SmartRouter } from '../../fetch/router.js';
@@ -63,6 +64,24 @@ export function stripMarkdownBodiesForAnswerMode(
   for (const r of results) {
     if (r.markdown_content !== undefined) r.markdown_content = undefined;
   }
+}
+
+/**
+ * The configured instance was queried but produced nothing because it errored,
+ * so every result came from the fallback engines. Say so instead of serving
+ * them silently. An instance that answered with zero results stays quiet.
+ */
+function instanceFailureWarning(
+  engines: SearchEngine[],
+  enginesUsed: Iterable<string>,
+  errors: string[],
+): string | undefined {
+  if (!engines.some((e) => e.name === 'searxng')) return undefined;
+  if ([...enginesUsed].includes('searxng')) return undefined;
+  const failure = errors.find((e) => /^searxng[:(]/.test(e));
+  if (!failure) return undefined;
+  const reason = failure.slice(failure.indexOf(':') + 1).trim();
+  return `Search engine instance failed (${reason}); results come from fallback engines only.`;
 }
 
 export async function runSearxngSearch(
@@ -346,7 +365,11 @@ export async function runSearxngSearch(
       fetch_time_ms: fetchElapsed,
       queries_executed: normalizedQueries,
     };
-    const combinedMq = [filterWarningsMq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
+    const combinedMq = [
+      filterWarningsMq,
+      instanceFailureWarning(activeEngines, enginesUsed, errors),
+      backendStatus?.consumeWarning(),
+    ].filter(Boolean).join('; ');
     if (combinedMq) output.warning = combinedMq;
     if (input.format === 'answer' || input.format === 'stream_answer') {
       const synth = await runSynthesis({
@@ -570,7 +593,11 @@ export async function runSearxngSearch(
     search_time_ms: searchElapsed,
     fetch_time_ms: fetchElapsed,
   };
-  const combinedSq = [filterWarningsSq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
+  const combinedSq = [
+    filterWarningsSq,
+    instanceFailureWarning(effectiveEngines, enginesUsed, errors),
+    backendStatus?.consumeWarning(),
+  ].filter(Boolean).join('; ');
   if (combinedSq) output.warning = combinedSq;
   if (input.format === 'answer' || input.format === 'stream_answer') {
     const synth = await runSynthesis({
