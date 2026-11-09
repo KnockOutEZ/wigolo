@@ -13,15 +13,15 @@
  *      "حدثني عن", "ما اسم", ...).
  *   2. Strip trailing question scaffolding ("وماذا تعرف عنها؟",
  *      "وكيف حالك؟", ...).
- *   3. Remove Arabic stopwords from the body, EXCEPT when the resulting
- *      string would be too short (in which case we fall back to the
- *      pre-stopword version so we never send an empty query to a search
- *      engine).
- *   4. Normalize Arabic diacritics, tatweel, and alef/ya/ta-marbuta
- *      variants for matching, but return the original-form text to the
- *      search engine (search engines like Bing/DuckDuckGo handle
- *      orthographic variants themselves; we don't want to corrupt the
- *      user's actual wording).
+ *   3. Trim Arabic function words from the EDGES of the subject, and keep
+ *      the ones inside it — "تاريخ مصر من الفراعنة إلى اليوم" must survive
+ *      intact, so interior prepositions are never removed. Falls back to the
+ *      pre-trim text when trimming would empty the query.
+ *   4. Strip diacritics and tatweel for matching (vocalized question forms
+ *      such as "مَنْ هِيَ" must still match the scaffolding patterns), while
+ *      returning the original-form text to the search engine (search engines
+ *      like Bing/DuckDuckGo handle orthographic variants themselves; we don't
+ *      want to corrupt the user's actual wording).
  *
  * The returned string is what should be sent to the search engines.
  * The original query is preserved for downstream display and for the
@@ -102,19 +102,24 @@ const TRAILING_SCAFFOLDING_WORDS = new Set([
   "تفاصيل", "وتفاصيل",
   "مختصر", "ومختصر",
   "نبذة", "ونبذة",
-  "وعلي", "علي",
+  // NOTE: do NOT add "علي"/"وعلي" here — علي is the given name Ali, so a
+  // trailing scan would turn "مسجد محمد علي" into "مسجد محمد". The
+  // preposition is على, and stripping a bare trailing على would mangle
+  // subjects such as "التوكل على" for no benefit.
 ]);
 
 // ---------------------------------------------------------------------------
-// Body stopwords — removed from the body, but kept if removal would
-// leave the query too short. These are common Arabic function words that
-// search engines handle well on their own and that pollute search
-// queries with low-information tokens.
+// Body function words — trimmed from the EDGES of the subject. Interior
+// occurrences are kept: they carry the relation between the words, and
+// deleting them rewrites what the user asked. These are the low-information
+// tokens engines handle well on their own.
 // ---------------------------------------------------------------------------
 
 const ARABIC_STOPWORDS = new Set([
-  // Prepositions
-  "في", "من", "على", "إلى", "الى", "عن", "مع", "بعد", "قبل", "خلال",
+  // Prepositions. NOTE: قبل/بعد are deliberately absent — they are temporal
+  // qualifiers, so removing them turns "مصر قبل الثورة" and "مصر بعد الثورة"
+  // into the same query (and the dispatch de-dup then merges them).
+  "في", "من", "على", "إلى", "الى", "عن", "مع", "خلال",
   "أثناء", "اثناء", "حول", "بشأن", "نحو", "بسبب", "بدون",
   // Pronouns
   "هو", "هي", "هم", "هن", "أنا", "نحن", "أنت", "أنتم", "أنتما",
@@ -140,20 +145,6 @@ const ARABIC_STOPWORDS = new Set([
 // ---------------------------------------------------------------------------
 
 const DIACRITICS_RE = /[\u064B-\u065F\u0670\u0640]/g;
-
-/** Normalize Arabic text for matching: drop diacritics, normalize alef/ya,
- *  collapse whitespace. Returns lowercased text. */
-export function normalizeArabic(text: string): string {
-  return String(text || "")
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(DIACRITICS_RE, "")
-    .replace(/[أإآٱ]/g, "ا")
-    .replace(/ى/g, "ي")
-    .replace(/ة/g, "ه")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function stripLeadingPrefix(text: string): string {
   let current = text.trim();
@@ -195,18 +186,31 @@ function stripTrailingScaffolding(text: string): string {
   return core.join(" ");
 }
 
-function removeStopwords(text: string): string {
-  const words = text.split(/\s+/);
-  const kept: string[] = [];
-  for (const word of words) {
-    if (!word) continue;
-    if (ARABIC_STOPWORDS.has(word)) continue;
-    // Strip leading "و" before the stopword check.
-    const stripped = word.startsWith("و") && word.length > 1 ? word.slice(1) : word;
-    if (ARABIC_STOPWORDS.has(stripped)) continue;
-    kept.push(word);
-  }
-  return kept.join(" ");
+function isStopword(word: string): boolean {
+  if (ARABIC_STOPWORDS.has(word)) return true;
+  const stripped = word.startsWith("و") && word.length > 1 ? word.slice(1) : word;
+  return ARABIC_STOPWORDS.has(stripped);
+}
+
+/**
+ * Trim function words from the EDGES of the subject only.
+ *
+ * A function word at an edge is scaffolding ("في مصر القديمة" -> "مصر
+ * القديمة"). The same word INSIDE the subject carries the relation between
+ * its nouns: removing it here rewrites what the user asked — "تاريخ مصر من
+ * الفراعنة إلى اليوم" would lose "من" and "إلى" and become a word salad that
+ * undoes the trailing-scan fix above.
+ */
+function trimEdgeStopwords(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return text;
+  let start = 0;
+  let end = words.length;
+  while (start < end && isStopword(words[start])) start++;
+  while (end > start && isStopword(words[end - 1])) end--;
+  // Never strip the whole subject — keep the pre-trim text instead.
+  if (start >= end) return text;
+  return words.slice(start, end).join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -251,13 +255,14 @@ export function cleanQueryForSearch(query: string): CleanedQuery {
   // Step 2: strip trailing question scaffolding
   const subject = stripTrailingScaffolding(afterPrefix) || afterPrefix || working;
 
-  // Step 3: remove body stopwords. Keep at most one round so we don't
-  // over-strip.
-  let withStopwordsRemoved = removeStopwords(subject);
+  // Step 3: trim function words at the edges of the subject. Interior
+  // function words are kept — they carry the relation between the nouns, and
+  // removing them rewrites the query (see trimEdgeStopwords).
+  let withStopwordsRemoved = trimEdgeStopwords(subject);
 
-  // Step 4: safety — if stopword removal emptied the string, fall back to
-  // the subject (pre-stopword). If even the subject is empty, fall back to
-  // the original query so we never send an empty string to a search engine.
+  // Step 4: safety — if trimming emptied the string, fall back to the subject.
+  // If even the subject is empty, fall back to the original query so we never
+  // send an empty string to a search engine.
   if (!withStopwordsRemoved || withStopwordsRemoved.length < 3) {
     withStopwordsRemoved = subject;
   }

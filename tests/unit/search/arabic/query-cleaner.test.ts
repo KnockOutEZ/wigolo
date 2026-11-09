@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   cleanQueryForSearch,
   isArabicQuery,
-  normalizeArabic,
 } from '../../../../src/search/arabic/query-cleaner.js';
 import { preprocessQueryForSearch } from '../../../../src/search/query.js';
 
@@ -32,14 +31,6 @@ describe('isArabicQuery', () => {
   });
 });
 
-describe('normalizeArabic', () => {
-  it('strips diacritics and folds letter variants', () => {
-    expect(normalizeArabic('مُحَمَّد')).toBe('محمد');
-    expect(normalizeArabic('أحمد')).toBe('احمد');
-    expect(normalizeArabic('مدرسة')).toBe('مدرسه');
-  });
-});
-
 describe('cleanQueryForSearch', () => {
   it('strips the leading question scaffolding', () => {
     const out = cleanQueryForSearch('من هو مؤسس الجيش المصري الحديث');
@@ -58,11 +49,31 @@ describe('cleanQueryForSearch', () => {
     expect(cleanQueryForSearch('من فضلك من هو طه حسين').searchQuery).toBe('طه حسين');
   });
 
-  it('removes Arabic function words from the body', () => {
+  it('trims function words at the EDGES of the subject', () => {
+    const out = cleanQueryForSearch('في مصر القديمة');
+    expect(out.searchQuery).toBe('مصر القديمة');
+  });
+
+  it('keeps function words INSIDE the subject (they carry the relation)', () => {
+    // Regression: removing the interior "في" turned a natural phrase into a
+    // word salad ("مباراة مصر كأس العالم").
     const out = cleanQueryForSearch('مباراة مصر في كأس العالم');
-    expect(out.searchQuery).not.toContain('في');
-    expect(out.searchQuery).toContain('مباراة');
-    expect(out.searchQuery).toContain('مصر');
+    expect(out.searchQuery).toBe('مباراة مصر في كأس العالم');
+  });
+
+  it('never removes a temporal qualifier that flips the meaning', () => {
+    // "قبل" and "بعد" are opposites: merging them makes the dispatch de-dup
+    // collapse two different questions into one.
+    const before = cleanQueryForSearch('مصر قبل الثورة');
+    const after = cleanQueryForSearch('مصر بعد الثورة');
+    expect(before.searchQuery).toBe('مصر قبل الثورة');
+    expect(after.searchQuery).toBe('مصر بعد الثورة');
+    expect(before.searchQuery).not.toBe(after.searchQuery);
+  });
+
+  it('does not strip a trailing given name', () => {
+    // "علي" is the name Ali — the trailing scan must not eat it.
+    expect(cleanQueryForSearch('مسجد محمد علي').searchQuery).toBe('مسجد محمد علي');
   });
 
   it('leaves an already-clean query untouched', () => {
@@ -84,11 +95,11 @@ describe('cleanQueryForSearch', () => {
   });
 
   it('keeps a subject that CONTAINS a scaffolding word mid-sentence', () => {
-    // "من الفراعنة" is part of the subject, not trailing question
-    // scaffolding — the cleaner must not cut the query at the first "من".
+    // "من الفراعنة إلى اليوم" is part of the subject, not trailing question
+    // scaffolding — the cleaner must not cut at "من" and must not delete the
+    // interior prepositions either.
     const out = cleanQueryForSearch('تاريخ مصر من الفراعنة إلى اليوم');
-    expect(out.searchQuery).toContain('الفراعنة');
-    expect(out.searchQuery).toContain('اليوم');
+    expect(out.searchQuery).toBe('تاريخ مصر من الفراعنة إلى اليوم');
   });
 
   it('matches vocalized (harakat-carrying) question prefixes', () => {

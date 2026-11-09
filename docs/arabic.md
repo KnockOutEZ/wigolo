@@ -24,7 +24,9 @@ For a query that is written in Arabic, wigolo strips:
 1. the leading question scaffolding — `من هو`, `من هي`, `مين`, `حدثني عن`,
    `ما اسم`, `من فضلك`, `لو سمحت`, …;
 2. the trailing scaffolding — `وماذا تعرف عنها؟`, `وكيف حالك؟`, `أخبرني`, …;
-3. common Arabic function words from the body (`في`, `على`, `مع`, `هو`, …).
+3. common Arabic function words at the **edges** of the subject (`في`, `هو`,
+   …). Function words *inside* the subject are kept: they carry the relation
+   between the words, and removing them would rewrite the question.
 
 The stripped query is what the engines receive:
 
@@ -52,14 +54,18 @@ as it was asked — the contract differs per tool:
 
 - **`search`** echoes the original wording in the response's `query` field.
 - **`research`** has no `query` field: the wording it was given is kept in
-  `input.question`, and the individual normalized sub-queries are reported in
-  `sub_queries`.
+  `input.question`, and `sub_queries` reports the sub-queries the pipeline
+  planned, in the caller's wording. Normalization happens later, when each
+  sub-query is handed to an engine, so `sub_queries` is **not** the normalized
+  form.
 
-The cleaner itself lives in `src/search/arabic/query-cleaner.ts` and is
-exposed through `preprocessQueryForSearch()` in `src/search/query.ts`.
+No response field exposes the cleaned query: normalization is a dispatch
+concern, not part of the response contract.
 
-## Tests
+## Scope
 
-`tests/unit/search/arabic/query-cleaner.test.ts` covers the detection, the
-leading/trailing scaffolding, the body stopwords, and the two safety rules
-(no empty query, no over-stripping).
+The cleaner only acts on Arabic queries; everything else is passed through
+untouched. It removes question scaffolding and edge function words, never the
+interior of the subject — `تاريخ مصر من الفراعنة إلى اليوم` reaches the
+engines unchanged apart from its question wrapper, and temporal qualifiers such
+as `قبل` / `بعد` are always preserved because they flip the meaning.

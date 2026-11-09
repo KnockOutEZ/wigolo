@@ -209,6 +209,13 @@ export class CoreSearchProvider implements SearchProvider {
     // call also runs quoted-term / low-recall variants that a multi-input
     // call never does, so a multi-input call must not satisfy a
     // single-input cache hit (they'd disagree on the extras).
+    //
+    // The marker is emitted ONLY for the mode that differs from the default
+    // (a multi-input call whose queries normalized down to one). Passing it on
+    // every call would put the field in every fingerprint, changing every
+    // cache key and invalidating each user's search cache on upgrade.
+    const collapsedToSingle =
+      preprocessedQueryCount > 1 && queries.length === 1;
     const cacheKey = buildSearchCacheKey(queries.join(' | '), {
       category: input.category,
       include_domains: input.include_domains,
@@ -222,7 +229,7 @@ export class CoreSearchProvider implements SearchProvider {
       search_depth: depth,
       reranker: getConfig().reranker,
       search_engines: input.search_engines,
-      single_query_dispatch: isSingleQuery,
+      single_query_dispatch: collapsedToSingle ? false : undefined,
     });
 
     let items: SearchResultItem[] = [];

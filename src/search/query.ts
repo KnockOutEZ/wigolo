@@ -8,9 +8,9 @@ const CLAUSE_SEPARATORS = ['. ', '? ', '! ', '; ', ', and ', ', or ', ' - ', ' �
  *
  * For Arabic queries this strips the leading question scaffolding
  * ("من هو", "حدثني عن", ...), the trailing scaffolding ("وماذا تعرف
- * عنها؟", ...) and common Arabic function words. The cleaned string is
- * what gets sent to the engines; the ORIGINAL wording is kept for display
- * and for downstream consumers that need the question as typed.
+ * عنها؟", ...) and function words at the EDGES of the subject. The cleaned
+ * string is what gets sent to the engines; the ORIGINAL wording is kept for
+ * display and for downstream consumers that need the question as typed.
  *
  * For non-Arabic queries this is a no-op pass-through.
  *
