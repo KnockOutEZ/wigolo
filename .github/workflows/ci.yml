@@ -45,7 +45,9 @@ jobs:
 
   full-suite:
     name: full test suite (ubuntu)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, where the browser engine can't
+    # install its system deps yet. Unpin once it supports 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +78,9 @@ jobs:
   # recursive-mkdir and corrupt-archive download-path fixes on every PR).
   clean-machine-smoke:
     name: clean-machine smoke (${{ matrix.os }}, node ${{ matrix.node }})
-    runs-on: ${{ matrix.os }}
+    # The matrix keeps the `ubuntu-latest` label so the required check names
+    # don't change; the job itself runs on 24.04 (see full-suite above).
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # linux-arm64 is non-blocking: its native embedding tokenizer is still being
     # validated on real ARM hardware, so it reports without gating a merge.
     continue-on-error: ${{ matrix.os == 'ubuntu-22.04-arm' }}
