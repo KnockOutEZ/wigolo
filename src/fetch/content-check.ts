@@ -80,7 +80,10 @@ function hasNoscriptRequired(html: string): boolean {
   if (!noscriptMatches) return false;
   const looksLikeJsWarning = noscriptMatches.some((tag) => {
     const inner = tag.replace(/<[^>]+>/g, '').toLowerCase();
-    return inner.includes('javascript') || inner.includes('enable');
+    // Match JavaScript terms only. A bare "enable" also appears in notices
+    // such as "Enable images for the optional preview", which is not a
+    // JavaScript warning and must not escalate the page or set the flag.
+    return /\bjavascript\b|\bjs\b/.test(inner);
   });
   if (!looksLikeJsWarning) return false;
   // (b) gate: ignore the marker when the body has substantive content.
@@ -108,6 +111,47 @@ export function contentAppearsEmpty(html: string): boolean {
 
   if (hasSpaShellIndicator(html)) return true;
   if (hasNextData(html)) return true;
+  if (hasNoscriptRequired(html)) return true;
+  if (hasHighScriptRatio(html)) return true;
+
+  return false;
+}
+
+// An empty client-render mount. A custom bundle can mount into its own id, so
+// the check cannot be limited to root/app/__next. An empty div is weak evidence
+// on its own, though: static pages ship placeholders for comment widgets and
+// search boxes. A canonical framework id is always a signature. Any other id
+// counts only when the page has no readable text to speak of.
+const EMPTY_CLIENT_MOUNT = /<div[^>]+id=["']([^"']+)["'][^>]*>\s*<\/div>/gi;
+const CANONICAL_MOUNT_IDS = new Set(['root', 'app', '__next']);
+
+function hasEmptyClientMount(html: string, visibleTextLength: number): boolean {
+  for (const match of html.matchAll(EMPTY_CLIENT_MOUNT)) {
+    const id = (match[1] ?? '').toLowerCase();
+    if (CANONICAL_MOUNT_IDS.has(id)) return true;
+    if (visibleTextLength < VISIBLE_TEXT_THRESHOLD) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the page is a client-rendered shell.
+ *
+ * Two conditions must hold: the readable body is thin, and the markup carries
+ * a client-render signature. Each half alone produces false claims.
+ *   - Thin alone: a 150-character status page is complete without JavaScript.
+ *   - Signature alone: a complete article can contain an empty widget mount.
+ *
+ * This predicate feeds the machine-facing `js_required` flag, so it must be
+ * stricter than `contentAppearsEmpty`. That one only decides whether to try
+ * the browser tier, where a wrong guess costs a retry, not a false claim.
+ */
+export function looksLikeShell(html: string): boolean {
+  const visibleText = extractVisibleTextExcludingNoscript(html);
+  if (visibleText.length >= SUBSTANTIVE_BODY_THRESHOLD) return false;
+
+  if (hasEmptyClientMount(html, visibleText.length)) return true;
+  if (hasSpaShellIndicator(html)) return true;
   if (hasNoscriptRequired(html)) return true;
   if (hasHighScriptRatio(html)) return true;
 

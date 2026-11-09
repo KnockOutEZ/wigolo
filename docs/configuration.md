@@ -62,6 +62,7 @@ The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use 
 | `FETCH_TIMEOUT_MS` | `10000` | Per-request HTTP timeout. |
 | `FETCH_MAX_RETRIES` | `2` | HTTP retry budget. |
 | `MAX_REDIRECTS` | `5` | Redirect ceiling. |
+| `WIGOLO_MAX_RESPONSE_BYTES` | `20971520` (20 MB) | Largest response body the HTTP and TLS fetch tiers will buffer. Bigger responses fail with `response_too_large` instead of exhausting memory. `0` disables the cap. Browser-rendered pages, the Reddit API and escape-hatch fetchers, and redirect-body drains aren't covered by this cap. |
 | `MAX_BROWSERS` | `3` | Browser-engine pool size for JS-rendered pages. |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list of browser families to pool. |
 | `BROWSER_IDLE_TIMEOUT` | `60000` | Idle ms before a pooled browser is released. |
@@ -80,7 +81,7 @@ The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use 
 
 Reliability framing matters here: these tiers make wigolo read pages the way a real browser does, and it learns per-domain which tier works (inspect with [`wigolo tune`](./cli.md#tune)). When a challenge doesn't clear, the failure is labeled honestly instead of returning junk. Crawling stays polite throughout — robots.txt respected by default, per-domain rate limits, and page budgets sized for research, not bulk harvesting.
 
-For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL` (attach to a running browser's debug port), `WIGOLO_CHROME_PROFILE_PATH` (use a profile), `WIGOLO_AUTH_STATE_PATH` (a saved storage-state file). Then pass `use_auth: true` on `fetch`/`crawl`. `wigolo auth discover` lists attachable sessions.
+For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL` (attach to a running browser's debug port), `WIGOLO_CHROME_PROFILE_PATH` (use a profile), `WIGOLO_AUTH_STATE_PATH` (a saved storage-state file). Then pass `use_auth: true` on `fetch`/`crawl`. `wigolo auth discover` lists attachable sessions. A storage-state file is loaded into a fresh context for each fetch; a browser attached over CDP is driven through its existing context, which keeps that browser's own cookies.
 
 ## On-device models
 
