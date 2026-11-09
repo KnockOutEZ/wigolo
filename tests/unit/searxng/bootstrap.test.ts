@@ -152,7 +152,9 @@ describe('SearXNG bootstrap', () => {
       vi.mocked(spawnSync).mockReturnValue(spawnResult(0));
       try {
         const result = await resolveSearchBackend();
-        expect(result.type).toBe(process.platform === 'win32' ? 'docker' : 'native');
+        // On Windows the default `native` mode pins away from docker, and native
+        // can't run there, so it falls back to scraping (unchanged behaviour).
+        expect(result.type).toBe(process.platform === 'win32' ? 'scraping' : 'native');
       } finally {
         vi.mocked(execSync).mockReset();
         vi.mocked(spawnSync).mockReset();
