@@ -420,8 +420,9 @@ function envInt(
 }
 
 /**
- * Parse a positive-integer env var or setting. A bad value throws at load, so
- * the failure names the variable instead of surfacing later in a request.
+ * Parse a positive-integer env var or setting. A bad value falls back to the
+ * documented default, matching `envInt`, so a typo cannot stop the CLI from
+ * loading. The caller never sees a non-positive value.
  */
 function envPositiveInt(
   key: string,
@@ -434,10 +435,7 @@ function envPositiveInt(
   if (raw === undefined || raw === null || raw === '') return fallback;
 
   const parsed = typeof raw === 'number' ? raw : /^\d+$/.test(String(raw).trim()) ? Number(String(raw).trim()) : NaN;
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${key} must be a positive integer, got ${JSON.stringify(raw)}`);
-  }
-  return parsed;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function envFloat(

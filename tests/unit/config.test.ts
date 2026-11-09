@@ -317,11 +317,12 @@ describe('config', () => {
       expect(getConfig().reranker).toBe('none');
     });
 
-    it('rejects a non-positive embedding request timeout at load', () => {
-      for (const bad of ['-1', '0', 'abc']) {
+    it('falls back to the default for a non-positive embedding request timeout', () => {
+      for (const bad of ['-1', '0', 'abc', '']) {
         process.env.WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS = bad;
         resetConfig();
-        expect(() => getConfig()).toThrow('WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS');
+        // A typo must not stop the CLI from loading, so the default wins.
+        expect(getConfig().embeddingRequestTimeoutMs).toBe(30_000);
       }
     });
 

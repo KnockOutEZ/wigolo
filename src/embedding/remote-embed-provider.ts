@@ -11,6 +11,13 @@ export const REMOTE_EMBED_DIM = 384;
 /** One response holds one vector per input. 1 MiB covers a large batch. */
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
+/**
+ * Cap the requests in flight at once. A research run can embed many pages at
+ * the same time, and a local server behind the endpoint has a small worker
+ * pool. Four keeps the round trips moving without flooding it.
+ */
+export const MAX_CONCURRENT_REQUESTS = 4;
+
 type RemoteEmbedItem = { index?: unknown; embedding?: unknown };
 
 /**
@@ -55,6 +62,10 @@ export class RemoteEmbedProvider implements EmbedProvider {
   readonly dim = REMOTE_EMBED_DIM;
   private readonly requestModel: string;
   private readonly url: string;
+  private readonly maxTextLength: number;
+  /** Slots in use, plus waiters in arrival order. */
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
 
   constructor(private readonly config: Config) {
     const base = resolveRemoteBase(config.embeddingApiBase, {
@@ -67,6 +78,7 @@ export class RemoteEmbedProvider implements EmbedProvider {
     this.url = `${base}/embeddings`;
     this.requestModel = config.embeddingModel;
     this.modelId = `${config.embeddingModel} @ ${endpoint.protocol}//${endpoint.host}${endpoint.pathname}`;
+    this.maxTextLength = config.embeddingMaxTextLength;
   }
 
   /**
@@ -80,15 +92,22 @@ export class RemoteEmbedProvider implements EmbedProvider {
 
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
+    // Many servers reject over-length input unless told to truncate, and the
+    // bundled model trims the same way. Trim before the send so a long page
+    // cannot fail the cache write. The count check still uses `texts.length`.
+    const inputs = texts.map((text) =>
+      text.length > this.maxTextLength ? text.slice(0, this.maxTextLength) : text,
+    );
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.config.embeddingApiKey) headers.Authorization = `Bearer ${this.config.embeddingApiKey}`;
 
     let response: Response;
+    await this.acquireSlot();
     try {
       response = await fetch(this.url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ model: this.requestModel, input: texts }),
+        body: JSON.stringify({ model: this.requestModel, input: inputs }),
         signal: AbortSignal.timeout(this.config.embeddingRequestTimeoutMs),
         redirect: 'error',
       });
@@ -96,6 +115,8 @@ export class RemoteEmbedProvider implements EmbedProvider {
       const reason = (err instanceof Error ? err.message : 'unknown network error')
         .replaceAll(this.config.embeddingApiKey || '\0', '[redacted]');
       throw new Error(`Remote embedding request failed: ${reason}`);
+    } finally {
+      this.releaseSlot();
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
@@ -155,5 +176,21 @@ export class RemoteEmbedProvider implements EmbedProvider {
       vectors[i] = vector;
     });
     return vectors;
+  }
+
+  /** Take a slot, waiting in arrival order while the cap is reached. */
+  private async acquireSlot(): Promise<void> {
+    if (this.active < MAX_CONCURRENT_REQUESTS) {
+      this.active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.active += 1;
+  }
+
+  /** Free a slot and hand it to the next waiter, if any. */
+  private releaseSlot(): void {
+    this.active -= 1;
+    this.waiting.shift()?.();
   }
 }

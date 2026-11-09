@@ -139,9 +139,19 @@ describe('doctor — fresh-install lazy contract', () => {
     resetConfig();
     mockFreshInstall();
     await runDoctor('/tmp/.wigolo-remote-embed');
-    expect(outBuffer).toMatch(/Embeddings model:\s+remote configured \(endpoint not probed\)/);
-    expect(outBuffer).toMatch(/provider:\s+remote \(endpoint not probed\)/);
+    expect(outBuffer).toMatch(/Embeddings model:\s+remote endpoint configured \(not probed\)/);
+    expect(outBuffer).toMatch(/provider:\s+remote endpoint configured \(not probed\)/);
     expect(getEmbedProviderMock).not.toHaveBeenCalled();
+  });
+  it('degrades the run when the remote embedding endpoint is misconfigured', async () => {
+    process.env.WIGOLO_EMBEDDING_API_BASE = 'file:///tmp/x';
+    resetConfig();
+    mockFreshInstall();
+    const code = await runDoctor('/tmp/.wigolo-remote-embed-bad');
+    // A bad URL is a real fault: every cache write would fail, so the report
+    // must not stay "ok".
+    expect(code).toBe(1);
+    expect(outBuffer).toMatch(/Embeddings model:\s+remote endpoint misconfigured/);
   });
   it('exits 0 on a fresh install (missing browser + models + no searxng bootstrap)', async () => {
     mockFreshInstall();

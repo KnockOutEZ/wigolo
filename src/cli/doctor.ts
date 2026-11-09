@@ -786,7 +786,16 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     out(`  ML reranker:        not installed${reranker?.reason ? ` (${reranker.reason})` : ''}`);
   }
   if (getConfig().embeddingApiBase) {
-    out('  Embeddings model:   remote configured (endpoint not probed)');
+    // Construct locally: this validates the URL and the key rule and performs no
+    // network call. A bad endpoint is a real fault, so the run is degraded.
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  Embeddings model:   remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  Embeddings model:   remote endpoint misconfigured - ${errorLine(err)}`);
+      degraded = true;
+      nonFixableDegraded = true;
+    }
   } else if (embeddings.installed) {
     out(`  Embeddings model:   installed (fastembed BGE-small-en-v1.5)`);
   } else {
@@ -1065,7 +1074,12 @@ function checkCoreEmbeddings(dataDir: string): void {
   out('');
   out('[wigolo doctor] Core embeddings:');
   if (getConfig().embeddingApiBase) {
-    out('  provider:      remote (endpoint not probed)');
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  provider:      remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  provider:      remote endpoint misconfigured - ${errorLine(err)}`);
+    }
     return;
   }
   const cache = checkFastembedCache(dataDir);

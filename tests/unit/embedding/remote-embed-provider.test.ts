@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../../src/config.js';
-import { RemoteEmbedProvider, REMOTE_EMBED_DIM } from '../../../src/embedding/remote-embed-provider.js';
+import { RemoteEmbedProvider, REMOTE_EMBED_DIM, MAX_CONCURRENT_REQUESTS } from '../../../src/embedding/remote-embed-provider.js';
 
 const config = (over: Partial<Config> = {}) => ({
   embeddingApiBase: 'http://127.0.0.1:8080/v1///',
   embeddingApiKey: null,
   embeddingModel: 'test-embed',
   embeddingRequestTimeoutMs: 1234,
+  embeddingMaxTextLength: 8000,
   ...over,
 }) as Config;
 
@@ -55,6 +56,48 @@ describe('RemoteEmbedProvider', () => {
     vi.stubGlobal('fetch', fetchMock);
     expect(await new RemoteEmbedProvider(config()).embed([])).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('trims input to the configured maximum before the send', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply([{ index: 0, embedding: vector(1) }]));
+    vi.stubGlobal('fetch', fetchMock);
+    const long = 'a'.repeat(20);
+    await new RemoteEmbedProvider(config({ embeddingMaxTextLength: 10 })).embed([long]);
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body).input;
+    expect(sent).toEqual(['a'.repeat(10)]);
+  });
+
+  it('leaves input under the maximum untouched', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply([{ index: 0, embedding: vector(1) }]));
+    vi.stubGlobal('fetch', fetchMock);
+    await new RemoteEmbedProvider(config({ embeddingMaxTextLength: 10 })).embed(['short']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toEqual(['short']);
+  });
+
+  it('caps the requests in flight at once', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise<void>((resolve) => resolvers.push(resolve));
+      inFlight -= 1;
+      return reply([{ index: 0, embedding: vector(1) }]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new RemoteEmbedProvider(config());
+    const calls = Array.from({ length: MAX_CONCURRENT_REQUESTS * 2 }, () => provider.embed(['x']));
+    await flush();
+    // The rest wait for a slot, so the server never sees more than the cap.
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_CONCURRENT_REQUESTS);
+    while (resolvers.length > 0) {
+      resolvers.shift()?.();
+      await flush();
+    }
+    await Promise.all(calls);
+    expect(peak).toBe(MAX_CONCURRENT_REQUESTS);
   });
 
   it('sends one probe request during warmup', async () => {
