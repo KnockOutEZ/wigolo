@@ -3,7 +3,7 @@ import { extractJsonLd } from '../jsonld.js';
 
 export type ContentType = 'news' | 'recipe' | 'product' | 'code' | 'docs' | 'generic';
 
-const JSONLD_TYPE_MAP: Record<string, ContentType> = {
+const JSONLD_TYPE_MAP = new Map<string, ContentType>(Object.entries({
   recipe: 'recipe',
   product: 'product',
   newsarticle: 'news',
@@ -14,13 +14,13 @@ const JSONLD_TYPE_MAP: Record<string, ContentType> = {
   qapage: 'code',
   techarticle: 'docs',
   apireference: 'docs',
-};
+}));
 
-const OG_TYPE_MAP: Record<string, ContentType> = {
+const OG_TYPE_MAP = new Map<string, ContentType>(Object.entries({
   article: 'news',
   product: 'product',
   recipe: 'recipe',
-};
+}));
 
 const DOCS_PATH_PREFIXES = ['/docs/', '/documentation/', '/reference/', '/api/'];
 
@@ -54,12 +54,12 @@ function classifyByJsonLd(html: string): ContentType | null {
 
 function mapJsonLdType(raw: unknown): ContentType | null {
   if (typeof raw === 'string') {
-    return JSONLD_TYPE_MAP[normalizeType(raw)] ?? null;
+    return JSONLD_TYPE_MAP.get(normalizeType(raw)) ?? null;
   }
   if (Array.isArray(raw)) {
     for (const entry of raw) {
       if (typeof entry !== 'string') continue;
-      const mapped = JSONLD_TYPE_MAP[normalizeType(entry)];
+      const mapped = JSONLD_TYPE_MAP.get(normalizeType(entry));
       if (mapped) return mapped;
     }
   }
@@ -76,7 +76,7 @@ function classifyByOgType(document: Document): ContentType | null {
   const meta = document.querySelector('meta[property="og:type"]');
   const content = meta?.getAttribute('content')?.trim().toLowerCase();
   if (!content) return null;
-  return OG_TYPE_MAP[content] ?? null;
+  return OG_TYPE_MAP.get(content) ?? null;
 }
 
 function classifyByUrl(url: string): ContentType | null {

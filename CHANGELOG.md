@@ -10,6 +10,10 @@
 - `find_similar` scores only rows that carry the active model id, for the bundled model too. Rows written under an older model id no longer match, so an endpoint or model change hides them. (fixes #674)
 - A remote embedding endpoint trims input to `WIGOLO_EMBEDDING_MAX_TEXT_LENGTH` before the send, keeps at most 4 requests in flight, and falls back to the default timeout when the value is not a positive integer. (fixes #674)
 
+### Fixed
+- `search` no longer fails with "mapped is not iterable" when the query contains `constructor`. Lookup tables keyed by query words or page-supplied values (code-block language, JSON-LD `@type`, `og:type`) no longer match built-in object members such as `constructor` or `__proto__`. (fixes #683)
+- One-shot `wigolo search` (and the other one-shot tool commands) now query the search engine instance set in `WIGOLO_SEARXNG_URL` / `SEARXNG_URL`. Before, they only used the built-in engines, so `WIGOLO_SEARCH=searxng` or `hybrid` never sent a request to it. With the backend selected but no URL set, the result now says why the instance wasn't used. (#685)
+
 ## v0.3.1 — 2026-10-24
 
 Re-cut of v0.3.0 so the release ships its single-file binaries.

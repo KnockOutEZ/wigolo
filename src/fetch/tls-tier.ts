@@ -18,6 +18,7 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import { readCapped } from './read-capped.js';
 
 const log = createLogger('fetch');
 
@@ -64,6 +65,7 @@ interface WreqResponse {
   headers: WreqHeaders;
   text(): Promise<string>;
   arrayBuffer?(): Promise<ArrayBuffer>;
+  body?: ReadableStream<Uint8Array> | null;
 }
 
 interface WreqFetchInit {
@@ -211,6 +213,9 @@ function buildProfileRotation(active: string): string[] {
 
 const PDF_MAGIC = '%PDF-';
 
+// Same decoding `response.text()` does (UTF-8, BOM stripped).
+const UTF8 = new TextDecoder();
+
 function bufferLooksLikePdf(buf: Buffer): boolean {
   return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
 }
@@ -227,16 +232,20 @@ async function readResponse(url: string, response: WreqResponse): Promise<TlsFet
   let rawBuffer: Buffer | undefined;
   // Normalised so a magic-bytes PDF is reported as application/pdf downstream.
   let effectiveContentType = contentType;
-  if (declaredPdf && typeof response.arrayBuffer === 'function') {
-    const ab = await response.arrayBuffer();
-    rawBuffer = Buffer.from(ab);
-  } else if (ambiguousType && typeof response.arrayBuffer === 'function') {
-    const buf = Buffer.from(await response.arrayBuffer());
-    if (bufferLooksLikePdf(buf)) {
-      rawBuffer = buf;
+  const canStream = Boolean(response.body) || typeof response.arrayBuffer === 'function';
+  if (canStream) {
+    // Bounded by WIGOLO_MAX_RESPONSE_BYTES, same as the HTTP tier.
+    const body = await readCapped(response, getConfig().maxResponseBytes, {
+      contentLength: headers['content-length'],
+      url,
+    });
+    if (declaredPdf) {
+      rawBuffer = body;
+    } else if (ambiguousType && bufferLooksLikePdf(body)) {
+      rawBuffer = body;
       effectiveContentType = 'application/pdf';
     } else {
-      html = buf.toString('utf-8');
+      html = UTF8.decode(body);
     }
   } else {
     html = await response.text();

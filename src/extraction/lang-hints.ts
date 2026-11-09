@@ -1,11 +1,11 @@
-const ALIASES: Record<string, string> = {
+const ALIASES = new Map<string, string>(Object.entries({
   typescript: 'ts',
   javascript: 'js',
   python: 'py',
   rust: 'rs',
   golang: 'go',
   shell: 'sh',
-};
+}));
 
 const PATTERNS = [
   /(?:^|\s)language-([a-z0-9+#-]+)/i,
@@ -21,7 +21,7 @@ export function detectCodeLanguage(classAttr: string | null | undefined): string
     const m = classAttr.match(re);
     if (m) {
       const raw = m[1].toLowerCase();
-      return ALIASES[raw] ?? raw;
+      return ALIASES.get(raw) ?? raw;
     }
   }
   return null;

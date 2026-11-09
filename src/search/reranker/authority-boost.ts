@@ -38,7 +38,7 @@ const KNOWN_DOCS_HOSTS = new Set([
   'docs.anthropic.com',
 ]);
 
-const KNOWN_SUBJECT_DOMAIN: Record<string, string[]> = {
+const KNOWN_SUBJECT_DOMAIN = new Map<string, string[]>(Object.entries({
   redis: ['redis.io', 'redis.com'],
   postgres: ['postgresql.org', 'neon.tech'],
   postgresql: ['postgresql.org', 'neon.tech'],
@@ -78,7 +78,7 @@ const KNOWN_SUBJECT_DOMAIN: Record<string, string[]> = {
   pnpm: ['pnpm.io'],
   yarn: ['yarnpkg.com'],
   mcp: ['modelcontextprotocol.io', 'spec.modelcontextprotocol.io', 'docs.anthropic.com'],
-};
+}));
 
 function extractSubjects(query: string): string[] {
   const tokens = query
@@ -114,7 +114,7 @@ export function applyAuthorityBoost<T extends AuthorityBoostable>(
   const subjects = extractSubjects(query);
   const knownDomains = new Set<string>();
   for (const s of subjects) {
-    const mapped = KNOWN_SUBJECT_DOMAIN[s];
+    const mapped = KNOWN_SUBJECT_DOMAIN.get(s);
     if (mapped) for (const d of mapped) knownDomains.add(d);
   }
 
