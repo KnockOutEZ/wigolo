@@ -21,6 +21,11 @@ export interface Config {
   fetchTimeoutMs: number;
   fetchMaxRetries: number;
   maxRedirects: number;
+  /** Largest response body (bytes) the HTTP and TLS fetch tiers will buffer
+   * before failing with `response_too_large`. 0 or less disables the cap.
+   * Browser-tier, Reddit API, escape-hatch and redirect-drain reads are not
+   * covered. */
+  maxResponseBytes: number;
   fetchAllowPrivate: boolean;
   playwrightLoadTimeoutMs: number;
   playwrightNavTimeoutMs: number;
@@ -620,6 +625,7 @@ export function getConfig(): Config {
     fetchTimeoutMs: envInt('FETCH_TIMEOUT_MS', 10000, settings, 'fetchTimeoutMs'),
     fetchMaxRetries: envInt('FETCH_MAX_RETRIES', 2, settings, 'fetchMaxRetries'),
     maxRedirects: envInt('MAX_REDIRECTS', 5, settings, 'maxRedirects'),
+    maxResponseBytes: envInt('WIGOLO_MAX_RESPONSE_BYTES', 20 * 1024 * 1024, settings, 'maxResponseBytes'),
     fetchAllowPrivate: envBool('WIGOLO_FETCH_ALLOW_PRIVATE', false, settings, 'fetchAllowPrivate'),
     playwrightLoadTimeoutMs: envInt('PLAYWRIGHT_LOAD_TIMEOUT_MS', 15000, settings, 'playwrightLoadTimeoutMs'),
     playwrightNavTimeoutMs: envInt('PLAYWRIGHT_NAV_TIMEOUT_MS', 30000, settings, 'playwrightNavTimeoutMs'),

@@ -27,6 +27,7 @@ import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../../src/
 import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
 import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
+import { ResponseTooLargeError } from '../../../src/fetch/read-capped.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE } from '../../../src/fetch/browser-acquire.js';
 
 const FULL_HTML = `
@@ -821,5 +822,36 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
     const raw = result as RawFetchResult;
     expect(raw.html).toBe(SPA_SHELL_HTML);
     expect(raw.warning).toBe(BROWSER_INSTALLING_NOTE);
+  });
+});
+
+describe('SmartRouter — response over the size cap', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    // Threshold of 1 so an ordinary failure would escalate to the browser at once.
+    process.env = { ...originalEnv, BROWSER_FALLBACK_THRESHOLD: '1' };
+    resetConfig();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+  });
+
+  it('surfaces response_too_large without escalating or counting a domain failure', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => {
+        throw new ResponseTooLargeError(1024, 'https://big.example/file');
+      }),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: readyAcquirer() });
+
+    await expect(router.fetch('https://big.example/file')).rejects.toBeInstanceOf(ResponseTooLargeError);
+    expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+    expect(router.getDomainStats('big.example')?.failureCount ?? 0).toBe(0);
   });
 });
