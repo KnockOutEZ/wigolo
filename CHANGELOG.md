@@ -5,6 +5,9 @@
 ### Added
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
 
+### Fixed
+- `search` no longer fails with "mapped is not iterable" when the query contains `constructor`. Lookup tables keyed by query words or page-supplied values (code-block language, JSON-LD `@type`, `og:type`) no longer match built-in object members such as `constructor` or `__proto__`. (fixes #683)
+
 ## v0.3.1 — 2026-10-24
 
 Re-cut of v0.3.0 so the release ships its single-file binaries.

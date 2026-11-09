@@ -71,3 +71,11 @@ describe('detectCodeLanguage', () => {
     expect(detectCodeLanguage(undefined)).toBeNull();
   });
 });
+
+describe('detectCodeLanguage — class names that match Object.prototype members', () => {
+  // The class attribute comes from the fetched page; an inherited member must
+  // never be returned in place of the language string.
+  it.each(['constructor', 'tostring', 'valueof'])('language-%s returns the raw name as a string', (name) => {
+    expect(detectCodeLanguage(`language-${name}`)).toBe(name);
+  });
+});
