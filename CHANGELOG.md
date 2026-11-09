@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- `doctor --json` reports `ok_with_warnings` when a check reports `failed` but the run stays usable. The `status` field no longer reads `ok` in that case, so scripts that compare `status === "ok"` must accept the new value. (#673)
+
 ## v0.3.1 — 2026-10-24
 
 Re-cut of v0.3.0 so the release ships its single-file binaries.
