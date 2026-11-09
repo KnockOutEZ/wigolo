@@ -5,6 +5,9 @@
 ### Added
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
 
+### Fixed
+- One-shot `wigolo search` (and the other one-shot tool commands) now query the search engine instance set in `WIGOLO_SEARXNG_URL` / `SEARXNG_URL`. Before, they only used the built-in engines, so `WIGOLO_SEARCH=searxng` or `hybrid` never sent a request to it. With the backend selected but no URL set, the result now says why the instance wasn't used. (#685)
+
 ## v0.3.1 — 2026-10-24
 
 Re-cut of v0.3.0 so the release ships its single-file binaries.

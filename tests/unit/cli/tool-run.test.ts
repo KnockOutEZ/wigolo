@@ -4,8 +4,10 @@ import type { SearchOutput, FetchOutput, StageResult } from '../../../src/types.
 
 // The runner must NEVER touch the searxng bootstrap. Mock the bootstrap module
 // with throwing spies so any accidental call fails the test loudly.
-const resolveSearchBackend = vi.fn(() => { throw new Error('resolveSearchBackend must not be called'); });
-const getBootstrapState = vi.fn(() => { throw new Error('getBootstrapState must not be called'); });
+const { resolveSearchBackend, getBootstrapState } = vi.hoisted(() => ({
+  resolveSearchBackend: vi.fn(() => { throw new Error('resolveSearchBackend must not be called'); }),
+  getBootstrapState: vi.fn(() => { throw new Error('getBootstrapState must not be called'); }),
+}));
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   resolveSearchBackend,
   getBootstrapState,
@@ -42,6 +44,8 @@ import { handleSearch } from '../../../src/tools/search.js';
 import { handleFetch } from '../../../src/tools/fetch.js';
 import { handleResearch } from '../../../src/tools/research.js';
 import { runTool } from '../../../src/cli/tool-run.js';
+import { resetConfig } from '../../../src/config.js';
+import { SearxngClient } from '../../../src/search/searxng.js';
 
 function captureStdout(): { restore: () => void; text: () => string } {
   const chunks: string[] = [];
@@ -207,5 +211,66 @@ describe('runTool', () => {
       cap.restore();
     }
     expect(code).toBe(1);
+  });
+
+  describe('configured search engine instance (#685)', () => {
+    const saved = { url: process.env.WIGOLO_SEARXNG_URL, legacy: process.env.SEARXNG_URL, backend: process.env.WIGOLO_SEARCH };
+    afterEach(() => {
+      for (const [k, v] of [['WIGOLO_SEARXNG_URL', saved.url], ['SEARXNG_URL', saved.legacy], ['WIGOLO_SEARCH', saved.backend]] as const) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+      resetConfig();
+    });
+
+    async function searchEngines(): Promise<Parameters<typeof handleSearch>[1]> {
+      vi.mocked(handleSearch).mockResolvedValue(okSearch);
+      resetConfig();
+      const cap = captureStdout();
+      try {
+        await runTool('search', ['fresh q', '--json']);
+      } finally {
+        cap.restore();
+      }
+      return vi.mocked(handleSearch).mock.calls[0][1];
+    }
+
+    // #685: `wigolo search` with WIGOLO_SEARCH=searxng logged the provider as
+    // selected but only ever queried DuckDuckGo + Bing, so the instance the user
+    // pointed at never received a request.
+    it.each(['searxng', 'hybrid'])('WHY: WIGOLO_SEARCH=%s with a URL queries that instance', async (backend) => {
+      process.env.WIGOLO_SEARCH = backend;
+      process.env.WIGOLO_SEARXNG_URL = 'http://127.0.0.1:8888';
+      const engines = await searchEngines();
+      expect(engines[0]).toBeInstanceOf(SearxngClient);
+      expect(engines.map((e) => e.name)).toEqual(['searxng', 'duckduckgo', 'bing']);
+      expect(resolveSearchBackend).not.toHaveBeenCalled();
+      expect(getBootstrapState).not.toHaveBeenCalled();
+    });
+
+    it('honours the legacy SEARXNG_URL variable too', async () => {
+      delete process.env.WIGOLO_SEARXNG_URL;
+      process.env.SEARXNG_URL = 'http://127.0.0.1:8888';
+      process.env.WIGOLO_SEARCH = 'searxng';
+      const engines = await searchEngines();
+      expect(engines[0]).toBeInstanceOf(SearxngClient);
+    });
+
+    it('the default core backend with no URL adds no instance', async () => {
+      delete process.env.WIGOLO_SEARXNG_URL;
+      delete process.env.SEARXNG_URL;
+      delete process.env.WIGOLO_SEARCH;
+      const engines = await searchEngines();
+      expect(engines.some((e) => e instanceof SearxngClient)).toBe(false);
+    });
+
+    it('WHY: searxng selected with no URL warns instead of silently serving other engines', async () => {
+      delete process.env.WIGOLO_SEARXNG_URL;
+      delete process.env.SEARXNG_URL;
+      process.env.WIGOLO_SEARCH = 'searxng';
+      await searchEngines();
+      const status = vi.mocked(handleSearch).mock.calls[0][3];
+      expect(status?.isActive).toBe(false);
+      expect(status?.consumeWarning?.() ?? '').toMatch(/WIGOLO_SEARXNG_URL/);
+    });
   });
 });
