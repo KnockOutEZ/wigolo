@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { parseCommand } from './cli/index.js';
-import { runWarmup } from './cli/warmup.js';
+import { runWarmup, isWarmupHelp, warmupArgsError, WARMUP_USAGE } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctorIsolated } from './cli/doctor.js';
@@ -56,10 +56,22 @@ export async function main(): Promise<void> {
   const { command, args } = parseCommand(rawArgs.filter((a) => a !== '--wait-for-index'));
 
   switch (command) {
-    case 'warmup':
+    case 'warmup': {
+      if (isWarmupHelp(args)) {
+        process.stdout.write(WARMUP_USAGE);
+        await exitCli(0);
+        break;
+      }
+      const argsError = warmupArgsError(args);
+      if (argsError) {
+        process.stderr.write(`wigolo: ${argsError}\n`);
+        await exitCli(2);
+        break;
+      }
       await runWarmup(args);
       await exitCli(0);
       break;
+    }
 
     case 'serve':
       runDaemon(args);

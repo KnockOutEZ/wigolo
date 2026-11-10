@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
@@ -433,12 +434,16 @@ describe('runDoctor', () => {
       expect(sqlite.detail).toContain('different Node.js version');
     });
 
-    it('gives a cold `npx playwright --version` 30s before timing out', async () => {
+    it('WHY: reads the bundled browser engine version instead of running `npx playwright` (#672)', async () => {
+      // npx fetched the latest package from the registry on installs without a
+      // local bin (global npm, single-file binary) and reported ITS version.
+      const bundled = (createRequire(import.meta.url)('playwright/package.json') as { version: string }).version;
       await runDoctor('/tmp/.wigolo');
-      const call = vi.mocked(spawnSync).mock.calls.find(
+      const npxCall = vi.mocked(spawnSync).mock.calls.find(
         ([cmd, args]) => cmd === 'npx' && (args as string[] | undefined)?.[0] === 'playwright',
       );
-      expect(call?.[2]).toMatchObject({ timeout: 30_000 });
+      expect(npxCall).toBeUndefined();
+      expect(outBuffer).toContain(`installed (v${bundled})`);
     });
 
     it('reports no RSS feeds when none configured', async () => {

@@ -67,7 +67,7 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => {
 import { existsSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { runCommand } from '../../../src/cli/tui/run-command.js';
-import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState, sanitizeBrowserInstallError } from '../../../src/cli/warmup.js';
+import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState, sanitizeBrowserInstallError, warmupArgsError, isWarmupHelp, WARMUP_USAGE } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 import { checkVenvModule } from '../../../src/python-env.js';
 import { getConfig } from '../../../src/config.js';
@@ -658,5 +658,76 @@ describe('runWarmup browser-failure surfacing (A1)', () => {
     expect(result.playwrightError).toBe('Error: self signed certificate in certificate chain');
     expect(result.playwrightError).not.toContain('╔');
     expect(result.playwrightError).not.toContain('npx playwright install');
+  });
+});
+
+// #672: component flags must select components. `warmup --embeddings` used to
+// download the browser engine first (~500MB on disk), and `warmup --help`
+// started that download instead of printing usage.
+describe('warmup component selection (#672)', () => {
+  const chromiumInstalls = () =>
+    // Exact 'install': on Linux an `install-deps chromium` call runs too.
+    vi.mocked(runCommand).mock.calls.filter((c) => argsOf(c).includes('install') && includesArg(c, 'chromium'));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(runCommand).mockResolvedValue(ok);
+    vi.mocked(getConfig).mockReturnValue(coreConfig as never);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    rerankMock.mockResolvedValue([{ id: '0', score: 0.5 }]);
+  });
+
+  it.each([[['--embeddings']], [['--reranker']], [['--reranker', '--embeddings']]])(
+    'WHY: %j alone does not install the browser engine',
+    async (flags) => {
+      const result = await runWarmup(flags);
+      expect(chromiumInstalls()).toHaveLength(0);
+      expect(result.playwright).toBe('skipped');
+    },
+  );
+
+  it('--embeddings still installs the embeddings model', async () => {
+    const result = await runWarmup(['--embeddings']);
+    expect(result.embeddings).toBe('ok');
+  });
+
+  it.each([[[] as string[]], [['--browser']], [['--all']], [['--browser', '--embeddings']]])(
+    '%j installs the browser engine',
+    async (flags) => {
+      const result = await runWarmup(flags);
+      expect(chromiumInstalls()).toHaveLength(1);
+      expect(result.playwright).toBe('ok');
+    },
+  );
+
+  it('output-only flags keep the browser default', async () => {
+    const result = await runWarmup(['--json', '--plain', '--force']);
+    expect(chromiumInstalls()).toHaveLength(1);
+    expect(result.playwright).toBe('ok');
+  });
+});
+
+describe('warmup argument checks (#672)', () => {
+  it.each([[['--help']], [['-h']], [['--embeddings', '--help']]])('%j is a help request', (args) => {
+    expect(isWarmupHelp(args)).toBe(true);
+  });
+
+  it('a normal run is not a help request', () => {
+    expect(isWarmupHelp(['--browser'])).toBe(false);
+  });
+
+  it('usage lists every component flag', () => {
+    for (const f of ['--all', '--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--no-searxng', '--force', '--json']) {
+      expect(WARMUP_USAGE).toContain(f);
+    }
+  });
+
+  it('accepts every known flag', () => {
+    expect(warmupArgsError(['--all', '--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--no-searxng', '--force', '--json', '--plain', '--verify', '--skip-verify'])).toBeNull();
+  });
+
+  it('WHY: rejects an unknown flag instead of silently running the default install', () => {
+    expect(warmupArgsError(['--embedding'])).toMatch(/--embedding/);
+    expect(warmupArgsError(['browser'])).toMatch(/browser/);
   });
 });

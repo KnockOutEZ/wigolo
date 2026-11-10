@@ -125,6 +125,8 @@ wigolo warmup [--all|--browser|--reranker|--embeddings]
 
 Re-runs component downloads — for CI images or repairing a broken component. `init` already does this; you rarely need it directly.
 
+With no component flag it installs the browser engine. Naming components installs only those: `warmup --embeddings` fetches the embedding model without the browser engine; add `--browser` to get both. `--all` installs everything. `wigolo warmup --help` lists every option, and an unknown option is rejected.
+
 ### serve
 
 ```text

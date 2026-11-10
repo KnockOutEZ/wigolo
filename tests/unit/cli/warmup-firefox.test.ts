@@ -251,7 +251,8 @@ describe('warmup --firefox flag', () => {
       String(p).includes('firefox') ? false : true,
     );
 
-    const result = await runWarmup(['--firefox']);
+    // --browser too: a component flag alone no longer installs chromium (#672).
+    const result = await runWarmup(['--browser', '--firefox']);
 
     expect(result.firefox).toBe('failed');
     expect(result.firefoxError).toContain('missing on disk');

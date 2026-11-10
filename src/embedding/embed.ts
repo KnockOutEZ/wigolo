@@ -128,7 +128,7 @@ export class EmbeddingService {
 
   private async loadProvider(): Promise<boolean> {
     this.loadAttempts += 1;
-    log.info('loading embedding model (first use — downloads ~30MB if not cached)', {
+    log.info('loading embedding model (first use — ~65MB on disk if not cached)', {
       attempt: this.loadAttempts,
     });
     try {
