@@ -36,6 +36,27 @@ function envTimeoutMs(name: string, fallback: number): number {
   return fallback;
 }
 
+/**
+ * Parse `WIGOLO_SERVE_ALLOWED_ORIGINS`: comma-separated exact origins that may
+ * reach the MCP transport from a browser-based client. Matching is exact; any
+ * entry with a wildcard (or the opaque `null` origin) is dropped, so the list
+ * can never widen into "allow everything".
+ */
+export function parseAllowedOrigins(raw: string | undefined): Set<string> {
+  const origins = new Set<string>();
+  if (!raw) return origins;
+  for (const part of raw.split(',')) {
+    const origin = part.trim();
+    if (!origin) continue;
+    if (origin.includes('*') || origin === 'null') {
+      log.warn('Ignoring invalid WIGOLO_SERVE_ALLOWED_ORIGINS entry (exact origins only)', { origin });
+      continue;
+    }
+    origins.add(origin);
+  }
+  return origins;
+}
+
 export interface DaemonOptions {
   port: number;
   host: string;
@@ -50,6 +71,11 @@ export interface DaemonOptions {
    * actually binding a public interface.
    */
   restBindHost?: string;
+  /**
+   * Exact browser origins allowed on the MCP transport. Defaults to
+   * `WIGOLO_SERVE_ALLOWED_ORIGINS`. Only honoured when an API token is set.
+   */
+  allowedOrigins?: string[];
 }
 
 export class DaemonHttpServer {
@@ -64,6 +90,7 @@ export class DaemonHttpServer {
   private readonly apiToken: string | null;
   private readonly allowUnauthenticated: boolean;
   private readonly restBindHost: string;
+  private readonly allowedOrigins: Set<string>;
   private restRouter: RestRouter | null = null;
   private restRouterPromise: Promise<RestRouter> | null = null;
 
@@ -75,6 +102,9 @@ export class DaemonHttpServer {
     this.apiToken = options.apiToken !== undefined ? options.apiToken : resolveApiToken();
     this.allowUnauthenticated = options.allowUnauthenticated ?? false;
     this.restBindHost = options.restBindHost ?? options.host;
+    this.allowedOrigins = options.allowedOrigins !== undefined
+      ? parseAllowedOrigins(options.allowedOrigins.join(','))
+      : parseAllowedOrigins(process.env.WIGOLO_SERVE_ALLOWED_ORIGINS);
   }
 
   /**
@@ -101,19 +131,22 @@ export class DaemonHttpServer {
 
   /**
    * Gate the MCP transport routes (/mcp, /sse, /messages). Returns true when the
-   * request was rejected (a response was written). A browser `Origin` is always
-   * rejected, including in token mode, so a page cannot drive the transport.
+   * request was rejected (a response was written). A browser `Origin` is
+   * rejected unless a token is configured and the origin is listed exactly in
+   * `WIGOLO_SERVE_ALLOWED_ORIGINS`; even then the bearer token below must match.
    * In token mode the bearer token authorizes remote MCP clients, so Host is not
    * restricted. In open mode, the loopback Host allowlist blocks DNS rebinding.
    */
   private mcpTransportRejected(req: IncomingMessage, res: ServerResponse): boolean {
-    if (req.headers.origin !== undefined) {
+    const origin = req.headers.origin;
+    const originAllowed = origin !== undefined && !!this.apiToken && this.allowedOrigins.has(origin);
+    if (origin !== undefined && !originAllowed) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: false,
         error: 'Forbidden: browser origin not allowed',
         error_reason: 'origin_not_allowed',
-        hint: 'Browser-origin requests are not supported on the MCP transport. Use a server-side or CLI client.',
+        hint: 'Browser-origin requests are refused on the MCP transport unless WIGOLO_API_TOKEN is set and the origin is listed in WIGOLO_SERVE_ALLOWED_ORIGINS.',
       }));
       return true;
     }
@@ -159,6 +192,10 @@ export class DaemonHttpServer {
       ensureAdminToken(getConfig().dataDir);
     } catch (err) {
       log.warn('Failed to write daemon admin token', { error: String(err) });
+    }
+
+    if (this.allowedOrigins.size > 0 && !this.apiToken) {
+      log.warn('WIGOLO_SERVE_ALLOWED_ORIGINS is ignored because no API token is configured (set WIGOLO_API_TOKEN)');
     }
 
     this.subsystems.bootstrapSearxng().catch((err) => {
