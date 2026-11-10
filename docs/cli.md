@@ -38,6 +38,8 @@ wigolo doctor [--fix] [--json]
 
 Diagnoses the installation: data dir writability, browser engine, fetch tiers, on-device models, LLM provider status, search backend, per-engine health (with the exact env var that enables each keyed engine), cache stats, and telemetry state. `--fix` repairs known failures.
 
+`--json` prints one report object on stdout. The `status` field reports one of three states. `ok` means every check passed. `ok_with_warnings` means a check reports `failed` while the run stays usable. Examples: a fresh install reports the browser or the embeddings model as absent, or the search engine is enabled with a `ready` bootstrap state and its lock file is stale. `degraded` means doctor finds a fault. The `exitCode` field matches the process exit code: 0 for `ok` and `ok_with_warnings`, 1 for `degraded`.
+
 ### verify
 
 ```text
