@@ -7,6 +7,9 @@ import { loadPlugins } from '../../../src/plugins/loader.js';
 import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { runPluginList, runPluginRemove } from '../../../src/cli/plugin.js';
 import type { Extractor, SearchEngine } from '../../../src/types.js';
+import { initSubsystems } from '../../../src/server.js';
+import { getGeneralEngines } from '../../../src/search/core/verticals/general.js';
+import { setPluginSearchEngines } from '../../../src/search/core/plugin-engines.js';
 
 describe('plugin lifecycle integration', () => {
   const originalEnv = process.env;
@@ -252,4 +255,24 @@ export const extractor = {
     const result = await loadPlugins();
     expect(result.extractors.map(e => e.name)).toContain('long-name-ext');
   });
+
+  it('WHY: a search engine plugin loaded by the server joins the default search roster', async () => {
+    // Before this, plugin engines only reached research/agent/find_similar;
+    // the default core search never queried them despite docs/plugins.md.
+    createPlugin('wiki-plugin', { hasExtractor: false, hasSearchEngine: true, engineName: 'wiki-engine' });
+    const dataDir = mkdtempSync(join(tmpdir(), 'wigolo-plugin-data-'));
+    process.env.WIGOLO_DATA_DIR = dataDir;
+    resetConfig();
+    const subsystems = await initSubsystems();
+    try {
+      const entry = getGeneralEngines().find((e) => e.engine.name === 'wiki-engine');
+      expect(entry).toBeDefined();
+      const results = await entry!.engine.search('anything');
+      expect(results.length).toBeGreaterThan(0);
+    } finally {
+      await subsystems.shutdown();
+      setPluginSearchEngines([]);
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
