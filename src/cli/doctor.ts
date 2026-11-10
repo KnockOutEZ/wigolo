@@ -97,16 +97,14 @@ function checkDocker(): { ok: boolean; version?: string; cli?: string } {
 }
 
 async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string; probes: Record<BrowserName, BrowserProbeResult> }> {
-  let installed = false;
+  // Read the bundled package's version. `npx playwright --version` fetched the
+  // latest release from the registry when no local bin existed (#672).
   let version: string | undefined;
   try {
-    const r = spawnSync('npx', ['playwright', '--version'], { encoding: 'utf-8', timeout: 30_000 });
-    if (r.status === 0) {
-      installed = true;
-      const m = r.stdout.match(/(\d+\.\d+\.\d+)/);
-      version = m?.[1];
-    }
-  } catch { /* ignore */ }
+    const req = createRequire(import.meta.url);
+    version = (req('playwright/package.json') as { version?: string }).version;
+  } catch { /* not resolvable */ }
+  const installed = version !== undefined;
 
   // Use the SAME shared probe warmup uses so doctor cannot disagree
   // with warmup about browser health. The check is launchability — a real

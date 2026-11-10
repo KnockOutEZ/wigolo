@@ -185,7 +185,7 @@ export class BrowserAcquirer {
   private startOrJoinInstall(): Promise<boolean> {
     if (this.installPromise) return this.installPromise;
 
-    this.log.info('installing browser engine (first use, ~100-150MB)…');
+    this.log.info('installing browser engine (first use, ~530MB on disk)…');
 
     this.installPromise = (async () => {
       // Cross-process guard: if another process holds the lock, join it by
