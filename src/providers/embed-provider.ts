@@ -6,7 +6,7 @@
  * Node bindings); the factory now returns FastembedEmbedProvider.
  */
 import { createLogger } from '../logger.js';
-import { getConfig } from '../config.js';
+import { getConfig, type Config } from '../config.js';
 import { createIdleUnload, withIdleTracking, type IdleUnload } from './idle-unload.js';
 
 const log = createLogger('providers');
@@ -43,6 +43,16 @@ export function getEmbedProvider(): Promise<EmbedProvider> {
   if (cached) return cached;
   const config = getConfig();
   const startedAt = generation;
+  if (config.embeddingApiBase) {
+    cached = remoteEmbedProvider(config, startedAt).catch(err => {
+      if (generation === startedAt) {
+        cached = null;
+        instance = null;
+      }
+      throw err;
+    });
+    return cached;
+  }
   cached = import('../embedding/fastembed-provider.js')
     .then(async m => {
       const p = new m.FastembedEmbedProvider();
@@ -79,6 +89,28 @@ export function getEmbedProvider(): Promise<EmbedProvider> {
       throw err;
     });
   return cached;
+}
+
+/**
+ * Build the OpenAI-compatible provider. A remote endpoint holds no local
+ * model, so no idle timer is armed: there is nothing to unload.
+ */
+function remoteEmbedProvider(config: Config, startedAt: number): Promise<EmbedProvider> {
+  return import('../embedding/remote-embed-provider.js').then(async m => {
+    const p = new m.RemoteEmbedProvider(config);
+    await p.warmup();
+    if (generation !== startedAt) {
+      // Same rule as the on-device path: a dispose landed during the probe, so
+      // this provider belongs to a dropped lookup and must not be published.
+      await releaseEmbedProvider(p);
+      throw new Error('embed provider disposed during initialization');
+    }
+    log.info('embed provider ready', { provider: 'embed', impl: 'remote', modelId: p.modelId, dim: p.dim });
+    instance = p;
+    idle = null;
+    handle = p;
+    return p;
+  });
 }
 
 export function _resetEmbedProviderForTest(): void {

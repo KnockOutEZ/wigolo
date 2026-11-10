@@ -292,7 +292,10 @@ export class EmbeddingService {
       const overscan = excludeUrls && excludeUrls.size > 0
         ? Math.max(topK + excludeUrls.size, topK * 2)
         : topK;
-      const hits = await this.store.search(queryVector, overscan);
+      // Scope the lookup to this provider's provenance. A remote endpoint keeps
+      // the same dimension but can serve different weights, so rows from another
+      // backend must never be scored against this query.
+      const hits = await this.store.search(queryVector, overscan, { modelId: provider.modelId });
 
       const results: SimilarResult[] = [];
       for (const hit of hits) {

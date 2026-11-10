@@ -81,6 +81,69 @@ describe('SqliteVecStore', () => {
     expect(r.map(x => x.id)).toEqual(['a']);
   });
 
+  it('widens the KNN window until the filter finds enough rows', async () => {
+    // 60 stale rows rank closer than the one current-model row, so a fixed
+    // window of 50 would return nothing for the current model.
+    const stale: VectorRecord[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      stale.push({
+        id: `stale-${i}`,
+        vector: new Float32Array([1, 0, 0, 0]),
+        metadata: { url: `https://stale/${i}`, contentHash: `h${i}`, modelId: 'old-model' },
+      });
+    }
+    await store.upsert(stale);
+    await store.upsert([
+      {
+        id: 'current',
+        vector: new Float32Array([0.5, 0.5, 0, 0]),
+        metadata: { url: 'https://current', contentHash: 'hc', modelId: 'new-model' },
+      },
+    ]);
+
+    const results = await store.search(new Float32Array([1, 0, 0, 0]), 1, { modelId: 'new-model' });
+    expect(results.map(x => x.id)).toEqual(['current']);
+  });
+
+  it('clamps the KNN window to the sqlite-vec limit of 4096', async () => {
+    await store.upsert([
+      { id: 'a', vector: new Float32Array([1, 0, 0, 0]), metadata: { url: 'https://a', contentHash: 'h', modelId: 'm' } },
+    ]);
+
+    // sqlite-vec rejects a k value above 4096, so a larger limit must not
+    // reach the MATCH query, with or without a filter.
+    const filtered = await store.search(new Float32Array([1, 0, 0, 0]), 5000, { modelId: 'm' });
+    expect(filtered.map(x => x.id)).toEqual(['a']);
+
+    const unfiltered = await store.search(new Float32Array([1, 0, 0, 0]), 5000);
+    expect(unfiltered.map(x => x.id)).toEqual(['a']);
+  });
+
+  it('falls back to an exact scan when the KNN window is saturated', async () => {
+    // 4100 rows from another model rank ahead of the only current-model row,
+    // so the 4096-row KNN window cannot reach it.
+    const stale: VectorRecord[] = [];
+    for (let i = 0; i < 4100; i += 1) {
+      stale.push({
+        id: `stale-${i}`,
+        vector: new Float32Array([1, 0, 0, 0]),
+        metadata: { url: `https://stale/${i}`, contentHash: `h${i}`, modelId: 'old-model' },
+      });
+    }
+    await store.upsert(stale);
+    await store.upsert([
+      {
+        id: 'current',
+        vector: new Float32Array([0, 1, 0, 0]),
+        metadata: { url: 'https://current', contentHash: 'hc', modelId: 'new-model' },
+      },
+    ]);
+
+    const results = await store.search(new Float32Array([1, 0, 0, 0]), 1, { modelId: 'new-model' });
+    expect(results.map(x => x.id)).toEqual(['current']);
+    expect(results[0].score).toBeCloseTo(1 / (1 + Math.SQRT2), 5);
+  });
+
   it('filters by url and contentHash', async () => {
     await store.upsert([
       { id: 'a', vector: new Float32Array([1, 0, 0, 0]), metadata: { url: 'https://a', contentHash: 'h1', modelId: 'm' } },

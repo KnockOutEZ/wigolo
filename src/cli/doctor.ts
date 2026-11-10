@@ -11,6 +11,7 @@ import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
 import { RemoteRerankProvider } from '../search/reranker/remote-rerank-provider.js';
+import { RemoteEmbedProvider } from '../embedding/remote-embed-provider.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { isNativeAbiMismatch } from '../util/native-abi.js';
 import { getCacheStats } from '../cache/store.js';
@@ -559,13 +560,25 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
         : 'chromium not installed',
   });
 
+  const embedCfg = getConfig();
   const emb = checkFastembedCache(dataDir);
-  checks.push({
-    name: 'embeddings',
-    status: emb.installed ? 'ok' : 'failed',
-    fixable: true,
-    detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
-  });
+  if (embedCfg.embeddingApiBase) {
+    // Local construction only: it validates the URL and the key rule and
+    // performs no network call.
+    try {
+      new RemoteEmbedProvider(embedCfg);
+      checks.push({ name: 'embeddings', status: 'ok', fixable: false, detail: 'remote endpoint configured (not probed)' });
+    } catch (err) {
+      checks.push({ name: 'embeddings', status: 'failed', fixable: false, detail: errorLine(err) });
+    }
+  } else {
+    checks.push({
+      name: 'embeddings',
+      status: emb.installed ? 'ok' : 'failed',
+      fixable: true,
+      detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
+    });
+  }
 
   // searxng bootstrap: only a fixable failure when the sidecar is opted into.
   // On core (default) a failed/absent state is EXPECTED, not a failure — report
@@ -781,7 +794,18 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   } else {
     out(`  ML reranker:        not installed${reranker?.reason ? ` (${reranker.reason})` : ''}`);
   }
-  if (embeddings.installed) {
+  if (getConfig().embeddingApiBase) {
+    // Construct locally: this validates the URL and the key rule and performs no
+    // network call. A bad endpoint is a real fault, so the run is degraded.
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  Embeddings model:   remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  Embeddings model:   remote endpoint misconfigured - ${errorLine(err)}`);
+      degraded = true;
+      nonFixableDegraded = true;
+    }
+  } else if (embeddings.installed) {
     out(`  Embeddings model:   installed (fastembed BGE-small-en-v1.5)`);
   } else {
     out(`  Embeddings model:   not installed${embeddings.reason ? ` (${embeddings.reason})` : ''}`);
@@ -1069,6 +1093,15 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 function checkCoreEmbeddings(dataDir: string): void {
   out('');
   out('[wigolo doctor] Core embeddings:');
+  if (getConfig().embeddingApiBase) {
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  provider:      remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  provider:      remote endpoint misconfigured - ${errorLine(err)}`);
+    }
+    return;
+  }
   const cache = checkFastembedCache(dataDir);
   if (cache.installed) {
     out('  provider:      installed (fastembed BGE-small-en-v1.5)');
