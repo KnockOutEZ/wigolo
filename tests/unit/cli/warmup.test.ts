@@ -666,7 +666,8 @@ describe('runWarmup browser-failure surfacing (A1)', () => {
 // started that download instead of printing usage.
 describe('warmup component selection (#672)', () => {
   const chromiumInstalls = () =>
-    vi.mocked(runCommand).mock.calls.filter((c) => includesArg(c, 'install') && includesArg(c, 'chromium'));
+    // Exact 'install': on Linux an `install-deps chromium` call runs too.
+    vi.mocked(runCommand).mock.calls.filter((c) => argsOf(c).includes('install') && includesArg(c, 'chromium'));
 
   beforeEach(() => {
     vi.clearAllMocks();
