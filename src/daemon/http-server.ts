@@ -10,6 +10,7 @@ import { getConfig } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { createLogger } from '../logger.js';
 import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
+import { browserInstalledOnDisk } from '../fetch/browser-acquire.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
 import type { RestRouter } from './rest/router.js';
@@ -260,6 +261,8 @@ export class DaemonHttpServer {
         browserPool: this.subsystems?.browserPool ?? null,
         startedAt: this.startedAt,
         searxngConfigured: searxngConfigured(getConfig()),
+        // #673: pool presence does not prove an engine is installed.
+        browserInstalled: browserInstalledOnDisk(),
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;
