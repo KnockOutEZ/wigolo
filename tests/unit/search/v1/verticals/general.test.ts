@@ -4,6 +4,8 @@ import {
   _resetGeneralEnginesForTest,
 } from '../../../../../src/search/core/verticals/general.js';
 import { _resetBreakersForTest } from '../../../../../src/search/core/engine-base.js';
+import { setPluginSearchEngines } from '../../../../../src/search/core/plugin-engines.js';
+import type { RawSearchResult, SearchEngine } from '../../../../../src/types.js';
 
 describe('getGeneralEngines', () => {
   const originalBraveKey = process.env.BRAVE_API_KEY;
@@ -93,5 +95,52 @@ describe('getGeneralEngines', () => {
     expect(w('bing')).toBe(1);
     expect(w('duckduckgo')).toBe(1);
     expect(w('wikipedia')).toBeLessThan(1);
+  });
+
+  // docs/plugins.md promises plugin search engines "join the multi-engine
+  // dispatch" and show up in engines_used. The core search builds its roster
+  // here, so a plugin engine that isn't listed never receives a query.
+  describe('plugin search engines', () => {
+    afterEach(() => setPluginSearchEngines([]));
+
+    function pluginEngine(name: string, calls: string[]): SearchEngine {
+      return {
+        name,
+        async search(query: string): Promise<RawSearchResult[]> {
+          calls.push(query);
+          return [{ title: 't', url: 'https://wiki.internal/x', snippet: 's', relevance_score: 1, engine: name }];
+        },
+      };
+    }
+
+    it('WHY: a registered plugin engine joins the general roster and receives the query', async () => {
+      const calls: string[] = [];
+      setPluginSearchEngines([pluginEngine('internal-wiki', calls)]);
+      const entry = getGeneralEngines().find((e) => e.engine.name === 'internal-wiki');
+      expect(entry).toBeDefined();
+      expect(entry?.quality).toBeDefined();
+      const results = await entry!.engine.search('vpn setup');
+      expect(calls).toEqual(['vpn setup']);
+      expect(results[0].url).toBe('https://wiki.internal/x');
+    });
+
+    it('built-in engines are unchanged when plugins are registered', () => {
+      const before = getGeneralEngines().map((e) => e.engine.name);
+      setPluginSearchEngines([pluginEngine('internal-wiki', [])]);
+      expect(getGeneralEngines().map((e) => e.engine.name)).toEqual([...before, 'internal-wiki']);
+    });
+
+    it('a plugin registered after the roster was first built still joins it', () => {
+      getGeneralEngines();
+      setPluginSearchEngines([pluginEngine('late-plugin', [])]);
+      expect(getGeneralEngines().some((e) => e.engine.name === 'late-plugin')).toBe(true);
+    });
+
+    it('clearing the plugins restores the built-in roster', () => {
+      const before = getGeneralEngines();
+      setPluginSearchEngines([pluginEngine('internal-wiki', [])]);
+      setPluginSearchEngines([]);
+      expect(getGeneralEngines()).toBe(before);
+    });
   });
 });
