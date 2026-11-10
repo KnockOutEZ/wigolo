@@ -127,6 +127,40 @@ describe('SearXNG bootstrap', () => {
       expect(result.type).toBe('native');
     });
 
+    it('WHY: SEARXNG_MODE=docker uses the container even when Python is available', async () => {
+      // An explicit docker opt-in must not be overridden by the native path just
+      // because a Python happens to be installed (#685).
+      process.env.SEARXNG_MODE = 'docker';
+      resetConfig();
+      vi.mocked(existsSync).mockReturnValue(false);
+      vi.mocked(execSync).mockReturnValue(Buffer.from('Docker version 27'));
+      vi.mocked(spawnSync).mockReturnValue(spawnResult(0));
+      try {
+        const result = await resolveSearchBackend();
+        expect(result.type).toBe('docker');
+      } finally {
+        vi.mocked(execSync).mockReset();
+        vi.mocked(spawnSync).mockReset();
+      }
+    });
+
+    it('without SEARXNG_MODE=docker, an available Python still selects native', async () => {
+      delete process.env.SEARXNG_MODE;
+      resetConfig();
+      vi.mocked(existsSync).mockReturnValue(false);
+      vi.mocked(execSync).mockReturnValue(Buffer.from('Docker version 27'));
+      vi.mocked(spawnSync).mockReturnValue(spawnResult(0));
+      try {
+        const result = await resolveSearchBackend();
+        // On Windows the default `native` mode pins away from docker, and native
+        // can't run there, so it falls back to scraping (unchanged behaviour).
+        expect(result.type).toBe(process.platform === 'win32' ? 'scraping' : 'native');
+      } finally {
+        vi.mocked(execSync).mockReset();
+        vi.mocked(spawnSync).mockReset();
+      }
+    });
+
     it('returns fallback when state is failed and no Docker', async () => {
       vi.mocked(existsSync).mockImplementation((p) => String(p).includes('state.json'));
       vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'failed' }));
