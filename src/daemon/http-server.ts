@@ -10,6 +10,7 @@ import { getConfig } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { createLogger } from '../logger.js';
 import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
+import { browserReadyForWork } from '../fetch/browser-acquire.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
 import { resolveApiToken } from './rest/auth.js';
 import type { RestRouter } from './rest/router.js';
@@ -255,11 +256,19 @@ export class DaemonHttpServer {
 
   private handleHealthRequest(res: ServerResponse): void {
     try {
+      const browserPool = this.subsystems?.browserPool ?? null;
       const report = probeHealth({
         backendStatus: this.subsystems?.backendStatus ?? null,
-        browserPool: this.subsystems?.browserPool ?? null,
+        browserPool,
         startedAt: this.startedAt,
         searxngConfigured: searxngConfigured(getConfig()),
+        // #673: pool presence does not prove an engine is installed. The probe is
+        // a single `existsSync` per engine, and it runs only when a pool exists.
+        // The value is not cached, so a lazy install shows up in the next
+        // `/health` response. Probe every engine browser work needs (#694): the
+        // pool's configured types plus Chromium, which the acquisition gate
+        // checks before the pool launches.
+        browserInstalled: browserPool ? browserReadyForWork(browserPool.getConfiguredTypes()) : undefined,
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;
