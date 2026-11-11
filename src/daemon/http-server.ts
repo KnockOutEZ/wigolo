@@ -256,13 +256,16 @@ export class DaemonHttpServer {
 
   private handleHealthRequest(res: ServerResponse): void {
     try {
+      const browserPool = this.subsystems?.browserPool ?? null;
       const report = probeHealth({
         backendStatus: this.subsystems?.backendStatus ?? null,
-        browserPool: this.subsystems?.browserPool ?? null,
+        browserPool,
         startedAt: this.startedAt,
         searxngConfigured: searxngConfigured(getConfig()),
-        // #673: pool presence does not prove an engine is installed.
-        browserInstalled: browserInstalledOnDisk(),
+        // #673: pool presence does not prove an engine is installed. The probe is
+        // a single `existsSync`, and it runs only when a pool exists. The value is
+        // not cached, so a lazy install shows up in the next `/health` response.
+        browserInstalled: browserPool ? browserInstalledOnDisk() : undefined,
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;
