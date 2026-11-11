@@ -25,6 +25,27 @@ export interface PlaywrightProxyOption {
   password?: string;
 }
 
+/** One `%XX` escape plus any UTF-8 continuation escapes after it. */
+const ESCAPE_SEQUENCE = /%[0-9A-Fa-f]{2}(?:%[89ABab][0-9A-Fa-f])*/g;
+
+/**
+ * Percent-decode userinfo. A stray `%` (not a valid escape) is kept as typed,
+ * while the escapes the URL parser added around it are still decoded.
+ */
+function decodeUserinfo(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value.replace(ESCAPE_SEQUENCE, (seq) => {
+      try {
+        return decodeURIComponent(seq);
+      } catch {
+        return seq;
+      }
+    });
+  }
+}
+
 /**
  * Build Playwright's structured `proxy` launch option from the resolved proxy
  * URL. Credentials are passed as `username`/`password` fields — NEVER inline in
@@ -47,8 +68,8 @@ export function playwrightProxyOption(
   parsed.username = '';
   parsed.password = '';
   const opt: PlaywrightProxyOption = { server: parsed.toString() };
-  if (username) opt.username = decodeURIComponent(username);
-  if (password) opt.password = decodeURIComponent(password);
+  if (username) opt.username = decodeUserinfo(username);
+  if (password) opt.password = decodeUserinfo(password);
   return opt;
 }
 
