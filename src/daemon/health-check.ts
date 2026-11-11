@@ -24,6 +24,10 @@ export interface HealthProbeInput {
 export interface HealthReport {
   status: 'healthy' | 'degraded' | 'down';
   searxng: 'active' | 'unavailable' | 'not_initialized' | 'not_configured';
+  /**
+   * Presence of every engine browser work needs. This is a disk check, not a
+   * launch test; `wigolo doctor` runs the launch smoke-test.
+   */
   browsers: 'ready' | 'not_initialized' | 'not_installed';
   cache: 'active' | 'not_initialized';
   uptime_seconds: number;

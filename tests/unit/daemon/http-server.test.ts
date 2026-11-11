@@ -37,6 +37,13 @@ vi.mock('../../../src/fetch/router.js', () => {
   };
 });
 
+// Keep the real probe helpers; force the health gate closed so the wiring is
+// observable without a browser install on the test machine.
+vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/fetch/browser-acquire.js')>();
+  return { ...actual, browserReadyForWork: vi.fn(() => false) };
+});
+
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   resolveSearchBackend: vi.fn().mockResolvedValue({ type: 'scraping' }),
   bootstrapNativeSearxng: vi.fn(),
@@ -254,6 +261,25 @@ describe('DaemonHttpServer', () => {
       const resp = await fetch(`${url}/health`);
       const body = await resp.json();
       expect(body).toHaveProperty('browsers');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('health probes every engine a browser fetch needs (#694)', async () => {
+    // WHY: the acquisition gate probes chromium before the pool launches, so a
+    // probe over the configured list alone reports ready while fetches block.
+    const { browserReadyForWork } = await import('../../../src/fetch/browser-acquire.js');
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const url = await daemon.start();
+      const resp = await fetch(`${url}/health`);
+      const body = await resp.json();
+      expect(browserReadyForWork).toHaveBeenCalledWith(['chromium']);
+      expect(body.browsers).toBe('not_installed');
+      // A missing engine is a supported state on a core daemon (D1, #676).
+      expect(body.status).toBe('healthy');
     } finally {
       await daemon.stop();
     }
