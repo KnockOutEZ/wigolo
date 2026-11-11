@@ -23,8 +23,22 @@ const STOPWORDS: ReadonlySet<string> = new Set([
   'latest', 'current', 'newest', 'recent', 'best', 'top', 'most',
 ]);
 
+// Arabic function words. They carry no entity signal, so they must not
+// dilute the alignment ratio — and a query made only of them has nothing to
+// align against. The list is written in the FOLDED form the tokenizer emits
+// (alef-maksura -> ya, ta-marbuta -> ha), so it matches the tokens.
+const ARABIC_STOPWORDS: ReadonlySet<string> = new Set([
+  'من', 'في', 'عن', 'علي', 'مع', 'الي', 'هذا', 'هذه', 'ذلك', 'التي', 'الذي',
+  'الذين', 'اللذان', 'اللاتي', 'ما', 'ماذا', 'كيف', 'متي', 'اين', 'لماذا', 'هل',
+  'او', 'و', 'ثم', 'قد', 'كان', 'كانت', 'يكون', 'تكون', 'كل', 'بعض', 'بين',
+  'بعد', 'قبل', 'حتي', 'عند', 'لدي', 'نحو', 'حيث', 'ايضا', 'هو', 'هي', 'هم',
+  'نحن', 'انا',
+]);
+
 function tokenize(s: string): string[] {
-  return tokenizeRankingText(s).filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+  return tokenizeRankingText(s).filter(
+    (t) => t.length >= 2 && !STOPWORDS.has(t) && !ARABIC_STOPWORDS.has(t),
+  );
 }
 
 /**
@@ -45,4 +59,13 @@ export function lexicalAlignment(query: string, title: string, snippet: string):
     if (docTokens.has(t)) overlap++;
   }
   return overlap / qTokens.size;
+}
+
+/**
+ * True when the query carries at least one content token — a token a result
+ * could legitimately match. A query made only of stopwords has nothing to
+ * align against, so every alignment-based gate must stay open for it.
+ */
+export function hasContentTokens(query: string): boolean {
+  return tokenize(query).length > 0;
 }
