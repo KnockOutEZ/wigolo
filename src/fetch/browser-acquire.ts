@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
+import type { BrowserType } from '../types.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { PlainReporter } from '../cli/tui/reporter.js';
@@ -31,6 +32,13 @@ export const BROWSER_INSTALLING_NOTE =
 export const BROWSER_UNAVAILABLE_ERROR =
   'browser engine required for this page but not installed; installing in background (~1-2 min) — retry shortly, or run `wigolo warmup --browser`';
 
+/** Playwright engine handle per configurable browser type. */
+const BROWSER_ENGINES: Record<BrowserType, { executablePath(): string }> = {
+  chromium,
+  firefox,
+  webkit,
+};
+
 const DEFAULT_WAIT_MS = 20_000;
 const DEFAULT_RETRY_MS = 10 * 60 * 1000;
 // A held install lock older than this is treated as stale (crashed installer).
@@ -43,10 +51,13 @@ const LOCK_STALE_MS = 10 * 60 * 1000;
  * browser-probe.ts's `onDisk` check (no launch smoke-test, which would cost 30s
  * on the hot fetch path). Never throws.
  */
-export function browserInstalledOnDisk(): boolean {
+export function browserInstalledOnDisk(types: readonly BrowserType[] = ['chromium']): boolean {
+  const configured: readonly BrowserType[] = types.length > 0 ? types : ['chromium'];
   try {
-    const exec = chromium.executablePath();
-    return !!exec && existsSync(exec);
+    return configured.every(type => {
+      const exec = BROWSER_ENGINES[type].executablePath();
+      return !!exec && existsSync(exec);
+    });
   } catch {
     return false;
   }

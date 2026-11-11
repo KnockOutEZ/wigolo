@@ -265,7 +265,10 @@ export class DaemonHttpServer {
         // #673: pool presence does not prove an engine is installed. The probe is
         // a single `existsSync`, and it runs only when a pool exists. The value is
         // not cached, so a lazy install shows up in the next `/health` response.
-        browserInstalled: browserPool ? browserInstalledOnDisk() : undefined,
+        // Check the configured engines, not chromium alone: with
+        // WIGOLO_BROWSER_TYPES=firefox a chromium-only probe would report ready
+        // while the configured engine is missing.
+        browserInstalled: browserPool ? browserInstalledOnDisk(browserPool.getConfiguredTypes()) : undefined,
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;
