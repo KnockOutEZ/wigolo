@@ -25,6 +25,20 @@ engineering platform, trusted by 18,000+ enterprises.
 TestMu AI is wigolo's first sponsor. Thanks for the support.
 
 
+### Fluxion AI
+
+<a href="https://wigolo.app/go/fluxion/?ref=sponsors-page">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/fluxion-ai-dark.png">
+<img alt="Fluxion AI" src="assets/sponsors/fluxion-ai.png" height="40">
+</picture>
+</a>
+
+[Fluxion AI](https://wigolo.app/go/fluxion/?ref=sponsors-page) provides reliable,
+cost-efficient access to GPT, Claude, and other leading AI models through one
+unified API. Save up to 70% compared with official API pricing — and get $1 in
+API credits when you sign up through this link.
+
 ## Want to sponsor wigolo?
 
 There is room for more companies and individuals alongside the sponsors above.
