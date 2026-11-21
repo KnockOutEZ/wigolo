@@ -98,6 +98,9 @@ export class Crawler {
     // into the link graph so /foo, /foo#a, /foo#b collapse to ONE edge.
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
+    // visited is keyed on requested URLs; a redirect can land two of them on
+    // the same page, so also track the final URLs already emitted.
+    const emitted = new Set<string>();
 
     // seedOrigin comes from the pre-redirect input URL. Re-anchored to the
     // seed's final origin below once it has been fetched, so a seed that
@@ -112,6 +115,9 @@ export class Crawler {
     while (queue.length > 0 && pages.length < maxPages) {
       const next = strategy === 'dfs' ? queue.pop()! : queue.shift()!;
       const [url, depth] = next;
+
+      // Already reached as another URL's redirect target.
+      if (emitted.has(canonicalForCrawl(url))) continue;
 
       // Check robots.txt
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) {
@@ -152,6 +158,10 @@ export class Crawler {
           // unparseable final URL — keep the origin we started with
         }
       }
+
+      const finalCanonical = canonicalForCrawl(fetchResult.url);
+      if (emitted.has(finalCanonical)) continue;
+      emitted.add(finalCanonical);
 
       const item: CrawlResultItem = {
         url: canonicalForOutput(fetchResult.url),
@@ -286,9 +296,12 @@ export class Crawler {
     // emits one edge per (from, canonical-to) pair.
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
+    // see crawlTraversal — two listed URLs can redirect to the same page.
+    const emitted = new Set<string>();
 
     for (const url of toFetch) {
       if (pages.length >= maxPages) break;
+      if (emitted.has(canonicalForCrawl(url))) continue;
 
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) continue;
 
@@ -302,7 +315,9 @@ export class Crawler {
           this.rateLimiter.recordResponse(new URL(url).hostname, result.http_status);
         }
 
-        if (!result.error) {
+        const finalCanonical = canonicalForCrawl(result.url);
+        if (!result.error && !emitted.has(finalCanonical)) {
+          emitted.add(finalCanonical);
           const item: CrawlResultItem = {
             url: canonicalForOutput(result.url),
             title: result.title,

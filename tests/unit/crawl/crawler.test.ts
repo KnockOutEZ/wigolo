@@ -274,6 +274,93 @@ describe('Crawler — BFS', () => {
 
       expect(result.pages).toEqual([]);
     });
+
+    it('does not crawl the landing page again through a link back to it', async () => {
+      const selfLinkingFetch: FetchFn = vi.fn(async (url: string) => {
+        if (url === 'https://example.com') {
+          return makeFetchOutput('https://www.example.com/', 'Home', '# Home', [
+            'https://www.example.com/',
+            'https://www.example.com/a',
+          ]);
+        }
+        return makeFetchOutput(url, 'Page', '# Page', []);
+      });
+      const crawler = new Crawler(selfLinkingFetch, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 10,
+      });
+
+      expect(result.pages.map((p) => p.url)).toEqual([
+        'https://www.example.com',
+        'https://www.example.com/a',
+      ]);
+    });
+  });
+
+  describe('redirect aliases', () => {
+    // /old 301s to /new, and the seed links to both.
+    const aliasFetch = () => vi.fn(async (url: string) => {
+      if (url === 'https://docs.example.com') {
+        return makeFetchOutput(url, 'Home', '# Home', [
+          'https://docs.example.com/old',
+          'https://docs.example.com/new',
+        ]);
+      }
+      if (url === 'https://docs.example.com/old') {
+        return makeFetchOutput('https://docs.example.com/new', 'New', '# New', []);
+      }
+      return makeFetchOutput(url, 'Page', `# ${url}`, []);
+    });
+
+    it('emits a page once when two links redirect to the same final URL', async () => {
+      const fetch = aliasFetch();
+      const crawler = new Crawler(fetch, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://docs.example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 10,
+      });
+
+      expect(result.pages.map((p) => p.url)).toEqual([
+        'https://docs.example.com',
+        'https://docs.example.com/new',
+      ]);
+      // /new was already fetched as /old's redirect target; no second request.
+      expect(fetch.mock.calls.map((c) => c[0])).not.toContain('https://docs.example.com/new');
+    });
+
+    it('does not let a duplicate use up a max_pages slot', async () => {
+      const fetch = vi.fn(async (url: string) => {
+        if (url === 'https://docs.example.com') {
+          return makeFetchOutput(url, 'Home', '# Home', [
+            'https://docs.example.com/old',
+            'https://docs.example.com/new',
+            'https://docs.example.com/other',
+          ]);
+        }
+        if (url === 'https://docs.example.com/new') {
+          return makeFetchOutput('https://docs.example.com/old', 'Old', '# Old', []);
+        }
+        return makeFetchOutput(url, 'Page', `# ${url}`, []);
+      });
+      const crawler = new Crawler(fetch, rawFetchFn);
+      const result = await crawler.crawl({
+        url: 'https://docs.example.com',
+        strategy: 'bfs',
+        max_depth: 1,
+        max_pages: 3,
+      });
+
+      expect(result.pages.map((p) => p.url)).toEqual([
+        'https://docs.example.com',
+        'https://docs.example.com/old',
+        'https://docs.example.com/other',
+      ]);
+    });
   });
 
   it('does not visit the same URL twice', async () => {
@@ -493,6 +580,41 @@ describe('Crawler — Sitemap', () => {
     const urls = result.pages.map((p) => p.url);
     expect(urls).toContain('https://docs.example.com/page1');
     expect(urls).toContain('https://docs.example.com/page2');
+  });
+
+  it('emits a page once when two sitemap URLs redirect to the same final URL', async () => {
+    const sitemapXml = `<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.example.com/old</loc></url>
+  <url><loc>https://docs.example.com/new</loc></url>
+  <url><loc>https://docs.example.com/other</loc></url>
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch: FetchFn = vi.fn(async (url) =>
+      url === 'https://docs.example.com/old'
+        ? makeFetchOutput('https://docs.example.com/new', 'New', '# New', [])
+        : makeFetchOutput(url, 'Page', `# ${url}`, []),
+    );
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 10,
+    });
+
+    expect(result.pages.map((p) => p.url)).toEqual([
+      'https://docs.example.com/new',
+      'https://docs.example.com/other',
+    ]);
+    expect(result.crawled).toBe(2);
   });
 
   it('falls back to BFS when no sitemap found', async () => {
