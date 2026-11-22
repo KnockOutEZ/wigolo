@@ -99,8 +99,10 @@ export class Crawler {
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
     // visited is keyed on requested URLs; a redirect can land two of them on
-    // the same page, so also track the final URLs already emitted.
-    const emitted = new Set<string>();
+    // the same page, so also track each emitted final URL and the shallowest
+    // depth it was reached at. A page is emitted once, but a later, shallower
+    // visit (possible under DFS) still expands its links.
+    const emittedDepth = new Map<string, number>();
 
     // seedOrigin comes from the pre-redirect input URL. Re-anchored to the
     // seed's final origin below once it has been fetched, so a seed that
@@ -116,8 +118,9 @@ export class Crawler {
       const next = strategy === 'dfs' ? queue.pop()! : queue.shift()!;
       const [url, depth] = next;
 
-      // Already reached as another URL's redirect target.
-      if (emitted.has(canonicalForCrawl(url))) continue;
+      // Already reached as another URL's redirect target, at this depth or shallower.
+      const reachedAt = emittedDepth.get(canonicalForCrawl(url));
+      if (reachedAt !== undefined && reachedAt <= depth) continue;
 
       // Check robots.txt
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) {
@@ -160,8 +163,9 @@ export class Crawler {
       }
 
       const finalCanonical = canonicalForCrawl(fetchResult.url);
-      if (emitted.has(finalCanonical)) continue;
-      emitted.add(finalCanonical);
+      const emittedAt = emittedDepth.get(finalCanonical);
+      if (emittedAt !== undefined && emittedAt <= depth) continue;
+      emittedDepth.set(finalCanonical, depth);
 
       const item: CrawlResultItem = {
         url: canonicalForOutput(fetchResult.url),
@@ -177,9 +181,11 @@ export class Crawler {
         ...(fetchResult.challenge_class !== undefined ? { challenge_class: fetchResult.challenge_class } : {}),
         ...(fetchResult.solve_method !== undefined ? { solve_method: fetchResult.solve_method } : {}),
       };
-      pages.push(item);
-
-      if (indexing) await enqueueIndexCrawl(item);
+      // A shallower revisit only re-expands links; the page is already out.
+      if (emittedAt === undefined) {
+        pages.push(item);
+        if (indexing) await enqueueIndexCrawl(item);
+      }
 
       // Discover links for traversal
       if (depth < maxDepth) {
@@ -289,7 +295,6 @@ export class Crawler {
     );
 
     const totalFound = filtered.length;
-    const toFetch = filtered.slice(0, maxPages);
     const pages: CrawlResultItem[] = [];
     const allLinks: LinkEdge[] = [];
     // see crawlTraversal — same dedup key used here so the sitemap path
@@ -298,10 +303,14 @@ export class Crawler {
     const indexing = isIndexingEnabled();
     // see crawlTraversal — two listed URLs can redirect to the same page.
     const emitted = new Set<string>();
+    // Each listed URL uses one of max_pages slots (a failed or robots-blocked
+    // one too), except a redirect duplicate of a page already emitted.
+    let slots = maxPages;
 
-    for (const url of toFetch) {
-      if (pages.length >= maxPages) break;
+    for (const url of filtered) {
+      if (slots <= 0 || pages.length >= maxPages) break;
       if (emitted.has(canonicalForCrawl(url))) continue;
+      slots--;
 
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) continue;
 
@@ -316,7 +325,9 @@ export class Crawler {
         }
 
         const finalCanonical = canonicalForCrawl(result.url);
-        if (!result.error && !emitted.has(finalCanonical)) {
+        if (!result.error && emitted.has(finalCanonical)) {
+          slots++;
+        } else if (!result.error) {
           emitted.add(finalCanonical);
           const item: CrawlResultItem = {
             url: canonicalForOutput(result.url),
