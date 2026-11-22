@@ -687,6 +687,42 @@ describe('Crawler — Sitemap', () => {
     ]);
   });
 
+  it('hands back the slot when a fetched sitemap URL turns out to be a redirect duplicate', async () => {
+    const sitemapXml = `<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.example.com/old</loc></url>
+  <url><loc>https://docs.example.com/alias</loc></url>
+  <url><loc>https://docs.example.com/other</loc></url>
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    // /old and /alias both land on /new; only fetching /alias reveals that.
+    const fetch = vi.fn(async (url: string) =>
+      url === 'https://docs.example.com/old' || url === 'https://docs.example.com/alias'
+        ? makeFetchOutput('https://docs.example.com/new', 'New', '# New', [])
+        : makeFetchOutput(url, 'Page', `# ${url}`, []),
+    );
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 2,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(result.pages.map((p) => p.url)).toEqual([
+      'https://docs.example.com/new',
+      'https://docs.example.com/other',
+    ]);
+  });
+
   it('a failed sitemap fetch still uses its max_pages slot', async () => {
     const sitemapXml = `<?xml version="1.0"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
