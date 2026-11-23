@@ -93,10 +93,13 @@ export class FastembedEmbedProvider implements EmbedProvider {
   private readonly deferredReleases: FlagEmbedding[] = [];
   readonly modelId: string;
   readonly dim: number;
+  /** Character cap per input, from `embeddingMaxTextLength`. */
+  private readonly maxTextLength: number;
 
   constructor() {
     this.modelId = FASTEMBED_EMBED_MODEL_ID;
     this.dim = 384;
+    this.maxTextLength = getConfig().embeddingMaxTextLength;
   }
 
   async warmup(): Promise<void> {
@@ -193,8 +196,13 @@ export class FastembedEmbedProvider implements EmbedProvider {
     this.embedsInFlight += 1;
     try {
       const model = await this.getModel();
+      // The model keeps only its first 512 tokens, so text far past that
+      // mostly costs tokenizer time. Trim it first, as the remote provider
+      // does.
+      const cap = this.maxTextLength;
+      const inputs = cap > 0 ? texts.map((t) => (t.length > cap ? t.slice(0, cap) : t)) : texts;
       const out: Float32Array[] = [];
-      for await (const batch of model.embed(texts, texts.length)) {
+      for await (const batch of model.embed(inputs, inputs.length)) {
         for (const vec of batch) {
           out.push(Float32Array.from(vec));
         }
