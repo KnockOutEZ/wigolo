@@ -26,6 +26,21 @@ export interface PlaywrightProxyOption {
 }
 
 /**
+ * Percent-decode one userinfo part, and never throw. The URL parser keeps a
+ * `%` that is not followed by two hex digits (a password of `100%`, for
+ * example), and `decodeURIComponent` throws `URIError` on that input. The part
+ * is the credential the user typed, so return it unchanged when it holds no
+ * valid escape sequence to decode. One bad escape must not stop the launch.
+ */
+function decodeUserinfoPart(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Build Playwright's structured `proxy` launch option from the resolved proxy
  * URL. Credentials are passed as `username`/`password` fields — NEVER inline in
  * the `server` string — so they don't leak into the browser child's process
@@ -47,8 +62,8 @@ export function playwrightProxyOption(
   parsed.username = '';
   parsed.password = '';
   const opt: PlaywrightProxyOption = { server: parsed.toString() };
-  if (username) opt.username = decodeURIComponent(username);
-  if (password) opt.password = decodeURIComponent(password);
+  if (username) opt.username = decodeUserinfoPart(username);
+  if (password) opt.password = decodeUserinfoPart(password);
   return opt;
 }
 

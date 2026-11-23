@@ -99,6 +99,33 @@ describe('playwrightProxyOption', () => {
   it('returns undefined for an unparseable proxy URL (fail-safe)', () => {
     expect(playwrightProxyOption('not a url', true)).toBeUndefined();
   });
+
+  it('keeps a literal percent sign in the password', () => {
+    const opt = playwrightProxyOption('http://user:100%@proxy.example.com:8080', true);
+    expect(opt).toBeDefined();
+    expect(opt!.username).toBe('user');
+    expect(opt!.password).toBe('100%');
+  });
+
+  it('keeps a malformed escape in the username unchanged', () => {
+    const opt = playwrightProxyOption('http://us%zz:pw@proxy.example.com:8080', true);
+    expect(opt).toBeDefined();
+    expect(opt!.username).toBe('us%zz');
+    expect(opt!.password).toBe('pw');
+  });
+
+  it('still decodes a valid escape sequence', () => {
+    const opt = playwrightProxyOption('http://user:p%40ss@proxy.example.com:8080', true);
+    expect(opt!.password).toBe('p@ss');
+  });
+
+  it('decodes after a split and recompose round trip with a percent password', () => {
+    const { bareUrl, userinfo } = splitUserinfo('http://user:100%@proxy.example.com:8080');
+    expect(userinfo).toBe('user:100%');
+    const opt = playwrightProxyOption(recomposeWithUserinfo(bareUrl, userinfo!), true);
+    expect(opt).toBeDefined();
+    expect(opt!.password).toBe('100%');
+  });
 });
 
 describe('CREDENTIAL_URL_KEYS', () => {
