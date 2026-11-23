@@ -8,6 +8,8 @@ From zero to your agent searching the web in about five minutes. You need Node.j
 npx wigolo init
 ```
 
+On Linux x64, if the install stops with `Failed to download the binaries: 404`, apply the one-line setting in [installation](./installation.md#linux-x64-failed-to-download-the-binaries-404) first.
+
 `init` is unattended by default — no prompts, safe in scripts and CI. It performs a complete setup: downloads the browser engine and the on-device ranking and embedding models, verifies each component, and prints a per-component report so failures surface loudly instead of hiding until first use. A degraded component doesn't abort setup — it's named in the report, init still exits 0 (agents wired, config persisted), and the component lazy-retries on first use. A non-zero exit is reserved for hard failures like a failed requested agent registration.
 
 To wire your coding agent at the same time, name it:
