@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.3.2 — 2026-11-23
+
+Remote embeddings, readiness reporting, warmup component flags, plugin search engines in the default search, and installs on Linux x64 again.
+
 ### Added
 - Remote embeddings: `WIGOLO_EMBEDDING_API_BASE` sends cache embeddings to an OpenAI-compatible `/embeddings` endpoint. `WIGOLO_EMBEDDING_API_KEY` holds an optional Bearer token. A keyless base can use plain HTTP. A key needs HTTPS unless the host is loopback. Wigolo skips the bundled model when the base exists. (fixes #674)
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
@@ -12,6 +16,10 @@
 - `doctor --json` reports `ok_with_warnings` when a check reports `failed` but the run stays usable. The `status` field no longer reads `ok` in that case, so scripts that compare `status === "ok"` must accept the new value. (#673)
 
 ### Fixed
+- A very large response no longer crashes the process. Response bodies are capped by `WIGOLO_MAX_RESPONSE_BYTES` (default 20 MB), including chunked bodies with no declared length. (fixes #648)
+- The reranker and the embedding model unload after `WIGOLO_RERANKER_IDLE_TIMEOUT_MS` (default 300 s) and `WIGOLO_EMBEDDING_IDLE_TIMEOUT` (default 1800 s) without a call, and reload on the next one. The unload releases the model session, and shutdown waits for a reranker load in flight. (#647)
+- `use_auth: true` fetches through the browser now use the stored auth state from `WIGOLO_AUTH_STATE_PATH`, in a context of their own. (fixes #526)
+- A fetch that falls back to a lower tier while the browser engine is still installing now returns the install note in `warning` and flags a JS shell with `js_required`. (fixes #671)
 - `WIGOLO_RERANKER_MAX_LENGTH` and `WIGOLO_EMBEDDING_MAX_TEXT_LENGTH` now apply to the bundled models. The reranker cuts each query and document pair at that many tokens when the value is below the model's own limit (512), and the bundled embedding model trims each input to that many characters before tokenizing. Both settings were read but ignored on the local path. The reranker default equals the model limit, so default reranking is unchanged. (#647)
 - The MCP server no longer fails to start when the interactive prompt library is missing or damaged, for example after an interrupted `npx` install. Only `wigolo setup mcp` loads it now, and it reports the error instead of exiting at startup.
 - Installing from the repository (CI, the Docker image build, contributors) no longer fails on Linux x64 when the optional GPU files for the on-device model runtime cannot be downloaded. wigolo runs its models on the CPU and now skips that download. `docs/installation.md` gives the same one-line setting for `npx` and global installs on Linux x64.
