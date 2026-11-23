@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - target: node22-macos-arm64
-            runner: macos-14
+            runner: macos-15
             artifact: wigolo-macos-arm64
             # VERIFIED locally (macOS arm64).
             assets: >-
