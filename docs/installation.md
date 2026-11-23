@@ -19,6 +19,16 @@ wigolo init
 
 `init` performs a complete setup by default (browser engine + on-device models + verification, with a per-component report). Pass `--no-warmup` to defer downloads to first use. See [getting started](./getting-started.md) for the init walkthrough.
 
+### Linux x64: `Failed to download the binaries: 404`
+
+On Linux x64 the on-device model runtime tries to download optional GPU files during install. Their download location currently returns 404, which stops `npx` and `npm install -g`. wigolo runs its models on the CPU and does not need those files. Skip the download once per machine, then install as above:
+
+```bash
+echo "onnxruntime-node-install-cuda=skip" >> ~/.npmrc
+```
+
+To skip it for a single command instead, prefix it with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`, for example `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g wigolo`.
+
 ## Single-file binary
 
 Each [GitHub Release](https://github.com/KnockOutEZ/wigolo/releases/latest) attaches a self-contained executable per platform — no Node.js install required:
