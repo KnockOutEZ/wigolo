@@ -19,6 +19,16 @@ wigolo init
 
 `init` performs a complete setup by default (browser engine + on-device models + verification, with a per-component report). Pass `--no-warmup` to defer downloads to first use. See [getting started](./getting-started.md) for the init walkthrough.
 
+### Linux x64: `Failed to download the binaries: 404`
+
+On Linux x64 the on-device model runtime tries to download optional GPU files during install. Their download location currently returns 404, which stops `npx` and `npm install -g`. wigolo runs its models on the CPU and does not need those files. Skip the download once per machine, then install as above:
+
+```bash
+echo "onnxruntime-node-install-cuda=skip" >> ~/.npmrc
+```
+
+To skip it for a single command instead, prefix it with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`, for example `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g wigolo`.
+
 ## Single-file binary
 
 Each [GitHub Release](https://github.com/KnockOutEZ/wigolo/releases/latest) attaches a self-contained executable per platform — no Node.js install required:
@@ -69,7 +79,7 @@ docker compose -f packaging/compose.serve.yml up
 
 The compose file binds `0.0.0.0` inside the container, which is a non-loopback bind: the daemon **fails closed** and refuses to start until you set `WIGOLO_API_TOKEN` (uncomment the line in the file) or explicitly opt into open access. Details in [self-hosting](./self-hosting.md).
 
-The published browser-preloaded image is `ghcr.io/knockoutez/wigolo:latest-full`; versioned releases use the same `-full` suffix (for example, `0.3.1-full`). It is useful for `--rm`/no-volume runs where first-use browser downloads would repeat:
+The published browser-preloaded image is `ghcr.io/knockoutez/wigolo:latest-full`; versioned releases use the same `-full` suffix (for example, `0.3.2-full`). It is useful for `--rm`/no-volume runs where first-use browser downloads would repeat:
 
 ```bash
 docker run -i --rm ghcr.io/knockoutez/wigolo:latest-full
