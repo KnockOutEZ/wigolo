@@ -369,14 +369,14 @@ describe('extractLinksAndImages', () => {
   });
 
   it('stays fast on link text full of images with no link after it', () => {
-    for (const image of ['![a](<img>)', '![a](\n\timg "t")']) {
+    for (const image of ['![a](<img>)', '![a](\n\timg "t")', '![a](img\u00a0\u00a0\u00a0)']) {
       const md = '[' + image.repeat(40) + '] text';
       const start = Date.now();
       const result = extractLinksAndImages(md);
       resolveRelativeUrls(md, 'https://x.org/');
       expect(Date.now() - start).toBeLessThan(1000);
       expect(result.links).toEqual([]);
-      expect(result.images).toEqual(['img']);
+      expect(result.images).toEqual([image.includes('\u00a0') ? 'img\u00a0\u00a0\u00a0' : 'img']);
     }
   });
 

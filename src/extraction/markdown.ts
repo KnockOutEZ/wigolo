@@ -169,12 +169,14 @@ export function extractSection(
 // kept unless a title or the closing parenthesis follows it.
 const ANGLE_DEST = String.raw`(?:[^<>\\]|\\.)*`;
 const BARE_DEST =
-  String.raw`(?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^\s"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+`;
+  String.raw`(?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^ \t\r\n"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+`;
 // Leading whitespace belongs to the `\s*` before the destination, never to it.
 const LINK_DEST = String.raw`(?:<(${ANGLE_DEST})>|(?!\s)(${BARE_DEST}))`;
 // An optional quoted or parenthesised title, then the closing parenthesis.
+// Only ASCII whitespace separates them: a non-breaking space stays part of
+// the destination, so each destination parses one way.
 const LINK_TAIL =
-  String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
+  String.raw`(?:[ \t\r\n]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t\r\n]*\)`;
 const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
 // The text of a link. It can hold whole images, so a linked image
 // `[![alt](src)](href)` is one link to href; `![` only starts such an image.
