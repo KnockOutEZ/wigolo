@@ -161,9 +161,23 @@ export function extractSection(
   return { content: extractFromHeading(lines, headings, i), matched: true };
 }
 
+// The `(destination "title")` part of an inline link or image, per CommonMark:
+// a `<…>` destination (group 1) or a bare one with backslash escapes and one
+// level of balanced parentheses (group 2), then an optional quoted or
+// parenthesised title. Turndown writes destinations this way: it escapes
+// `<>()` with a backslash and wraps a destination that has a space in `<…>`.
+const LINK_TARGET =
+  String.raw`\(\s*(?:<((?:[^<>\n\\]|\\.)*)>|((?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+))` +
+  String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
+
+function linkDestination(match: RegExpExecArray): string {
+  const raw = match[1] ?? match[2] ?? '';
+  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+}
+
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
-  const imagePattern = /!\[[^\]]*\]\(([^)]+)\)/g;
-  const linkPattern = /(?<!!)\[[^\]]*\]\(([^)]+)\)/g;
+  const imagePattern = new RegExp(String.raw`!\[[^\]]*\]` + LINK_TARGET, 'g');
+  const linkPattern = new RegExp(String.raw`(?<!!)\[[^\]]*\]` + LINK_TARGET, 'g');
 
   const images = new Set<string>();
   const links = new Set<string>();
@@ -172,12 +186,14 @@ export function extractLinksAndImages(markdown: string): { links: string[]; imag
 
   // Extract images first
   while ((match = imagePattern.exec(markdown)) !== null) {
-    images.add(match[1]);
+    const dest = linkDestination(match);
+    if (dest) images.add(dest);
   }
 
   // Extract links (non-image)
   while ((match = linkPattern.exec(markdown)) !== null) {
-    links.add(match[1]);
+    const dest = linkDestination(match);
+    if (dest) links.add(dest);
   }
 
   return { links: Array.from(links), images: Array.from(images) };

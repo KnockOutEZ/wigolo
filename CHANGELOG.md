@@ -4,6 +4,7 @@
 
 ### Fixed
 - `GET /health` reports `browsers: "not_installed"` when an engine that browser work needs is missing. The probe covers the configured browser types and Chromium, which the acquisition gate checks before the pool launches. The pool object is created at startup either way, so the old check reported `"ready"` on a broken install. Overall `status` is unchanged, because the engine installs on first use. (#673)
+- `fetch` `links` and `images` hold only the link destination. A link title, `<…>` brackets and backslash escapes no longer end up in the URL, so `crawl` with `strategy: "bfs"` follows the real page instead of a 404. (#708)
 
 ## v0.3.2 — 2026-11-23
 
