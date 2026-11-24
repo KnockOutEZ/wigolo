@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## v0.3.3 — 2026-11-24
+
+Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.
+
 ### Fixed
+- Release binaries are attached again. The macOS arm64 build ran on the retired `macos-14` runner and was cancelled, so v0.3.2 shipped with none. It now builds on `macos-15`. (#707)
 - `GET /health` reports `browsers: "not_installed"` when an engine that browser work needs is missing. The probe covers the configured browser types and Chromium, which the acquisition gate checks before the pool launches. The pool object is created at startup either way, so the old check reported `"ready"` on a broken install. Overall `status` is unchanged, because the engine installs on first use. (#673)
 - `fetch` `links` and `images` hold only the link destination. A link title, `<…>` brackets and backslash escapes no longer end up in the URL, and relative links with parentheses (`/wiki/Foo_(bar)`) resolve correctly. So `crawl` with `strategy: "bfs"` follows the real page instead of a 404. (#708)
 
