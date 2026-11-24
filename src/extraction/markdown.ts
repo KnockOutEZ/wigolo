@@ -165,15 +165,18 @@ export function extractSection(
 // (first group) or a bare form with backslash escapes and one level of
 // balanced parentheses (second group). Turndown writes destinations this way:
 // it escapes `<>()` with a backslash and wraps one that has a space in `<…>`.
+// An href can hold a raw tab or line break; inside a bare destination it is
+// kept unless a title or the closing parenthesis follows it.
 const LINK_DEST =
-  String.raw`(?:<((?:[^<>\n\\]|\\.)*)>|((?:[^ \t\r\n()\\]|\\.|\((?:[^ \t\r\n()\\]|\\.)*\))+))`;
+  String.raw`(?:<((?:[^<>\\]|\\.)*)>|((?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^\s"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+))`;
 // An optional quoted or parenthesised title, then the closing parenthesis.
 const LINK_TAIL =
   String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
 const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
 
+// Drop backslash escapes, and the tabs and line breaks a URL parser ignores.
 function unescapeDestination(raw: string): string {
-  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/[\t\r\n]/g, '');
 }
 
 function linkDestination(match: RegExpExecArray): string {

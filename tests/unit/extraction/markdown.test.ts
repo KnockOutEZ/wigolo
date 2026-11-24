@@ -351,6 +351,18 @@ describe('extractLinksAndImages', () => {
     const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
     expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
   });
+
+  it('keeps a destination whose href has a line break or tab', () => {
+    const md = htmlToMarkdown(
+      '<a href="https://x.org/a?x=1\n&amp;y=2">a</a> <a href="https://x.org/b c\td">b</a> ' +
+      '<a href="https://x.org/e\n" title="t">e</a>',
+    );
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/a?x=1&y=2',
+      'https://x.org/b cd',
+      'https://x.org/e',
+    ]);
+  });
 });
 
 describe('filterDecorativeImages', () => {
