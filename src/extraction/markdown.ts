@@ -177,9 +177,10 @@ const LINK_TAIL =
 const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
 // The text of a link. It can hold whole images, so a linked image
 // `[![alt](src)](href)` is one link to href; `![` only starts such an image.
-// A bare destination here cannot start with `<`, so each image parses one way.
-// Plain text cannot hold `[`, so an unclosed `[` stops at the next one.
-const INNER_IMAGE = String.raw`!\[[^\]]*\]\(\s*(?:<` + ANGLE_DEST + '>|(?!<)' + BARE_DEST + ')' + LINK_TAIL;
+// A bare destination here cannot start with `<` or whitespace, so each image
+// parses one way. Plain text cannot hold `[`, so an unclosed `[` stops at the
+// next one.
+const INNER_IMAGE = String.raw`!\[[^\]]*\]\(\s*(?:<` + ANGLE_DEST + String.raw`>|(?![<\s])` + BARE_DEST + ')' + LINK_TAIL;
 const LINK_TEXT = String.raw`\[(?:` + INNER_IMAGE + String.raw`|[^\][!]|!(?!\[))*\]`;
 
 // Drop backslash escapes, and the tabs and line breaks a URL parser ignores.

@@ -369,13 +369,15 @@ describe('extractLinksAndImages', () => {
   });
 
   it('stays fast on link text full of images with no link after it', () => {
-    const md = '[' + '![a](<img>)'.repeat(40) + '] text';
-    const start = Date.now();
-    const result = extractLinksAndImages(md);
-    resolveRelativeUrls(md, 'https://x.org/');
-    expect(Date.now() - start).toBeLessThan(1000);
-    expect(result.links).toEqual([]);
-    expect(result.images).toEqual(['img']);
+    for (const image of ['![a](<img>)', '![a](\n\timg "t")']) {
+      const md = '[' + image.repeat(40) + '] text';
+      const start = Date.now();
+      const result = extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(result.links).toEqual([]);
+      expect(result.images).toEqual(['img']);
+    }
   });
 
   it('stays fast on many unclosed brackets before many images', () => {
