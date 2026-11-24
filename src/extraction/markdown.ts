@@ -253,7 +253,8 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
   if (!markdown || !baseUrl) return markdown;
 
   const rewrite = (path: string): string => {
-    const trimmed = path.trim();
+    // ASCII whitespace only: a non-breaking space can be part of the path.
+    const trimmed = path.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
     if (!trimmed) return path;
     if (/^(?:https?:|mailto:|tel:|javascript:|data:)/i.test(trimmed)) return path;
     if (trimmed.startsWith('#')) {
@@ -279,13 +280,15 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
   };
 
   // Rewrite the destination as written (escaped, maybe in `<…>`). An unchanged
-  // destination keeps its original form; a resolved one is a URL, so it has no
-  // spaces and only needs turndown's `<>()` escaping.
+  // destination keeps its original form. A resolved one is escaped again, and
+  // goes in `<…>` if it still has a space (a protocol-relative path can).
   const rewriteDest = (angle: string | undefined, bare: string | undefined): string => {
     const written = angle !== undefined ? `<${angle}>` : (bare ?? '');
     const dest = unescapeDestination(angle ?? bare ?? '');
     const resolved = rewrite(dest);
-    return resolved === dest ? written : resolved.replace(/([<>()])/g, '\\$1');
+    if (resolved === dest) return written;
+    const escaped = resolved.replace(/([<>()\\])/g, '\\$1');
+    return /[ \t\r\n]/.test(escaped) ? `<${escaped}>` : escaped;
   };
 
   // Image links first so the shared link regex does not rewrite them twice.

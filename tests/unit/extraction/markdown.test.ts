@@ -474,6 +474,16 @@ describe('resolveRelativeUrls', () => {
     ].join(' '));
   });
 
+  it('round-trips a resolved destination through link extraction', () => {
+    const md = resolveRelativeUrls(
+      '[q](?q=\\\\*) [p](/p ) ![c](<//cdn.x.org/a b.png>)',
+      'https://x.org/',
+    );
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual(['https://x.org/?q=\\*', 'https://x.org/p%C2%A0']);
+    expect(result.images).toEqual(['https://cdn.x.org/a b.png']);
+  });
+
   it('feeds clean absolute URLs to link extraction for relative turndown links', () => {
     const html =
       '<p><a href="/wiki/Foo_(bar)" title="Foo">Foo</a> ' +
