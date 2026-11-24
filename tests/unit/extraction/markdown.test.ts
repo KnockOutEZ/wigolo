@@ -347,6 +347,70 @@ describe('extractLinksAndImages', () => {
     expect(result.images).toEqual(['https://x.org/fig.png']);
   });
 
+  it('puts the href of a linked image in links and its src in images', () => {
+    const md = htmlToMarkdown(
+      '<p><a href="https://x.org/docs/a.html"><img src="https://x.org/a.png" alt="a"></a> ' +
+      '<a href="https://x.org/docs/b.html"><img src="https://x.org/b.png" alt="">B</a> ' +
+      '<a href="https://x.org/c.html" title="C"><img src="https://x.org/c.png" alt="c" title="c"></a></p>',
+    );
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual([
+      'https://x.org/docs/a.html',
+      'https://x.org/docs/b.html',
+      'https://x.org/c.html',
+    ]);
+    expect(result.images).toEqual(['https://x.org/a.png', 'https://x.org/b.png', 'https://x.org/c.png']);
+  });
+
+  it('does not take a link from an image wrapped in plain brackets', () => {
+    const result = extractLinksAndImages('[![a](https://x.org/a.png)] text');
+    expect(result.links).toEqual([]);
+    expect(result.images).toEqual(['https://x.org/a.png']);
+  });
+
+  it('stays fast on link text full of images with no link after it', () => {
+    for (const image of ['![a](<img>)', '![a](\n\timg "t")', '![a](img\u00a0\u00a0\u00a0)']) {
+      const md = '[' + image.repeat(40) + '] text';
+      const start = Date.now();
+      const result = extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(result.links).toEqual([]);
+      expect(result.images).toEqual([image.includes('\u00a0') ? 'img\u00a0\u00a0\u00a0' : 'img']);
+    }
+  });
+
+  it('stays fast on many unclosed brackets before many images', () => {
+    const md = '\\['.repeat(8000) + '\n\n' + '![a](i.png)'.repeat(8000);
+    const start = Date.now();
+    const result = extractLinksAndImages(md);
+    resolveRelativeUrls(md, 'https://x.org/');
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result.links).toEqual([]);
+    expect(result.images).toEqual(['i.png']);
+  });
+
+  it('stays fast on many images with a bracket in the destination or title', () => {
+    for (const [image, src] of [['![a](u[)', 'u['], ['![a](u "[x")', 'u']]) {
+      const md = image.repeat(16000);
+      const start = Date.now();
+      const result = extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(result.links).toEqual([]);
+      expect(result.images).toEqual([src]);
+    }
+  });
+
+  it('stays fast on a long run of whitespace after an unclosed destination', () => {
+    for (const md of ['[a](' + '\t'.repeat(40000) + 'x', '[![a](b)](' + '\t'.repeat(40000) + 'x']) {
+      const start = Date.now();
+      extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
+
   it('keeps a destination with a non-breaking space', () => {
     const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
     expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
@@ -482,6 +546,14 @@ describe('resolveRelativeUrls', () => {
     const result = extractLinksAndImages(md);
     expect(result.links).toEqual(['https://x.org/?q=\\*', 'https://x.org/p%C2%A0']);
     expect(result.images).toEqual(['https://cdn.x.org/a b.png']);
+  });
+
+  it('resolves both the href and the src of a linked image', () => {
+    const md = resolveRelativeUrls('[![a](img/a.png)](a.html)', 'https://x.org/docs/page.html');
+    expect(md).toBe('[![a](https://x.org/docs/img/a.png)](https://x.org/docs/a.html)');
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual(['https://x.org/docs/a.html']);
+    expect(result.images).toEqual(['https://x.org/docs/img/a.png']);
   });
 
   it('feeds clean absolute URLs to link extraction for relative turndown links', () => {
