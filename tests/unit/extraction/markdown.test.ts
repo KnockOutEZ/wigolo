@@ -347,6 +347,27 @@ describe('extractLinksAndImages', () => {
     expect(result.images).toEqual(['https://x.org/fig.png']);
   });
 
+  it('puts the href of a linked image in links and its src in images', () => {
+    const md = htmlToMarkdown(
+      '<p><a href="https://x.org/docs/a.html"><img src="https://x.org/a.png" alt="a"></a> ' +
+      '<a href="https://x.org/docs/b.html"><img src="https://x.org/b.png" alt="">B</a> ' +
+      '<a href="https://x.org/c.html" title="C"><img src="https://x.org/c.png" alt="c" title="c"></a></p>',
+    );
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual([
+      'https://x.org/docs/a.html',
+      'https://x.org/docs/b.html',
+      'https://x.org/c.html',
+    ]);
+    expect(result.images).toEqual(['https://x.org/a.png', 'https://x.org/b.png', 'https://x.org/c.png']);
+  });
+
+  it('does not take a link from an image wrapped in plain brackets', () => {
+    const result = extractLinksAndImages('[![a](https://x.org/a.png)] text');
+    expect(result.links).toEqual([]);
+    expect(result.images).toEqual(['https://x.org/a.png']);
+  });
+
   it('keeps a destination with a non-breaking space', () => {
     const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
     expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
@@ -482,6 +503,14 @@ describe('resolveRelativeUrls', () => {
     const result = extractLinksAndImages(md);
     expect(result.links).toEqual(['https://x.org/?q=\\*', 'https://x.org/p%C2%A0']);
     expect(result.images).toEqual(['https://cdn.x.org/a b.png']);
+  });
+
+  it('resolves both the href and the src of a linked image', () => {
+    const md = resolveRelativeUrls('[![a](img/a.png)](a.html)', 'https://x.org/docs/page.html');
+    expect(md).toBe('[![a](https://x.org/docs/img/a.png)](https://x.org/docs/a.html)');
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual(['https://x.org/docs/a.html']);
+    expect(result.images).toEqual(['https://x.org/docs/img/a.png']);
   });
 
   it('feeds clean absolute URLs to link extraction for relative turndown links', () => {

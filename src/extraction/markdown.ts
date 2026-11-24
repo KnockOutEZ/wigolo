@@ -167,12 +167,18 @@ export function extractSection(
 // it escapes `<>()` with a backslash and wraps one that has a space in `<…>`.
 // An href can hold a raw tab or line break; inside a bare destination it is
 // kept unless a title or the closing parenthesis follows it.
-const LINK_DEST =
-  String.raw`(?:<((?:[^<>\\]|\\.)*)>|((?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^\s"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+))`;
+const ANGLE_DEST = String.raw`(?:[^<>\\]|\\.)*`;
+const BARE_DEST =
+  String.raw`(?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^\s"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+`;
+const LINK_DEST = `(?:<(${ANGLE_DEST})>|(${BARE_DEST}))`;
 // An optional quoted or parenthesised title, then the closing parenthesis.
 const LINK_TAIL =
   String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
 const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
+// The text of a link. It can hold whole images, so a linked image
+// `[![alt](src)](href)` is one link to href; `![` only starts such an image.
+const INNER_IMAGE = String.raw`!\[[^\]]*\]\(\s*(?:<` + ANGLE_DEST + '>|' + BARE_DEST + ')' + LINK_TAIL;
+const LINK_TEXT = String.raw`\[(?:` + INNER_IMAGE + String.raw`|[^\]!]|!(?!\[))*\]`;
 
 // Drop backslash escapes, and the tabs and line breaks a URL parser ignores.
 function unescapeDestination(raw: string): string {
@@ -185,7 +191,7 @@ function linkDestination(match: RegExpExecArray): string {
 
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
   const imagePattern = new RegExp(String.raw`!\[[^\]]*\]` + LINK_TARGET, 'g');
-  const linkPattern = new RegExp(String.raw`(?<!!)\[[^\]]*\]` + LINK_TARGET, 'g');
+  const linkPattern = new RegExp('(?<!!)' + LINK_TEXT + LINK_TARGET, 'g');
 
   const images = new Set<string>();
   const links = new Set<string>();
@@ -293,7 +299,7 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
 
   // Image links first so the shared link regex does not rewrite them twice.
   const imagePattern = new RegExp(String.raw`(!\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
-  const linkPattern = new RegExp(String.raw`((?<!!)\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
+  const linkPattern = new RegExp('((?<!!)' + LINK_TEXT + String.raw`\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
   const replacer = (_m: string, open: string, angle: string | undefined, bare: string | undefined, close: string): string =>
     `${open}${rewriteDest(angle, bare)}${close}`;
 
