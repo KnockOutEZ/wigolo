@@ -378,6 +378,16 @@ describe('extractLinksAndImages', () => {
     expect(result.images).toEqual(['img']);
   });
 
+  it('stays fast on many unclosed brackets before many images', () => {
+    const md = '\\['.repeat(8000) + '\n\n' + '![a](i.png)'.repeat(8000);
+    const start = Date.now();
+    const result = extractLinksAndImages(md);
+    resolveRelativeUrls(md, 'https://x.org/');
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result.links).toEqual([]);
+    expect(result.images).toEqual(['i.png']);
+  });
+
   it('keeps a destination with a non-breaking space', () => {
     const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
     expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
