@@ -390,6 +390,27 @@ describe('extractLinksAndImages', () => {
     expect(result.images).toEqual(['i.png']);
   });
 
+  it('stays fast on many images with a bracket in the destination or title', () => {
+    for (const [image, src] of [['![a](u[)', 'u['], ['![a](u "[x")', 'u']]) {
+      const md = image.repeat(16000);
+      const start = Date.now();
+      const result = extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(result.links).toEqual([]);
+      expect(result.images).toEqual([src]);
+    }
+  });
+
+  it('stays fast on a long run of whitespace after an unclosed destination', () => {
+    for (const md of ['[a](' + '\t'.repeat(40000) + 'x', '[![a](b)](' + '\t'.repeat(40000) + 'x']) {
+      const start = Date.now();
+      extractLinksAndImages(md);
+      resolveRelativeUrls(md, 'https://x.org/');
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
+
   it('keeps a destination with a non-breaking space', () => {
     const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
     expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);

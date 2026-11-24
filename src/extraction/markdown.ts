@@ -170,7 +170,8 @@ export function extractSection(
 const ANGLE_DEST = String.raw`(?:[^<>\\]|\\.)*`;
 const BARE_DEST =
   String.raw`(?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^\s"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+`;
-const LINK_DEST = `(?:<(${ANGLE_DEST})>|(${BARE_DEST}))`;
+// Leading whitespace belongs to the `\s*` before the destination, never to it.
+const LINK_DEST = String.raw`(?:<(${ANGLE_DEST})>|(?!\s)(${BARE_DEST}))`;
 // An optional quoted or parenthesised title, then the closing parenthesis.
 const LINK_TAIL =
   String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
@@ -194,7 +195,9 @@ function linkDestination(match: RegExpExecArray): string {
 
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
   const imagePattern = new RegExp(String.raw`!\[[^\]]*\]` + LINK_TARGET, 'g');
-  const linkPattern = new RegExp('(?<!!)' + LINK_TEXT + LINK_TARGET, 'g');
+  // A whole image is consumed as its own match (no destination group), so a
+  // `[` inside an image's destination or title never starts a link.
+  const linkPattern = new RegExp(INNER_IMAGE + '|(?<!!)' + LINK_TEXT + LINK_TARGET, 'g');
 
   const images = new Set<string>();
   const links = new Set<string>();
@@ -302,9 +305,13 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
 
   // Image links first so the shared link regex does not rewrite them twice.
   const imagePattern = new RegExp(String.raw`(!\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
-  const linkPattern = new RegExp('((?<!!)' + LINK_TEXT + String.raw`\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
-  const replacer = (_m: string, open: string, angle: string | undefined, bare: string | undefined, close: string): string =>
-    `${open}${rewriteDest(angle, bare)}${close}`;
+  // As in extractLinksAndImages, a whole image is skipped as its own match.
+  const linkPattern = new RegExp(
+    INNER_IMAGE + '|((?<!!)' + LINK_TEXT + String.raw`\(\s*)` + LINK_DEST + `(${LINK_TAIL})`,
+    'g',
+  );
+  const replacer = (m: string, open: string | undefined, angle: string | undefined, bare: string | undefined, close: string): string =>
+    open === undefined ? m : `${open}${rewriteDest(angle, bare)}${close}`;
 
   return markdown.replace(imagePattern, replacer).replace(linkPattern, replacer);
 }
