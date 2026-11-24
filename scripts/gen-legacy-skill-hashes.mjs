@@ -46,18 +46,18 @@ if (existsSync(MANIFEST)) {
 
 // 2) Every byte-set in git history under each skill root.
 for (const root of SKILL_ROOTS) {
-  const commits = git(['log', '--all', '--format=%H', '--', root])
+  const commits = git(['log', '--all', '--full-history', '--format=%H', '--', root])
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
   for (const sha of commits) {
     let tree;
     try {
-      tree = git(['ls-tree', '-r', '--name-only', sha, '--', root]);
+      tree = git(['ls-tree', '-r', '-z', '--name-only', sha, '--', root]);
     } catch {
       continue;
     }
-    const files = tree.split('\n').map((s) => s.trim()).filter((f) => f.endsWith('.md'));
+    const files = tree.split('\0').filter((f) => f.endsWith('.md'));
     for (const path of files) {
       let buf;
       try {
