@@ -346,6 +346,11 @@ describe('extractLinksAndImages', () => {
     expect(result.links).toEqual(['https://x.org/ha.html', 'https://x.org/wiki/Foo_(bar)']);
     expect(result.images).toEqual(['https://x.org/fig.png']);
   });
+
+  it('keeps a destination with a non-breaking space', () => {
+    const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
+    expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
+  });
 });
 
 describe('filterDecorativeImages', () => {
@@ -440,5 +445,31 @@ describe('resolveRelativeUrls', () => {
   it('returns input unchanged when baseUrl is empty', () => {
     const md = '[Rel](/x)';
     expect(resolveRelativeUrls(md, '')).toBe(md);
+  });
+
+  it('resolves escaped, bracketed and titled relative destinations', () => {
+    const md = [
+      '[a](/wiki/Foo_\\(bar\\) "Say \\"hi\\"")',
+      '[b](<rel page.html>)',
+      '[c](/c)[d](/d)',
+      '![e](img/e.png "t")',
+    ].join(' ');
+    expect(resolveRelativeUrls(md, 'https://x.org/docs/')).toBe([
+      '[a](https://x.org/wiki/Foo_\\(bar\\) "Say \\"hi\\"")',
+      '[b](https://x.org/docs/rel%20page.html)',
+      '[c](https://x.org/c)[d](https://x.org/d)',
+      '![e](https://x.org/docs/img/e.png "t")',
+    ].join(' '));
+  });
+
+  it('feeds clean absolute URLs to link extraction for relative turndown links', () => {
+    const html =
+      '<p><a href="/wiki/Foo_(bar)" title="Foo">Foo</a> ' +
+      '<a href="high-availability.html" title="Chapter 26. High Availability">Chapter 26</a></p>';
+    const md = resolveRelativeUrls(htmlToMarkdown(html), 'https://x.org/docs/current/page.html');
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/wiki/Foo_(bar)',
+      'https://x.org/docs/current/high-availability.html',
+    ]);
   });
 });

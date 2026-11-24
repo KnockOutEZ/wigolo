@@ -161,18 +161,23 @@ export function extractSection(
   return { content: extractFromHeading(lines, headings, i), matched: true };
 }
 
-// The `(destination "title")` part of an inline link or image, per CommonMark:
-// a `<…>` destination (group 1) or a bare one with backslash escapes and one
-// level of balanced parentheses (group 2), then an optional quoted or
-// parenthesised title. Turndown writes destinations this way: it escapes
-// `<>()` with a backslash and wraps a destination that has a space in `<…>`.
-const LINK_TARGET =
-  String.raw`\(\s*(?:<((?:[^<>\n\\]|\\.)*)>|((?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+))` +
+// The destination of an inline link or image, per CommonMark: a `<…>` form
+// (first group) or a bare form with backslash escapes and one level of
+// balanced parentheses (second group). Turndown writes destinations this way:
+// it escapes `<>()` with a backslash and wraps one that has a space in `<…>`.
+const LINK_DEST =
+  String.raw`(?:<((?:[^<>\n\\]|\\.)*)>|((?:[^ \t\r\n()\\]|\\.|\((?:[^ \t\r\n()\\]|\\.)*\))+))`;
+// An optional quoted or parenthesised title, then the closing parenthesis.
+const LINK_TAIL =
   String.raw`(?:\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?\s*\)`;
+const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
+
+function unescapeDestination(raw: string): string {
+  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+}
 
 function linkDestination(match: RegExpExecArray): string {
-  const raw = match[1] ?? match[2] ?? '';
-  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+  return unescapeDestination(match[1] ?? match[2] ?? '');
 }
 
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
@@ -270,16 +275,21 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
     }
   };
 
+  // Rewrite the destination as written (escaped, maybe in `<…>`). An unchanged
+  // destination keeps its original form; a resolved one is a URL, so it has no
+  // spaces and only needs turndown's `<>()` escaping.
+  const rewriteDest = (angle: string | undefined, bare: string | undefined): string => {
+    const written = angle !== undefined ? `<${angle}>` : (bare ?? '');
+    const dest = unescapeDestination(angle ?? bare ?? '');
+    const resolved = rewrite(dest);
+    return resolved === dest ? written : resolved.replace(/([<>()])/g, '\\$1');
+  };
+
   // Image links first so the shared link regex does not rewrite them twice.
-  let result = markdown.replace(
-    /(!\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
-    (_m, open, path, close) => `${open}${rewrite(path)}${close}`,
-  );
+  const imagePattern = new RegExp(String.raw`(!\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
+  const linkPattern = new RegExp(String.raw`((?<!!)\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
+  const replacer = (_m: string, open: string, angle: string | undefined, bare: string | undefined, close: string): string =>
+    `${open}${rewriteDest(angle, bare)}${close}`;
 
-  result = result.replace(
-    /(^|[^!])(\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
-    (_m, pre, open, path, close) => `${pre}${open}${rewrite(path)}${close}`,
-  );
-
-  return result;
+  return markdown.replace(imagePattern, replacer).replace(linkPattern, replacer);
 }
