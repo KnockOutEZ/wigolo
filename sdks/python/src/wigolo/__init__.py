@@ -8,7 +8,7 @@ that.
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _dist_version
 
 from ._aio import AsyncClient
@@ -18,7 +18,7 @@ from ._local import local_client
 
 try:
     __version__ = _dist_version("wigolo")
-except PackageNotFoundError:  # imported from a source tree, not installed
+except _PackageNotFoundError:  # imported from a source tree, not installed
     __version__ = "0.0.0+unknown"
 
 __all__ = [
