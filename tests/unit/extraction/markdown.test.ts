@@ -296,6 +296,73 @@ describe('extractLinksAndImages', () => {
     expect(result.links).not.toContain('https://img.com/a.png');
     expect(result.images).not.toContain('https://link.com');
   });
+
+  it('drops the link title from the destination', () => {
+    const md = [
+      '[a](https://x.org/p.html "Chapter 26. High Availability")',
+      "[b](https://x.org/c 'Title')",
+      '[c](https://x.org/d (Title))',
+      '[d](https://x.org/e "Say \\"hi\\" (now)")',
+      '[e](relative-page.html "t")',
+    ].join(' ');
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/p.html',
+      'https://x.org/c',
+      'https://x.org/d',
+      'https://x.org/e',
+      'relative-page.html',
+    ]);
+  });
+
+  it('drops the image title from the destination', () => {
+    const md = '![img](https://x.org/i.png "Figure 1") [a](https://x.org/a)';
+    const result = extractLinksAndImages(md);
+    expect(result.images).toEqual(['https://x.org/i.png']);
+    expect(result.links).toEqual(['https://x.org/a']);
+  });
+
+  it('reads angle-bracket destinations, backslash escapes and balanced parentheses', () => {
+    const md = [
+      '[a](<https://x.org/b>)',
+      '[b](<https://x.org/with space.html> "t")',
+      '[c](https://en.wikipedia.org/wiki/Mercury_\\(planet\\))',
+      '[d](https://en.wikipedia.org/wiki/Venus_(planet))',
+    ].join(' ');
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/b',
+      'https://x.org/with space.html',
+      'https://en.wikipedia.org/wiki/Mercury_(planet)',
+      'https://en.wikipedia.org/wiki/Venus_(planet)',
+    ]);
+  });
+
+  it('returns clean URLs for links and images that turndown writes with titles', () => {
+    const html =
+      '<p><a href="https://x.org/ha.html" title="Chapter 26. High Availability">Chapter 26</a> ' +
+      '<a href="https://x.org/wiki/Foo_(bar)" title="Foo">Foo</a> ' +
+      '<img src="https://x.org/fig.png" alt="fig" title="Figure 1"></p>';
+    const md = htmlToMarkdown(html);
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual(['https://x.org/ha.html', 'https://x.org/wiki/Foo_(bar)']);
+    expect(result.images).toEqual(['https://x.org/fig.png']);
+  });
+
+  it('keeps a destination with a non-breaking space', () => {
+    const md = htmlToMarkdown('<a href="https://x.org/a&#160;b">a</a>');
+    expect(extractLinksAndImages(md).links).toEqual(['https://x.org/a b']);
+  });
+
+  it('keeps a destination whose href has a line break or tab', () => {
+    const md = htmlToMarkdown(
+      '<a href="https://x.org/a?x=1\n&amp;y=2">a</a> <a href="https://x.org/b c\td">b</a> ' +
+      '<a href="https://x.org/e\n" title="t">e</a>',
+    );
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/a?x=1&y=2',
+      'https://x.org/b cd',
+      'https://x.org/e',
+    ]);
+  });
 });
 
 describe('filterDecorativeImages', () => {
@@ -390,5 +457,41 @@ describe('resolveRelativeUrls', () => {
   it('returns input unchanged when baseUrl is empty', () => {
     const md = '[Rel](/x)';
     expect(resolveRelativeUrls(md, '')).toBe(md);
+  });
+
+  it('resolves escaped, bracketed and titled relative destinations', () => {
+    const md = [
+      '[a](/wiki/Foo_\\(bar\\) "Say \\"hi\\"")',
+      '[b](<rel page.html>)',
+      '[c](/c)[d](/d)',
+      '![e](img/e.png "t")',
+    ].join(' ');
+    expect(resolveRelativeUrls(md, 'https://x.org/docs/')).toBe([
+      '[a](https://x.org/wiki/Foo_\\(bar\\) "Say \\"hi\\"")',
+      '[b](https://x.org/docs/rel%20page.html)',
+      '[c](https://x.org/c)[d](https://x.org/d)',
+      '![e](https://x.org/docs/img/e.png "t")',
+    ].join(' '));
+  });
+
+  it('round-trips a resolved destination through link extraction', () => {
+    const md = resolveRelativeUrls(
+      '[q](?q=\\\\*) [p](/p ) ![c](<//cdn.x.org/a b.png>)',
+      'https://x.org/',
+    );
+    const result = extractLinksAndImages(md);
+    expect(result.links).toEqual(['https://x.org/?q=\\*', 'https://x.org/p%C2%A0']);
+    expect(result.images).toEqual(['https://cdn.x.org/a b.png']);
+  });
+
+  it('feeds clean absolute URLs to link extraction for relative turndown links', () => {
+    const html =
+      '<p><a href="/wiki/Foo_(bar)" title="Foo">Foo</a> ' +
+      '<a href="high-availability.html" title="Chapter 26. High Availability">Chapter 26</a></p>';
+    const md = resolveRelativeUrls(htmlToMarkdown(html), 'https://x.org/docs/current/page.html');
+    expect(extractLinksAndImages(md).links).toEqual([
+      'https://x.org/wiki/Foo_(bar)',
+      'https://x.org/docs/current/high-availability.html',
+    ]);
   });
 });
