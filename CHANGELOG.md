@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+### Added
+- `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact origins allowed on the MCP transport. It is for clients that send an `Origin` header without a CORS preflight, such as server-side clients, Electron main processes and proxies. Browser pages still cannot use it, because the daemon sends no CORS headers. The list applies only when an API token is set (`WIGOLO_API_TOKEN` or `WIGOLO_API_TOKEN_FILE`), and the bearer token is still required. Unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
+
 ### Fixed
+- `crawl` emits a page once when two URLs redirect to it, in both traversal and sitemap crawls. A sitemap crawl fetches at most twice `max_pages` URLs.
 - A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
+- `init --agents=antigravity` writes the MCP entry to `~/.gemini/config/mcp_config.json`, the global config Antigravity reads, and detects Antigravity by its `~/.gemini/antigravity` data folder or the `agy` command. It wrote `~/.antigravity/mcp.json` before, which Antigravity does not read; install and uninstall now remove a wigolo entry left there. (fixes #258)
 - DuckDuckGo and Mojeek captcha pages now count as engine errors, not as a healthy engine with no results. A page that still parses to results is kept.
 - On a degraded engine pool, a below-floor result with little query overlap no longer survives as the top result. The best aligned result keeps the top-1 slot instead.
 - `WIGOLO_SEARCH=hybrid` also falls back when the engine pool collapsed to at most one weak result (`degraded_pool_low_lexical`).
