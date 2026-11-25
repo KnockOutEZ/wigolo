@@ -15,7 +15,7 @@
 # ---- builder: compile TypeScript to dist/ ----
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 COPY . .
 RUN npm run build
@@ -23,7 +23,7 @@ RUN npm run build
 # ---- deps: install production node_modules once, shared by both targets ----
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev
 
 # ---- base: shared runtime layout with the browser engine's OS libraries baked ----

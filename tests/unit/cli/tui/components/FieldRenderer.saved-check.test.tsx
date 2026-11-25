@@ -26,6 +26,17 @@ const textField: FieldDef = {
 
 const noop = (): void => {};
 
+// React runs passive effects through its scheduler, which keeps the real
+// setImmediate it saw at import, so the effect that starts the ✓ timer runs
+// outside the fake clock. Yield a few real setImmediate turns (they run in
+// order, after the scheduler's) so effects land before fake time moves.
+const realSetImmediate = globalThis.setImmediate;
+async function flushEffects(): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
+  }
+}
+
 describe('FieldRenderer — saved ✓ checkmark', () => {
   it('shows ✓ immediately after savedAt becomes non-null', async () => {
     vi.useFakeTimers();
@@ -64,6 +75,7 @@ describe('FieldRenderer — saved ✓ checkmark', () => {
     );
 
     // Advance 100ms — well within the 1500ms window; ✓ should be visible
+    await flushEffects();
     await vi.advanceTimersByTimeAsync(100);
     expect(lastFrame() ?? '').toContain('✓');
   });
@@ -87,6 +99,7 @@ describe('FieldRenderer — saved ✓ checkmark', () => {
     );
 
     // Before 1500ms: ✓ should be visible
+    await flushEffects();
     await vi.advanceTimersByTimeAsync(100);
     expect(lastFrame() ?? '').toContain('✓');
 
@@ -151,6 +164,7 @@ describe('FieldRenderer — saved ✓ checkmark', () => {
     );
 
     // Advance 800ms — ✓ still visible
+    await flushEffects();
     await vi.advanceTimersByTimeAsync(800);
     expect(lastFrame() ?? '').toContain('✓');
 
@@ -169,6 +183,7 @@ describe('FieldRenderer — saved ✓ checkmark', () => {
         savedAt={ts2}
       />,
     );
+    await flushEffects();
 
     // Advance another 900ms (1700ms total since ts1, but only 900ms since ts2)
     // ✓ should still be visible (ts2 window hasn't expired)
