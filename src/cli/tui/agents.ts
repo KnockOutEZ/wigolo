@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { AgentDescriptor, DetectedAgent } from './agents-types.js';
 import { binaryInPath, dirExists, fileExists, getHome, getCwd } from './detect-helpers.js';
+import { antigravityDataDir, antigravityMcpConfigPath } from '../agents/antigravity.js';
 import { vscodeUserDir } from '../agents/vscode.js';
 
 export type { AgentId, AgentDescriptor, DetectedAgent, InstallType } from './agents-types.js';
@@ -94,9 +95,10 @@ const antigravity: AgentDescriptor = {
   displayName: 'Antigravity',
   installType: 'config-file',
   detect: ({ home }) =>
-    binaryInPath('antigravity') !== null ||
-    dirExists(join(home, '.antigravity')),
-  configPath: ({ home }) => join(home, '.antigravity', 'mcp.json'),
+    dirExists(antigravityDataDir(home)) ||
+    binaryInPath('agy') !== null ||
+    binaryInPath('antigravity') !== null,
+  configPath: ({ home }) => antigravityMcpConfigPath(home),
 };
 
 export const AGENTS: readonly AgentDescriptor[] = [
