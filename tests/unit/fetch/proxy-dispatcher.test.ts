@@ -211,7 +211,8 @@ describe('per-hop proxy decision', () => {
     expect(shouldProxyHop('https://example.org/x')).toBe(true);
   });
 
-  it('reads lowercase no_proxy before NO_PROXY, like undici', () => {
+  // Windows env names are case-insensitive, so the two spellings are one variable there.
+  it.skipIf(process.platform === 'win32')('reads lowercase no_proxy before NO_PROXY, like undici', () => {
     clearProxyEnv();
     process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     process.env.NO_PROXY = 'internal.example';
@@ -222,7 +223,8 @@ describe('per-hop proxy decision', () => {
     expect(shouldProxyHop('https://elsewhere.test/x')).toBe(false);
   });
 
-  it('lets a set but empty https_proxy win over HTTPS_PROXY, like undici', () => {
+  // Windows env names are case-insensitive, so the two spellings are one variable there.
+  it.skipIf(process.platform === 'win32')('lets a set but empty https_proxy win over HTTPS_PROXY, like undici', () => {
     clearProxyEnv();
     process.env.https_proxy = '';
     process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
