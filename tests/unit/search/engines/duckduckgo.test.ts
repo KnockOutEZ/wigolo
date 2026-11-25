@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DuckDuckGoEngine } from '../../../../src/search/engines/duckduckgo.js';
+import { isCaptchaHtml } from '../../../../src/search/engines/user-agents.js';
 
 const fixtureHtml = readFileSync('tests/fixtures/search/duckduckgo-results.html', 'utf-8');
 
@@ -103,5 +104,25 @@ describe('DuckDuckGoEngine', () => {
       expect(results.length).toBe(3);
       expect(results[0].title).toContain('hcaptcha');
     });
+  });
+});
+
+describe('isCaptchaHtml', () => {
+  it('matches challenge-page structure', () => {
+    expect(isCaptchaHtml('<html><head><title>Captcha</title></head></html>')).toBe(true);
+    expect(isCaptchaHtml('<iframe src="https://newassets.hcaptcha.com/captcha/v1/x"></iframe>')).toBe(true);
+    expect(isCaptchaHtml('<script src="https://www.google.com/recaptcha/api.js"></script>')).toBe(true);
+    expect(isCaptchaHtml('<div class="g-recaptcha" data-sitekey="k"></div>')).toBe(true);
+    expect(isCaptchaHtml('<form id="challenge-form" action="/x"></form>')).toBe(true);
+    expect(isCaptchaHtml('<body>Select all squares containing a duck</body>')).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: captcha words in titles, snippets or the query box', () => {
+    const page = `<html><head><title>hcaptcha at DuckDuckGo</title></head><body>
+      <input name="q" value="hcaptcha vs g-recaptcha challenge-form">
+      <a class="result-link" href="https://example.com">hCaptcha vs g-recaptcha</a>
+      <td class="result-snippet">How cf-challenge and challenge-form pages work.</td>
+    </body></html>`;
+    expect(isCaptchaHtml(page)).toBe(false);
   });
 });

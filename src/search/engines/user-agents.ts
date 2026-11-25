@@ -58,6 +58,8 @@ export function isCaptchaHtml(html: string): boolean {
     /<title>\s*captcha\s*<\/title>/.test(sample) ||
     /select all squares containing/.test(sample) ||
     /please verify you are (a )?human/.test(sample) ||
-    /cf-challenge|challenge-form|hcaptcha|g-recaptcha/.test(sample)
+    // A widget or form on the page, not the words in a title or snippet.
+    /<(?:iframe|script)[^>]+src=["'][^"']*(?:hcaptcha\.com|google\.com\/recaptcha|challenges\.cloudflare\.com)/.test(sample) ||
+    /<(?:div|form)[^>]+(?:class|id)=["'][^"']*\b(?:h-captcha|g-recaptcha|cf-challenge|challenge-form)\b/.test(sample)
   );
 }

@@ -201,10 +201,10 @@ describe('applyScoreFloor — degraded-pool lexical gate', () => {
     expect(kept.map((r) => r.url)).toEqual(['https://aligned.example/doc']);
   });
 
-  it('rescues the next aligned result of an engine when its best below-floor result is low-lexical', () => {
+  it('rescues the next result of an engine when its best below-floor result is zero-lexical', () => {
     const results = [
       sl('https://top.example/', 0.9, 0.8, 'bing'),
-      sl('https://junk.example/', 0.04, 0.17, 'duckduckgo'),
+      sl('https://junk.example/', 0.04, 0, 'duckduckgo'),
       sl('https://aligned.example/doc', 0.03, 0.55, 'duckduckgo'),
     ];
     const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
@@ -213,5 +213,18 @@ describe('applyScoreFloor — degraded-pool lexical gate', () => {
       perEngineKeep: 1,
     });
     expect(kept.map((r) => r.url)).toEqual(['https://top.example/', 'https://aligned.example/doc']);
+  });
+
+  it('MUST-NOT-FIRE: a degraded pool still rescues a low-but-nonzero lexical result', () => {
+    const results = [
+      sl('https://top.example/', 0.9, 0.8, 'bing'),
+      sl('https://partial.example/', 0.04, 0.17, 'duckduckgo'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+      perEngineKeep: 1,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://top.example/', 'https://partial.example/']);
   });
 });
