@@ -4,6 +4,7 @@
 
 ### Fixed
 - Search engines and HTTP page fetches now go through the configured proxy: `PROXY_URL` with `USE_PROXY`, else `HTTP_PROXY`/`HTTPS_PROXY` with `NO_PROXY`, else `ALL_PROXY`. Only the browser tier used it before. Loopback stays direct under `PROXY_URL` and `ALL_PROXY`, and an invalid proxy setting is logged and skipped. (fixes #629)
+- A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 
 ## v0.3.3 — 2026-11-24
 
