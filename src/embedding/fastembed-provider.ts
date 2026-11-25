@@ -68,6 +68,9 @@ export async function initModelWithArchiveRetry<T>(
   }
 }
 
+/** Model id of the bundled fastembed model. */
+export const FASTEMBED_EMBED_MODEL_ID = 'BGE-small-en-v1.5';
+
 /**
  * Native ONNX embedding provider using fastembed-rs Node bindings.
  *
@@ -78,16 +81,71 @@ export async function initModelWithArchiveRetry<T>(
 export class FastembedEmbedProvider implements EmbedProvider {
   private model: FlagEmbedding | null = null;
   private modelPromise: Promise<FlagEmbedding> | null = null;
+  /** Bumped by `dispose()`; a load that resolves late must not store weights. */
+  private loadGeneration = 0;
+  /** Generation of the in-flight load in `modelPromise`. */
+  private modelPromiseGeneration = -1;
+  /** In-flight `embed()` calls; `dispose()` must not release under one. */
+  private embedsInFlight = 0;
+  /** Resolved by the `embed()` that brings the counter back to zero. */
+  private drainWaiter: { promise: Promise<void>; resolve: () => void } | null = null;
+  /** Sessions from a load that resolved after dispose, held until the last embed ends. */
+  private readonly deferredReleases: FlagEmbedding[] = [];
   readonly modelId: string;
   readonly dim: number;
+  /** Character cap per input, from `embeddingMaxTextLength`. */
+  private readonly maxTextLength: number;
 
   constructor() {
-    this.modelId = 'BGE-small-en-v1.5';
+    this.modelId = FASTEMBED_EMBED_MODEL_ID;
     this.dim = 384;
+    this.maxTextLength = getConfig().embeddingMaxTextLength;
   }
 
   async warmup(): Promise<void> {
     await this.getModel();
+  }
+
+  /**
+   * Release the ONNX session behind a loaded model. `session` is private in
+   * the fastembed typings, so it is read through a narrow cast. Best-effort:
+   * a failed release is logged and never thrown.
+   */
+  private async releaseSession(model: FlagEmbedding | null): Promise<void> {
+    if (!model) return;
+    const session = (model as unknown as { session?: { release?: () => Promise<unknown> } }).session;
+    if (typeof session?.release !== 'function') return;
+    try {
+      await session.release();
+    } catch (err) {
+      log.debug('embedding session release failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** The waiter for the in-flight counter; armed by `dispose()`, cleared at zero. */
+  private drain(): Promise<void> {
+    if (this.drainWaiter) return this.drainWaiter.promise;
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => { resolve = r; });
+    this.drainWaiter = { promise, resolve };
+    return promise;
+  }
+
+  /**
+   * Release the resident ONNX model. The next call loads it again from the
+   * cache. A call already in flight settles first — running on a released
+   * session would crash — then the session is released. A load that is still
+   * in flight is discarded, so a late resolve cannot hold the weights; its own
+   * session is released when it resolves.
+   */
+  async dispose(): Promise<void> {
+    this.loadGeneration += 1;
+    const model = this.model;
+    this.model = null;
+    this.modelPromise = null;
+    this.modelPromiseGeneration = -1;
+    if (this.embedsInFlight > 0) await this.drain();
+    await this.releaseSession(model);
   }
 
   private getModel(): Promise<FlagEmbedding> {
@@ -96,33 +154,76 @@ export class FastembedEmbedProvider implements EmbedProvider {
     log.info('Loading embedding model', { modelId: this.modelId });
     const dataDir = getConfig().dataDir;
     const cacheDir = ensureFastembedCacheDir(dataDir);
-    this.modelPromise = import('fastembed')
+    const generation = this.loadGeneration;
+    const promise = import('fastembed')
       .then(({ FlagEmbedding, EmbeddingModel }) =>
         initModelWithArchiveRetry(
           () => FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir }),
           () => resetFastembedCacheDir(dataDir),
         ),
       )
-      .then(m => {
+      .then(async m => {
+      if (generation !== this.loadGeneration) {
+        // A resolve that landed after the release is never published. If no
+        // embed is in flight, release it now. The count covers the whole
+        // provider, not only this model. A busy provider therefore defers the
+        // release, even when this model is idle, and the last in-flight embed
+        // releases it in its finally block, after it stops using the session.
+        if (this.embedsInFlight === 0) {
+          await this.releaseSession(m);
+        } else {
+          this.deferredReleases.push(m);
+        }
+        return m;
+      }
       this.model = m;
       log.info('Embedding model ready', { modelId: this.modelId, dim: this.dim });
       return m;
     }).catch(err => {
-      this.modelPromise = null;
+      if (this.modelPromiseGeneration === generation) {
+        this.modelPromise = null;
+        this.modelPromiseGeneration = -1;
+      }
       throw err;
     });
-    return this.modelPromise;
+    this.modelPromise = promise;
+    this.modelPromiseGeneration = generation;
+    return promise;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
-    const model = await this.getModel();
-    const out: Float32Array[] = [];
-    for await (const batch of model.embed(texts, texts.length)) {
-      for (const vec of batch) {
-        out.push(Float32Array.from(vec));
+    this.embedsInFlight += 1;
+    try {
+      const model = await this.getModel();
+      // The model keeps only its first 512 tokens, so text far past that
+      // mostly costs tokenizer time. Trim it first, as the remote provider
+      // does.
+      const cap = this.maxTextLength;
+      const inputs = cap > 0 ? texts.map((t) => (t.length > cap ? t.slice(0, cap) : t)) : texts;
+      const out: Float32Array[] = [];
+      for await (const batch of model.embed(inputs, inputs.length)) {
+        for (const vec of batch) {
+          out.push(Float32Array.from(vec));
+        }
+      }
+      return out;
+    } finally {
+      this.embedsInFlight -= 1;
+      if (this.embedsInFlight === 0) {
+        const deferred = this.deferredReleases.splice(0);
+        for (const model of deferred) {
+          await this.releaseSession(model);
+        }
+        // The deferred releases above await, so a new embed can start and
+        // raise the count again. Keep the waiter armed in that case: the embed
+        // that brings the count back to zero resolves it.
+        if (this.embedsInFlight === 0 && this.drainWaiter) {
+          const waiter = this.drainWaiter;
+          this.drainWaiter = null;
+          waiter.resolve();
+        }
       }
     }
-    return out;
   }
 }

@@ -1,0 +1,63 @@
+name: Author Guard
+
+# GitHub credits a commit's AUTHOR in the contributors list, matched by email.
+# Commits made from a hosted coding-agent session default to the agent's own
+# identity, which lands that account in the contributors list instead of the
+# person who did the work. Once such a commit is on `main` it can only be
+# removed by rewriting history, so this check catches it while the fix is still
+# a rebase of the PR branch.
+on:
+  pull_request:
+    # `edited` covers a base change, which can change the commit list without a push.
+    types: [opened, reopened, synchronize, edited]
+
+# `pull_request`, not `pull_request_target`: nothing from the PR is checked out
+# or run, and no secrets are needed.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  author-guard:
+    name: author guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reject commits authored by an agent identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_COUNT: ${{ github.event.pull_request.commits }}
+        run: |
+          set -euo pipefail
+
+          # The PR commits endpoint lists at most 250 commits, so a larger PR
+          # cannot be fully checked here.
+          if [ "$COMMIT_COUNT" -gt 250 ]; then
+            echo "::error title=Too many commits to check::PR #${PR_NUMBER} has ${COMMIT_COUNT} commits; this check can only verify 250. Split the PR or check its authors by hand."
+            exit 1
+          fi
+
+          bad=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate \
+            --jq '.[] | select((.commit.author.email | ascii_downcase) == "noreply@anthropic.com")
+                      | "\(.sha[0:8]) \(.commit.author.name) <\(.commit.author.email)>: \(.commit.message | split("\n")[0])"')
+
+          if [ -z "$bad" ]; then
+            echo "Every commit is authored by a person."
+            exit 0
+          fi
+
+          echo "::error title=Commits authored by an agent identity::These commits would credit the agent account instead of you in the contributors list."
+          echo "$bad"
+          cat <<'EOF'
+
+          Re-author them with your own identity, then force-push this PR branch:
+
+            git config user.name  "<your name>"
+            git config user.email "<email linked to your GitHub account>"
+            git rebase -r --exec 'git commit --amend --no-edit --reset-author' <base>
+            git push --force-with-lease
+
+          EOF
+          exit 1

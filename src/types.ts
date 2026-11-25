@@ -11,6 +11,17 @@ export interface StageError {
   error_reason: string;
   stage: string;
   hint?: string;
+  /** Upstream HTTP status when the stage failure carries one (e.g. anti-bot 403/429).
+   * Lets the crawl rate-limiter adapt pace per-domain. Absent when no status exists. */
+  http_status?: number;
+  /**
+   * Solve-ladder provenance on a `blocked_by_challenge` stage error: the coarse
+   * challenge class the classifier assigned, and the solve method — always
+   * `null` on a block (no rung cleared it). Absent on non-challenge stage errors.
+   * Lets a caller audit the honest ceiling (which challenge class blocked).
+   */
+  challenge_class?: ChallengeClass;
+  solve_method?: SolveMethod | null;
 }
 
 export type StageResult<T> =
@@ -59,7 +70,7 @@ export interface FetchInput {
  *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
  *   - 'browser'           : full browser tier
  */
-export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser';
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
 
 export interface FetchOutput {
   /** Compatibility alias of how long the request took, ms. */
@@ -85,6 +96,16 @@ export interface FetchOutput {
   cached_at?: string;
   stale?: boolean;
   js_required?: boolean;
+  /**
+   * Non-fatal advisory from the router about how this response was produced.
+   * Today the only producer is the lazy browser-acquisition budget: when a
+   * browser-tier escalation cannot acquire the engine in time, the router
+   * returns the best lower-tier content it already had and attaches a note
+   * saying the engine is still installing. Without this field the caller
+   * receives a plain 200 and cannot tell a placeholder body from a real page.
+   * Absent on responses that have nothing to report.
+   */
+  warning?: string;
   error?: string;
   action_results?: ActionResult[];
   changed?: boolean;
@@ -139,6 +160,31 @@ export interface FetchOutput {
    * as a real site_data payload.
    */
   fetch_failed?: string;
+  /**
+   * Solve-ladder provenance surfaced from the browser tier: the coarse
+   * challenge class the classifier assigned when a bot-protection challenge was
+   * detected on this fetch. Absent when no challenge was involved.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge, or `null` when a challenge was
+   * detected but no rung passed it (the honest, but recovered-to-content case is
+   * rare here — a hard block surfaces as a `blocked_by_challenge` stage error).
+   * Absent when no challenge was involved.
+   */
+  solve_method?: SolveMethod | null;
+  /**
+   * Set when the returned body is a block page rather than the real content:
+   * a bot challenge, a "you've been blocked" banner, or an "enable JavaScript"
+   * stub served with an error status. The content is still returned — this
+   * only tells the caller not to trust it. Absent on normal pages.
+   */
+  blocked?: BlockedInfo;
+}
+
+/** Why a fetched body was flagged as a block page — see FetchOutput.blocked. */
+export interface BlockedInfo {
+  reason: 'challenge' | 'block_page' | 'js_required';
 }
 
 /**
@@ -164,6 +210,32 @@ export interface ContentCompleteness {
   settled_by: 'probe' | 'stability' | 'budget';
 }
 
+/**
+ * Coarse taxonomy of a bot-protection challenge, produced by the challenge
+ * classifier. Drives which solve rung (if any) the ladder engages:
+ *   - 'image'       : a visible-image challenge (grid/slider/text) — pixels to
+ *                     reason about, so in-band AI-vision-solvable.
+ *   - 'interactive' : a checkbox/Turnstile-style widget — a trusted gesture can
+ *                     pass it (no image to read).
+ *   - 'behavioral'  : an invisible/managed challenge (reCAPTCHA v3, managed
+ *                     Turnstile, DataDome/Akamai) — no image, not "solvable",
+ *                     only avoidable via fingerprint/IP/behavior.
+ *   - 'none'        : real content, no challenge markers.
+ */
+export type ChallengeClass = 'image' | 'interactive' | 'behavioral' | 'none';
+
+/**
+ * Which rung of the solve ladder actually cleared (or attempted) a challenge.
+ * Surfaced on the fetch result for audit + honesty:
+ *   - 'reuse'     : a stored, route-gated clearance was injected.
+ *   - 'auto-pass' : a trusted-input gesture passed an interactive widget.
+ *   - 'cdp-direct': the raw control-plane rung.
+ *   - 'ai-vision' : an in-band vision model solved a visible-image challenge.
+ *   - 'solver'    : an opt-in external solver/reader escape rung.
+ *   - 'human'     : a human solved it in a visible browser surface.
+ */
+export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | 'solver' | 'human';
+
 export interface RawFetchResult {
   url: string;
   finalUrl: string;
@@ -171,12 +243,19 @@ export interface RawFetchResult {
   contentType: string;
   statusCode: number;
   /**
+   * True when `statusCode` is a placeholder because the tier never observed the
+   * origin's status (the stealth escalation and the direct CDP rung report 200).
+   * A 2xx here does not mean the origin answered OK.
+   */
+  statusUnknown?: boolean;
+  /**
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
    *   - 'browser'           : full browser fallback
+   *   - 'reddit-api'        : opt-in Reddit OAuth API path (credential-gated)
    */
-  method: 'http' | 'tls-impersonation' | 'browser';
+  method: 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
@@ -191,6 +270,19 @@ export interface RawFetchResult {
    * filtering) branches on `level`/`reason` to avoid trusting shell captures.
    */
   contentCompleteness?: ContentCompleteness;
+  /**
+   * Coarse challenge class the classifier assigned to this fetch, when the
+   * browser tier detected a bot-protection challenge. Absent on captures that
+   * never hit a challenge. Set by the solve-ladder path (slice PL); optional so
+   * existing construction sites compile unchanged.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge (or `null` when a challenge was
+   * detected but no rung passed it — the honest `blocked_by_challenge` path).
+   * Absent when no challenge was involved. Set by the solve-ladder path.
+   */
+  solve_method?: SolveMethod | null;
 }
 
 export interface ExtractionResult {
@@ -599,7 +691,10 @@ export interface SearchOutput {
    * dispatched, `healthy` = engines that returned ≥1 result, `degraded` =
    * healthy < total. `reasons` names the events that degraded the pool
    * (e.g. `starvation_redispatch` when a thin vertical fell back to the
-   * general pool). Single surface for "pool degraded to N engines". */
+   * general pool; `thin_pool` when some dispatched engine contributed no
+   * results so cross-engine ranking ran on a thinned pool; `pool_collapsed`
+   * when the pool fell below the collapse floor). Single surface for "pool
+   * degraded to N engines". */
   engine_pool?: EnginePoolHealth;
 }
 
@@ -943,6 +1038,14 @@ export interface CrawlResultItem {
   /** Per-page render completeness, carried through from the page's fetch.
    * Absent when the page was served by a non-browser tier. */
   content_completeness?: ContentCompleteness;
+  /** Solve-ladder provenance carried through from the page's fetch: the
+   * classified challenge class when this page hit an anti-bot challenge.
+   * Absent on pages that never encountered one. */
+  challenge_class?: ChallengeClass;
+  /** How a challenged page was cleared (e.g. 'auto-pass'), carried through
+   * from the page's fetch. Null when a challenge was detected but not cleared.
+   * Absent on pages that never encountered a challenge. */
+  solve_method?: SolveMethod | null;
 }
 
 export interface LinkEdge {

@@ -210,3 +210,16 @@ describe('classifyContent — generic fallback', () => {
     expect(classifyContent('not a url', '<html></html>')).toBe('generic');
   });
 });
+
+describe('classifyContent — page-supplied types that name Object.prototype members', () => {
+  // The type strings come from the fetched page, so a page must not be able to
+  // smuggle an inherited member (a function) out as its content type.
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])('JSON-LD @type %j falls through to generic', (t) => {
+    expect(classifyContent('https://example.com/x', withJsonLd(t))).toBe('generic');
+    expect(classifyContent('https://example.com/x', withJsonLd([t, 'Thing']))).toBe('generic');
+  });
+
+  it.each(['constructor', 'toString', '__proto__'])('og:type %j falls through to generic', (t) => {
+    expect(classifyContent('https://example.com/x', withOgType(t))).toBe('generic');
+  });
+});

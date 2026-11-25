@@ -77,8 +77,12 @@ let outBuffer = '';
 let stdoutBuffer = '';
 let writeSpy: ReturnType<typeof vi.spyOn>;
 let stdoutSpy: ReturnType<typeof vi.spyOn>;
+const originalReranker = process.env.WIGOLO_RERANKER;
+const originalRerankBase = process.env.WIGOLO_RERANK_API_BASE;
+const originalEmbedBase = process.env.WIGOLO_EMBEDDING_API_BASE;
 
 beforeEach(() => {
+  process.env.WIGOLO_RERANKER = 'onnx';
   outBuffer = '';
   stdoutBuffer = '';
   resetConfig();
@@ -92,6 +96,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalReranker === undefined) delete process.env.WIGOLO_RERANKER;
+  else process.env.WIGOLO_RERANKER = originalReranker;
+  if (originalRerankBase === undefined) delete process.env.WIGOLO_RERANK_API_BASE;
+  else process.env.WIGOLO_RERANK_API_BASE = originalRerankBase;
+  if (originalEmbedBase === undefined) delete process.env.WIGOLO_EMBEDDING_API_BASE;
+  else process.env.WIGOLO_EMBEDDING_API_BASE = originalEmbedBase;
   resetConfig();
   delete process.env.WIGOLO_SEARCH;
   writeSpy.mockRestore();
@@ -115,6 +125,34 @@ function mockFreshInstall(): void {
 }
 
 describe('doctor — fresh-install lazy contract', () => {
+  it('reports a configured remote reranker without checking the ONNX cache', async () => {
+    process.env.WIGOLO_RERANKER = 'remote';
+    process.env.WIGOLO_RERANK_API_BASE = 'http://127.0.0.1:8082/v1';
+    resetConfig();
+    mockFreshInstall();
+    await runDoctor('/tmp/.wigolo-remote');
+    expect(outBuffer).toMatch(/ML reranker:\s+remote configured \(endpoint not probed\)/);
+    expect(getRerankProviderMock).not.toHaveBeenCalled();
+  });
+  it('reports a configured remote embedding endpoint without checking the fastembed cache', async () => {
+    process.env.WIGOLO_EMBEDDING_API_BASE = 'http://127.0.0.1:8080/v1';
+    resetConfig();
+    mockFreshInstall();
+    await runDoctor('/tmp/.wigolo-remote-embed');
+    expect(outBuffer).toMatch(/Embeddings model:\s+remote endpoint configured \(not probed\)/);
+    expect(outBuffer).toMatch(/provider:\s+remote endpoint configured \(not probed\)/);
+    expect(getEmbedProviderMock).not.toHaveBeenCalled();
+  });
+  it('degrades the run when the remote embedding endpoint is misconfigured', async () => {
+    process.env.WIGOLO_EMBEDDING_API_BASE = 'file:///tmp/x';
+    resetConfig();
+    mockFreshInstall();
+    const code = await runDoctor('/tmp/.wigolo-remote-embed-bad');
+    // A bad URL is a real fault: every cache write would fail, so the report
+    // must not stay "ok".
+    expect(code).toBe(1);
+    expect(outBuffer).toMatch(/Embeddings model:\s+remote endpoint misconfigured/);
+  });
   it('exits 0 on a fresh install (missing browser + models + no searxng bootstrap)', async () => {
     mockFreshInstall();
     const code = await runDoctor('/tmp/.wigolo-fresh');
@@ -149,6 +187,52 @@ describe('doctor — fresh-install lazy contract', () => {
     await runDoctor('/tmp/.wigolo-fresh');
     expect(outBuffer).toMatch(/ML reranker:\s+not installed/i);
     expect(outBuffer).toMatch(/Embeddings model:\s+not installed/i);
+  });
+});
+
+describe('doctor --json — status names the warning state', () => {
+  it('reports ok_with_warnings, not a bare ok, on a fresh install that exits 0', async () => {
+    mockFreshInstall();
+    const code = await runDoctor('/tmp/.wigolo-fresh', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    // The D5 lazy contract still holds: a missing browser is not an error.
+    expect(code).toBe(0);
+    expect(parsed.exitCode).toBe(0);
+    // But the report must not claim `ok` beside a failed check.
+    expect(parsed.status).toBe('ok_with_warnings');
+    const failed = (parsed.checks as { name: string; status: string }[])
+      .filter((c) => c.status === 'failed')
+      .map((c) => c.name);
+    expect(failed).toContain('browser');
+    expect(failed).toContain('embeddings');
+    // The human line names every warning contributor too.
+    expect(outBuffer).toMatch(/Overall: OK \(warnings: .*browser/);
+    expect(outBuffer).toMatch(/Overall: OK \(warnings: .*embeddings/);
+  });
+
+  it('keeps a plain ok when every check passes', async () => {
+    vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+      const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+      if (joined.includes('--version')) return okProc('Python 3.12.4');
+      return okProc();
+    });
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      return s.endsWith('fastembed') || s.endsWith('transformers') || s.includes('/fake/playwright/');
+    });
+    vi.mocked(readdirSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith('fastembed')) return ['models--BAAI--bge-small-en-v1.5'] as never;
+      if (s.endsWith('transformers')) return ['Xenova'] as never;
+      return [] as never;
+    });
+    vi.mocked(readFileSync).mockReturnValue('');
+
+    const code = await runDoctor('/tmp/.wigolo-warm', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    expect(code).toBe(0);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.checks.some((c: { status: string }) => c.status === 'failed')).toBe(false);
   });
 });
 
@@ -292,6 +376,28 @@ describe('doctor — broken browser still degrades (lazy ≠ blind)', () => {
 
     expect(code).toBe(1);
     expect(outBuffer).toMatch(/will not launch|Overall: DEGRADED/i);
+  });
+
+  it('reports the browser check as installed-but-failed-to-launch with the reason, not missing', async () => {
+    vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+      const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+      if (joined.includes('--version')) return okProc('1.50.0');
+      return okProc();
+    });
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readdirSync).mockReturnValue(['model'] as never);
+    vi.mocked(readFileSync).mockReturnValue('');
+    const { chromium } = await import('playwright');
+    // JSON mode probes the browser more than once (human pass + cold checks).
+    vi.mocked(chromium.launch)
+      .mockRejectedValueOnce(new Error('crashed on launch') as never)
+      .mockRejectedValueOnce(new Error('crashed on launch') as never);
+
+    await runDoctor('/tmp/.wigolo-broken', { json: true });
+    const parsed = JSON.parse(stdoutBuffer);
+    const bc = parsed.checks.find((c: { name: string }) => c.name === 'browser');
+    expect(bc.status).toBe('failed');
+    expect(bc.detail).toBe('chromium installed but failed to launch: crashed on launch');
   });
 });
 

@@ -13,3 +13,6 @@ export const FEEDBACK_LINKS = {
 
 /** Prefix a /public asset path with the configured base path (GitHub Pages). */
 export const asset = (path: string) => `${BASE_PATH}${path}`;
+
+/** Shared Open Graph / Twitter image (its real pixel size — 2:1 renders on every major card). */
+export const SOCIAL_IMAGE = { url: "/wigolo/wigolo-social.png", width: 2560, height: 1280 } as const;

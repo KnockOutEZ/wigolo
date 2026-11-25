@@ -100,6 +100,35 @@ describe('getConfig() — persists numeric fields from config.json', () => {
   });
 });
 
+describe('getConfig() — humanize (behavioral realism) resolution', () => {
+  it('uses humanize from config.json when env absent', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { humanize: 'on' } }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_HUMANIZE;
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().humanize).toBe('on');
+  });
+
+  it('env WIGOLO_HUMANIZE overrides config.json value', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { humanize: 'on' } }));
+    setConfigPath(cfgPath);
+    process.env.WIGOLO_HUMANIZE = 'off';
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().humanize).toBe('off');
+  });
+
+  it('defaults to off when both env and config.json are absent', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: {} }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_HUMANIZE;
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().humanize).toBe('off');
+  });
+});
+
 describe('getConfig() — searchBackend (A1 runtime self-config)', () => {
   it('reads searchBackend from config.json when WIGOLO_SEARCH env absent', () => {
     const cfgPath = join(dir, 'config.json');

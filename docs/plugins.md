@@ -61,6 +61,8 @@ export const searchEngine = {
 
 That's genuinely it — an internal wiki, a private index, a niche vertical engine lands in the dispatch pool in well under 100 lines. Results from your engine flow through the same fusion, dedup, and on-device reranking as the built-ins, and show up in `engines_used` / `engine_telemetry` like any other engine.
 
+Plugin engines join the general web search pool (the one most queries use) with the same retry and circuit-breaker protection as the built-in engines, and they're also searched by `research`, `agent` and `find_similar`. The specialised code, news, papers and image pools keep their own engine lists.
+
 ## Extractor plugins
 
 ```ts

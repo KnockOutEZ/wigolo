@@ -91,6 +91,61 @@ describe('agent tool integration', () => {
     expect(synthStep).toBeDefined();
   });
 
+  it('emits progress for each completed step when streaming is enabled', async () => {
+    const onProgress = vi.fn();
+
+    const response = await handleAgent(
+      { prompt: 'Find CRM pricing', stream: true },
+      [stubEngine],
+      stubRouter,
+      undefined,
+      undefined,
+      onProgress,
+    );
+    const result = response.ok ? response.data : ({ ...response } as any);
+
+    expect(result.error).toBeUndefined();
+    expect(onProgress).toHaveBeenCalledTimes(result.steps.length);
+    expect(onProgress.mock.calls.map(([update]) => update.progress)).toEqual(
+      result.steps.map((_, index) => index + 1),
+    );
+    expect(onProgress.mock.calls.map(([update]) => update.message)).toEqual(
+      result.steps.map((step) => step.detail),
+    );
+  });
+
+  it('does not emit progress when streaming is disabled', async () => {
+    const onProgress = vi.fn();
+
+    const response = await handleAgent(
+      { prompt: 'Find CRM pricing' },
+      [stubEngine],
+      stubRouter,
+      undefined,
+      undefined,
+      onProgress,
+    );
+
+    expect(response.ok).toBe(true);
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('keeps the agent result when a progress callback fails', async () => {
+    const onProgress = vi.fn().mockRejectedValue(new Error('transport closed'));
+
+    const response = await handleAgent(
+      { prompt: 'Find CRM pricing', stream: true },
+      [stubEngine],
+      stubRouter,
+      undefined,
+      undefined,
+      onProgress,
+    );
+
+    expect(response.ok).toBe(true);
+    expect(onProgress).toHaveBeenCalled();
+  });
+
   it('full pipeline with explicit URLs', async () => {
     const input: AgentInput = {
       prompt: 'Compare pricing',

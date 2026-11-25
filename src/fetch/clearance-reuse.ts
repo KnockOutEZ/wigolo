@@ -1,4 +1,5 @@
-import { STEALTH_CHROME_MAJOR } from './stealth.js';
+import { currentStealthChromeMajor } from './stealth.js';
+import { routeIdentity } from '../cache/store.js';
 import type { DomainClearance } from '../cache/store.js';
 
 /**
@@ -19,10 +20,17 @@ export type ClearanceTier = 'browser' | 'tls' | 'http';
 /**
  * Whether a clearance minted against `clearanceUa` may be presented by `tier`.
  *
- * The browser tier renders through Chromium advertising a fixed Chrome identity
- * (the pinned {@link STEALTH_CHROME_MAJOR}); it CANNOT present a Firefox/Safari
- * UA, and a Chrome UA of a different major is a fingerprint mismatch a bot wall
- * will reject. So the browser tier only accepts a Chrome-major-matching UA.
+ * The browser tier renders through Chromium advertising ONE Chrome identity; it
+ * CANNOT present a Firefox/Safari UA, and a Chrome UA of a different major is a
+ * fingerprint mismatch a bot wall will reject. So the browser tier only accepts
+ * a Chrome-major-matching UA.
+ *
+ * The major compared against is {@link currentStealthChromeMajor} — the browser
+ * the tier ACTUALLY launched, falling back to the shared pin before any launch.
+ * It must not be the static pin: the tier mints clearances under the real
+ * installed browser's major (T1-C), so pinning here would refuse every
+ * clearance the tier itself just minted on any machine whose Chrome differs
+ * from the pin.
  *
  * The header tiers (tls/http) inject the cookie as a `Cookie:` header rather
  * than re-presenting the minting UA byte-for-byte; cross-tier reuse there is
@@ -33,7 +41,7 @@ export function uaMatchesTier(clearanceUa: string, tier: ClearanceTier): boolean
   if (tier !== 'browser') return true;
   const m = clearanceUa.match(/Chrome\/(\d+)\./);
   if (!m) return false;
-  return Number(m[1]) === STEALTH_CHROME_MAJOR;
+  return Number(m[1]) === currentStealthChromeMajor();
 }
 
 /**
@@ -45,6 +53,51 @@ export function isClearanceFresh(clearance: DomainClearance, now: number): boole
   const exp = Date.parse(clearance.expiresAt);
   if (!Number.isFinite(exp)) return false;
   return now < exp;
+}
+
+/**
+ * The egress route a clearance was minted on, normalised. A missing / empty /
+ * null stored value (a legacy pre-route row) is treated as `'direct'` — the
+ * only route those rows could have been harvested on before route capture
+ * existed.
+ */
+export function normalizeClearanceRoute(route: string | undefined | null): string {
+  // Same reduction the store applies on write, so a clearance minted while the
+  // configured proxyUrl carried credentials still matches the current route
+  // derived from that same raw URL. Using a different rule on either side would
+  // silently kill reuse for every proxy user.
+  return routeIdentity(route);
+}
+
+/**
+ * Route-identity gate. A cf_clearance is bound to the `{IP + UA + TLS}` of the
+ * egress it was solved on (FlareSolverr #871): a clearance harvested on one
+ * route is invalid from another. We capture the route as `proxyUrl ?? 'direct'`
+ * at harvest and HARD-REFUSE reuse on any mismatch. Legacy rows (undefined
+ * stored route) are treated as `'direct'`, so they only replay on a direct
+ * current route and are refused from a proxy route.
+ */
+export function routeMatchesClearance(clearanceRoute: string | undefined | null, currentRoute: string): boolean {
+  return normalizeClearanceRoute(clearanceRoute) === normalizeClearanceRoute(currentRoute);
+}
+
+/**
+ * The single reuse-eligibility predicate: a stored clearance may be replayed by
+ * `tier` on `currentRoute` at `now` ONLY when it is fresh AND UA-presentable by
+ * the tier AND route-identity-matched AND carries a real cf_clearance value.
+ * Composes the individual gates so callers cannot skip one.
+ */
+export function isClearanceReusable(
+  clearance: DomainClearance,
+  tier: ClearanceTier,
+  currentRoute: string,
+  now: number,
+): boolean {
+  if (!isClearanceFresh(clearance, now)) return false;
+  if (!uaMatchesTier(clearance.ua, tier)) return false;
+  if (!routeMatchesClearance(clearance.solvedRoute, currentRoute)) return false;
+  if (clearanceCookieValue(clearance.cookie) == null) return false;
+  return true;
 }
 
 /**

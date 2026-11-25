@@ -188,3 +188,66 @@ describe('serve-port conflict (S9)', () => {
     expect(msg).toMatch(/--port \d+/);
   });
 });
+
+describe('serve license notice', () => {
+  // WHY: a daemon serving other machines is where commercial use happens, so
+  // the operator gets one stderr line pointing at the commercial terms. A local
+  // dev bind or the MCP stdio path is not that situation and stays quiet — the
+  // line must not read as a warning to people it does not apply to.
+  const originalEnv = process.env;
+  let stderrOutput: string;
+  const noticeLines = () => stderrOutput.split('\n').filter((l) => /AGPL/.test(l));
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
+    resetConfig();
+    vi.clearAllMocks();
+    stderrOutput = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation((data: string | Uint8Array) => {
+      stderrOutput += typeof data === 'string' ? data : new TextDecoder().decode(data);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.restoreAllMocks();
+  });
+
+  it('formatServeLicenseNotice is null for every loopback spelling', async () => {
+    const { formatServeLicenseNotice } = await import('../../../src/cli/daemon.js');
+    for (const host of ['127.0.0.1', '127.1.2.3', 'localhost', '::1', '[::1]']) {
+      expect(formatServeLicenseNotice(host)).toBeNull();
+    }
+  });
+
+  it('formatServeLicenseNotice is one line naming AGPL and LICENSING.md for a non-loopback host', async () => {
+    const { formatServeLicenseNotice } = await import('../../../src/cli/daemon.js');
+    for (const host of ['0.0.0.0', '::', '10.0.0.5', 'example.internal']) {
+      const notice = formatServeLicenseNotice(host);
+      expect(notice).not.toBeNull();
+      expect(notice).not.toContain('\n');
+      expect(notice).toContain('AGPL');
+      expect(notice).toContain('LICENSING.md');
+    }
+  });
+
+  it('runDaemon prints the notice exactly once after binding a non-loopback host', async () => {
+    process.env.WIGOLO_API_TOKEN = 'secret';
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '0.0.0.0']);
+    await vi.waitFor(() => expect(stderrOutput).toContain('Press Ctrl+C to stop.'));
+    expect(noticeLines()).toHaveLength(1);
+    expect(noticeLines()[0]).toMatch(/^\[wigolo serve\] /);
+  });
+
+  it('runDaemon prints no notice on a loopback bind', async () => {
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '127.0.0.1']);
+    await vi.waitFor(() => expect(stderrOutput).toContain('Press Ctrl+C to stop.'));
+    expect(noticeLines()).toEqual([]);
+  });
+});

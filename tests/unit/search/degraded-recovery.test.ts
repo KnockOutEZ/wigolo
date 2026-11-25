@@ -207,6 +207,96 @@ describe('degraded-dispatch recovery wave', () => {
     expect(out.pool_degraded?.reasons).toContain('degraded_recovery');
   });
 
+  it('surfaces thin_pool (advisory) when only 2 engines contribute but the pool has NOT collapsed', async () => {
+    // WHY: from a datacenter IP several engines are reachable but return zero
+    // for a given query, so the pool honestly thins to 1–2 CONTRIBUTING engines
+    // WITHOUT falling below the collapse floor. RRF then runs with weak cross-
+    // engine voting, which is exactly the band where a single-engine off-topic
+    // hit can survive (the reproduced runtime.tv leak). The advisory `thin_pool`
+    // reason tells the caller/agent the results came from a thinned pool. Here 2
+    // of 5 primary engines contribute (healthy=2 == floor ceil(5/2)=3? no:
+    // ceil(5/2)=3, so 2 < 3 would be COLLAPSE) — so we dispatch 4 to keep the
+    // floor at 2 and have exactly 2 contributors: floor ceil(4/2)=2, healthy=2,
+    // NOT < floor, so not collapsed; healthy <= THIN_POOL_MAX_CONTRIBUTORS(2).
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://a.com/1')]);
+    const ddg = healthyEntry('ddg', [makeResult('ddg', 'https://b.com/1')]);
+    const wikiEmpty = emptyEntry('wikipedia');
+    const margEmpty = emptyEntry('marginalia');
+    verticalState.general = [bing, ddg, wikiEmpty, margEmpty];
+
+    const out = await runV1Search({ query: 'thin pool query', maxResults: 10 });
+
+    expect(out.pool_degraded?.degraded).toBe(true);
+    expect(out.pool_degraded?.reasons).toContain('thin_pool');
+    // Must NOT be mislabelled as a collapse — that reason engages the
+    // downstream junk-floor emptying gate and must stay reserved for a real
+    // collapse.
+    expect(out.pool_degraded?.reasons).not.toContain('pool_collapsed');
+  });
+
+  it('does NOT surface thin_pool when a healthy pool has one routinely-empty engine (7 of 8 healthy)', async () => {
+    // NEGATIVE / must-not-fire: a single routinely-empty engine (Wikipedia
+    // returning 0 for a multi-word query) leaves 7 of 8 contributing — an
+    // excellent pool. The old `< dispatched` trigger wrongly flagged this on
+    // almost every real query; the absolute-contributor threshold must not.
+    const entries: EngineEntry[] = [];
+    for (let i = 0; i < 7; i++) {
+      entries.push(healthyEntry(`e${i}`, [makeResult(`e${i}`, `https://ok${i}.com/1`)]));
+    }
+    entries.push(emptyEntry('wikipedia'));
+    verticalState.general = entries;
+
+    const out = await runV1Search({ query: 'healthy pool one empty engine', maxResults: 10 });
+
+    // 7 contributors is far above the thin threshold: no degraded object, no
+    // thin_pool reason.
+    expect(out.pool_degraded).toBeUndefined();
+  });
+
+  it('does NOT surface thin_pool for a fully-healthy small roster (≤2 engines, all contributing)', async () => {
+    // NEGATIVE / must-not-fire for condition (b): a vertical whose entire
+    // roster is 2 engines and BOTH return results is at its normal state, not a
+    // degradation — even though the absolute contributor count (2) is at the
+    // thin threshold. The "some engine dropped out" (`< dispatched`) half of the
+    // predicate excludes it. Guards against flagging a small-but-healthy pool.
+    const a = healthyEntry('bing', [makeResult('bing', 'https://a.com/1')]);
+    const b = healthyEntry('ddg', [makeResult('ddg', 'https://b.com/1')]);
+    verticalState.general = [a, b];
+
+    const out = await runV1Search({ query: 'small healthy roster', maxResults: 10 });
+
+    expect(out.pool_degraded).toBeUndefined();
+  });
+
+  it('does NOT surface thin_pool when every dispatched engine contributes results', async () => {
+    // NEGATIVE / must-not-fire: a fully healthy pool (all dispatched engines
+    // returned >= 1 result) is not thin, so no advisory reason and no
+    // pool_degraded object at all.
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://a.com/1')]);
+    const ddg = healthyEntry('ddg', [makeResult('ddg', 'https://b.com/1')]);
+    const wiki = healthyEntry('wikipedia', [makeResult('wikipedia', 'https://c.com/1')]);
+    verticalState.general = [bing, ddg, wiki];
+
+    const out = await runV1Search({ query: 'fully healthy query', maxResults: 10 });
+
+    expect(out.pool_degraded).toBeUndefined();
+  });
+
+  it('a collapsed pool surfaces pool_collapsed and NOT thin_pool (gates stay distinct)', async () => {
+    // NEGATIVE for the thin gate: when the pool truly collapses (1 of 3 healthy,
+    // below floor), the reason is pool_collapsed — the thin advisory must NOT
+    // also fire, so the two bands never blur.
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://only.com/1')]);
+    const ddgEmpty = emptyEntry('ddg');
+    const wikiEmpty = emptyEntry('wikipedia');
+    verticalState.general = [bing, ddgEmpty, wikiEmpty];
+
+    const out = await runV1Search({ query: 'kubernetes ingress controller', maxResults: 10 });
+
+    expect(out.pool_degraded?.reasons).toContain('pool_collapsed');
+    expect(out.pool_degraded?.reasons).not.toContain('thin_pool');
+  });
+
   it('does NOT re-dispatch good results away when the primary pool is healthy but thin on count', async () => {
     // NEGATIVE: two of two primary engines return results (healthy = 2/2 =
     // 100%). Even though max_results is high, the pool is NOT degraded, so no

@@ -1,5 +1,95 @@
 # Changelog
 
+## Unreleased
+
+## v0.3.3 — 2026-11-24
+
+Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.
+
+### Fixed
+- Release binaries are attached again. The macOS arm64 build ran on the retired `macos-14` runner and was cancelled, so v0.3.2 shipped with none. It now builds on `macos-15`. (#707)
+- `GET /health` reports `browsers: "not_installed"` when an engine that browser work needs is missing. The probe covers the configured browser types and Chromium, which the acquisition gate checks before the pool launches. The pool object is created at startup either way, so the old check reported `"ready"` on a broken install. Overall `status` is unchanged, because the engine installs on first use. (#673)
+- `fetch` `links` and `images` hold only the link destination. A link title, `<…>` brackets and backslash escapes no longer end up in the URL, and relative links with parentheses (`/wiki/Foo_(bar)`) resolve correctly. So `crawl` with `strategy: "bfs"` follows the real page instead of a 404. (#708)
+
+## v0.3.2 — 2026-11-23
+
+Remote embeddings, readiness reporting, warmup component flags, plugin search engines in the default search, and installs on Linux x64 again.
+
+### Added
+- Remote embeddings: `WIGOLO_EMBEDDING_API_BASE` sends cache embeddings to an OpenAI-compatible `/embeddings` endpoint. `WIGOLO_EMBEDDING_API_KEY` holds an optional Bearer token. A keyless base can use plain HTTP. A key needs HTTPS unless the host is loopback. Wigolo skips the bundled model when the base exists. (fixes #674)
+- `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
+
+### Changed
+- `find_similar` scores only rows that carry the active model id, for the bundled model too. Rows written under an older model id no longer match, so an endpoint or model change hides them. (fixes #674)
+- A remote embedding endpoint trims input to `WIGOLO_EMBEDDING_MAX_TEXT_LENGTH` before the send, keeps at most 4 requests in flight, and falls back to the default timeout when the value is not a positive integer. (fixes #674)
+- `doctor --json` reports `ok_with_warnings` when a check reports `failed` but the run stays usable. The `status` field no longer reads `ok` in that case, so scripts that compare `status === "ok"` must accept the new value. (#673)
+
+### Fixed
+- A very large response no longer crashes the process. Response bodies are capped by `WIGOLO_MAX_RESPONSE_BYTES` (default 20 MB), including chunked bodies with no declared length. (fixes #648)
+- The reranker and the embedding model unload after `WIGOLO_RERANKER_IDLE_TIMEOUT_MS` (default 300 s) and `WIGOLO_EMBEDDING_IDLE_TIMEOUT` (default 1800 s) without a call, and reload on the next one. The unload releases the model session, and shutdown waits for a reranker load in flight. (#647)
+- `use_auth: true` fetches through the browser now use the stored auth state from `WIGOLO_AUTH_STATE_PATH`, in a context of their own. (fixes #526)
+- A fetch that falls back to a lower tier while the browser engine is still installing now returns the install note in `warning` and flags a JS shell with `js_required`. (fixes #671)
+- `WIGOLO_RERANKER_MAX_LENGTH` and `WIGOLO_EMBEDDING_MAX_TEXT_LENGTH` now apply to the bundled models. The reranker cuts each query and document pair at that many tokens when the value is below the model's own limit (512), and the bundled embedding model trims each input to that many characters before tokenizing. Both settings were read but ignored on the local path. The reranker default equals the model limit, so default reranking is unchanged. (#647)
+- The MCP server no longer fails to start when the interactive prompt library is missing or damaged, for example after an interrupted `npx` install. Only `wigolo setup mcp` loads it now, and it reports the error instead of exiting at startup.
+- Installing from the repository (CI, the Docker image build, contributors) no longer fails on Linux x64 when the optional GPU files for the on-device model runtime cannot be downloaded. wigolo runs its models on the CPU and now skips that download. `docs/installation.md` gives the same one-line setting for `npx` and global installs on Linux x64.
+- Search engine plugins now take part in the default `search`. They were only reaching `research`, `agent` and `find_similar`, although `docs/plugins.md` said they join the dispatch pool. They join the general web pool with the same retry and circuit-breaker protection as the built-in engines.
+- `wigolo warmup` component flags now select components: `--embeddings` or `--reranker` alone no longer download the browser engine first, `--browser` is honoured, `warmup --help` prints usage instead of starting a download, and unknown options are rejected. `doctor` (and `init --no-warmup`) read the bundled browser engine version instead of running `npx playwright`, which could download a different release from the registry. First-use install messages now give on-disk sizes. (#672)
+- `search` no longer fails with "mapped is not iterable" when the query contains `constructor`. Lookup tables keyed by query words or page-supplied values (code-block language, JSON-LD `@type`, `og:type`) no longer match built-in object members such as `constructor` or `__proto__`. (fixes #683)
+- One-shot `wigolo search` (and the other one-shot tool commands) now query the search engine instance set in `WIGOLO_SEARXNG_URL` / `SEARXNG_URL`. Before, they only used the built-in engines, so `WIGOLO_SEARCH=searxng` or `hybrid` never sent a request to it. With the backend selected but no URL set, the result now says why the instance wasn't used. (#685)
+- With `SEARXNG_MODE=docker` and no `WIGOLO_SEARXNG_URL`, the MCP server now starts the search engine container on demand instead of reporting it as not installed and using the fallback engines. An explicit `docker` mode also wins over a native install when Python happens to be present. When the search engine instance errors, results now carry a warning with the reason instead of silently coming from the fallback engines. (fixes #685)
+
+## v0.3.1 — 2026-10-24
+
+Re-cut of v0.3.0 so the release ships its single-file binaries.
+
+### Fixed
+- Release binaries are attached again. The macOS x64 build ran on the retired `macos-13` runner, sat queued until it was cancelled, and that skipped attaching any binaries to v0.3.0; it now builds on `macos-15-intel`. (#664)
+
+## v0.3.0 — 2026-10-21
+
+Node 26 support, a large batch of contributor fixes, remote reranking, three keyless academic search engines, and hardened SSRF protection.
+
+### ⚠️ Breaking
+- **Node 22 or newer is required; Node 20 is no longer supported** (it is end-of-life). better-sqlite3 moves to 12.11.x, which ships Node 26 prebuilds but no Windows prebuild for Node 20. Node 22, 24 and 26 are tested in CI. (#657, fixes #237)
+- **MCP `search` returns a single JSON text block.** The separate `[wigolo notice] …` block is gone, and the synthesis warning moves into the payload as a `notice` field (replacing `warning`; combined with any existing `notice`), matching `format=stream_answer`. Callers that read `content[1]` or `warning` should read `content[0]` and `notice`. The REST API is unchanged. (#658, fixes #651)
+
+### Added
+- Remote/self-hosted reranker: `WIGOLO_RERANKER=remote` with a Cohere-style `/rerank` endpoint (`WIGOLO_RERANK_API_BASE`, optional `WIGOLO_RERANK_API_KEY`; plain HTTP is allowed for loopback only). (#642, fixes #631)
+- OpenAlex, DBLP and OpenReview as keyless secondary engines in the papers vertical. (#235)
+- crates.io search engine (#191) and a JobPosting named schema for `extract` (#192).
+- MCP tool annotations (read-only, open-world and similar hints) on all tools. (#251)
+- `agent` sends MCP progress notifications for completed steps when `stream: true`. (#250, fixes #248)
+- Anti-bot solve ladder with opt-in rungs (trusted-input interactive pass, AI vision solve, hosted scraping browser, human-solve fallback) and a background/windowless browser. (#260)
+- `wigolo serve` prints a commercial-licensing notice when bound to a non-loopback host. (#635)
+- `WIGOLO_SEARXNG_URL` is now read (it is the name every hint already used); `SEARXNG_URL` still works. Warmup skips the local SearXNG install when a URL is set or `SEARXNG_MODE=docker`. (#658, fixes #645)
+
+### Fixed
+- `serve` no longer exits on an unhandled `TimeoutError` when a challenge poll's signal is already aborted. (#658, fixes #630)
+- Readable error when better-sqlite3 was built for a different Node than the one running wigolo, also reported by `doctor` (including `--json`). (#657, fixes #220 and #654)
+- `doctor`: no more 80-character error truncation, a 30s timeout for cold `npx playwright`, and "installed, failed to launch" reported separately from "not installed". (#657, fixes #653)
+- The `search_engines` parameter is honoured by the core search backend and included in the cache key. (#521, fixes #303)
+- The GitHub code engine only runs when `WIGOLO_GITHUB_TOKEN` is set, instead of tripping its own breaker. (#658, fixes #649)
+- Tracking-parameter stripping in dedup is case-insensitive. (#658, fixes #633)
+- The extraction fallback uses the configured LLM model instead of always sending `gpt-4o-mini`, so `OPENAI_BASE_URL` gateways work for extraction too. (#658)
+- Crawl scope follows the seed's post-redirect origin (apex → www). (#265, fixes #263)
+- REST maps tool failures on the machine error code, not the prose, so they no longer all return 500. (#264, fixes #262)
+- `config --set` accepts the documented `settingsPath` keys. (#277, fixes #256)
+- The setup wizard derives required fields from the schema; a keychain-stored key no longer sends users back through setup. (#279, fixes #257)
+- Citation claims are no longer split at decimal numbers. (#278, fixes #274)
+- Better CJK ranking: bigram tokenisation keeps lexical and rare-term signals for Chinese, Japanese and Korean queries. (#232, fixes #230)
+- The ARM64 Docker image includes the tokenizer binary, so vector search no longer silently degrades. (#253, fixes #231)
+- Windows: concurrent skill installs no longer fail on lock-directory `EPERM`. (#658)
+- Cache expiry is timezone-independent (#209); section requests keep the full-page cache (#229); token-authenticated remote MCP clients are allowed (#219); OpenCode MCP configuration is wired (#204).
+- `sharp` is declared as a direct dependency (#658, fixes #652), and the skill packs carry the package version (#658, fixes #632).
+
+### Security
+- SSRF: plain-HTTP fetches pin the socket to the validated IP, which closes the DNS-rebinding window. The pin fails closed on unresolvable or mismatched hosts. The TLS and browser tiers follow in #207. (#402, #210)
+- Dependency updates for disclosed advisories: ajv, ws, protobufjs, vite. (#216)
+- fastembed v3, which downloads models from Hugging Face instead of the retiring Qdrant GCS bucket. (#644, fixes #643)
+
+### Docs
+- Commercial licensing terms (LICENSING.md); AGPL-3.0 is unchanged. Docker `-full` image tags corrected (#280, fixes #255).
+
 ## v0.2.0 — 2026-07-17
 
 Zero-config onboarding, full distribution surface, and a headless-first control plane — matching and going past the ergonomics of the paid tools without shedding the local semantic brain. All ten tools (search, fetch, crawl, extract, cache, find_similar, research, agent, diff, watch) keep working throughout; everything below is additive and keyless-by-default.

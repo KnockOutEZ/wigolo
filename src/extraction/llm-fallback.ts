@@ -10,7 +10,8 @@ import {
 } from '../integrations/cloud/llm/cache.js';
 import { hashPrompt, hashSchema } from '../integrations/cloud/llm/hash.js';
 import { allProviders, providerEnvVar, selectProviderWithKeyStore } from '../integrations/cloud/llm/select.js';
-import type { LLMExtractResult, LLMProvider } from '../integrations/cloud/llm/types.js';
+import { resolveModel } from '../integrations/cloud/llm/model-select.js';
+import type { LLMCallOpts, LLMExtractResult, LLMProvider } from '../integrations/cloud/llm/types.js';
 import { validateAgainstSchema } from '../integrations/cloud/llm/validate.js';
 
 const MAX_HTML_BYTES = 50_000;
@@ -35,7 +36,7 @@ export interface LLMFallbackResult extends LLMExtractResult {
 const ADAPTERS: Record<
   LLMProvider,
   (
-    opts: { prompt: string; jsonSchema: Record<string, unknown>; signal?: AbortSignal },
+    opts: LLMCallOpts,
     apiKey: string,
   ) => Promise<LLMExtractResult>
 > = {
@@ -76,7 +77,10 @@ export async function extractWithLLM(
   const prompt = buildPrompt(input);
   const promptHash = hashPrompt(prompt);
   const schemaHash = hashSchema(input.jsonSchema);
-  const modelId = `${provider}:default`;
+  // Honor the configured model (WIGOLO_LLM_MODEL[_<PROVIDER>]) the same way the
+  // synthesis path does, and key the cache on it so a model switch is a miss.
+  const model = resolveModel(provider);
+  const modelId = `${provider}:${model}`;
 
   ensureLLMCacheTable();
   const cached = lookupLLMCache(modelId, promptHash, schemaHash);
@@ -95,7 +99,7 @@ export async function extractWithLLM(
   let result: LLMExtractResult;
   try {
     result = await ADAPTERS[provider](
-      { prompt, jsonSchema: input.jsonSchema, signal: input.signal },
+      { prompt, jsonSchema: input.jsonSchema, signal: input.signal, modelOverride: model },
       apiKey,
     );
   } catch (e) {

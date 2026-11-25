@@ -2,6 +2,9 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import { createPinnedAgent } from './pinned-dispatcher.js';
+import { readCapped } from './read-capped.js';
+import type { Agent } from 'undici';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -33,6 +36,9 @@ export interface HttpFetchResult {
 // The leading bytes of every PDF file. Used to recognise a PDF that a server
 // served with a generic/absent content-type so the byte tier buffers it.
 const PDF_MAGIC = '%PDF-';
+
+// Same decoding `response.text()` does (UTF-8, BOM stripped).
+const UTF8 = new TextDecoder();
 
 function bufferLooksLikePdf(buf: Buffer): boolean {
   return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
@@ -141,6 +147,17 @@ class HttpFetchError extends Error {
   }
 }
 
+/**
+ * Drive one fetch to completion, following redirects manually so every hop can be re-guarded.
+ *
+ * `redirect: 'manual'` is deliberate: an automatic redirect would connect to the next host without
+ * the SSRF checks below ever seeing it. Each hop therefore re-runs the literal-URL guard, the
+ * resolved-IP guard, and — since #207 — pins the socket to the addresses that guard just cleared,
+ * so the connection cannot be re-resolved onto a different address after validation.
+ *
+ * The response body is fully consumed here (text, or buffered for PDFs), which is what makes it
+ * safe to close the per-hop dispatchers in the `finally`.
+ */
 async function fetchWithRedirects(
   originalUrl: string,
   options: HttpFetchOptions,
@@ -152,8 +169,16 @@ async function fetchWithRedirects(
   const visited = new Set<string>();
   let currentUrl = originalUrl;
   let redirectCount = 0;
+  // Every Agent created across the redirect chain, kept only so the finally below can close them
+  // once the body has been consumed. An Agent left open is a socket leak, and the body is read
+  // inside this function, so closing on the way out is safe.
+  const agents: Agent[] = [];
 
+  try {
   while (true) {
+    // Per HOP, not per request: an IP-literal hop takes no pin, and leaving the previous hop's
+    // Agent in scope would send that request through a dispatcher built for a different host.
+    let pinnedAgent: Agent | undefined;
     if (visited.has(currentUrl)) {
       throw new HttpFetchError(`Redirect loop detected at ${currentUrl}`, false);
     }
@@ -176,6 +201,28 @@ async function fetchWithRedirects(
         if (!resolved.ok) {
           throw new HttpFetchError(resolved.reason, false);
         }
+        // FAIL CLOSED. `guardResolvedHost` reports ok with no addresses when the host did not
+        // resolve, and the old reasoning was that there is then no IP to connect to. That holds
+        // only if both lookups get the same answer. They are two separate queries, so an attacker
+        // who controls the authority can answer the validation query with NXDOMAIN or an empty
+        // set and the connect query with a private address — which would sail through here
+        // unpinned and reinstate the rebinding path this change exists to close.
+        //
+        // Not retryable: DNS failures never were (EAI_AGAIN/ENOTFOUND aren't in the retry set),
+        // and dead hostnames are common at crawl scale, so retrying would only add backoff.
+        if (!resolved.addresses?.length) {
+          throw new HttpFetchError(
+            `Could not resolve ${rhost} to a validated address; refusing to connect without pinning`,
+            false,
+          );
+        }
+        // PIN the socket to what we just validated. Without this the connection resolves DNS a
+        // second time, and an attacker controlling the resolver can answer with a public IP for
+        // the check above and a private one for the connect (DNS rebinding). Pinning removes the
+        // second resolution, so there is no window to race. Literal IPs need no pinning — there
+        // is no name to re-resolve.
+        pinnedAgent = createPinnedAgent(rhost, resolved.addresses);
+        agents.push(pinnedAgent);
       }
     }
 
@@ -210,6 +257,9 @@ async function fetchWithRedirects(
         headers: mergedHeaders,
         redirect: 'manual',
         signal,
+        // `dispatcher` is undici's extension to RequestInit; Node's global fetch honours it but
+        // the DOM typings do not declare it, hence the cast.
+        ...(pinnedAgent ? ({ dispatcher: pinnedAgent } as Record<string, unknown>) : {}),
       });
     } catch (err) {
       const isTimeout = err instanceof Error && err.name === 'TimeoutError';
@@ -238,6 +288,15 @@ async function fetchWithRedirects(
     }
 
     if (REDIRECT_STATUSES.has(response.status)) {
+      // Let go of the body before doing anything else with this hop. We never read a redirect
+      // body, and an unread one keeps the request in flight, which stalls the Agent cleanup in
+      // the `finally` for a full timeoutMs. Placed above the error branches too, so the
+      // no-location and too-many-redirects throws release it as well.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed, or never had a body */
+      }
       const location = response.headers.get('location');
       if (!location) {
         throw new HttpFetchError(`Redirect with no location header at ${currentUrl}`, false);
@@ -265,6 +324,12 @@ async function fetchWithRedirects(
     }
 
     if (RETRYABLE_STATUSES.has(response.status)) {
+      // Same reasoning as the redirect branch: this throws without reading the body.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed, or never had a body */
+      }
       throw new HttpFetchError(`HTTP ${response.status} from ${currentUrl}`, true);
     }
 
@@ -287,21 +352,21 @@ async function fetchWithRedirects(
     // extractor (which keys PDF handling on the content-type).
     let effectiveContentType = contentType;
 
+    // Every body read is bounded by WIGOLO_MAX_RESPONSE_BYTES so one huge
+    // response can't be buffered whole (ERR_STRING_TOO_LONG / OOM).
+    const body = await readCapped(response, getConfig().maxResponseBytes, {
+      contentLength: response.headers.get('content-length'),
+      url: currentUrl,
+    });
     if (declaredPdf) {
-      const arrayBuf = await response.arrayBuffer();
-      rawBuffer = Buffer.from(arrayBuf);
+      rawBuffer = body;
       html = '';
-    } else if (ambiguousType) {
-      const buf = Buffer.from(await response.arrayBuffer());
-      if (bufferLooksLikePdf(buf)) {
-        rawBuffer = buf;
-        html = '';
-        effectiveContentType = 'application/pdf';
-      } else {
-        html = buf.toString('utf-8');
-      }
+    } else if (ambiguousType && bufferLooksLikePdf(body)) {
+      rawBuffer = body;
+      html = '';
+      effectiveContentType = 'application/pdf';
     } else {
-      html = await response.text();
+      html = UTF8.decode(body);
     }
 
     return {
@@ -313,5 +378,18 @@ async function fetchWithRedirects(
       headers,
       rawBuffer,
     };
+  }
+  } finally {
+    for (const a of agents) {
+      try {
+        // destroy(), not close(): close() waits for in-flight requests, so a body we failed to
+        // release anywhere above would stall this cleanup for a full timeoutMs. By the time we
+        // reach here the body has either been read in full or deliberately cancelled, so there is
+        // nothing left worth waiting for, and this way a missed path cannot cost latency.
+        await a.destroy();
+      } catch {
+        /* tearing down a pool must never mask the real result */
+      }
+    }
   }
 }

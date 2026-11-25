@@ -57,10 +57,19 @@ describe('dispatchTool — fetch', () => {
 
   it('failure maps via errors.ts status table (fetch upstream → 502)', async () => {
     vi.mocked(handleFetch).mockResolvedValue({
-      ok: false, error: 'blocked', error_reason: 'blocked_by_challenge', stage: 'fetch',
+      ok: false, error: 'blocked_by_challenge', error_reason: 'the site returned a bot challenge', stage: 'fetch',
     } as never);
     const r = await dispatchTool('fetch', { url: 'https://x.com' }, fakeCtx());
     expect(r.status).toBe(502);
+    expect((r.body as { ok: boolean }).ok).toBe(false);
+  });
+
+  it('invalid input from the tool maps to 400, not 500', async () => {
+    vi.mocked(handleFetch).mockResolvedValue({
+      ok: false, error: 'invalid_url', error_reason: 'url is not a valid absolute URL', stage: 'fetch',
+    } as never);
+    const r = await dispatchTool('fetch', { url: 'not a url' }, fakeCtx());
+    expect(r.status).toBe(400);
     expect((r.body as { ok: boolean }).ok).toBe(false);
   });
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
 import { describeFetchError } from '../fetch/error-describe.js';
+import { detectBlockedPage } from '../fetch/blocked-page.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
@@ -13,6 +14,7 @@ import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { resolveMode } from '../util/mode.js';
 import { createLogger } from '../logger.js';
 import { guardFetchUrl } from '../watch/ssrf.js';
+import { isResponseTooLarge } from '../fetch/read-capped.js';
 
 const log = createLogger('fetch');
 
@@ -162,6 +164,8 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     // cache-only mode, where no live refetch is possible) still warns the caller.
     ...(cached.contentCompleteness ? { content_completeness: cached.contentCompleteness } : {}),
   };
+  const blocked = detectBlockedPage(cached.httpStatus ?? 200, cached.rawHtml);
+  if (blocked) out.blocked = blocked;
   capAuxFields(out, input.max_content_chars);
   return out;
 }
@@ -263,13 +267,27 @@ export async function handleFetch(
     // stealth mode can return a StageError (e.g., playwright_not_installed,
     // playwright_fetch_failed). Surface it directly.
     if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
-      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string };
+      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string; http_status?: number; statusCode?: number; challenge_class?: FetchOutput['challenge_class']; solve_method?: FetchOutput['solve_method'] };
+      // A StageError carries its upstream status as `http_status` (see StageError
+      // in types.ts); some raw fetch shapes use `statusCode`. Read whichever is a
+      // number so a blocked_by_challenge status reaches the crawl cooldown.
+      const stageStatus = typeof stageErr.http_status === 'number'
+        ? stageErr.http_status
+        : (typeof stageErr.statusCode === 'number' ? stageErr.statusCode : undefined);
       return {
         ok: false,
         error: stageErr.error,
         error_reason: stageErr.error_reason ?? stageErr.error,
         stage: stageErr.stage ?? 'fetch',
+        // Surface the upstream status when the stage error carries one (e.g. an
+        // anti-bot 403/429) so the crawl limiter can adapt pace. Never invented:
+        // stage errors without a known status (SSRF/validation) stay unset.
+        ...(stageStatus !== undefined ? { http_status: stageStatus } : {}),
         ...(stageErr.hint ? { hint: stageErr.hint } : {}),
+        // Solve-ladder provenance on a blocked_by_challenge stage error — the
+        // classified challenge class + a null solve method (honest ceiling).
+        ...(stageErr.challenge_class !== undefined ? { challenge_class: stageErr.challenge_class } : {}),
+        ...(stageErr.solve_method !== undefined ? { solve_method: stageErr.solve_method } : {}),
       };
     }
 
@@ -288,6 +306,7 @@ export async function handleFetch(
         error: `http_${raw.statusCode}`,
         error_reason: `Upstream returned HTTP ${raw.statusCode}${snippet ? `: ${snippet}` : ''}`,
         stage: 'fetch',
+        ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
         hint: raw.statusCode === 404
           ? 'Check the URL — file/branch may have been removed or renamed'
           : 'Retry later or check upstream status',
@@ -312,10 +331,23 @@ export async function handleFetch(
       log.warn('change detection failed', { url: raw.finalUrl, error: String(err) });
     }
 
-    try {
-      cacheContent(raw, extraction);
-    } catch (err) {
-      log.warn('failed to cache fetched content', { url: raw.finalUrl, error: String(err) });
+    // A block page that still came back as content (a bot wall served over the
+    // HTTP/TLS tier, a 403 banner) keeps its markdown but is flagged so callers
+    // don't have to text-sniff it.
+    const blocked = detectBlockedPage(raw.statusCode, raw.html, raw.headers, {
+      statusUnknown: raw.statusUnknown,
+    });
+
+    // A flagged fetch is not cached. The cache keeps neither the response
+    // headers nor whether the tier reported a placeholder status, so a replay
+    // could not tell it was a block page again and would serve it unflagged. The
+    // next call fetches fresh instead.
+    if (!blocked) {
+      try {
+        cacheContent(raw, extraction);
+      } catch (err) {
+        log.warn('failed to cache fetched content', { url: raw.finalUrl, error: String(err) });
+      }
     }
 
     try {
@@ -377,6 +409,12 @@ export async function handleFetch(
       // 5xx pages that may extract to a usable HTML body.
       ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
       ...(raw.jsRequired ? { js_required: true } : {}),
+      // The router reports a degraded-but-usable capture as a lower-tier body
+      // plus a note (today: the browser engine was still installing, so the
+      // HTTP shell is the best available content). Dropping the note made that
+      // fallback indistinguishable from a normal 200, so the caller trusted a
+      // placeholder body. Surface it verbatim; never synthesize one here.
+      ...(raw.warning ? { warning: raw.warning } : {}),
       // Stable fingerprint of the FULL extracted body — computed on
       // extraction.markdown BEFORE the presentation budget clips the returned
       // `markdown`. Change-detection consumers (watch scheduler, diff) key off
@@ -401,7 +439,13 @@ export async function handleFetch(
       ...(extraction.site_data_blocked
         ? { fetch_failed: extraction.site_data_blocked }
         : {}),
+      // Solve-ladder provenance from the browser tier when a challenge was
+      // detected on this fetch (e.g. a challenge the ladder cleared to content).
+      // Absent on plain fetches that never hit a challenge.
+      ...(raw.challenge_class !== undefined ? { challenge_class: raw.challenge_class } : {}),
+      ...(raw.solve_method !== undefined ? { solve_method: raw.solve_method } : {}),
     };
+    if (blocked) out.blocked = blocked;
 
     capAuxFields(out, input.max_content_chars);
     await attachEvidence(out, input, finalMarkdown);
@@ -411,7 +455,7 @@ export async function handleFetch(
     const described = describeFetchError(err);
     return {
       ok: false,
-      error: 'fetch_failed',
+      error: isResponseTooLarge(err) ? 'response_too_large' : 'fetch_failed',
       error_reason: described.reason,
       stage: 'fetch',
       ...(described.hint ? { hint: described.hint } : {}),

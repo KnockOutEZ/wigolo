@@ -108,6 +108,9 @@ export async function backfillEmbeddings(opts: BackfillOptions): Promise<Backfil
       });
 
       try {
+        // Reacquire each batch. The idle timer can release the model between
+        // batches, and a stale handle would reload it into the old provider.
+        provider = await getEmbedProvider();
         const vectors = await provider.embed(texts);
         if (!dryRun) {
           await store.upsert(

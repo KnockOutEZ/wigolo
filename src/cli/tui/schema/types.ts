@@ -31,6 +31,7 @@ export interface FieldDef {
   max?: number;
   secret?: true;
   propagateToAgents?: boolean;
+  required?: boolean | ((ctx: Ctx) => boolean);
   visible?: (ctx: Ctx) => boolean;
   validate?: (v: unknown) => string | null;
   futureNote?: string;

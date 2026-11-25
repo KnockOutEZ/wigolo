@@ -95,6 +95,81 @@ describe('migration 008 — anti-bot clearance columns', () => {
   });
 });
 
+describe('migration 010 — clearance route-identity column', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    _resetMigrationGuard();
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-route-'));
+    dbPath = join(dir, 'cache.db');
+  });
+
+  afterEach(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('adds the solved_route column to domain_routing on a fresh DB', () => {
+    const db = new Database(dbPath);
+    applyMigrations(db, { vecLoaded: false });
+
+    const cols = (db.prepare("PRAGMA table_info('domain_routing')").all() as Array<{ name: string }>)
+      .map((c) => c.name);
+    expect(cols).toContain('solved_route');
+
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('010-clearance-route');
+    db.close();
+  });
+
+  it('is idempotent — running twice does not error or duplicate the column', () => {
+    const db = new Database(dbPath);
+    applyMigrations(db, { vecLoaded: false });
+    _resetMigrationGuard();
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+
+    const cols = (db.prepare("PRAGMA table_info('domain_routing')").all() as Array<{ name: string }>)
+      .map((c) => c.name);
+    expect(cols.filter((c) => c === 'solved_route')).toHaveLength(1);
+    db.close();
+  });
+
+  it('is idempotent against a domain_routing that already has solved_route', () => {
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE domain_routing (
+        domain TEXT PRIMARY KEY,
+        prefer_playwright INTEGER DEFAULT 0,
+        http_failures INTEGER DEFAULT 0,
+        last_updated TEXT,
+        cf_clearance TEXT,
+        clearance_ua TEXT,
+        clearance_tier TEXT,
+        clearance_expires_at TEXT,
+        solved_route TEXT
+      );
+    `);
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    db.close();
+  });
+
+  it('a legacy row with a NULL solved_route reads back as direct via the store', () => {
+    const db = new Database(dbPath);
+    applyMigrations(db, { vecLoaded: false });
+    // A pre-010 clearance row (route left NULL by the migration ALTER default).
+    db.prepare(
+      `INSERT INTO domain_routing (domain, prefer_playwright, http_failures, cf_clearance, clearance_ua, clearance_tier, clearance_expires_at)
+       VALUES ('legacy.test', 0, 0, 'cf_clearance=old', 'ua', 'browser', '2026-08-01T00:00:00.000Z')`,
+    ).run();
+    const row = db.prepare(
+      "SELECT solved_route FROM domain_routing WHERE domain = 'legacy.test'",
+    ).get() as { solved_route: string | null };
+    expect(row.solved_route).toBeNull();
+    db.close();
+  });
+});
+
 describe('store — domain clearance + backoff round-trips', () => {
   beforeEach(() => { initDatabase(':memory:'); });
   afterEach(() => { closeDatabase(); });
@@ -112,6 +187,27 @@ describe('store — domain clearance + backoff round-trips', () => {
     expect(got!.ua).toBe('Mozilla/5.0 (test)');
     expect(got!.tier).toBe('tls');
     expect(got!.expiresAt).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it('round-trips the solved egress route (solvedRoute) when recorded', () => {
+    recordDomainClearance('routed.test', {
+      cookie: 'cf_clearance=r',
+      ua: 'ua',
+      tier: 'browser',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+      solvedRoute: 'http://proxy:8080',
+    });
+    expect(getDomainClearance('routed.test')!.solvedRoute).toBe('http://proxy:8080');
+  });
+
+  it('a clearance recorded without a route reads back as direct (legacy surrogate)', () => {
+    recordDomainClearance('noroute.test', {
+      cookie: 'cf_clearance=n',
+      ua: 'ua',
+      tier: 'browser',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+    });
+    expect(getDomainClearance('noroute.test')!.solvedRoute).toBe('direct');
   });
 
   it('getDomainClearance returns null for an unknown host', () => {

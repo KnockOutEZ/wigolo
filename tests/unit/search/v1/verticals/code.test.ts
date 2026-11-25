@@ -7,23 +7,34 @@ import { _resetBreakersForTest } from '../../../../../src/search/core/engine-bas
 
 describe('getCodeEngines', () => {
   const originalBraveKey = process.env.BRAVE_API_KEY;
+  const originalGithubToken = process.env.WIGOLO_GITHUB_TOKEN;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     delete process.env.BRAVE_API_KEY;
+    process.env.WIGOLO_GITHUB_TOKEN = 'test-token';
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
     _resetCodeEnginesForTest();
     _resetBreakersForTest();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (originalBraveKey === undefined) {
       delete process.env.BRAVE_API_KEY;
     } else {
       process.env.BRAVE_API_KEY = originalBraveKey;
     }
+    if (originalGithubToken === undefined) {
+      delete process.env.WIGOLO_GITHUB_TOKEN;
+    } else {
+      process.env.WIGOLO_GITHUB_TOKEN = originalGithubToken;
+    }
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
     _resetCodeEnginesForTest();
   });
 
-  it('returns six entries by default (github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io)', () => {
+  it('returns six entries with a GitHub token (github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io)', () => {
     expect(getCodeEngines()).toHaveLength(6);
   });
 
@@ -37,6 +48,18 @@ describe('getCodeEngines', () => {
       'mdn',
       'stackoverflow',
     ]);
+  });
+
+  it('omits github-code when WIGOLO_GITHUB_TOKEN is unset', async () => {
+    // WHY: GitHub code search 401s without auth, so an unauthenticated engine
+    // only burns a slot and trips its breaker on every code query (#649).
+    delete process.env.WIGOLO_GITHUB_TOKEN;
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetCodeEnginesForTest();
+    const names = getCodeEngines().map((e) => e.engine.name);
+    expect(names).not.toContain('github-code');
+    expect(names).toHaveLength(5);
   });
 
   it('adds brave when BRAVE_API_KEY is set', async () => {

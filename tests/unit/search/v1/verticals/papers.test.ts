@@ -11,13 +11,25 @@ describe('getPapersEngines', () => {
     _resetBreakersForTest();
   });
 
-  it('returns two entries', () => {
-    expect(getPapersEngines()).toHaveLength(2);
+  it('returns five entries', () => {
+    expect(getPapersEngines()).toHaveLength(5);
   });
 
-  it('wraps arxiv and semantic-scholar engines (preserving names)', () => {
+  it('wraps arxiv, semantic-scholar, openalex, dblp, openreview (preserving names)', () => {
     const names = getPapersEngines().map((e) => e.engine.name);
-    expect(names).toEqual(['arxiv', 'semantic-scholar']);
+    expect(names).toEqual(['arxiv', 'semantic-scholar', 'openalex', 'dblp', 'openreview']);
+  });
+
+  it('marks the three added engines secondary and leaves arxiv/S2 primary', () => {
+    const secondaryNames = ['openalex', 'dblp', 'openreview'];
+    const entries = getPapersEngines();
+    for (const name of secondaryNames) {
+      expect(entries.find((e) => e.engine.name === name)?.secondary).toBe(true);
+    }
+    for (const e of entries) {
+      if (secondaryNames.includes(e.engine.name)) continue;
+      expect(e.secondary ?? false).toBe(false);
+    }
   });
 
   it('memoizes — two calls return the same array reference', () => {
@@ -33,9 +45,13 @@ describe('getPapersEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('marks supportsDateFilter true on both', () => {
-    for (const entry of getPapersEngines()) {
-      expect(entry.supportsDateFilter).toBe(true);
-    }
+  it('marks supportsDateFilter true only on arxiv and semantic-scholar', () => {
+    const entries = getPapersEngines();
+    const f = (name: string) => entries.find((e) => e.engine.name === name)?.supportsDateFilter;
+    expect(f('arxiv')).toBe(true);
+    expect(f('semantic-scholar')).toBe(true);
+    expect(f('openalex')).toBe(false);
+    expect(f('dblp')).toBe(false);
+    expect(f('openreview')).toBe(false);
   });
 });

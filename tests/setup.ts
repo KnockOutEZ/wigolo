@@ -13,10 +13,19 @@ import { join } from 'node:path';
 // test in that worker from falling back to the real home dir. Invisible on CI
 // (throwaway HOME), decisive locally.
 const TEST_DATA_DIR = join(tmpdir(), 'wigolo-test', String(process.pid), '.wigolo');
+// config.json does not follow WIGOLO_DATA_DIR: without WIGOLO_CONFIG_PATH it
+// resolves to the real ~/.wigolo/config.json. Reading a version-less file
+// rewrites it, so a test that mocks readFileSync could replace a developer's
+// real settings. Point it at the worker's temp dir, re-asserted the same way.
+const TEST_CONFIG_PATH = join(TEST_DATA_DIR, 'config.json');
 function ensureTestDataDir(): void {
   if (!process.env.WIGOLO_DATA_DIR) {
     mkdirSync(TEST_DATA_DIR, { recursive: true });
     process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
+  }
+  if (!process.env.WIGOLO_CONFIG_PATH) {
+    mkdirSync(TEST_DATA_DIR, { recursive: true });
+    process.env.WIGOLO_CONFIG_PATH = TEST_CONFIG_PATH;
   }
 }
 ensureTestDataDir();
@@ -35,6 +44,24 @@ if (!process.env.WIGOLO_RERANKER) {
 // or any other backend override this per-test with process.env.WIGOLO_SEARCH.
 if (!process.env.WIGOLO_SEARCH) {
   process.env.WIGOLO_SEARCH = 'searxng';
+}
+
+// The driver-hardened stealth launcher (`patchright`) ships as an INSTALLED
+// optionalDependency, and `stealthDriver` defaults to 'auto' — so the dedicated
+// stealth path prefers it over the standard launcher. That silently escapes
+// every `vi.mock('playwright')` in the suite: the pool launches a REAL browser,
+// navigates to a fake host, and the test fails on ERR_NAME_NOT_RESOLVED rather
+// than exercising its mock. It cost 22 failures that read as environmental
+// flake. Pin the suite to the standard driver — `resolveStealthLauncher`
+// short-circuits on this mode and never probes the optional package.
+//
+// Env, deliberately: a static `import` of the stealth module here would be
+// hoisted above the assignments in this file (populating the config cache with
+// the wrong search backend), and a dynamic import inside a hook would execute
+// the src graph inside each test file's own mocked-fs/os context. A test that
+// genuinely exercises the hardened driver overrides this var in its own scope.
+if (!process.env.WIGOLO_STEALTH_DRIVER) {
+  process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
 }
 
 // Isolate CI-detection env vars from the host. Production code in

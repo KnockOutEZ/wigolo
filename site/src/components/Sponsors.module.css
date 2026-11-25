@@ -1,0 +1,130 @@
+.section {
+  padding-block: 100px 110px;
+  background: var(--bg-warm);
+  border-top: 1px solid var(--line-2);
+}
+.inner {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 80px;
+  align-items: start;
+}
+.head {
+  position: sticky;
+  top: calc(var(--nav-h) + 40px);
+}
+.title {
+  margin-top: 20px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(34px, 4.2vw, 56px);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+}
+.lede {
+  margin-top: 22px;
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 34ch;
+}
+.pitch {
+  display: inline-block;
+  margin-top: 26px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  border-bottom: 1.5px solid var(--ink);
+  padding-bottom: 3px;
+  transition: opacity 0.18s var(--ease);
+}
+.pitch:hover {
+  opacity: 0.6;
+}
+
+/* One hairline table of sponsors, same shape as the parity table. */
+.list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.row {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  gap: 28px;
+  align-items: center;
+  padding: 22px 24px;
+  border-bottom: 1px solid var(--line-2);
+}
+.row:last-child {
+  border-bottom: none;
+}
+.logoLink {
+  display: flex;
+  align-items: center;
+  transition: opacity 0.2s var(--ease);
+}
+.logoLink:hover {
+  opacity: 0.7;
+}
+.logo {
+  display: block;
+  height: 24px;
+  width: auto;
+  max-width: 100%;
+}
+.blurb {
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.visit {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
+  transition: border-color 0.2s var(--ease);
+}
+.visit:hover {
+  border-color: var(--ink);
+}
+.open {
+  background: var(--bg-warm);
+}
+.openName {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+@media (max-width: 1024px) {
+  .inner {
+    grid-template-columns: 1fr;
+    gap: 44px;
+  }
+  .head {
+    position: static;
+  }
+}
+@media (max-width: 640px) {
+  .section {
+    padding-block: 64px 72px;
+  }
+  .row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 20px;
+  }
+  .visit {
+    justify-self: start;
+  }
+}

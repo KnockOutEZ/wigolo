@@ -10,6 +10,8 @@ function CopyField() {
   return (
     <button
       className={styles.copy}
+      data-track="copy_install"
+      data-track-location="hero"
       onClick={() => {
         navigator.clipboard?.writeText(cmd).catch(() => {});
         setCopied(true);
@@ -53,7 +55,7 @@ export default function Hero() {
         </div>
 
         <div className={styles.ctas}>
-          <a href="#quickstart" className="btn btn-primary">
+          <a href="#quickstart" className="btn btn-primary" data-track="cta_click" data-track-location="hero">
             Get started
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M3 8h9M8 3l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

@@ -1,6 +1,9 @@
 ## What & why
 
-Briefly describe the change and the problem it solves. Link any related issue.
+Briefly describe the change and the problem it solves.
+
+<!-- Link issues with one closing keyword PER issue, or GitHub only closes the first:
+     Fixes #123, fixes #456   (not "Fixes #123, #456") -->
 
 ## Changes
 

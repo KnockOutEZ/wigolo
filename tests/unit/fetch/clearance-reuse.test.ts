@@ -6,6 +6,8 @@ import {
   clearanceCookieValue,
   clearanceExpiresIso,
   parsedClearanceCookie,
+  routeMatchesClearance,
+  isClearanceReusable,
 } from '../../../src/fetch/clearance-reuse.js';
 import { STEALTH_CHROME_MAJOR, resolveStealthUA } from '../../../src/fetch/stealth.js';
 
@@ -80,6 +82,77 @@ describe('clearance-reuse: cookie parsing', () => {
 
   it('parsedClearanceCookie returns null for a non-clearance cookie', () => {
     expect(parsedClearanceCookie('nope=1', 'example.com')).toBeNull();
+  });
+});
+
+describe('clearance-reuse: routeMatchesClearance (route-identity gate)', () => {
+  it('exact route match is reusable (same proxy egress)', () => {
+    expect(routeMatchesClearance('http://proxy:8080', 'http://proxy:8080')).toBe(true);
+  });
+
+  it('a proxy-minted clearance is REFUSED from a direct route (route-identity mismatch)', () => {
+    expect(routeMatchesClearance('http://proxy:8080', 'direct')).toBe(false);
+  });
+
+  it('a direct-minted clearance is REFUSED from a proxy route', () => {
+    expect(routeMatchesClearance('direct', 'http://proxy:8080')).toBe(false);
+  });
+
+  it('two DIFFERENT proxies are a mismatch (clearance is IP-bound)', () => {
+    expect(routeMatchesClearance('http://proxy-a:8080', 'http://proxy-b:8080')).toBe(false);
+  });
+
+  it('direct-to-direct matches', () => {
+    expect(routeMatchesClearance('direct', 'direct')).toBe(true);
+  });
+
+  it('a legacy row (undefined route) is treated as direct — matches a direct current route', () => {
+    expect(routeMatchesClearance(undefined, 'direct')).toBe(true);
+  });
+
+  it('a legacy row (undefined route) is REFUSED from a proxy route', () => {
+    expect(routeMatchesClearance(undefined, 'http://proxy:8080')).toBe(false);
+  });
+
+  it('an empty-string stored route is treated as direct (legacy/NULL surrogate)', () => {
+    expect(routeMatchesClearance('', 'direct')).toBe(true);
+    expect(routeMatchesClearance('', 'http://proxy:8080')).toBe(false);
+  });
+});
+
+describe('clearance-reuse: isClearanceReusable (composed eligibility)', () => {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  const past = new Date(Date.now() - 60_000).toISOString();
+
+  it('reuses ONLY when fresh AND UA-ok AND route-matches', () => {
+    const c = { cookie: 'cf_clearance=x', ua: CHROME_UA, tier: 'browser', expiresAt: future, solvedRoute: 'direct' };
+    expect(isClearanceReusable(c, 'browser', 'direct', Date.now())).toBe(true);
+  });
+
+  it('refuses on route mismatch even when fresh + UA-ok', () => {
+    const c = { cookie: 'cf_clearance=x', ua: CHROME_UA, tier: 'browser', expiresAt: future, solvedRoute: 'http://proxy:8080' };
+    expect(isClearanceReusable(c, 'browser', 'direct', Date.now())).toBe(false);
+  });
+
+  it('refuses when stale even if route + UA match', () => {
+    const c = { cookie: 'cf_clearance=x', ua: CHROME_UA, tier: 'browser', expiresAt: past, solvedRoute: 'direct' };
+    expect(isClearanceReusable(c, 'browser', 'direct', Date.now())).toBe(false);
+  });
+
+  it('refuses on UA mismatch (Firefox-minted for the browser tier) even if route + fresh', () => {
+    const c = { cookie: 'cf_clearance=x', ua: FIREFOX_UA, tier: 'browser', expiresAt: future, solvedRoute: 'direct' };
+    expect(isClearanceReusable(c, 'browser', 'direct', Date.now())).toBe(false);
+  });
+
+  it('a legacy row (no solvedRoute) is reusable on a direct route, refused on a proxy route', () => {
+    const legacy = { cookie: 'cf_clearance=x', ua: CHROME_UA, tier: 'browser', expiresAt: future };
+    expect(isClearanceReusable(legacy, 'browser', 'direct', Date.now())).toBe(true);
+    expect(isClearanceReusable(legacy, 'browser', 'http://proxy:8080', Date.now())).toBe(false);
+  });
+
+  it('refuses when the stored cookie is not a cf_clearance value', () => {
+    const c = { cookie: 'other=1', ua: CHROME_UA, tier: 'browser', expiresAt: future, solvedRoute: 'direct' };
+    expect(isClearanceReusable(c, 'browser', 'direct', Date.now())).toBe(false);
   });
 });
 

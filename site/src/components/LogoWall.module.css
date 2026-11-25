@@ -1,0 +1,167 @@
+.section {
+  padding-block: 24px 88px;
+  overflow: hidden;
+}
+.caption {
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 18px;
+  color: var(--muted);
+  margin-bottom: 36px;
+  padding-inline: var(--pad-x);
+}
+.caption strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.note {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--muted-2);
+  margin-top: 36px;
+  padding-inline: var(--pad-x);
+}
+
+.noteLink {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.noteLink:hover {
+  color: var(--ink);
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viewport {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+.viewport + .viewport {
+  margin-top: 28px;
+}
+.track {
+  display: flex;
+  width: max-content;
+  animation: scroll 70s linear infinite;
+}
+.reverse {
+  animation-direction: reverse;
+  animation-duration: 60s;
+}
+.viewport:hover .track {
+  animation-play-state: paused;
+}
+.row {
+  display: flex;
+  align-items: center;
+}
+
+/* Tier sizing: the top row carries the household names, so it runs larger. */
+.topRow {
+  --logo-h: 30px;
+  --name-size: 26px;
+  --gap: 56px;
+}
+.bottomRow {
+  --logo-h: 22px;
+  --name-size: 19px;
+  --gap: 44px;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--logo-h) * 0.35);
+  margin-inline: calc(var(--gap) / 2);
+  color: var(--olive-400);
+  white-space: nowrap;
+  transition: color 0.2s var(--ease);
+}
+.logo:hover {
+  color: var(--ink-2);
+}
+.mark {
+  display: block;
+  flex: none;
+  height: var(--logo-h);
+  width: calc(var(--logo-h) * var(--aspect, 1));
+  fill: currentColor;
+}
+/* Wordmarks are short and wide; match their cap height to the names beside them. */
+.wordmark .mark {
+  height: calc(var(--logo-h) * 0.8);
+  width: calc(var(--logo-h) * 0.8 * var(--aspect, 1));
+}
+.mask {
+  background-color: currentColor;
+  -webkit-mask: var(--src) center / contain no-repeat;
+  mask: var(--src) center / contain no-repeat;
+}
+.name {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--name-size);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+@keyframes scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-33.333%);
+  }
+}
+
+@media (max-width: 720px) {
+  .topRow {
+    --logo-h: 24px;
+    --name-size: 21px;
+    --gap: 40px;
+  }
+  .bottomRow {
+    --logo-h: 18px;
+    --name-size: 16px;
+    --gap: 32px;
+  }
+  .caption {
+    font-size: 16px;
+  }
+}
+
+/* No motion: one static, centred copy per row instead of a clipped strip. */
+@media (prefers-reduced-motion: reduce) {
+  .track {
+    animation: none;
+    width: auto;
+    justify-content: center;
+  }
+  .row {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 20px;
+    padding-inline: var(--pad-x);
+  }
+  .row[data-copy="1"],
+  .row[data-copy="2"] {
+    display: none;
+  }
+  .viewport {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}

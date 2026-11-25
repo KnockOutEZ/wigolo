@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+/.logo-wall/
+
+# generated docs content (scripts/sync-content.mjs)
+/content/
+/.source/

@@ -47,6 +47,20 @@ export interface RunLlmTextOpts {
   signal?: AbortSignal;
   /** Route this call to an explicit backend, bypassing process.env resolution. */
   backend?: LlmBackendOverride;
+  /**
+   * Optional image sent alongside the prompt for vision-capable cloud models
+   * (anthropic/openai/gemini). Ignored by groq and the custom OpenAI-compatible
+   * backend, which stay text-only.
+   */
+  image?: LlmImageInput;
+}
+
+/** Base64 image input attached to an LLM text call. */
+export interface LlmImageInput {
+  /** Base64-encoded image bytes, without a `data:` URI prefix. */
+  data: string;
+  /** IANA media type, e.g. 'image/png'. */
+  mediaType: string;
 }
 
 export interface RunLlmTextResult {
@@ -194,7 +208,7 @@ export async function runLlmText(opts: RunLlmTextOpts): Promise<RunLlmTextResult
   log.debug('runLlmText cloud', { provider, model });
   return withRetry(`${provider}:${model}`, async () => {
     const r: TextCallResult = await TEXT_ADAPTERS[provider](
-      { prompt: opts.prompt, model, maxTokens: opts.maxTokens, signal },
+      { prompt: opts.prompt, model, maxTokens: opts.maxTokens, signal, image: opts.image },
       apiKey,
     );
     return { text: r.text, provider: r.provider, model: r.model, latencyMs: r.latencyMs };

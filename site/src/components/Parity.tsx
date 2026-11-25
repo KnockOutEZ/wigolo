@@ -1,5 +1,6 @@
 import Reveal from "./Reveal";
-import { asset } from "@/lib/site";
+import { asset, BASE_PATH } from "@/lib/site";
+import { ALTERNATIVES } from "@/content/alternatives";
 import styles from "./Parity.module.css";
 
 type Cell = boolean | string;
@@ -105,11 +106,23 @@ export default function Parity() {
             >
               watch the full run
             </a>
+            . Compare in detail:{" "}
+            {ALTERNATIVES.map((a, i) => (
+              <span key={a.slug}>
+                {i > 0 && " · "}
+                <a href={`${BASE_PATH}/alternatives/${a.slug}/`} style={{ textDecoration: "underline" }}>
+                  vs {a.name}
+                </a>
+              </span>
+            ))}
             .
           </p>
           <img
             className={styles.meter}
             src={asset("/promo/meter.svg")}
+            width={880}
+            height={380}
+            decoding="async"
             alt="The meter: a metered cloud API's cost climbs with every query while wigolo stays flat at zero dollars — illustrative pricing"
             loading="lazy"
           />

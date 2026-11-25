@@ -6,6 +6,8 @@
 // Multi-word concept queries are scored by the longest in-order run of query
 // content-tokens present in the doc (Reciprocal-Rank-Fusion vs "Reciprocal").
 
+import { tokenizeRankingText } from './text-tokenizer.js';
+
 export interface RareTerms {
   compoundTokens: string[];
   conceptPhrase: string[] | null;
@@ -57,10 +59,7 @@ function classifyCompound(raw: string): string | null {
 }
 
 function contentTokens(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .map(stripEdges)
+  return tokenizeRankingText(query)
     .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
 }
 
@@ -85,7 +84,7 @@ export function detectRareTerms(query: string): RareTerms {
 }
 
 function tokenizeDoc(s: string): string[] {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(Boolean);
+  return tokenizeRankingText(s);
 }
 
 // Longest contiguous run of `phrase` tokens (in their query order) that appears

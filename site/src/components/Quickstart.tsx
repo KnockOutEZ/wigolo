@@ -8,6 +8,8 @@ function Cmd({ text }: { text: string }) {
   return (
     <button
       className={styles.cmd}
+      data-track="copy_install"
+      data-track-location="quickstart"
       onClick={() => {
         navigator.clipboard?.writeText(text).catch(() => {});
         setCopied(true);
