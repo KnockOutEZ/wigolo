@@ -44,6 +44,25 @@ vi.mock('../../../src/config.js', () => ({
   getConfig: vi.fn(() => ({ dataDir: '/tmp/test-wigolo-warmup', searchBackend: null, searxngUrl: null })),
 }));
 
+// `--all` also warms the reranker and the embedding model. Without these mocks
+// the test downloads both models from the network.
+vi.mock('../../../src/providers/rerank-provider.js', () => ({
+  getRerankProvider: vi.fn(async () => ({
+    modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
+    rerank: vi.fn().mockResolvedValue([{ id: '0', score: 0.5 }]),
+  })),
+}));
+
+vi.mock('../../../src/embedding/fastembed-provider.js', () => {
+  const FastembedEmbedProvider = vi.fn(function (this: Record<string, unknown>) {
+    this.modelId = 'BGE-small-en-v1.5';
+    this.dim = 384;
+    this.warmup = vi.fn().mockResolvedValue(undefined);
+    this.embed = vi.fn().mockResolvedValue([new Float32Array(384).fill(0.1)]);
+  });
+  return { FastembedEmbedProvider };
+});
+
 // --- setup-mcp mock scaffold (mirrors setup-mcp-non-interactive.test.ts). ---
 const { detectAgentsMock, selectAgentsMock, applyConfigsMock, printAddMcpBannerMock } = vi.hoisted(() => ({
   detectAgentsMock: vi.fn(),

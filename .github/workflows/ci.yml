@@ -45,7 +45,9 @@ jobs:
 
   full-suite:
     name: full test suite (ubuntu)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, where the browser engine can't
+    # install its system deps yet. Unpin once it supports 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +78,9 @@ jobs:
   # recursive-mkdir and corrupt-archive download-path fixes on every PR).
   clean-machine-smoke:
     name: clean-machine smoke (${{ matrix.os }}, node ${{ matrix.node }})
-    runs-on: ${{ matrix.os }}
+    # The matrix keeps the `ubuntu-latest` label so the required check names
+    # don't change; the job itself runs on 24.04 (see full-suite above).
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # linux-arm64 is non-blocking: its native embedding tokenizer is still being
     # validated on real ARM hardware, so it reports without gating a merge.
     continue-on-error: ${{ matrix.os == 'ubuntu-22.04-arm' }}
@@ -117,6 +121,9 @@ jobs:
         shell: bash
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' # warmup does the real install below
+          # A global install does not read the repo .npmrc. This is the same
+          # setting docs/installation.md gives Linux x64 users.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
         run: |
           TGZ=$(npm pack 2>/dev/null | tail -1)
           echo "packed: $TGZ"
@@ -129,17 +136,17 @@ jobs:
       - name: warmup loads + self-tests every native/model dep
         shell: bash
         run: |
-          # chromium always installs; --reranker/--embeddings add the ML models,
+          # --browser installs chromium; --reranker/--embeddings add the ML models,
           # each with a real self-test (browser launch, one rerank, one embed).
           # linux-arm64 has no embeddings tokenizer binary (a known upstream gap)
           # and `warmup --embeddings` THROWS there, so skip it on ARM entirely and
           # assert browser + reranker only — the ARM job still gates the browser
           # engine, ranking model, native SQLite, and the tool calls below.
           if [ "${{ matrix.os }}" = "ubuntu-22.04-arm" ]; then
-            wigolo warmup --reranker --json > warm.json
+            wigolo warmup --browser --reranker --json > warm.json
             KEYS='browserEngine reranker'
           else
-            wigolo warmup --reranker --embeddings --json > warm.json
+            wigolo warmup --browser --reranker --embeddings --json > warm.json
             KEYS='browserEngine reranker embeddings'
           fi
           node -e "const r=JSON.parse(require('fs').readFileSync('warm.json','utf8')); for (const k of process.argv.slice(1)){ if (r[k] !== 'ok'){ console.error('DEP FAILED:', k, '=', r[k], r[k+'Error']||''); process.exit(1) } } console.log('native + model deps OK ('+process.argv.slice(1).join(', ')+')')" $KEYS

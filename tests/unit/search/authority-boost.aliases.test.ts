@@ -49,3 +49,26 @@ describe('authority-boost aliases', () => {
     expect(matched[0].relevance_score - baseline[0].relevance_score).toBeGreaterThan(0.1);
   });
 });
+
+describe('authority-boost: query words that name Object.prototype members', () => {
+  // A plain-object lookup keyed by a query word returns inherited members for
+  // "constructor", "toString", etc. — #683 crashed every search containing
+  // "constructor" with "mapped is not iterable".
+  it.each(['constructor', 'Java record constructor', 'toString', '__proto__ hasOwnProperty valueOf'])(
+    'does not throw and leaves scores alone for %j',
+    (query) => {
+      const results = [r('https://example.com/a', 0.5), r('https://example.org/b', 0.4)];
+      const out = applyAuthorityBoost(query, results);
+      expect(out).toHaveLength(2);
+      expect(out.every((x) => Number.isFinite(x.relevance_score))).toBe(true);
+    },
+  );
+
+  it('still boosts a known subject when the query also says "constructor"', () => {
+    const results = [r('https://www.w3schools.com/x'), r('https://redis.io/docs/x')];
+    const out = applyAuthorityBoost('redis constructor', results);
+    const redis = out.find((x) => x.url.includes('redis.io'))!;
+    const w3 = out.find((x) => x.url.includes('w3schools'))!;
+    expect(redis.relevance_score).toBeGreaterThan(w3.relevance_score);
+  });
+});

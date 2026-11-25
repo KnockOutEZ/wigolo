@@ -47,6 +47,7 @@ export const SETTINGS_SECRETS_DENYLIST = new Set<string>([
   'braveApiKey',
   'githubToken',
   'rerankApiKey',
+  'embeddingApiKey',
   'redditClientSecret',
   // Hosted-CDP (Bright-Data-style) endpoint may carry inline credentials and
   // acts as an IP+solver escape rung. Treat it like a secret: never persist it

@@ -9,6 +9,9 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('cache');
 
+/** sqlite-vec rejects a knn LIMIT above this value. */
+const KNN_MAX = 4096;
+
 /**
  * VectorStore backed by the sqlite-vec extension loaded into the shared
  * better-sqlite3 cache database.
@@ -28,9 +31,14 @@ const log = createLogger('cache');
  * score as `1 / (1 + distance)`. Higher score = closer match.
  *
  * Filter semantics match VectorStore: when `filter` is provided we
- * over-fetch from the KNN side (oversample = limit * 5) then post-filter
- * against vec_metadata before truncating to `limit`. Filters never relax
- * — every populated filter field must match.
+ * over-fetch from the KNN side, then post-filter against vec_metadata. The
+ * window widens until it holds `limit` matching rows or covers the whole
+ * store. Filters never relax — every populated filter field must match.
+ *
+ * sqlite-vec caps the KNN window at KNN_MAX. When the capped window still
+ * holds fewer than `limit` matching rows, search runs an exact filtered scan
+ * and ranks the matches with vec_distance_L2, so rows from another model can
+ * never hide a match.
  */
 export class SqliteVecStore implements VectorStore {
   private upsertSelectStmt: Database.Statement;
@@ -129,9 +137,9 @@ export class SqliteVecStore implements VectorStore {
 
     // When a filter is present we over-fetch from the KNN side and apply
     // the filter post-hoc, since vec0 MATCH cannot be combined with JOIN
-    // predicates inside a single WHERE clause.
-    const knnLimit = filter ? Math.max(limit * 5, 50) : limit;
-
+    // predicates inside a single WHERE clause. The window widens until it
+    // holds `limit` matches or covers the whole store, so rows from another
+    // model cannot hide current-model rows that rank further out.
     const candidateStmt = this.db.prepare(`
       SELECT rowid, distance
       FROM vec_documents
@@ -140,71 +148,131 @@ export class SqliteVecStore implements VectorStore {
       LIMIT ?
     `);
 
-    let candidates: Array<{ rowid: number; distance: number }>;
-    try {
-      candidates = candidateStmt.all(queryBuf, knnLimit) as Array<{
-        rowid: number;
-        distance: number;
-      }>;
-    } catch (err) {
-      log.error('SqliteVecStore.search KNN failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
+    let knnLimit = Math.min(filter ? Math.max(limit * 5, 50) : limit, KNN_MAX);
+
+    for (;;) {
+      let candidates: Array<{ rowid: number; distance: number }>;
+      try {
+        candidates = candidateStmt.all(queryBuf, knnLimit) as Array<{
+          rowid: number;
+          distance: number;
+        }>;
+      } catch (err) {
+        log.error('SqliteVecStore.search KNN failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+
+      if (candidates.length === 0) return [];
+
+      const rowids = candidates.map(c => c.rowid);
+      const placeholders = rowids.map(() => '?').join(',');
+      const metaRows = this.db
+        .prepare(`
+          SELECT m.rowid AS rowid, m.external_id AS external_id,
+                 meta.url AS url, meta.content_hash AS content_hash,
+                 meta.model_id AS model_id, meta.extra_json AS extra_json
+          FROM vec_id_map m
+          JOIN vec_metadata meta ON m.rowid = meta.rowid
+          WHERE m.rowid IN (${placeholders})
+        `)
+        .all(...rowids) as Array<MetaRow & { rowid: number }>;
+
+      const metaByRowid = new Map<number, MetaRow & { rowid: number }>();
+      for (const r of metaRows) metaByRowid.set(r.rowid, r);
+
+      const results: VectorSearchResult[] = [];
+      for (const cand of candidates) {
+        const meta = metaByRowid.get(cand.rowid);
+        if (!meta) continue;
+
+        const metadata = toVectorMetadata(meta);
+
+        if (filter && !matchesFilter(metadata, filter)) continue;
+
+        results.push({
+          id: meta.external_id,
+          score: 1 / (1 + cand.distance),
+          metadata,
+        });
+
+        if (results.length >= limit) break;
+      }
+
+      if (results.length >= limit) return results;
+      // A window that returned fewer rows than it asked for already covers
+      // every vector in the store, so a wider window cannot add matches.
+      if (!filter || candidates.length < knnLimit) return results;
+      if (knnLimit >= KNN_MAX) {
+        // The KNN window cannot grow further, so rows from another model may
+        // still hide matches. Rank every row that passes the filter instead.
+        try {
+          return this.exactFilteredSearch(queryBuf, limit, filter);
+        } catch (err) {
+          log.error('SqliteVecStore.search exact fallback failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return results;
+        }
+      }
+      knnLimit = Math.min(knnLimit * 4, KNN_MAX);
+    }
+  }
+
+  /**
+   * Exact ranked scan for a filtered search whose KNN window is saturated.
+   *
+   * The join applies the filter before the limit, then vec_distance_L2 ranks
+   * every matching row. Distance values match the KNN path, so scores and
+   * ordering stay the same.
+   */
+  private exactFilteredSearch(
+    queryBuf: Buffer,
+    limit: number,
+    filter: Partial<VectorMetadata>,
+  ): VectorSearchResult[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.modelId !== undefined) {
+      where.push('meta.model_id = ?');
+      params.push(filter.modelId);
+    }
+    if (filter.url !== undefined) {
+      where.push('meta.url = ?');
+      params.push(filter.url);
+    }
+    if (filter.contentHash !== undefined) {
+      where.push('meta.content_hash = ?');
+      params.push(filter.contentHash);
     }
 
-    if (candidates.length === 0) return [];
-
-    const rowids = candidates.map(c => c.rowid);
-    const placeholders = rowids.map(() => '?').join(',');
-    const metaRows = this.db
-      .prepare(`
-        SELECT m.rowid AS rowid, m.external_id AS external_id,
-               meta.url AS url, meta.content_hash AS content_hash,
-               meta.model_id AS model_id, meta.extra_json AS extra_json
-        FROM vec_id_map m
-        JOIN vec_metadata meta ON m.rowid = meta.rowid
-        WHERE m.rowid IN (${placeholders})
-      `)
-      .all(...rowids) as Array<{
-        rowid: number;
-        external_id: string;
-        url: string;
-        content_hash: string;
-        model_id: string;
-        extra_json: string | null;
-      }>;
-
-    const metaByRowid = new Map<number, typeof metaRows[number]>();
-    for (const r of metaRows) metaByRowid.set(r.rowid, r);
+    const stmt = this.db.prepare(`
+      SELECT m.external_id AS external_id,
+             meta.url AS url, meta.content_hash AS content_hash,
+             meta.model_id AS model_id, meta.extra_json AS extra_json,
+             vec_distance_L2(docs.embedding, ?) AS distance
+      FROM vec_documents docs
+      JOIN vec_id_map m ON m.rowid = docs.rowid
+      JOIN vec_metadata meta ON meta.rowid = docs.rowid
+      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY distance
+    `);
 
     const results: VectorSearchResult[] = [];
-    for (const cand of candidates) {
-      const meta = metaByRowid.get(cand.rowid);
-      if (!meta) continue;
-
-      const extra = meta.extra_json
-        ? (JSON.parse(meta.extra_json) as Record<string, unknown>)
-        : undefined;
-
-      const metadata: VectorMetadata = {
-        url: meta.url,
-        contentHash: meta.content_hash,
-        modelId: meta.model_id,
-        ...(extra ? { extra } : {}),
-      };
-
-      if (filter && !matchesFilter(metadata, filter)) continue;
-
+    const rows = stmt.iterate(queryBuf, ...params) as IterableIterator<
+      MetaRow & { distance: number }
+    >;
+    for (const row of rows) {
+      const metadata = toVectorMetadata(row);
+      if (!matchesFilter(metadata, filter)) continue;
       results.push({
-        id: meta.external_id,
-        score: 1 / (1 + cand.distance),
+        id: row.external_id,
+        score: 1 / (1 + row.distance),
         metadata,
       });
-
       if (results.length >= limit) break;
     }
-
     return results;
   }
 
@@ -236,6 +304,26 @@ export class SqliteVecStore implements VectorStore {
     const row = this.sizeStmt.get() as { c: number };
     return row.c;
   }
+}
+
+type MetaRow = {
+  external_id: string;
+  url: string;
+  content_hash: string;
+  model_id: string;
+  extra_json: string | null;
+};
+
+function toVectorMetadata(row: MetaRow): VectorMetadata {
+  const extra = row.extra_json
+    ? (JSON.parse(row.extra_json) as Record<string, unknown>)
+    : undefined;
+  return {
+    url: row.url,
+    contentHash: row.content_hash,
+    modelId: row.model_id,
+    ...(extra ? { extra } : {}),
+  };
 }
 
 function matchesFilter(meta: VectorMetadata, filter: Partial<VectorMetadata>): boolean {

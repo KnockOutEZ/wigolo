@@ -11,6 +11,7 @@ import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
 import { RemoteRerankProvider } from '../search/reranker/remote-rerank-provider.js';
+import { RemoteEmbedProvider } from '../embedding/remote-embed-provider.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { isNativeAbiMismatch } from '../util/native-abi.js';
 import { getCacheStats } from '../cache/store.js';
@@ -97,16 +98,14 @@ function checkDocker(): { ok: boolean; version?: string; cli?: string } {
 }
 
 async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string; probes: Record<BrowserName, BrowserProbeResult> }> {
-  let installed = false;
+  // Read the bundled package's version. `npx playwright --version` fetched the
+  // latest release from the registry when no local bin existed (#672).
   let version: string | undefined;
   try {
-    const r = spawnSync('npx', ['playwright', '--version'], { encoding: 'utf-8', timeout: 30_000 });
-    if (r.status === 0) {
-      installed = true;
-      const m = r.stdout.match(/(\d+\.\d+\.\d+)/);
-      version = m?.[1];
-    }
-  } catch { /* ignore */ }
+    const req = createRequire(import.meta.url);
+    version = (req('playwright/package.json') as { version?: string }).version;
+  } catch { /* not resolvable */ }
+  const installed = version !== undefined;
 
   // Use the SAME shared probe warmup uses so doctor cannot disagree
   // with warmup about browser health. The check is launchability — a real
@@ -477,7 +476,18 @@ export interface DoctorFix {
 
 /** The machine-readable doctor report emitted under `--json`. */
 export interface DoctorReport {
-  status: 'ok' | 'degraded';
+  /**
+   * `ok` = every check passed.
+   *
+   * `ok_with_warnings` = the run is not degraded, but at least one check reports
+   * `failed`. A fresh install hits this: the browser and the embeddings model
+   * install on first use, so doctor reports them `failed` yet exits 0 (the D5
+   * lazy contract). Naming the state stops a `failed` check from sitting next
+   * to a bare `ok`.
+   *
+   * `degraded` = doctor found a fault it cannot ignore. Exit code 1.
+   */
+  status: 'ok' | 'ok_with_warnings' | 'degraded';
   exitCode: number;
   /** Running package version — for cross-channel support triage. */
   version: string;
@@ -550,13 +560,25 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
         : 'chromium not installed',
   });
 
+  const embedCfg = getConfig();
   const emb = checkFastembedCache(dataDir);
-  checks.push({
-    name: 'embeddings',
-    status: emb.installed ? 'ok' : 'failed',
-    fixable: true,
-    detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
-  });
+  if (embedCfg.embeddingApiBase) {
+    // Local construction only: it validates the URL and the key rule and
+    // performs no network call.
+    try {
+      new RemoteEmbedProvider(embedCfg);
+      checks.push({ name: 'embeddings', status: 'ok', fixable: false, detail: 'remote endpoint configured (not probed)' });
+    } catch (err) {
+      checks.push({ name: 'embeddings', status: 'failed', fixable: false, detail: errorLine(err) });
+    }
+  } else {
+    checks.push({
+      name: 'embeddings',
+      status: emb.installed ? 'ok' : 'failed',
+      fixable: true,
+      detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
+    });
+  }
 
   // searxng bootstrap: only a fixable failure when the sidecar is opted into.
   // On core (default) a failed/absent state is EXPECTED, not a failure — report
@@ -772,7 +794,18 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   } else {
     out(`  ML reranker:        not installed${reranker?.reason ? ` (${reranker.reason})` : ''}`);
   }
-  if (embeddings.installed) {
+  if (getConfig().embeddingApiBase) {
+    // Construct locally: this validates the URL and the key rule and performs no
+    // network call. A bad endpoint is a real fault, so the run is degraded.
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  Embeddings model:   remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  Embeddings model:   remote endpoint misconfigured - ${errorLine(err)}`);
+      degraded = true;
+      nonFixableDegraded = true;
+    }
+  } else if (embeddings.installed) {
     out(`  Embeddings model:   installed (fastembed BGE-small-en-v1.5)`);
   } else {
     out(`  Embeddings model:   not installed${embeddings.reason ? ` (${embeddings.reason})` : ''}`);
@@ -1019,11 +1052,22 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     degraded = nonFixableDegraded || anyFixableStillFailed;
   }
 
-  const status: DoctorReport['status'] = degraded ? 'degraded' : 'ok';
+  // A check can report `failed` while the run stays non-degraded: the browser
+  // and the embeddings model install on first use, and the D5 lazy contract
+  // keeps a fresh install at exit 0. A bare `ok` next to `failed` checks
+  // contradicts itself for anyone parsing this report, so name the state.
+  const reportChecks = sqliteCheck ? [...fixableChecks, sqliteCheck] : fixableChecks;
+  const failedChecks = reportChecks.filter((c) => c.status === 'failed');
+  const status: DoctorReport['status'] = degraded
+    ? 'degraded'
+    : failedChecks.length > 0
+      ? 'ok_with_warnings'
+      : 'ok';
   const exitCode = degraded ? 1 : 0;
 
   out('');
-  out(`[wigolo doctor] Overall: ${degraded ? 'DEGRADED' : 'OK'}`);
+  const warningSuffix = status === 'ok_with_warnings' ? ` (warnings: ${failedChecks.map((c) => c.name).join(', ')})` : '';
+  out(`[wigolo doctor] Overall: ${degraded ? 'DEGRADED' : `OK${warningSuffix}`}`);
 
   if (opts?.json) {
     const report: DoctorReport = {
@@ -1033,7 +1077,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       install_channel: detectInstallChannel(),
       // The ABI-mismatch check is not fixable, so it is not in fixableChecks;
       // include it so a degraded --json report names its cause.
-      checks: sqliteCheck ? [...fixableChecks, sqliteCheck] : fixableChecks,
+      checks: reportChecks,
       fixes,
     };
     // Machine shape on stdout; the human diagnostic above stays on stderr.
@@ -1049,6 +1093,15 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 function checkCoreEmbeddings(dataDir: string): void {
   out('');
   out('[wigolo doctor] Core embeddings:');
+  if (getConfig().embeddingApiBase) {
+    try {
+      new RemoteEmbedProvider(getConfig());
+      out('  provider:      remote endpoint configured (not probed)');
+    } catch (err) {
+      out(`  provider:      remote endpoint misconfigured - ${errorLine(err)}`);
+    }
+    return;
+  }
   const cache = checkFastembedCache(dataDir);
   if (cache.installed) {
     out('  provider:      installed (fastembed BGE-small-en-v1.5)');

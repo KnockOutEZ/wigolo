@@ -128,7 +128,7 @@ export class EmbeddingService {
 
   private async loadProvider(): Promise<boolean> {
     this.loadAttempts += 1;
-    log.info('loading embedding model (first use — downloads ~30MB if not cached)', {
+    log.info('loading embedding model (first use — ~65MB on disk if not cached)', {
       attempt: this.loadAttempts,
     });
     try {
@@ -292,7 +292,10 @@ export class EmbeddingService {
       const overscan = excludeUrls && excludeUrls.size > 0
         ? Math.max(topK + excludeUrls.size, topK * 2)
         : topK;
-      const hits = await this.store.search(queryVector, overscan);
+      // Scope the lookup to this provider's provenance. A remote endpoint keeps
+      // the same dimension but can serve different weights, so rows from another
+      // backend must never be scored against this query.
+      const hits = await this.store.search(queryVector, overscan, { modelId: provider.modelId });
 
       const results: SimilarResult[] = [];
       for (const hit of hits) {

@@ -3,6 +3,7 @@ import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import { createPinnedAgent } from './pinned-dispatcher.js';
+import { readCapped } from './read-capped.js';
 import type { Agent } from 'undici';
 
 export interface HttpFetchOptions {
@@ -35,6 +36,9 @@ export interface HttpFetchResult {
 // The leading bytes of every PDF file. Used to recognise a PDF that a server
 // served with a generic/absent content-type so the byte tier buffers it.
 const PDF_MAGIC = '%PDF-';
+
+// Same decoding `response.text()` does (UTF-8, BOM stripped).
+const UTF8 = new TextDecoder();
 
 function bufferLooksLikePdf(buf: Buffer): boolean {
   return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
@@ -348,21 +352,21 @@ async function fetchWithRedirects(
     // extractor (which keys PDF handling on the content-type).
     let effectiveContentType = contentType;
 
+    // Every body read is bounded by WIGOLO_MAX_RESPONSE_BYTES so one huge
+    // response can't be buffered whole (ERR_STRING_TOO_LONG / OOM).
+    const body = await readCapped(response, getConfig().maxResponseBytes, {
+      contentLength: response.headers.get('content-length'),
+      url: currentUrl,
+    });
     if (declaredPdf) {
-      const arrayBuf = await response.arrayBuffer();
-      rawBuffer = Buffer.from(arrayBuf);
+      rawBuffer = body;
       html = '';
-    } else if (ambiguousType) {
-      const buf = Buffer.from(await response.arrayBuffer());
-      if (bufferLooksLikePdf(buf)) {
-        rawBuffer = buf;
-        html = '';
-        effectiveContentType = 'application/pdf';
-      } else {
-        html = buf.toString('utf-8');
-      }
+    } else if (ambiguousType && bufferLooksLikePdf(body)) {
+      rawBuffer = body;
+      html = '';
+      effectiveContentType = 'application/pdf';
     } else {
-      html = await response.text();
+      html = UTF8.decode(body);
     }
 
     return {

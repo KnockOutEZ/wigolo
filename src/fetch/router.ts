@@ -40,6 +40,7 @@ import {
   type ClearanceTier,
 } from './clearance-reuse.js';
 import { ChallengeBlockedError } from './browser-pool.js';
+import { isResponseTooLarge } from './read-capped.js';
 import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
@@ -1419,6 +1420,9 @@ export class SmartRouter {
       // future branch reaches here with one.
       return this.guardChallengeShell(this.toRawFetchResult(result));
     } catch (err) {
+      // Over the size cap: another tier would just download the same body
+      // again, and it says nothing about the domain's health.
+      if (isResponseTooLarge(err)) throw err;
       stats.failureCount++;
       logger.warn('http fetch failed', {
         url,
@@ -1572,6 +1576,7 @@ export class SmartRouter {
     try {
       r = await this.tlsFetcher(url, { headers: tlsHeaders, signal });
     } catch (err) {
+      if (isResponseTooLarge(err)) throw err;
       if (err instanceof TlsTierUnavailableError) {
         logger.debug('tls tier unavailable, escalating', { url, domain });
         return { ok: false, reason: 'unavailable', error: err };
