@@ -13,6 +13,11 @@ name: MCP Registry
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (default is package.json on the chosen branch)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,8 +30,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Wait for npm to serve this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="${INPUT_VERSION:-$(node -p "require('./package.json').version")}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
             if [ "$(npm view "wigolo@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
@@ -44,6 +51,12 @@ jobs:
           curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
           rm -f server.json
           ./mcp-publisher init
+          # init fills in package.json's version and adds a placeholder
+          # YOUR_API_KEY variable; wigolo needs no key, and a manual run may
+          # republish an older version.
+          jq --arg v "$VERSION" '.version = $v | .packages |= map(.version = $v | del(.environmentVariables))' \
+            server.json > server.json.tmp && mv server.json.tmp server.json
+          cat server.json
           ./mcp-publisher login github-oidc
           # A publish the registry accepted but whose response was lost leaves
           # the version listed, and a retry of an immutable version is refused,
