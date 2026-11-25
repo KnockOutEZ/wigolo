@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 - DuckDuckGo and Mojeek captcha pages now count as engine errors, not as a healthy engine with no results. A page that still parses to results is kept.
 - On a degraded engine pool, a below-floor result with little query overlap no longer survives as the top result. The best aligned result keeps the top-1 slot instead.
 - `WIGOLO_SEARCH=hybrid` also falls back when the engine pool collapsed to at most one weak result (`degraded_pool_low_lexical`).
