@@ -17,8 +17,6 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
-    env:
-      SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,8 +85,8 @@ jobs:
       # Ordering: these run AFTER the root `wigolo` npm publish and the GitHub
       # Release so the critical root artifacts land first. They are NOT
       # continue-on-error — a sub-package failure fails the release loudly so a
-      # partial publish is visible, rather than being silently skipped like the
-      # best-effort registry/Smithery steps that follow.
+      # partial publish is visible. The MCP Registry publish runs afterwards as
+      # its own job (mcp-registry below).
       #
       # Every sub-package version is guarded against the tag the same way the
       # root package is, so a version drift stops the publish before it starts.
@@ -208,27 +206,9 @@ jobs:
           python -m build --wheel --sdist
           twine upload --skip-existing dist/*
 
-      # Publish metadata to the Official MCP Registry. GitHub OIDC (id-token: write
-      # above) authenticates the io.github.KnockOutEZ/* namespace with no secrets.
-      # server.json is regenerated from package.json each run so the version stays
-      # in lockstep with the release. Best-effort: a registry hiccup must not fail
-      # a release whose npm + GitHub artifacts already published.
-      - name: Publish to MCP Registry
-        continue-on-error: true
-        run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
-          rm -f server.json
-          ./mcp-publisher init
-          ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
-
-      # Publish the stdio MCPB bundle to Smithery. Runs only when SMITHERY_API_KEY
-      # is set. The manifest version is synced from package.json so it always
-      # matches the release. Best-effort, like the registry step.
-      - name: Publish to Smithery
-        if: ${{ env.SMITHERY_API_KEY != '' }}
-        continue-on-error: true
-        run: |
-          node -e "const fs=require('fs'),p='mcpb/manifest.json',m=require('./'+p);m.version=require('./package.json').version;fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
-          npx -y @anthropic-ai/mcpb pack mcpb wigolo.mcpb
-          npx -y @smithery/cli mcp publish ./wigolo.mcpb -n ktowhid20/wigolo
+  # The Official MCP Registry checks that the npm version exists, so it runs
+  # after the release job and waits for npm itself. Failing it does not undo
+  # a release whose npm, PyPI and GitHub artifacts already published.
+  mcp-registry:
+    needs: release
+    uses: ./.github/workflows/mcp-registry.yml

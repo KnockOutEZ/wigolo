@@ -1,0 +1,81 @@
+name: MCP Registry
+
+# Publishes the current package.json version to the Official MCP Registry.
+# Called by release.yml after every npm and PyPI publish, and can be run by
+# hand (Actions > MCP Registry > Run workflow on main) to republish a version
+# the release missed. GitHub OIDC authenticates the io.github.KnockOutEZ/*
+# namespace, so no secret is needed.
+#
+# The registry checks that the npm version exists, and a fresh npm publish can
+# take a few minutes to show up, so this waits for npm before publishing and
+# retries a refused publish.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (default is package.json on the chosen branch)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for npm to serve this version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION:-$(node -p "require('./package.json').version")}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if [ "$(npm view "wigolo@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "npm serves wigolo@$VERSION"
+              exit 0
+            fi
+            echo "wigolo@$VERSION not on npm yet, waiting ($i/30)"
+            sleep 20
+          done
+          echo "::error::wigolo@$VERSION never showed up on npm"
+          exit 1
+
+      - name: Publish to MCP Registry
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          rm -f server.json
+          ./mcp-publisher init
+          # init fills in package.json's version and adds a placeholder
+          # YOUR_API_KEY variable; wigolo needs no key, and a manual run may
+          # republish an older version.
+          jq --arg v "$VERSION" '.version = $v | .packages |= map(.version = $v | del(.environmentVariables))' \
+            server.json > server.json.tmp && mv server.json.tmp server.json
+          cat server.json
+          ./mcp-publisher login github-oidc
+          # A publish the registry accepted but whose response was lost leaves
+          # the version listed, and a retry of an immutable version is refused,
+          # so a listed version counts as done.
+          listed() {
+            curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.KnockOutEZ/wigolo&version=latest" \
+              | jq -e --arg n "io.github.KnockOutEZ/wigolo" --arg v "$VERSION" \
+                  'any(.servers[].server; .name == $n and .version == $v)' >/dev/null
+          }
+          for i in 1 2 3 4 5; do
+            if listed; then
+              echo "io.github.KnockOutEZ/wigolo@$VERSION is already listed"
+              exit 0
+            fi
+            if ./mcp-publisher publish; then
+              exit 0
+            fi
+            echo "publish refused, retrying in 60s ($i/5)"
+            sleep 60
+          done
+          echo "::error::could not publish io.github.KnockOutEZ/wigolo@$VERSION to the MCP Registry"
+          exit 1
