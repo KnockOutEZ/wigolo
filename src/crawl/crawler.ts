@@ -304,15 +304,20 @@ export class Crawler {
     // see crawlTraversal — two listed URLs can redirect to the same page.
     const emitted = new Set<string>();
     // Each listed URL uses one of max_pages slots (a failed or robots-blocked
-    // one too), except a redirect duplicate of a page already emitted.
+    // one too), except a redirect duplicate of a page already emitted. Fetches
+    // are capped at twice max_pages, so a sitemap whose URLs all redirect to
+    // one page cannot fetch every listed URL.
     let slots = maxPages;
+    const maxFetches = maxPages * 2;
+    let fetches = 0;
 
     for (const url of filtered) {
-      if (slots <= 0 || pages.length >= maxPages) break;
+      if (slots <= 0 || pages.length >= maxPages || fetches >= maxFetches) break;
       if (emitted.has(canonicalForCrawl(url))) continue;
       slots--;
 
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) continue;
+      fetches++;
 
       const release = await this.rateLimiter.acquire(url);
 

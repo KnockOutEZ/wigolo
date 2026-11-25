@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `crawl` emits a page once when two URLs redirect to it, in both traversal and sitemap crawls. A sitemap crawl fetches at most twice `max_pages` URLs.
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.

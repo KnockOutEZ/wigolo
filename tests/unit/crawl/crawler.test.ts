@@ -723,6 +723,33 @@ describe('Crawler — Sitemap', () => {
     ]);
   });
 
+  it('caps sitemap fetches at twice max_pages when every URL redirects to one page', async () => {
+    const locs = Array.from({ length: 20 }, (_, i) => `  <url><loc>https://docs.example.com/p${i}</loc></url>`).join('\n');
+    const sitemapXml = `<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${locs}
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch = vi.fn(async () => makeFetchOutput('https://docs.example.com/login', 'Login', '# Login', []));
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 3,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(result.pages.map((p) => p.url)).toEqual(['https://docs.example.com/login']);
+  });
+
   it('a failed sitemap fetch still uses its max_pages slot', async () => {
     const sitemapXml = `<?xml version="1.0"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
