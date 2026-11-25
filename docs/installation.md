@@ -99,7 +99,7 @@ The repo ships an MCP bundle manifest under [`mcpb/`](../mcpb/) for desktop host
 
 ## MCP registries
 
-wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.json`, and `mcp.json` (a plain MCP server config you can copy) — and is listed on MCP directories including [Glama](https://glama.ai/mcp/servers/KnockOutEZ/wigolo) and [Smithery](https://smithery.ai/server/ktowhid20/wigolo).
+wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.json`, and `mcp.json` (a plain MCP server config you can copy) — and is listed on MCP directories including [Glama](https://glama.ai/mcp/servers/KnockOutEZ/wigolo) and [mcp.so](https://mcp.so/server/wigolo/KnockOutEZ).
 
 ## Agent auto-wire
 

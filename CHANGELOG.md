@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+### Added
+- `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact origins allowed on the MCP transport. It is for clients that send an `Origin` header without a CORS preflight, such as server-side clients, Electron main processes and proxies. Browser pages still cannot use it, because the daemon sends no CORS headers. The list applies only when an API token is set (`WIGOLO_API_TOKEN` or `WIGOLO_API_TOKEN_FILE`), and the bearer token is still required. Unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
+
 ### Fixed
+- `crawl` emits a page once when two URLs redirect to it, in both traversal and sitemap crawls. A sitemap crawl fetches at most twice `max_pages` URLs.
 - Search engines and HTTP page fetches now go through the configured proxy: `PROXY_URL` with `USE_PROXY`, else `HTTP_PROXY`/`HTTPS_PROXY` with `NO_PROXY`, else `ALL_PROXY`. Only the browser tier used it before. Loopback stays direct under `PROXY_URL` and `ALL_PROXY`, and an invalid proxy setting is logged and skipped. (fixes #629)
 - A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 
