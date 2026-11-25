@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { spawnSync  } from 'node:child_process';
+import { binaryInPath } from '../tui/detect-helpers.js';
 import { mergeMcpJson, removeMcpJson } from './utils.js';
 
 const MCP_KEY_PATH = ['mcpServers', 'wigolo'];
@@ -21,25 +21,10 @@ export function antigravityMcpConfigPath(home: string = homedir()): string {
   return join(home, '.gemini', 'config', 'mcp_config.json');
 }
 
-function binaryExists(name: string): boolean {
-  const comand = process.platform === 'win32' ? 'where': 'which';
-
-  try {
-    const result = spawnSync(comand, [name], {
-      encoding:'utf-8',
-      timeout: 3000,
-    });
-    
-    return !result.error && result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
 function detect(): boolean {
   return existsSync(antigravityDataDir()) ||
-    binaryExists('agy') ||
-    binaryExists('antigravity');
+    binaryInPath('agy') !== null ||
+    binaryInPath('antigravity') !== null;
 }
 
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {

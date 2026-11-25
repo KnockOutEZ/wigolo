@@ -9,10 +9,10 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 let tmpHome: string;
@@ -36,17 +36,17 @@ describe('antigravityHandler.detect', () => {
   });
 
   it('returns true when `agy` is on PATH', async () => {
-    vi.mocked(execSync).mockImplementation((command) => {
-      if (command === 'which agy') return Buffer.from('/usr/bin/agy');
-      throw new Error('not found');
-    });
+    vi.mocked(spawnSync).mockImplementation(((_cmd: string, args: string[]) =>
+      args[0] === 'agy'
+        ? { status: 0, stdout: '/usr/bin/agy\n' }
+        : { status: 1, stdout: '' }) as unknown as typeof spawnSync);
     const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
     expect(antigravityHandler.detect()).toBe(true);
   });
 
   it('returns false when no product signal exists', async () => {
     mkdirSync(join(tmpHome, '.gemini', 'config'), { recursive: true });
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('not found'); });
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, stdout: '' } as unknown as ReturnType<typeof spawnSync>);
     const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
     expect(antigravityHandler.detect()).toBe(false);
   });

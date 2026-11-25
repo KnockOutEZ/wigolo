@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `init --agents=antigravity` writes the MCP entry to `~/.gemini/config/mcp_config.json`, the global config Antigravity reads, and detects Antigravity by its `~/.gemini/antigravity` data folder or the `agy` command. It wrote `~/.antigravity/mcp.json` before, which Antigravity does not read. (fixes #258)
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.
