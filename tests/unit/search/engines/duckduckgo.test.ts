@@ -96,5 +96,12 @@ describe('DuckDuckGoEngine', () => {
         /captcha|challenge/i,
       );
     });
+    it('returns results when a result page mentions a captcha widget', async () => {
+      const html = fixtureHtml.replace('React – Learn', 'hcaptcha vs g-recaptcha – Learn');
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(html, { status: 200 })));
+      const results = await new DuckDuckGoEngine().search('q', { timeoutMs: 1000 });
+      expect(results.length).toBe(3);
+      expect(results[0].title).toContain('hcaptcha');
+    });
   });
 });

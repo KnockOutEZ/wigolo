@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+- DuckDuckGo and Mojeek captcha pages now count as engine errors, not as a healthy engine with no results. A page that still parses to results is kept.
+- On a degraded engine pool, a below-floor result with little query overlap no longer survives as the top result. The best aligned result keeps the top-1 slot instead.
+- `WIGOLO_SEARCH=hybrid` also falls back when the engine pool collapsed to at most one weak result (`degraded_pool_low_lexical`).
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.

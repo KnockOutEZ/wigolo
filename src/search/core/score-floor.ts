@@ -114,21 +114,21 @@ export function applyScoreFloor<T extends { relevance_score: number; engine?: st
   // degradation) when its alignment is below DEGRADED_LOW_LEXICAL. Such
   // results forfeit the top-1 exemption and the per-engine rescue.
   const lexicalGate = opts.degraded === true && typeof opts.lexicalAlignmentOf === 'function';
-  const isZeroLexical = (r: T): boolean =>
+  const isLowLexical = (r: T): boolean =>
     lexicalGate && opts.lexicalAlignmentOf!(r) < DEGRADED_LOW_LEXICAL;
 
+  // The top-1 exemption goes to the highest-scored result that passes the
+  // lexical gate. A degraded pool whose results are all low-lexical keeps no
+  // exemption (topIdx = -1), so its off-topic survivors are not surfaced.
   let maxScore = -Infinity;
-  let topIdx = 0;
+  let topIdx = -1;
   for (let i = 0; i < results.length; i++) {
+    if (isLowLexical(results[i])) continue;
     if (results[i].relevance_score > maxScore) {
       maxScore = results[i].relevance_score;
       topIdx = i;
     }
   }
-  // Under the lexical gate the top-1 exemption is withdrawn from a zero-lexical
-  // top result: a degraded pool whose best survivor is off-topic must not
-  // surface it. topIdx = -1 disables the exemption entirely for this call.
-  if (isZeroLexical(results[topIdx])) topIdx = -1;
 
   // Per-engine keep guarantee: identify the below-floor indices to RESCUE so a
   // dominant engine can't floor out another engine entirely. Only engines with
@@ -154,18 +154,17 @@ export function applyScoreFloor<T extends { relevance_score: number; engine?: st
     }
     for (const [engine, idxs] of belowFloorByEngine) {
       if (aboveFloorEngines.has(engine)) continue;
+      // Under the degraded lexical gate a low-lexical result is never a rescue
+      // candidate, so the engine's next aligned result can take its slot.
       // Highest-scored first; ties break on earliest index for determinism.
-      idxs.sort((a, b) =>
-        results[b].relevance_score - results[a].relevance_score || a - b,
-      );
-      for (let k = 0; k < Math.min(perEngineKeep, idxs.length); k++) {
+      const candidates = idxs
+        .filter((i) => !isLowLexical(results[i]))
+        .sort((a, b) => results[b].relevance_score - results[a].relevance_score || a - b);
+      for (let k = 0; k < Math.min(perEngineKeep, candidates.length); k++) {
         // Only rescue a plausibly-relevant-just-below-floor result. An engine
         // whose best is far below the floor returned only junk; leave it
         // dropped rather than force pure junk into the slice.
-        // Under the degraded lexical gate a zero-lexical result is never
-        // rescued — it is the live-incident off-topic survivor.
-        if (isZeroLexical(results[idxs[k]])) continue;
-        if (results[idxs[k]].relevance_score >= rescueMin) rescued.add(idxs[k]);
+        if (results[candidates[k]].relevance_score >= rescueMin) rescued.add(candidates[k]);
       }
     }
   }

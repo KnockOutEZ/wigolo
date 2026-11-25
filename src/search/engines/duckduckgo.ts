@@ -51,8 +51,13 @@ export class DuckDuckGoEngine implements SearchEngine {
     }
 
     const html = await response.text();
-    if (isCaptchaHtml(html)) throw new Error('DDG returned captcha challenge');
-    return this.parseResults(html, maxResults);
+    const results = this.parseResults(html, maxResults);
+    // A page that parsed to results is a result page, even if a title or
+    // snippet mentions a captcha widget.
+    if (results.length === 0 && isCaptchaHtml(html)) {
+      throw new Error('DDG returned captcha challenge');
+    }
+    return results;
   }
 
   parseResults(html: string, maxResults: number): RawSearchResult[] {

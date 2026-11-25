@@ -188,4 +188,30 @@ describe('applyScoreFloor — degraded-pool lexical gate', () => {
     });
     expect(kept).toHaveLength(1);
   });
+
+  it('gives the top-1 exemption to the best aligned result when the top scorer is low-lexical', () => {
+    const results = [
+      sl('https://junk.example/', 0.04, 0.17, 'bing'),
+      sl('https://aligned.example/doc', 0.03, 0.55, 'bing'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://aligned.example/doc']);
+  });
+
+  it('rescues the next aligned result of an engine when its best below-floor result is low-lexical', () => {
+    const results = [
+      sl('https://top.example/', 0.9, 0.8, 'bing'),
+      sl('https://junk.example/', 0.04, 0.17, 'duckduckgo'),
+      sl('https://aligned.example/doc', 0.03, 0.55, 'duckduckgo'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+      perEngineKeep: 1,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://top.example/', 'https://aligned.example/doc']);
+  });
 });
