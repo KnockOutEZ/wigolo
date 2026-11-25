@@ -121,6 +121,9 @@ jobs:
         shell: bash
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' # warmup does the real install below
+          # A global install does not read the repo .npmrc. This is the same
+          # setting docs/installation.md gives Linux x64 users.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
         run: |
           TGZ=$(npm pack 2>/dev/null | tail -1)
           echo "packed: $TGZ"

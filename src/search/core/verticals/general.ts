@@ -11,6 +11,7 @@ import {
   type EngineEntry,
 } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
+import { getPluginEngineEntries } from '../plugin-engines.js';
 
 // Marginalia rate-limits (429) aggressively under a burst. Spacing its calls
 // at least this far apart keeps it in the pool instead of tripping its breaker;
@@ -25,6 +26,12 @@ registerEngineMinInterval('marginalia', MARGINALIA_MIN_INTERVAL_MS);
 let cached: EngineEntry[] | null = null;
 
 export function getGeneralEngines(): EngineEntry[] {
+  const builtIn = getBuiltInGeneralEngines();
+  const plugins = getPluginEngineEntries();
+  return plugins.length === 0 ? builtIn : [...builtIn, ...plugins];
+}
+
+function getBuiltInGeneralEngines(): EngineEntry[] {
   if (cached) return cached;
 
   const entries: EngineEntry[] = [

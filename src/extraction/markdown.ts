@@ -161,9 +161,45 @@ export function extractSection(
   return { content: extractFromHeading(lines, headings, i), matched: true };
 }
 
+// The destination of an inline link or image, per CommonMark: a `<…>` form
+// (first group) or a bare form with backslash escapes and one level of
+// balanced parentheses (second group). Turndown writes destinations this way:
+// it escapes `<>()` with a backslash and wraps one that has a space in `<…>`.
+// An href can hold a raw tab or line break; inside a bare destination it is
+// kept unless a title or the closing parenthesis follows it.
+const ANGLE_DEST = String.raw`(?:[^<>\\]|\\.)*`;
+const BARE_DEST =
+  String.raw`(?:[^ \t\r\n()\\]|\\.|[\t\r\n]+(?=[^ \t\r\n"'()])|\((?:[^ \t\r\n()\\]|\\.)*\))+`;
+// Leading whitespace belongs to the `\s*` before the destination, never to it.
+const LINK_DEST = String.raw`(?:<(${ANGLE_DEST})>|(?!\s)(${BARE_DEST}))`;
+// An optional quoted or parenthesised title, then the closing parenthesis.
+// Only ASCII whitespace separates them: a non-breaking space stays part of
+// the destination, so each destination parses one way.
+const LINK_TAIL =
+  String.raw`(?:[ \t\r\n]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t\r\n]*\)`;
+const LINK_TARGET = String.raw`\(\s*` + LINK_DEST + LINK_TAIL;
+// The text of a link. It can hold whole images, so a linked image
+// `[![alt](src)](href)` is one link to href; `![` only starts such an image.
+// A bare destination here cannot start with `<` or whitespace, so each image
+// parses one way. Plain text cannot hold `[`, so an unclosed `[` stops at the
+// next one.
+const INNER_IMAGE = String.raw`!\[[^\]]*\]\(\s*(?:<` + ANGLE_DEST + String.raw`>|(?![<\s])` + BARE_DEST + ')' + LINK_TAIL;
+const LINK_TEXT = String.raw`\[(?:` + INNER_IMAGE + String.raw`|[^\][!]|!(?!\[))*\]`;
+
+// Drop backslash escapes, and the tabs and line breaks a URL parser ignores.
+function unescapeDestination(raw: string): string {
+  return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/[\t\r\n]/g, '');
+}
+
+function linkDestination(match: RegExpExecArray): string {
+  return unescapeDestination(match[1] ?? match[2] ?? '');
+}
+
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
-  const imagePattern = /!\[[^\]]*\]\(([^)]+)\)/g;
-  const linkPattern = /(?<!!)\[[^\]]*\]\(([^)]+)\)/g;
+  const imagePattern = new RegExp(String.raw`!\[[^\]]*\]` + LINK_TARGET, 'g');
+  // A whole image is consumed as its own match (no destination group), so a
+  // `[` inside an image's destination or title never starts a link.
+  const linkPattern = new RegExp(INNER_IMAGE + '|(?<!!)' + LINK_TEXT + LINK_TARGET, 'g');
 
   const images = new Set<string>();
   const links = new Set<string>();
@@ -172,12 +208,14 @@ export function extractLinksAndImages(markdown: string): { links: string[]; imag
 
   // Extract images first
   while ((match = imagePattern.exec(markdown)) !== null) {
-    images.add(match[1]);
+    const dest = linkDestination(match);
+    if (dest) images.add(dest);
   }
 
   // Extract links (non-image)
   while ((match = linkPattern.exec(markdown)) !== null) {
-    links.add(match[1]);
+    const dest = linkDestination(match);
+    if (dest) links.add(dest);
   }
 
   return { links: Array.from(links), images: Array.from(images) };
@@ -229,7 +267,8 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
   if (!markdown || !baseUrl) return markdown;
 
   const rewrite = (path: string): string => {
-    const trimmed = path.trim();
+    // ASCII whitespace only: a non-breaking space can be part of the path.
+    const trimmed = path.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
     if (!trimmed) return path;
     if (/^(?:https?:|mailto:|tel:|javascript:|data:)/i.test(trimmed)) return path;
     if (trimmed.startsWith('#')) {
@@ -254,16 +293,27 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
     }
   };
 
+  // Rewrite the destination as written (escaped, maybe in `<…>`). An unchanged
+  // destination keeps its original form. A resolved one is escaped again, and
+  // goes in `<…>` if it still has a space (a protocol-relative path can).
+  const rewriteDest = (angle: string | undefined, bare: string | undefined): string => {
+    const written = angle !== undefined ? `<${angle}>` : (bare ?? '');
+    const dest = unescapeDestination(angle ?? bare ?? '');
+    const resolved = rewrite(dest);
+    if (resolved === dest) return written;
+    const escaped = resolved.replace(/([<>()\\])/g, '\\$1');
+    return /[ \t\r\n]/.test(escaped) ? `<${escaped}>` : escaped;
+  };
+
   // Image links first so the shared link regex does not rewrite them twice.
-  let result = markdown.replace(
-    /(!\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
-    (_m, open, path, close) => `${open}${rewrite(path)}${close}`,
+  const imagePattern = new RegExp(String.raw`(!\[[^\]]*\]\(\s*)` + LINK_DEST + `(${LINK_TAIL})`, 'g');
+  // As in extractLinksAndImages, a whole image is skipped as its own match.
+  const linkPattern = new RegExp(
+    INNER_IMAGE + '|((?<!!)' + LINK_TEXT + String.raw`\(\s*)` + LINK_DEST + `(${LINK_TAIL})`,
+    'g',
   );
+  const replacer = (m: string, open: string | undefined, angle: string | undefined, bare: string | undefined, close: string): string =>
+    open === undefined ? m : `${open}${rewriteDest(angle, bare)}${close}`;
 
-  result = result.replace(
-    /(^|[^!])(\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
-    (_m, pre, open, path, close) => `${pre}${open}${rewrite(path)}${close}`,
-  );
-
-  return result;
+  return markdown.replace(imagePattern, replacer).replace(linkPattern, replacer);
 }
