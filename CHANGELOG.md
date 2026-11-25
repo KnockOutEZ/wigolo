@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 - `init --agents=antigravity` writes the MCP entry to `~/.gemini/config/mcp_config.json`, the global config Antigravity reads, and detects Antigravity by its `~/.gemini/antigravity` data folder or the `agy` command. It wrote `~/.antigravity/mcp.json` before, which Antigravity does not read; install and uninstall now remove a wigolo entry left there. (fixes #258)
 
 ## v0.3.3 — 2026-11-24
