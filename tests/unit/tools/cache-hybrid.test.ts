@@ -127,6 +127,25 @@ describe('handleCache --- hybrid mode', () => {
     expect(urls.slice(2).sort()).toEqual(['https://b', 'https://d']);
   });
 
+  it('scopes the vector search to the active model id', async () => {
+    vi.mocked(ftsSearchRanked).mockReturnValue([]);
+    vi.mocked(getEmbedProvider).mockResolvedValue({
+      modelId: 'test-embed @ http://127.0.0.1:8080/v1',
+      dim: 4,
+      embed: vi.fn().mockResolvedValue([new Float32Array([1, 0, 0, 0])]),
+    });
+    const store = makeVectorStore({ size: 1, results: [] });
+    vi.mocked(getVectorStore).mockResolvedValue(store);
+
+    await handleCache({ query: 'foo', mode: 'hybrid' });
+
+    // Rows from another model or endpoint share no space with this query
+    // vector, so the search must filter on the provider id.
+    expect(store.search).toHaveBeenCalledWith(expect.any(Float32Array), expect.any(Number), {
+      modelId: 'test-embed @ http://127.0.0.1:8080/v1',
+    });
+  });
+
   it('falls back to FTS5 when vector index is empty', async () => {
     vi.mocked(getEmbedProvider).mockResolvedValue({
       modelId: 'test',

@@ -1,12 +1,8 @@
 import type { Config } from '../../config.js';
 import type { RerankCandidate, RerankProvider, RerankResult } from '../../providers/rerank-provider.js';
+import { resolveRemoteBase } from '../../providers/remote-endpoint.js';
 
 type RemoteResult = { index?: unknown; relevance_score?: unknown; score?: unknown };
-
-/** A key sent to this machine never crosses a network, so plain http is fine there. */
-function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(hostname);
-}
 
 /** Cohere-style POST /rerank adapter for a configured model service. */
 export class RemoteRerankProvider implements RerankProvider {
@@ -14,20 +10,12 @@ export class RemoteRerankProvider implements RerankProvider {
   private readonly url: string;
 
   constructor(private readonly config: Config) {
-    const base = config.rerankApiBase?.trim().replace(/\/+$/, '');
-    if (!base) throw new Error('Remote reranker requires WIGOLO_RERANK_API_BASE');
-    let parsed: URL;
-    try {
-      parsed = new URL(base);
-    } catch {
-      throw new Error('WIGOLO_RERANK_API_BASE must be an http(s) URL');
-    }
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
-      throw new Error('WIGOLO_RERANK_API_BASE must be an http(s) URL without credentials, query, or fragment');
-    }
-    if (config.rerankApiKey && parsed.protocol !== 'https:' && !isLoopback(parsed.hostname)) {
-      throw new Error('WIGOLO_RERANK_API_KEY requires HTTPS unless the endpoint is on loopback');
-    }
+    const base = resolveRemoteBase(config.rerankApiBase, {
+      label: 'Remote reranker',
+      varName: 'WIGOLO_RERANK_API_BASE',
+      keyVarName: 'WIGOLO_RERANK_API_KEY',
+      apiKey: config.rerankApiKey,
+    });
     this.url = `${base}/rerank`;
     this.modelId = config.rerankerModel;
   }

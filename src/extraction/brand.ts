@@ -4,6 +4,7 @@ import type { BrandExtractionOutput } from '../types.js';
 import { extractJsonLd } from './jsonld.js';
 import { extractPaletteFromBuffer, MAX_IMAGE_BYTES } from './brand-palette.js';
 import { guardUrl } from '../watch/ssrf.js';
+import { readCapped, isResponseTooLarge } from '../fetch/read-capped.js';
 
 const log = createLogger('extract');
 
@@ -990,19 +991,19 @@ export const defaultImageFetcher: BrandImageFetcher = async (url, opts) => {
       log.debug('palette fetch: non-2xx', { url: currentUrl, status: response.status });
       return null;
     }
-    const contentLength = response.headers.get('content-length');
-    if (contentLength && parseInt(contentLength, 10) > MAX_IMAGE_BYTES) {
-      log.debug('palette fetch: content-length over cap', { url: currentUrl, contentLength });
-      try { await response.body?.cancel(); } catch { /* */ }
-      return null;
-    }
-    const ab = await response.arrayBuffer();
-    if (ab.byteLength > MAX_IMAGE_BYTES) {
-      log.debug('palette fetch: body over cap', { url: currentUrl, bytes: ab.byteLength });
+    let buffer: Buffer;
+    try {
+      buffer = await readCapped(response, MAX_IMAGE_BYTES, {
+        contentLength: response.headers.get('content-length'),
+        url: currentUrl,
+      });
+    } catch (err) {
+      if (!isResponseTooLarge(err)) throw err;
+      log.debug('palette fetch: body over cap', { url: currentUrl, maxBytes: MAX_IMAGE_BYTES });
       return null;
     }
     return {
-      buffer: Buffer.from(ab),
+      buffer,
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',
     };
   }

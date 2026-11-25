@@ -5,6 +5,8 @@ import { BrowserPool } from '../fetch/browser-pool.js';
 import { httpFetch } from '../fetch/http-client.js';
 import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
 import { BingEngine } from '../search/engines/bing.js';
+import { SearxngClient } from '../search/searxng.js';
+import { searxngConfigured } from '../searxng/enabled.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { BackendStatus } from '../server/backend-status.js';
 import { getConfig } from '../config.js';
@@ -38,6 +40,7 @@ import { executeWatch } from '../repl/commands/watch.js';
 import { TOOL_HELP, isToolCommand, type ToolCommand } from './help.js';
 import type { ReplDeps } from '../repl/commands/types.js';
 import type {
+  SearchEngine,
   SearchOutput,
   FetchOutput,
   CrawlOutput,
@@ -167,7 +170,8 @@ async function dispatch(
  * adapters), but the research/agent/find_similar pipelines search the passed
  * engine instances directly — so we seed the same keyless direct engines the
  * MCP server uses (DuckDuckGo + Bing, no sidecar). Without these, one-shot
- * research/agent/find_similar would find zero web sources.
+ * research/agent/find_similar would find zero web sources. An external search
+ * engine URL is used when configured; a local sidecar is never started.
  *
  * Contract: RESULT → stdout, ALL logs → stderr. `--json` emits the tool's
  * MCP-shape JSON on stdout (exit 0), a failure exits 1, and under `--json` a
@@ -198,11 +202,17 @@ export async function runTool(command: string, rawArgs: string[]): Promise<numbe
   const browserPool = new BrowserPool();
   const router = new SmartRouter(httpClient, browserPool);
   const backendStatus = new BackendStatus();
-  const deps: ReplDeps = {
-    router,
-    engines: [new DuckDuckGoEngine(), new BingEngine()],
-    backendStatus,
-  };
+  const engines: SearchEngine[] = [new DuckDuckGoEngine(), new BingEngine()];
+  if (config.searxngUrl) {
+    engines.unshift(new SearxngClient(config.searxngUrl));
+    backendStatus.markHealthy();
+  } else if (searxngConfigured(config)) {
+    backendStatus.markUnhealthy(
+      'one-shot commands do not start the search engine sidecar — set WIGOLO_SEARXNG_URL ' +
+      'to an external instance, or run searches through the MCP server',
+    );
+  }
+  const deps: ReplDeps = { router, engines, backendStatus };
 
   try {
     const result = await dispatch(command, parsed, deps);

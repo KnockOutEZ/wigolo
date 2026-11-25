@@ -203,7 +203,7 @@ export async function installBrowser(
 }
 
 export interface WarmupResult {
-  playwright: 'ok' | 'failed';
+  playwright: 'ok' | 'failed' | 'skipped';
   playwrightError?: string;
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python' | 'no_venv' | 'skipped';
   searxngError?: string;
@@ -366,6 +366,23 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
 }
 
 export async function installEmbeddings(reporter: WarmupReporter = noopReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
+  const config = getConfig();
+  if (config.embeddingApiBase) {
+    reporter.start('embeddings', 'Checking remote embeddings endpoint');
+    try {
+      const { RemoteEmbedProvider } = await import('../embedding/remote-embed-provider.js');
+      const provider = new RemoteEmbedProvider(config);
+      // The remote model needs no download. One probe proves the URL and the
+      // model name, and it verifies the 384-dimension contract.
+      await provider.warmup();
+      reporter.success('embeddings', `remote model ${provider.modelId} ready`);
+      return { embeddings: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('embeddings', message);
+      return { embeddings: 'failed', embeddingsError: message };
+    }
+  }
   reporter.start('embeddings', 'Downloading semantic embeddings model (fastembed)');
   try {
     const { FastembedEmbedProvider } = await import('../embedding/fastembed-provider.js');
@@ -448,6 +465,45 @@ async function runVerify(dataDir: string, reporter: WarmupReporter): Promise<voi
   reporter.note('  claude mcp add wigolo --scope user -- npx wigolo');
 }
 
+export const WARMUP_USAGE = `Usage: wigolo warmup [components] [options]
+
+Pre-downloads components so the first tool call doesn't. With no component
+flag, installs the browser engine only.
+
+Components:
+  --browser        Browser engine (Chromium)
+  --reranker       ML reranker model
+  --embeddings     Embedding model
+  --firefox        Firefox browser engine
+  --webkit         WebKit browser engine
+  --searxng        Search engine sidecar
+  --all            Every component (the sidecar only when it is configured)
+
+Options:
+  --no-searxng     Never touch the search engine sidecar
+  --force          Reset the search engine sidecar's state first
+  --json           Print the result as JSON on stdout
+  --plain          Plain progress output
+  --verify         Run the post-install verification
+  -h, --help       Print this help
+`;
+
+const COMPONENT_FLAGS = ['--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--all'];
+const KNOWN_FLAGS = new Set([
+  ...COMPONENT_FLAGS,
+  '--no-searxng', '--force', '--json', '--plain', '--verify', '--skip-verify', '--help', '-h',
+]);
+
+export function isWarmupHelp(args: string[]): boolean {
+  return args.includes('--help') || args.includes('-h');
+}
+
+/** An error message for the first unrecognised argument, or null when all are known. */
+export function warmupArgsError(args: string[]): string | null {
+  const unknown = args.find((a) => !KNOWN_FLAGS.has(a));
+  return unknown === undefined ? null : `unknown warmup option '${unknown}' (see \`wigolo warmup --help\`)`;
+}
+
 export async function runWarmup(
   flags: string[] = [],
   reporter?: WarmupReporter,
@@ -467,7 +523,19 @@ export async function runWarmup(
 
   reporterImpl.note('Starting wigolo warmup');
 
-  const pwResult = await installPlaywright(reporterImpl);
+  // The browser engine is the default component; naming other components
+  // without --browser installs only those (#672). --no-searxng cancels
+  // --searxng, so that pair alone still means the default.
+  const anyComponent = COMPONENT_FLAGS.some(
+    (f) => flagSet.has(f) && !(f === '--searxng' && flagSet.has('--no-searxng')),
+  );
+  const wantBrowser = !anyComponent || flagSet.has('--browser') || flagSet.has('--all');
+  let pwResult: Pick<WarmupResult, 'playwright' | 'playwrightError'>;
+  if (wantBrowser) {
+    pwResult = await installPlaywright(reporterImpl);
+  } else {
+    pwResult = { playwright: 'skipped' };
+  }
 
   // D1: the search-engine sidecar is opt-in. The searxng phase runs only when
   // explicitly requested (`--searxng`), or with `--all` when the sidecar is

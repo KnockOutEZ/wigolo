@@ -1,0 +1,61 @@
+name: CI Runner Retry
+
+# GitHub sometimes cannot hand out a hosted runner (macOS arm64 most often).
+# The job then sits queued and is cancelled with "The job was not acquired by
+# Runner of type hosted even after multiple attempts". Nothing ran, but the run
+# is marked failed and `main` shows a red X. This re-runs such a run, and only
+# such a run: a real failure, or a cancellation for any other reason (a newer
+# push superseding it, a manual cancel), is left alone.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+# Nothing from the triggering run is checked out or executed. The job only
+# reads that run's job list through the API and asks for a re-run.
+permissions:
+  actions: write
+  checks: read
+
+jobs:
+  retry:
+    name: retry runner cancellations
+    # Attempts 1 and 2 may be retried, so a run gets at most 3 attempts.
+    if: >-
+      github.event.workflow_run.conclusion != 'success' &&
+      github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-run when every unsuccessful job lacked a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          unsuccessful=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/attempts/${ATTEMPT}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | "\(.id) \(.conclusion) \(.name)"')
+
+          if [ -z "$unsuccessful" ]; then
+            echo "No unsuccessful jobs in attempt ${ATTEMPT}. Nothing to do."
+            exit 0
+          fi
+
+          while read -r id conclusion name; do
+            if [ "$conclusion" != "cancelled" ]; then
+              echo "Leaving run ${RUN_ID} alone: '${name}' concluded '${conclusion}'."
+              exit 0
+            fi
+            if ! gh api "repos/${REPO}/check-runs/${id}/annotations" --jq '.[].message' \
+                | grep -q 'not acquired by Runner'; then
+              echo "Leaving run ${RUN_ID} alone: '${name}' was cancelled for a reason other than a missing runner."
+              exit 0
+            fi
+            echo "'${name}' was cancelled because no runner was available."
+          done <<< "$unsuccessful"
+
+          echo "Every unsuccessful job lacked a runner. Re-running failed jobs of run ${RUN_ID} (attempt ${ATTEMPT})."
+          gh api -X POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"

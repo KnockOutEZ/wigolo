@@ -110,7 +110,7 @@ function componentSummaryFromWarmup(
     return { browserEngine: 'skipped', embeddings: 'skipped', reranker: 'skipped' };
   }
   const summary: ComponentSummary = {
-    browserEngine: result.playwright === 'ok' ? 'ready' : 'failed',
+    browserEngine: result.playwright === 'ok' ? 'ready' : result.playwright === 'skipped' ? 'skipped' : 'failed',
     embeddings: result.embeddings === 'ok' ? 'ready' : 'failed',
     reranker: result.reranker === undefined ? 'skipped' : result.reranker === 'ok' ? 'ready' : 'failed',
   };

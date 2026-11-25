@@ -59,6 +59,7 @@ import {
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
+import { setPluginSearchEngines } from './search/core/plugin-engines.js';
 import { registerExtractor } from './extraction/pipeline.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
 
@@ -133,6 +134,7 @@ export async function initSubsystems(): Promise<Subsystems> {
       pluginRegistry.registerSearchEngine(eng, eng.name);
       searchEngines.push(eng);
     }
+    setPluginSearchEngines(pluginResult.searchEngines);
     if (pluginResult.errors.length > 0) {
       log.warn('some plugins failed to load', {
         errors: pluginResult.errors.map(e => `${e.pluginName}: ${e.message}`),
