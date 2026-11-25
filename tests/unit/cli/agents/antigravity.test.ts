@@ -99,3 +99,37 @@ describe('antigravityHandler.uninstall', () => {
     expect(existsSync(configPath)).toBe(true);
   });
 });
+
+describe('antigravity legacy config cleanup', () => {
+  function writeLegacy(servers: Record<string, unknown>): string {
+    const dir = join(tmpHome, '.antigravity');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'mcp.json');
+    writeFileSync(path, JSON.stringify({ mcpServers: servers }));
+    return path;
+  }
+
+  it('install drops a stale wigolo entry from ~/.antigravity/mcp.json and keeps others', async () => {
+    const legacy = writeLegacy({ wigolo: { command: 'npx' }, other: { command: 'other' } });
+    const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
+    await antigravityHandler.installMcp({ command: 'npx', args: ['-y', 'wigolo'] });
+    const parsed = JSON.parse(readFileSync(legacy, 'utf-8'));
+    expect(parsed.mcpServers.wigolo).toBeUndefined();
+    expect(parsed.mcpServers.other).toEqual({ command: 'other' });
+  });
+
+  it('uninstall reports the removed legacy entry', async () => {
+    writeLegacy({ wigolo: { command: 'npx' } });
+    const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
+    const result = await antigravityHandler.uninstall();
+    expect(result.removed).toEqual(['~/.antigravity/mcp.json (old wigolo entry)']);
+  });
+
+  it('leaves a legacy file without a wigolo entry untouched', async () => {
+    const legacy = writeLegacy({ other: { command: 'other' } });
+    const before = readFileSync(legacy, 'utf-8');
+    const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
+    await antigravityHandler.installMcp({ command: 'npx', args: ['-y', 'wigolo'] });
+    expect(readFileSync(legacy, 'utf-8')).toBe(before);
+  });
+});
