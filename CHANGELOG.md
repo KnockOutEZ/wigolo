@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact origins allowed on the MCP transport. It is for clients that send an `Origin` header without a CORS preflight, such as server-side clients, Electron main processes and proxies. Browser pages still cannot use it, because the daemon sends no CORS headers. The list applies only when an API token is set (`WIGOLO_API_TOKEN` or `WIGOLO_API_TOKEN_FILE`), and the bearer token is still required. Unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.
@@ -18,7 +21,6 @@ Remote embeddings, readiness reporting, warmup component flags, plugin search en
 ### Added
 - Remote embeddings: `WIGOLO_EMBEDDING_API_BASE` sends cache embeddings to an OpenAI-compatible `/embeddings` endpoint. `WIGOLO_EMBEDDING_API_KEY` holds an optional Bearer token. A keyless base can use plain HTTP. A key needs HTTPS unless the host is loopback. Wigolo skips the bundled model when the base exists. (fixes #674)
 - `fetch` results flag block pages with an optional `blocked: { reason }` (`challenge`, `block_page` or `js_required`). A bot wall or "you've been blocked" banner that came back as content still returns its markdown, but callers no longer have to text-sniff it. (fixes #650)
-- `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact browser origins allowed on the MCP transport, for web-based MCP clients. It only applies when `WIGOLO_API_TOKEN` is set, and the bearer token is still required; unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
 
 ### Changed
 - `find_similar` scores only rows that carry the active model id, for the bundled model too. Rows written under an older model id no longer match, so an endpoint or model change hides them. (fixes #674)

@@ -39,7 +39,8 @@ function envTimeoutMs(name: string, fallback: number): number {
 
 /**
  * Parse `WIGOLO_SERVE_ALLOWED_ORIGINS`: comma-separated exact origins that may
- * reach the MCP transport from a browser-based client. Matching is exact; any
+ * reach the MCP transport from a client that sends `Origin` without a CORS
+ * preflight (no CORS headers are sent). Matching is exact; any
  * entry with a wildcard (or the opaque `null` origin) is dropped, so the list
  * can never widen into "allow everything".
  */
@@ -147,7 +148,7 @@ export class DaemonHttpServer {
         ok: false,
         error: 'Forbidden: browser origin not allowed',
         error_reason: 'origin_not_allowed',
-        hint: 'Browser-origin requests are refused on the MCP transport unless WIGOLO_API_TOKEN is set and the origin is listed in WIGOLO_SERVE_ALLOWED_ORIGINS.',
+        hint: 'Browser-origin requests are refused on the MCP transport unless an API token is set and the origin is listed in WIGOLO_SERVE_ALLOWED_ORIGINS.',
       }));
       return true;
     }
@@ -196,7 +197,7 @@ export class DaemonHttpServer {
     }
 
     if (this.allowedOrigins.size > 0 && !this.apiToken) {
-      log.warn('WIGOLO_SERVE_ALLOWED_ORIGINS is ignored because no API token is configured (set WIGOLO_API_TOKEN)');
+      log.warn('WIGOLO_SERVE_ALLOWED_ORIGINS is ignored because no API token is configured (set WIGOLO_API_TOKEN or WIGOLO_API_TOKEN_FILE)');
     }
 
     this.subsystems.bootstrapSearxng().catch((err) => {
