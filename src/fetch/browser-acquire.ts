@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
+import type { BrowserType } from '../types.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { PlainReporter } from '../cli/tui/reporter.js';
@@ -31,6 +32,20 @@ export const BROWSER_INSTALLING_NOTE =
 export const BROWSER_UNAVAILABLE_ERROR =
   'browser engine required for this page but not installed; installing in background (~1-2 min) — retry shortly, or run `wigolo warmup --browser`';
 
+/** Playwright engine handle per configurable browser type. */
+const BROWSER_ENGINES: Record<BrowserType, { executablePath(): string }> = {
+  chromium,
+  firefox,
+  webkit,
+};
+
+/**
+ * The engine the acquisition gate installs before a browser-tier fetch. The
+ * router builds its acquirer with the default probe, so this stays Chromium
+ * even when the pool is configured for another engine.
+ */
+export const ACQUIRED_BROWSER_TYPE: BrowserType = 'chromium';
+
 const DEFAULT_WAIT_MS = 20_000;
 const DEFAULT_RETRY_MS = 10 * 60 * 1000;
 // A held install lock older than this is treated as stale (crashed installer).
@@ -43,13 +58,38 @@ const LOCK_STALE_MS = 10 * 60 * 1000;
  * browser-probe.ts's `onDisk` check (no launch smoke-test, which would cost 30s
  * on the hot fetch path). Never throws.
  */
-export function browserInstalledOnDisk(): boolean {
+export function browserInstalledOnDisk(
+  types: readonly BrowserType[] = [ACQUIRED_BROWSER_TYPE],
+): boolean {
+  const configured: readonly BrowserType[] =
+    types.length > 0 ? types : [ACQUIRED_BROWSER_TYPE];
   try {
-    const exec = chromium.executablePath();
-    return !!exec && existsSync(exec);
+    return configured.every(type => {
+      const exec = BROWSER_ENGINES[type].executablePath();
+      return !!exec && existsSync(exec);
+    });
   } catch {
     return false;
   }
+}
+
+/**
+ * Every engine browser work needs before a fetch can start: the pool's
+ * configured types plus the engine the acquisition gate probes (#694). A fetch
+ * blocks on the gate first and then launches through the pool, so a ready
+ * report must cover both. Order is stable and duplicates collapse.
+ */
+export function requiredBrowserTypes(configured: readonly BrowserType[]): BrowserType[] {
+  return [...new Set<BrowserType>([ACQUIRED_BROWSER_TYPE, ...configured])];
+}
+
+/**
+ * Probe every engine a browser fetch needs. Health calls this instead of
+ * checking the configured list alone, because the acquisition gate probes
+ * Chromium even when the pool is configured for another engine (#694).
+ */
+export function browserReadyForWork(configured: readonly BrowserType[]): boolean {
+  return browserInstalledOnDisk(requiredBrowserTypes(configured));
 }
 
 /**

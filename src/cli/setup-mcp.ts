@@ -1,6 +1,5 @@
 import { detectAgents } from './tui/agents.js';
 import type { AgentId } from './tui/agents.js';
-import { selectAgents, NotTtyError } from './tui/select-agents.js';
 import { applyConfigs, type ConfigApplyResult } from './tui/config-writer.js';
 import { printAddMcpBanner } from './tui/banner.js';
 import { parseSetupMcpFlags, FlagParseError } from './tui/flags.js';
@@ -94,10 +93,14 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     }
     selected = [...flags.agents] as AgentId[];
   } else {
+    // The prompt library loads only here, so `wigolo mcp` and every other
+    // command still start when it is missing or damaged.
+    let prompts: typeof import('./tui/select-agents.js') | null = null;
     try {
-      selected = await selectAgents(detected);
+      prompts = await import('./tui/select-agents.js');
+      selected = await prompts.selectAgents(detected);
     } catch (err) {
-      if (err instanceof NotTtyError) {
+      if (prompts && err instanceof prompts.NotTtyError) {
         writeErr('setup mcp requires an interactive terminal.');
         writeErr('Use -y --agents=<comma-list> in scripts or CI.');
         if (flags.json) emitSetupJson({ status: 'error', agents: [], message: 'requires an interactive terminal' });

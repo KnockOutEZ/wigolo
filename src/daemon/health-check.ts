@@ -12,12 +12,23 @@ export interface HealthProbeInput {
    * health derives from the browser pool + cache, not from the sidecar.
    */
   searxngConfigured: boolean;
+  /**
+   * Whether a browser engine is actually installed on disk. The pool object is
+   * created at startup whether or not an engine exists, so pool presence alone
+   * never proves that browser work can run (#673). Omit it when no on-disk probe
+   * is available; health then keeps the pool-presence semantics.
+   */
+  browserInstalled?: boolean;
 }
 
 export interface HealthReport {
   status: 'healthy' | 'degraded' | 'down';
   searxng: 'active' | 'unavailable' | 'not_initialized' | 'not_configured';
-  browsers: 'ready' | 'not_initialized';
+  /**
+   * Presence of every engine browser work needs. This is a disk check, not a
+   * launch test; `wigolo doctor` runs the launch smoke-test.
+   */
+  browsers: 'ready' | 'not_initialized' | 'not_installed';
   cache: 'active' | 'not_initialized';
   uptime_seconds: number;
 }
@@ -26,17 +37,23 @@ export function probeHealth(input: HealthProbeInput): HealthReport {
   const uptimeMs = Date.now() - input.startedAt;
   const uptimeSeconds = Math.round(uptimeMs / 1000);
 
-  const browsers: HealthReport['browsers'] = input.browserPool
-    ? 'ready'
-    : 'not_initialized';
+  // #673: the pool exists from startup even when no engine is installed. Report
+  // `not_installed` rather than `ready` so a broken install cannot look healthy.
+  const browsers: HealthReport['browsers'] = input.browserPool === null
+    ? 'not_initialized'
+    : input.browserInstalled === false
+      ? 'not_installed'
+      : 'ready';
 
   const cache: HealthReport['cache'] = 'active';
 
   // D1: on the default core backend the sidecar is intentionally absent —
   // health derives entirely from the browser pool + cache. A default daemon
-  // with browsers ready is healthy; with no browser pool it is down.
+  // with a browser pool is healthy; with no browser pool it is down. A missing
+  // engine is a supported state (#673), because the engine installs on first
+  // use — the `browsers` field carries that fact, not the overall status.
   if (!input.searxngConfigured) {
-    const status: HealthReport['status'] = browsers === 'ready' ? 'healthy' : 'down';
+    const status: HealthReport['status'] = browsers === 'not_initialized' ? 'down' : 'healthy';
     return {
       status,
       searxng: 'not_configured',
@@ -56,7 +73,7 @@ export function probeHealth(input: HealthProbeInput): HealthReport {
   }
 
   let status: HealthReport['status'];
-  if (searxng === 'active' && browsers === 'ready') {
+  if (searxng === 'active' && browsers !== 'not_initialized') {
     status = 'healthy';
   } else if (browsers === 'not_initialized' && searxng !== 'active') {
     status = 'down';
