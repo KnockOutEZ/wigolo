@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.3.4 — 2026-11-25
+
+Search and HTTP fetches honour the configured proxy, `WIGOLO_SERVE_ALLOWED_ORIGINS` for token-gated MCP clients, steadier search on a degraded engine pool, and link fixes for `crawl`.
+
 ### Added
 - `wigolo serve` accepts `WIGOLO_SERVE_ALLOWED_ORIGINS`, a comma-separated list of exact origins allowed on the MCP transport. It is for clients that send an `Origin` header without a CORS preflight, such as server-side clients, Electron main processes and proxies. Browser pages still cannot use it, because the daemon sends no CORS headers. The list applies only when an API token is set (`WIGOLO_API_TOKEN` or `WIGOLO_API_TOKEN_FILE`), and the bearer token is still required. Unlisted origins, and every origin on admin routes, keep getting 403. (fixes #392)
 
@@ -13,6 +17,8 @@
 - DuckDuckGo and Mojeek captcha pages now count as engine errors, not as a healthy engine with no results. A page that still parses to results is kept.
 - On a degraded engine pool, a below-floor result with little query overlap no longer survives as the top result. The best aligned result keeps the top-1 slot instead.
 - `WIGOLO_SEARCH=hybrid` also falls back when the engine pool collapsed to at most one weak result (`degraded_pool_low_lexical`).
+- A linked image `[![alt](src)](href)` puts its href in `links`; the image URL stays in `images`. `crawl` with `bfs` now follows links that wrap an image. (#712)
+- The Python SDK reports its installed version in `wigolo.__version__`. It said `0.1.0` on every release before. (#713)
 
 ## v0.3.3 — 2026-11-24
 
