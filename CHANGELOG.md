@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Search engines and HTTP page fetches now go through the configured proxy: `PROXY_URL` with `USE_PROXY`, else `HTTP_PROXY`/`HTTPS_PROXY` with `NO_PROXY`, else `ALL_PROXY`. Only the browser tier used it before. Loopback stays direct under `PROXY_URL` and `ALL_PROXY`, and an invalid proxy setting is logged and skipped. (fixes #629)
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.

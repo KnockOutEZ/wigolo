@@ -1,6 +1,5 @@
 import {
   EnvHttpProxyAgent,
-  ProxyAgent,
   getGlobalDispatcher,
   setGlobalDispatcher,
   type Dispatcher,
@@ -11,95 +10,125 @@ import { createLogger } from "../logger.js";
 const log = createLogger("fetch");
 
 /**
- * `always`: every request goes through the proxy (explicit PROXY_URL/ALL_PROXY).
- * `env`: HTTP(S)_PROXY decides per request, with NO_PROXY applied, exactly the
- * way undici's `EnvHttpProxyAgent` does — so a hop it sends direct must stay
- * direct here too.
+ * The proxy settings the installed dispatcher was built from. `shouldProxyHop`
+ * reads the same snapshot, so the per-hop answer cannot drift from what the
+ * dispatcher actually does with that hop.
  */
-type ProxyMode = "always" | "env";
+interface ProxySettings {
+  http: string | null;
+  https: string | null;
+  noProxy: string;
+}
+
+interface NoProxyEntry {
+  hostname: string;
+  port: number;
+}
+
+/** Loopback stays direct under an explicit proxy, so local daemon checks work. */
+const LOOPBACK_NO_PROXY = "localhost,127.0.0.1,[::1]";
+
+const DEFAULT_PORTS: Record<string, number> = { "http:": 80, "https:": 443 };
 
 let installed: Dispatcher | null = null;
 let previous: Dispatcher | null = null;
-let mode: ProxyMode | null = null;
+let settings: ProxySettings | null = null;
+let noProxyEntries: NoProxyEntry[] = [];
 
-function envValue(...names: string[]): string | null {
-  for (const name of names) {
-    const value = process.env[name];
-    if (value && value.trim()) return value.trim();
+function nonEmpty(value: string | undefined): string | null {
+  return value && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Resolve which proxy applies, once per process.
+ *
+ * `PROXY_URL` (with `USE_PROXY`) wins, then `ALL_PROXY`; both send every
+ * request through the proxy except loopback. Otherwise the standard
+ * `http_proxy`/`https_proxy`/`no_proxy` variables apply, read in the same
+ * order as undici's `EnvHttpProxyAgent`: lowercase first, and a set but empty
+ * lowercase value wins.
+ */
+function resolveProxySettings(): { settings: ProxySettings; source: string } | null {
+  const config = getConfig();
+  if (config.useProxy && config.proxyUrl) {
+    return {
+      settings: { http: config.proxyUrl, https: config.proxyUrl, noProxy: LOOPBACK_NO_PROXY },
+      source: "PROXY_URL",
+    };
+  }
+
+  const http = nonEmpty(process.env.http_proxy ?? process.env.HTTP_PROXY);
+  const https = nonEmpty(process.env.https_proxy ?? process.env.HTTPS_PROXY);
+  if (http || https) {
+    return {
+      settings: { http, https, noProxy: process.env.no_proxy ?? process.env.NO_PROXY ?? "" },
+      source: "HTTP(S)_PROXY",
+    };
+  }
+
+  const all = nonEmpty(process.env.ALL_PROXY ?? process.env.all_proxy);
+  if (all) {
+    return {
+      settings: { http: all, https: all, noProxy: LOOPBACK_NO_PROXY },
+      source: "ALL_PROXY",
+    };
   }
   return null;
 }
 
-/** Does `hostname`/`port` match one of the NO_PROXY entries? */
-function matchesNoProxy(hostname: string, port: string): boolean {
-  const raw = envValue("NO_PROXY", "no_proxy");
-  if (!raw) return false;
-
-  const host = hostname.toLowerCase();
-  for (const entryRaw of raw.split(/[,\s]+/)) {
-    const entry = entryRaw.trim().toLowerCase();
+/** Parse a NO_PROXY value the way undici's `EnvHttpProxyAgent` does. */
+function parseNoProxy(value: string): NoProxyEntry[] {
+  const entries: NoProxyEntry[] = [];
+  for (const entry of value.split(/[,\s]/)) {
     if (!entry) continue;
-    if (entry === "*") return true;
-
-    const [entryHost, entryPort] = entry.split(":");
-    if (entryPort && entryPort !== port) continue;
-
-    const suffix = entryHost.replace(/^\./, "");
-    if (host === suffix || host.endsWith(`.${suffix}`)) return true;
+    const parsed = entry.match(/^(.+):(\d+)$/);
+    entries.push({
+      hostname: (parsed ? parsed[1] : entry).replace(/^\*?\./, "").toLowerCase(),
+      port: parsed ? Number.parseInt(parsed[2], 10) : 0,
+    });
   }
-  return false;
+  return entries;
 }
 
 /**
  * Route outbound `fetch` through the configured proxy, once per process.
  *
- * The browser tier and `cdp-direct` already honour `USE_PROXY`/`PROXY_URL`, but
- * the search engines and the HTTP client call the global `fetch` without a
- * dispatcher, so they went direct: behind a proxy every non-Bing engine timed
- * out and page fetches returned empty content.
+ * The browser tier and `cdp-direct` read their own proxy options. The search
+ * engines and the HTTP client call the global `fetch` without a dispatcher, so
+ * without this they ignore the proxy.
  *
- * `PROXY_URL` wins over the environment. Otherwise the standard
- * `HTTPS_PROXY`/`HTTP_PROXY` variables are honoured through undici's
- * `EnvHttpProxyAgent`, which also applies `NO_PROXY`; `ALL_PROXY` alone is used
- * as an explicit proxy for every request (`EnvHttpProxyAgent` ignores it).
- *
- * Returns the installed dispatcher, or null when no proxy is configured.
+ * Returns the installed dispatcher, or null when no proxy is configured. A
+ * setting that cannot be parsed is logged and skipped, so commands that do not
+ * touch the network still run.
  */
 export function installProxyDispatcher(): Dispatcher | null {
   if (installed) return installed;
 
-  const config = getConfig();
-  let dispatcher: Dispatcher | null = null;
-  let nextMode: ProxyMode = "always";
-  let source = "";
+  const resolved = resolveProxySettings();
+  if (!resolved) return null;
 
-  if (config.useProxy && config.proxyUrl) {
-    dispatcher = new ProxyAgent(config.proxyUrl);
-    source = "PROXY_URL";
-  } else if (
-    envValue("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
-  ) {
-    dispatcher = new EnvHttpProxyAgent();
-    nextMode = "env";
-    source = "HTTP(S)_PROXY";
-  } else {
-    const allProxy = envValue("ALL_PROXY", "all_proxy");
-    if (allProxy) {
-      dispatcher = new ProxyAgent(allProxy);
-      source = "ALL_PROXY";
-    }
+  let dispatcher: Dispatcher;
+  try {
+    // Explicit values (empty string = none) stop undici from re-reading the environment.
+    dispatcher = new EnvHttpProxyAgent({
+      httpProxy: resolved.settings.http ?? "",
+      httpsProxy: resolved.settings.https ?? "",
+      noProxy: resolved.settings.noProxy,
+    });
+  } catch (err) {
+    log.warn("ignoring an invalid proxy setting; outbound fetch goes direct", {
+      source: resolved.source,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
   }
-
-  if (!dispatcher) return null;
 
   previous = getGlobalDispatcher();
   setGlobalDispatcher(dispatcher);
   installed = dispatcher;
-  mode = nextMode;
-  log.info("installed an outbound proxy dispatcher", {
-    source,
-    mode: nextMode,
-  });
+  settings = resolved.settings;
+  noProxyEntries = parseNoProxy(resolved.settings.noProxy);
+  log.info("installed an outbound proxy dispatcher", { source: resolved.source });
   return dispatcher;
 }
 
@@ -111,14 +140,12 @@ export function hasProxyDispatcher(): boolean {
 /**
  * Will this specific hop go through the proxy?
  *
- * The caller uses this to keep the SSRF protections on hops that stay direct:
- * `EnvHttpProxyAgent` sends NO_PROXY matches, and `http:` requests when only
- * `HTTPS_PROXY` is set, straight to the origin — those still need DNS pinning
- * and the fail-closed check, because no proxy is resolving them.
+ * Mirrors `EnvHttpProxyAgent`'s choice for the installed settings. The caller
+ * keeps DNS pinning and the fail-closed check on every hop that goes direct,
+ * because no proxy resolves those names.
  */
 export function shouldProxyHop(target: string | URL): boolean {
-  if (!installed || mode === null) return false;
-  if (mode === "always") return true;
+  if (!installed || !settings) return false;
 
   let url: URL;
   try {
@@ -127,14 +154,22 @@ export function shouldProxyHop(target: string | URL): boolean {
     return true;
   }
 
-  const port = url.port || (url.protocol === "https:" ? "443" : "80");
-  if (matchesNoProxy(url.hostname, port)) return false;
+  // Same host and port derivation as undici: IPv6 brackets are kept.
+  const hostname = url.host.replace(/:\d*$/, "").toLowerCase();
+  const port = Number.parseInt(url.port, 10) || DEFAULT_PORTS[url.protocol] || 0;
 
-  if (url.protocol === "https:")
-    return envValue("HTTPS_PROXY", "https_proxy") !== null;
-  if (url.protocol === "http:")
-    return envValue("HTTP_PROXY", "http_proxy") !== null;
-  return false;
+  if (noProxyEntries.length > 0) {
+    if (settings.noProxy === "*") return false;
+    for (const entry of noProxyEntries) {
+      if (entry.port && entry.port !== port) continue;
+      if (hostname === entry.hostname) return false;
+      if (hostname.endsWith(`.${entry.hostname}`)) return false;
+    }
+  }
+
+  // undici sends https through the https proxy, else the http proxy.
+  if (url.protocol === "https:") return (settings.https ?? settings.http) !== null;
+  return settings.http !== null;
 }
 
 /** Restore the dispatcher that was in place before installation (tests only). */
@@ -142,5 +177,6 @@ export function resetProxyDispatcher(): void {
   if (installed && previous) setGlobalDispatcher(previous);
   installed = null;
   previous = null;
-  mode = null;
+  settings = null;
+  noProxyEntries = [];
 }

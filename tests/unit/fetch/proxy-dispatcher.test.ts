@@ -30,6 +30,8 @@ const PROXY_ENV = [
   "http_proxy",
   "ALL_PROXY",
   "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
 ];
 
 let origin: Server;
@@ -186,6 +188,72 @@ describe("per-hop proxy decision", () => {
 
     expect(shouldProxyHop("http://example.com/x")).toBe(true);
     expect(shouldProxyHop("https://example.com/x")).toBe(true);
+  });
+
+  it("proxies https hops through HTTP_PROXY when HTTPS_PROXY is unset", () => {
+    clearProxyEnv();
+    process.env.HTTP_PROXY = "http://127.0.0.1:9";
+    resetConfig();
+    installProxyDispatcher();
+
+    expect(shouldProxyHop("https://example.com/page")).toBe(true);
+    expect(shouldProxyHop("http://example.com/page")).toBe(true);
+  });
+
+  it("matches a *.domain NO_PROXY entry against its subdomains", () => {
+    clearProxyEnv();
+    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.NO_PROXY = "*.example.com";
+    resetConfig();
+    installProxyDispatcher();
+
+    expect(shouldProxyHop("https://api.example.com/x")).toBe(false);
+    expect(shouldProxyHop("https://example.org/x")).toBe(true);
+  });
+
+  it("reads lowercase no_proxy before NO_PROXY, like undici", () => {
+    clearProxyEnv();
+    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.NO_PROXY = "internal.example";
+    process.env.no_proxy = "*";
+    resetConfig();
+    installProxyDispatcher();
+
+    expect(shouldProxyHop("https://elsewhere.test/x")).toBe(false);
+  });
+
+  it("lets a set but empty https_proxy win over HTTPS_PROXY, like undici", () => {
+    clearProxyEnv();
+    process.env.https_proxy = "";
+    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    resetConfig();
+
+    expect(installProxyDispatcher()).toBeNull();
+    expect(shouldProxyHop("https://example.com/x")).toBe(false);
+  });
+
+  it("sends loopback direct when PROXY_URL is explicit", async () => {
+    // beforeEach configured USE_PROXY + PROXY_URL.
+    installProxyDispatcher();
+
+    expect(shouldProxyHop("http://127.0.0.1:3333/health")).toBe(false);
+    expect(shouldProxyHop("http://localhost:3333/health")).toBe(false);
+    expect(shouldProxyHop("http://[::1]:3333/health")).toBe(false);
+
+    const port = (origin.address() as AddressInfo).port;
+    const res = await fetch(`http://127.0.0.1:${port}/`);
+    expect(await res.text()).toBe("origin-ok");
+    expect(seen).toHaveLength(0);
+  });
+
+  it("skips an invalid proxy setting instead of throwing", () => {
+    clearProxyEnv();
+    process.env.USE_PROXY = "1";
+    process.env.PROXY_URL = "not a proxy url";
+    resetConfig();
+
+    expect(() => installProxyDispatcher()).not.toThrow();
+    expect(hasProxyDispatcher()).toBe(false);
   });
 
   it("still fails closed on a hop the proxy agent sends direct", async () => {
