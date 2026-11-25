@@ -170,6 +170,11 @@ describe('EmbeddingService', () => {
 
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].url).toBe('https://example.com');
+    expect(mockStoreState.store.search).toHaveBeenLastCalledWith(
+      expect.any(Float32Array),
+      5,
+      { modelId: 'BGE-small-en-v1.5' },
+    );
   });
 
   it('findSimilar returns empty when index is empty', async () => {

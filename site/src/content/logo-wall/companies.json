@@ -1,0 +1,449 @@
+[
+  {
+    "name": "Google",
+    "slug": "google",
+    "tier": 1,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "google"
+    }
+  },
+  {
+    "name": "Microsoft",
+    "slug": "microsoft",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "github-avatar",
+      "org": "microsoft"
+    }
+  },
+  {
+    "name": "AWS",
+    "slug": "aws",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "github-avatar",
+      "org": "aws"
+    }
+  },
+  {
+    "name": "Alibaba",
+    "slug": "alibaba",
+    "tier": 1,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "alibabacloud"
+    }
+  },
+  {
+    "name": "Tencent",
+    "slug": "tencent",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "github-avatar",
+      "org": "Tencent"
+    }
+  },
+  {
+    "name": "Baidu",
+    "slug": "baidu",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "baidu"
+    }
+  },
+  {
+    "name": "ByteDance",
+    "slug": "bytedance",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "bytedance"
+    }
+  },
+  {
+    "name": "Apache",
+    "slug": "apache",
+    "tier": 1,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "apache"
+    }
+  },
+  {
+    "name": "Epic Games",
+    "slug": "epic-games",
+    "tier": 1,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "epicgames"
+    }
+  },
+  {
+    "name": "Samsung",
+    "slug": "samsung",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "samsung"
+    }
+  },
+  {
+    "name": "Stripe",
+    "slug": "stripe",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "stripe"
+    }
+  },
+  {
+    "name": "Airbnb",
+    "slug": "airbnb",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "airbnb"
+    }
+  },
+  {
+    "name": "PayPal",
+    "slug": "paypal",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "paypal"
+    }
+  },
+  {
+    "name": "Oracle",
+    "slug": "oracle",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "github-avatar",
+      "org": "oracle"
+    }
+  },
+  {
+    "name": "Red Hat",
+    "slug": "red-hat",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "redhat"
+    }
+  },
+  {
+    "name": "JetBrains",
+    "slug": "jetbrains",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "jetbrains"
+    }
+  },
+  {
+    "name": "Goldman Sachs",
+    "slug": "goldman-sachs",
+    "tier": 1,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "goldmansachs"
+    }
+  },
+  {
+    "name": "Meituan",
+    "slug": "meituan",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "meituan"
+    }
+  },
+  {
+    "name": "Shopee",
+    "slug": "shopee",
+    "tier": 2,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "shopee"
+    }
+  },
+  {
+    "name": "NTT DATA",
+    "slug": "ntt-data",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "name",
+    "logo": {
+      "source": "none"
+    }
+  },
+  {
+    "name": "Accenture",
+    "slug": "accenture",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "accenture"
+    }
+  },
+  {
+    "name": "Algolia",
+    "slug": "algolia",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "algolia"
+    }
+  },
+  {
+    "name": "Auth0",
+    "slug": "auth0",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "auth0"
+    }
+  },
+  {
+    "name": "bilibili",
+    "slug": "bilibili",
+    "tier": 2,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "bilibili"
+    }
+  },
+  {
+    "name": "Booking.com",
+    "slug": "booking-com",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "bookingdotcom"
+    }
+  },
+  {
+    "name": "Broadcom",
+    "slug": "broadcom",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "broadcom"
+    }
+  },
+  {
+    "name": "Canonical",
+    "slug": "canonical",
+    "tier": 2,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "canonical"
+    }
+  },
+  {
+    "name": "Capgemini",
+    "slug": "capgemini",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "github-avatar",
+      "org": "capgemini"
+    }
+  },
+  {
+    "name": "Cloudera",
+    "slug": "cloudera",
+    "tier": 2,
+    "evidence": "verified",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "cloudera"
+    }
+  },
+  {
+    "name": "DiDi",
+    "slug": "didi",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "github-avatar",
+      "org": "didi"
+    }
+  },
+  {
+    "name": "Elastic",
+    "slug": "elastic",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "elastic"
+    }
+  },
+  {
+    "name": "EY",
+    "slug": "ey",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "name",
+    "logo": {
+      "source": "none"
+    }
+  },
+  {
+    "name": "Fiverr",
+    "slug": "fiverr",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "fiverr"
+    }
+  },
+  {
+    "name": "Kakao",
+    "slug": "kakao",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "kakao"
+    }
+  },
+  {
+    "name": "miHoYo",
+    "slug": "mihoyo",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "mihoyo"
+    }
+  },
+  {
+    "name": "Optimizely",
+    "slug": "optimizely",
+    "tier": 2,
+    "evidence": "verified",
+    "display": "name",
+    "logo": {
+      "source": "none"
+    }
+  },
+  {
+    "name": "Palo Alto Networks",
+    "slug": "palo-alto-networks",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "paloaltonetworks"
+    }
+  },
+  {
+    "name": "Razer",
+    "slug": "razer",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "razer"
+    }
+  },
+  {
+    "name": "TCS",
+    "slug": "tcs",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "wordmark",
+    "logo": {
+      "source": "simple-icons",
+      "id": "tcs"
+    }
+  },
+  {
+    "name": "Ubisoft",
+    "slug": "ubisoft",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "icon+name",
+    "logo": {
+      "source": "simple-icons",
+      "id": "ubisoft"
+    }
+  },
+  {
+    "name": "Yandex",
+    "slug": "yandex",
+    "tier": 2,
+    "evidence": "self-reported",
+    "display": "name",
+    "logo": {
+      "source": "none"
+    }
+  }
+]

@@ -134,6 +134,23 @@ describe('skills content gates', () => {
     });
   });
 
+  describe('frontmatter metadata.version', () => {
+    // WHY: there is no release-time stamping for skills, so every pack's
+    // version silently drifted from the package it ships in (#632). Bump them
+    // together with package.json.
+    it('matches package.json version for every pack', () => {
+      const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string };
+      const offenders: string[] = [];
+      for (const pack of EXPECTED_PACKS) {
+        const content = readFileSync(join(SKILLS_DIR, pack, 'SKILL.md'), 'utf-8').replace(/\r\n/g, '\n');
+        const fm = content.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+        const version = fm.match(/^\s+version:\s*(\S+)\s*$/m)?.[1];
+        if (version !== pkg.version) offenders.push(`${pack}: ${version ?? '(missing)'}`);
+      }
+      expect(offenders, `expected ${pkg.version}`).toEqual([]);
+    });
+  });
+
   describe('legacy skill-hash manifest', () => {
     it('parses and documents its generation command', () => {
       const raw = JSON.parse(readFileSync(LEGACY_HASHES, 'utf-8')) as Record<string, unknown>;

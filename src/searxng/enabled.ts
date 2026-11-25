@@ -1,4 +1,4 @@
-import { getBootstrapState } from './bootstrap.js';
+import { getBootstrapState, checkDockerAvailable } from './bootstrap.js';
 
 /**
  * The narrow config shape these predicates read. Accepting a structural type
@@ -9,6 +9,7 @@ export interface SearxngConfigView {
   searchBackend: string | null;
   searxngUrl: string | null;
   dataDir: string;
+  searxngMode?: 'native' | 'docker';
 }
 
 /**
@@ -27,15 +28,16 @@ export function searxngConfigured(cfg: SearxngConfigView): boolean {
 }
 
 /**
- * Whether an actually-usable sidecar endpoint exists RIGHT NOW — either an
- * external URL, or a previously-installed native process whose on-disk state is
- * `ready`. Distinct from {@link searxngConfigured}: a user can opt into the
+ * Whether an actually-usable sidecar endpoint exists RIGHT NOW — an external
+ * URL, a previously-installed native process whose on-disk state is `ready`, or
+ * docker mode with a container CLI on PATH (the container starts on demand). Distinct from {@link searxngConfigured}: a user can opt into the
  * `hybrid`/`searxng` backend (configured) without ever having installed the
  * sidecar (not available). In that gap the caller must emit an actionable
  * message rather than install implicitly.
  */
 export function searxngBackendAvailable(cfg: SearxngConfigView): boolean {
   if (cfg.searxngUrl) return true;
+  if (cfg.searxngMode === 'docker' && checkDockerAvailable()) return true;
   const state = getBootstrapState(cfg.dataDir);
   return state?.status === 'ready';
 }

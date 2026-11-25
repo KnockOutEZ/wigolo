@@ -53,7 +53,7 @@ What the backends mean:
 - **`searxng`** — the optional/legacy aggregator sidecar only. Higher long-tail recall on some queries, slower cold start; wigolo manages the sidecar process for you.
 - **`hybrid`** — runs `core` first and falls back to the aggregator (merging results) only when a quality signal fires; the merged response names the signal in `fallback_signal`.
 
-The legacy sidecar has its own knobs when you opt in: `SEARXNG_URL` (use an external instance), `SEARXNG_MODE` (`native` or `docker`), `SEARXNG_PORT` (default `8888`).
+The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use an external instance; the legacy `SEARXNG_URL` is still accepted as a fallback), `SEARXNG_MODE` (`native` or `docker`; with `docker` the container starts on demand whenever a docker-compatible CLI is on PATH, even if Python is installed — the only option on Windows), `SEARXNG_PORT` (default `8888`).
 
 ## Fetch and browser engine
 
@@ -62,6 +62,7 @@ The legacy sidecar has its own knobs when you opt in: `SEARXNG_URL` (use an exte
 | `FETCH_TIMEOUT_MS` | `10000` | Per-request HTTP timeout. |
 | `FETCH_MAX_RETRIES` | `2` | HTTP retry budget. |
 | `MAX_REDIRECTS` | `5` | Redirect ceiling. |
+| `WIGOLO_MAX_RESPONSE_BYTES` | `20971520` (20 MB) | Largest response body the HTTP and TLS fetch tiers will buffer. Bigger responses fail with `response_too_large` instead of exhausting memory. `0` disables the cap. Browser-rendered pages, the Reddit API and escape-hatch fetchers, and redirect-body drains aren't covered by this cap. |
 | `MAX_BROWSERS` | `3` | Browser-engine pool size for JS-rendered pages. |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list of browser families to pool. |
 | `BROWSER_IDLE_TIMEOUT` | `60000` | Idle ms before a pooled browser is released. |
@@ -80,18 +81,57 @@ The legacy sidecar has its own knobs when you opt in: `SEARXNG_URL` (use an exte
 
 Reliability framing matters here: these tiers make wigolo read pages the way a real browser does, and it learns per-domain which tier works (inspect with [`wigolo tune`](./cli.md#tune)). When a challenge doesn't clear, the failure is labeled honestly instead of returning junk. Crawling stays polite throughout — robots.txt respected by default, per-domain rate limits, and page budgets sized for research, not bulk harvesting.
 
-For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL` (attach to a running browser's debug port), `WIGOLO_CHROME_PROFILE_PATH` (use a profile), `WIGOLO_AUTH_STATE_PATH` (a saved storage-state file). Then pass `use_auth: true` on `fetch`/`crawl`. `wigolo auth discover` lists attachable sessions.
+For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL` (attach to a running browser's debug port), `WIGOLO_CHROME_PROFILE_PATH` (use a profile), `WIGOLO_AUTH_STATE_PATH` (a saved storage-state file). Then pass `use_auth: true` on `fetch`/`crawl`. `wigolo auth discover` lists attachable sessions. A storage-state file is loaded into a fresh context for each fetch; a browser attached over CDP is driven through its existing context, which keeps that browser's own cookies.
 
 ## On-device models
 
 | Env var | Default | What it does |
 | --- | --- | --- |
-| `WIGOLO_RERANKER` | `onnx` | Result reranking: `onnx` (the bundled on-device ranking model), `none`, or `custom`. |
-| `WIGOLO_RERANKER_MODEL` | `bge-reranker-v2-m3` | Which ranking model to load. |
-| `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. |
+| `WIGOLO_RERANKER` | `onnx` | Result reranking: `onnx` (bundled model), `remote` (self-hosted endpoint), `none` (disabled), or reserved `custom`. |
+| `WIGOLO_RERANKER_MODEL` | `bge-reranker-v2-m3` | Model name sent to the remote endpoint; the ONNX model is bundled. |
+| `WIGOLO_RERANK_API_BASE` | unset | Remote service base URL; Wigolo sends `POST <base>/rerank`. Required for `remote`. |
+| `WIGOLO_RERANK_API_KEY` | unset | Optional Bearer token for the remote endpoint. Requires HTTPS unless the endpoint is on loopback (`localhost`, `127.x`, `[::1]`). Read from env or keychain; never persisted in `config.json`. |
+| `WIGOLO_RERANKER_REQUEST_TIMEOUT_MS` | `30000` | Remote request timeout in milliseconds. |
+| `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. Also the model name sent to a remote endpoint. |
+| `WIGOLO_EMBEDDING_API_BASE` | unset | OpenAI-compatible base URL. Wigolo sends `POST <base>/embeddings`. When unset, the bundled embedding model runs in-process. |
+| `WIGOLO_EMBEDDING_API_KEY` | unset | Optional Bearer token for the remote endpoint. Requires HTTPS unless the endpoint is on loopback (`localhost`, `127.x`, `[::1]`). Read from env or keychain. Never persisted in `config.json`. |
+| `WIGOLO_EMBEDDING_REQUEST_TIMEOUT_MS` | `30000` | Remote embedding request timeout in milliseconds. A bad value falls back to the default. |
 | `WIGOLO_RELEVANCE_THRESHOLD` | `0` | Drop search results below this reranker score (0 = keep all). |
 
-Models download once (during `init`/`warmup` or lazily on first use) and run fully in-process — no external services.
+The default ONNX model downloads once (during `init`/`warmup` or lazily on first use) and runs in-process. For a remote/self-hosted Cohere-style rerank endpoint:
+
+```bash
+export WIGOLO_RERANKER=remote
+export WIGOLO_RERANK_API_BASE=http://127.0.0.1:8082/v1
+export WIGOLO_RERANKER_MODEL=bge-reranker-v2-m3
+# WIGOLO_RERANK_API_KEY works over plain HTTP only on loopback; use HTTPS for any other host.
+```
+
+Wigolo sends `{ "model": "...", "query": "...", "documents": ["..."], "top_n": 2 }` to `/rerank`. The response must contain `results` with at least `top_n` entries shaped `{ "index": 0, "relevance_score": 0.9 }` (or `score`); if the service scores every document, Wigolo keeps the best `top_n`. Indexes refer to the original document order. This is a Cohere-style contract; OpenAI does not define a universal rerank API. Queries and candidate text are sent to the configured endpoint. Remote mode does not download the ONNX model. `warmup` and `doctor` check configuration without contacting the endpoint; the first rerank request verifies service availability. Search falls back to its existing ordering if the endpoint fails.
+
+## Remote embeddings
+
+To use a local or self-hosted embedding service, set `WIGOLO_EMBEDDING_API_BASE` to an OpenAI-compatible base URL. Wigolo sends `{ "model": "...", "input": ["..."] }` to `/embeddings`. The response must hold one vector per input in `data[].embedding`.
+
+Each vector must have 384 values. The vector index uses that size. Wigolo rejects a wrong-size vector with a clear error. Remote mode does not download the bundled embedding model.
+
+Wigolo trims input to `WIGOLO_EMBEDDING_MAX_TEXT_LENGTH` before the send. The default is 8000 characters. Set the server-side limit above that value if the server also truncates. A server that rejects over-length input now receives trimmed text instead.
+
+```bash
+export WIGOLO_EMBEDDING_API_BASE=http://127.0.0.1:8080/v1
+export WIGOLO_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+# WIGOLO_EMBEDDING_API_KEY works over plain HTTP only on loopback; use HTTPS for any other host.
+```
+
+`warmup` sends one short probe request. Cache writes and `find_similar` use the remote endpoint from then on.
+
+### Changing the endpoint or the model
+
+The vector store tags each row with a model id. That id combines the model name with the endpoint host and path. `find_similar` scores only rows that carry the active model id.
+
+A change to `WIGOLO_EMBEDDING_API_BASE` or `WIGOLO_EMBEDDING_MODEL` therefore hides every row from the old provider. `wigolo backfill` selects only URLs with no vector row, so it does not repair them. The CLI has no command that re-embeds one URL. Use the MCP `fetch` tool with `force_refresh: true` instead. A plain fetch returns from cache before the embed step runs.
+
+The model id does not change when the weights behind the same endpoint and model name change. Rows from the old weights stay in the index. To re-embed them, call the MCP `fetch` tool with `force_refresh: true` for each URL. To drop every vector, run `wigolo config --cleanup cache`. That command also deletes the cached pages.
 
 ## LLM providers (optional)
 
@@ -103,9 +143,21 @@ Core tools never need an LLM. Configuring one adds answer synthesis (`format: "a
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` | unset | Per-provider keys, read from env. |
 | `WIGOLO_LLM_API_KEY` | unset | Generic key slot (used by `init --provider=...`; stored in the OS keychain, never passed as a flag). |
 | `WIGOLO_LLM_MODEL` | provider default | Override the model name. |
-| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any OpenAI-compatible endpoint. |
+| `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any keyless OpenAI-compatible server (Ollama, vLLM, LM Studio). |
+| `OPENAI_BASE_URL` | OpenAI | With `WIGOLO_LLM_PROVIDER=openai`, send requests to another OpenAI-compatible service that takes an API key. |
 | `WIGOLO_LLM_CACHE_TTL_DAYS` | `7` | Cache lifetime for LLM outputs. |
 | `WIGOLO_LLM_MAX_CALLS_PER_REQUEST` | `1` | Hard cap on LLM calls per tool request. |
+
+### Using an OpenAI-compatible provider
+
+Any service that speaks the OpenAI API works through the `openai` provider: set its base URL, its key, and one of its model names.
+
+```bash
+export WIGOLO_LLM_PROVIDER=openai
+export OPENAI_BASE_URL=https://api.example.com/v1   # the service's OpenAI-compatible endpoint
+export OPENAI_API_KEY=sk-...                        # your key for that service
+export WIGOLO_LLM_MODEL=model-name                  # one of its model ids
+```
 
 ### Keyless local ladder
 

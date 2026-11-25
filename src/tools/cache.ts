@@ -204,7 +204,10 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
 
   const [ftsHits, vecHits] = await Promise.all([
     Promise.resolve(ftsSearchRanked(query, candidateLimit)),
-    store.search(queryVector, candidateLimit),
+    // Scope the vector side to the provider that built the query vector. After
+    // an endpoint or model change, the index holds rows from both, and a mixed
+    // ranking compares vectors that do not share a space.
+    store.search(queryVector, candidateLimit, { modelId: embedProvider.modelId }),
   ]);
 
   const ftsRankMap = buildRankMap(ftsHits.map(h => h.url));

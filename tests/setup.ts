@@ -13,10 +13,19 @@ import { join } from 'node:path';
 // test in that worker from falling back to the real home dir. Invisible on CI
 // (throwaway HOME), decisive locally.
 const TEST_DATA_DIR = join(tmpdir(), 'wigolo-test', String(process.pid), '.wigolo');
+// config.json does not follow WIGOLO_DATA_DIR: without WIGOLO_CONFIG_PATH it
+// resolves to the real ~/.wigolo/config.json. Reading a version-less file
+// rewrites it, so a test that mocks readFileSync could replace a developer's
+// real settings. Point it at the worker's temp dir, re-asserted the same way.
+const TEST_CONFIG_PATH = join(TEST_DATA_DIR, 'config.json');
 function ensureTestDataDir(): void {
   if (!process.env.WIGOLO_DATA_DIR) {
     mkdirSync(TEST_DATA_DIR, { recursive: true });
     process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
+  }
+  if (!process.env.WIGOLO_CONFIG_PATH) {
+    mkdirSync(TEST_DATA_DIR, { recursive: true });
+    process.env.WIGOLO_CONFIG_PATH = TEST_CONFIG_PATH;
   }
 }
 ensureTestDataDir();

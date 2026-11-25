@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Bricolage_Grotesque, Instrument_Sans, Azeret_Mono } from "next/font/google";
-import { asset, SITE_URL } from "@/lib/site";
+import { asset, SITE_URL, SOCIAL_IMAGE } from "@/lib/site";
+import { graph, organization, softwareApplication, website } from "@/lib/jsonld";
+import Analytics from "@/components/Analytics";
 import "./globals.css";
 
 const display = Bricolage_Grotesque({
@@ -62,40 +64,18 @@ export const metadata: Metadata = {
       "Local-first web intelligence over MCP. No keys, no cloud, no metered bill. Public beta.",
     // Plain public path: metadataBase already carries the base path —
     // asset() here would double-prefix it.
-    images: [{ url: "/wigolo/wigolo-social.png", width: 1200, height: 630 }],
+    images: [SOCIAL_IMAGE],
   },
   twitter: {
     card: "summary_large_image",
     title: TITLE,
     description:
       "Local-first web intelligence over MCP. No keys, no cloud, no metered bill. Public beta.",
-    images: ["/wigolo/wigolo-social.png"],
+    images: [SOCIAL_IMAGE.url],
   },
 };
 
-const jsonLd = {
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  name: "wigolo",
-  applicationCategory: "DeveloperApplication",
-  operatingSystem: "macOS, Linux, Windows",
-  description: DESCRIPTION,
-  url: SITE_URL,
-  downloadUrl: "https://www.npmjs.com/package/wigolo",
-  softwareVersion: "0.2.x (public beta)",
-  releaseNotes: "https://github.com/KnockOutEZ/wigolo/releases",
-  license: "https://www.gnu.org/licenses/agpl-3.0.html",
-  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  author: {
-    "@type": "Person",
-    name: "Towhid Khan",
-    url: "https://github.com/KnockOutEZ",
-  },
-  sameAs: [
-    "https://github.com/KnockOutEZ/wigolo",
-    "https://www.npmjs.com/package/wigolo",
-  ],
-};
+const jsonLd = graph(organization(), website(), softwareApplication(DESCRIPTION));
 
 export default function RootLayout({
   children,
@@ -107,9 +87,10 @@ export default function RootLayout({
       <body>
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          dangerouslySetInnerHTML={{ __html: jsonLd }}
         />
         {children}
+        <Analytics />
       </body>
     </html>
   );

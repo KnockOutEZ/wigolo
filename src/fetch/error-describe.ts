@@ -47,6 +47,19 @@ export function describeFetchError(err: unknown): DescribedError {
     };
   }
 
+  // Over WIGOLO_MAX_RESPONSE_BYTES (ResponseTooLargeError) — duck-typed like
+  // the challenge error above.
+  if (
+    err instanceof Error &&
+    (err as Error & { code?: unknown }).code === 'response_too_large'
+  ) {
+    const hint = (err as Error & { hint?: unknown }).hint;
+    return {
+      reason: err.message,
+      ...(typeof hint === 'string' ? { hint } : {}),
+    };
+  }
+
   const code = extractCode(err);
   if (code && CODE_DESCRIPTIONS[code]) return CODE_DESCRIPTIONS[code];
 

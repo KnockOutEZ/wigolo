@@ -260,7 +260,7 @@ Tools (one-shot; add --json for machine-readable output, --help for flags):
 
 Advanced:
   warmup [--all|--browser|--reranker|--embeddings]
-                          Re-run component downloads (CI / repair)
+                          Pre-download components ('warmup --help' for all)
 
 Options:
   -h, --help              Print this help

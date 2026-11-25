@@ -1,15 +1,23 @@
 import { asset, GH, BASE_PATH, FEEDBACK_LINKS } from "@/lib/site";
+import { ALTERNATIVES } from "@/content/alternatives";
 import styles from "./Footer.module.css";
 
 const COLS: { title: string; links: { label: string; href: string; ext?: boolean }[] }[] = [
   {
     title: "Product",
     links: [
-      { label: "Tools", href: "#tools" },
-      { label: "Docs", href: `${BASE_PATH}/docs` },
-      { label: "Parity", href: "#parity" },
-      { label: "Quickstart", href: "#quickstart" },
-      { label: "Feedback", href: "#feedback" },
+      { label: "Tools", href: `${BASE_PATH}/#tools` },
+      { label: "Docs", href: `${BASE_PATH}/docs/` },
+      { label: "Parity", href: `${BASE_PATH}/#parity` },
+      { label: "Quickstart", href: `${BASE_PATH}/#quickstart` },
+      { label: "Feedback", href: `${BASE_PATH}/#feedback` },
+    ],
+  },
+  {
+    title: "Compare",
+    links: [
+      ...ALTERNATIVES.map((a) => ({ label: `${a.name} alternative`, href: `${BASE_PATH}/alternatives/${a.slug}/` })),
+      { label: "All alternatives", href: `${BASE_PATH}/alternatives/` },
     ],
   },
   {
@@ -17,9 +25,10 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     links: [
       { label: "GitHub", href: GH, ext: true },
       { label: "npm", href: "https://www.npmjs.com/package/wigolo", ext: true },
-      { label: "Examples", href: `${GH}/tree/main/examples`, ext: true },
+      { label: "Examples", href: `${BASE_PATH}/docs/examples/` },
       { label: "Changelog", href: `${GH}/releases`, ext: true },
       { label: "Contributing", href: `${GH}/blob/main/CONTRIBUTING.md`, ext: true },
+      { label: "Adopters", href: `${GH}/blob/main/ADOPTERS.md`, ext: true },
       { label: "Report a bug", href: FEEDBACK_LINKS.bug, ext: true },
     ],
   },
@@ -27,8 +36,8 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     title: "Support",
     links: [
       { label: "Star on GitHub", href: GH, ext: true },
-      { label: "Sponsors", href: "#sponsors" },
-      { label: "Sponsor wigolo", href: `${GH}/blob/main/SPONSORS.md`, ext: true },
+      { label: "Sponsors", href: `${BASE_PATH}/#sponsors` },
+      { label: "Sponsor wigolo", href: `${BASE_PATH}/sponsors/` },
       { label: "Buy me a coffee", href: "https://buymeacoffee.com/knockoutez", ext: true },
       { label: "Email the maintainer", href: "mailto:ktowhid20@gmail.com" },
     ],

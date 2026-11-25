@@ -213,14 +213,23 @@ function acquireLock(): { token: string } {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
   for (;;) {
+    let created = false;
     try {
       mkdirSync(lock);
+      created = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // Windows answers EPERM, not EEXIST, while another process is mid-way
+      // through removing the lock dir; that is contention, so wait and retry.
+      if (code !== 'EEXIST' && !(code === 'EPERM' && process.platform === 'win32')) throw err;
+    }
+    // Only the owner-file steps of a lock we just created; their errors are
+    // real failures, not contention, so they propagate.
+    if (created) {
       writeFileSync(join(lock, 'owner'), token, 'utf-8');
       // Re-verify we own it (guards a racing steal between mkdir and write).
       if (readOwner(lock) === token) return { token };
       continue;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
 
     // Lock held — check staleness (crash-orphan recovery).

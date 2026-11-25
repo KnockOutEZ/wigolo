@@ -67,7 +67,7 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => {
 import { existsSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { runCommand } from '../../../src/cli/tui/run-command.js';
-import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState, sanitizeBrowserInstallError } from '../../../src/cli/warmup.js';
+import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState, sanitizeBrowserInstallError, warmupArgsError, isWarmupHelp, WARMUP_USAGE } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 import { checkVenvModule } from '../../../src/python-env.js';
 import { getConfig } from '../../../src/config.js';
@@ -192,6 +192,35 @@ describe('runWarmup', () => {
 
     expect(result.searxng).toBe('failed');
     expect(result.searxngError).toBe('pip failed');
+  });
+
+  it('skips the Python gate when an external search engine URL is configured', async () => {
+    // WHY: an external instance needs no local Python; warmup must not report
+    // no_python or attempt a native bootstrap (#645).
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo', searchBackend: null, searxngUrl: 'http://searxng:8080',
+    } as ReturnType<typeof getConfig>);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(false);
+
+    const result = await runWarmup(['--searxng']);
+
+    expect(result.searxng).toBe('skipped');
+    expect(checkPythonAvailable).not.toHaveBeenCalled();
+    expect(bootstrapNativeSearxng).not.toHaveBeenCalled();
+  });
+
+  it('skips the Python gate in docker mode', async () => {
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo', searchBackend: null, searxngUrl: null, searxngMode: 'docker',
+    } as ReturnType<typeof getConfig>);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(false);
+
+    const result = await runWarmup(['--searxng']);
+
+    expect(result.searxng).toBe('skipped');
+    expect(checkPythonAvailable).not.toHaveBeenCalled();
   });
 
   it('reports no python available (with --searxng)', async () => {
@@ -442,6 +471,28 @@ describe('exported repair functions (S9 — reused by doctor --fix)', () => {
     expect(r.embeddings).toBe('ok');
   });
 
+  it('installEmbeddings probes a remote endpoint instead of loading the local model', async () => {
+    vi.mocked(getConfig).mockReturnValueOnce({
+      dataDir: '/tmp/test-wigolo',
+      embeddingApiBase: 'http://127.0.0.1:8080/v1',
+      embeddingApiKey: null,
+      embeddingModel: 'test-embed',
+      embeddingRequestTimeoutMs: 500,
+    } as never);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ data: [{ index: 0, embedding: Array.from({ length: 384 }, () => 0.1) }] }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const r = await installEmbeddings();
+      expect(r.embeddings).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('wipeSearxngState is exported and runs without a reporter', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     // No throw, and it deletes the state/install/lock paths.
@@ -467,6 +518,13 @@ describe('warmup --reranker', () => {
 
     expect(rerankMock).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
+  });
+
+  it('does not invoke remote inference during warmup', async () => {
+    vi.mocked(getConfig).mockReturnValue({ ...coreConfig, reranker: 'remote' } as never);
+    const result = await runWarmup(['--reranker']);
+    expect(result.reranker).toBe('ok');
+    expect(rerankMock).not.toHaveBeenCalled();
   });
 
   it('--all flag includes reranker warmup', async () => {
@@ -622,5 +680,76 @@ describe('runWarmup browser-failure surfacing (A1)', () => {
     expect(result.playwrightError).toBe('Error: self signed certificate in certificate chain');
     expect(result.playwrightError).not.toContain('╔');
     expect(result.playwrightError).not.toContain('npx playwright install');
+  });
+});
+
+// #672: component flags must select components. `warmup --embeddings` used to
+// download the browser engine first (~500MB on disk), and `warmup --help`
+// started that download instead of printing usage.
+describe('warmup component selection (#672)', () => {
+  const chromiumInstalls = () =>
+    // Exact 'install': on Linux an `install-deps chromium` call runs too.
+    vi.mocked(runCommand).mock.calls.filter((c) => argsOf(c).includes('install') && includesArg(c, 'chromium'));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(runCommand).mockResolvedValue(ok);
+    vi.mocked(getConfig).mockReturnValue(coreConfig as never);
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    rerankMock.mockResolvedValue([{ id: '0', score: 0.5 }]);
+  });
+
+  it.each([[['--embeddings']], [['--reranker']], [['--reranker', '--embeddings']]])(
+    'WHY: %j alone does not install the browser engine',
+    async (flags) => {
+      const result = await runWarmup(flags);
+      expect(chromiumInstalls()).toHaveLength(0);
+      expect(result.playwright).toBe('skipped');
+    },
+  );
+
+  it('--embeddings still installs the embeddings model', async () => {
+    const result = await runWarmup(['--embeddings']);
+    expect(result.embeddings).toBe('ok');
+  });
+
+  it.each([[[] as string[]], [['--browser']], [['--all']], [['--browser', '--embeddings']]])(
+    '%j installs the browser engine',
+    async (flags) => {
+      const result = await runWarmup(flags);
+      expect(chromiumInstalls()).toHaveLength(1);
+      expect(result.playwright).toBe('ok');
+    },
+  );
+
+  it('output-only flags keep the browser default', async () => {
+    const result = await runWarmup(['--json', '--plain', '--force']);
+    expect(chromiumInstalls()).toHaveLength(1);
+    expect(result.playwright).toBe('ok');
+  });
+});
+
+describe('warmup argument checks (#672)', () => {
+  it.each([[['--help']], [['-h']], [['--embeddings', '--help']]])('%j is a help request', (args) => {
+    expect(isWarmupHelp(args)).toBe(true);
+  });
+
+  it('a normal run is not a help request', () => {
+    expect(isWarmupHelp(['--browser'])).toBe(false);
+  });
+
+  it('usage lists every component flag', () => {
+    for (const f of ['--all', '--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--no-searxng', '--force', '--json']) {
+      expect(WARMUP_USAGE).toContain(f);
+    }
+  });
+
+  it('accepts every known flag', () => {
+    expect(warmupArgsError(['--all', '--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--no-searxng', '--force', '--json', '--plain', '--verify', '--skip-verify'])).toBeNull();
+  });
+
+  it('WHY: rejects an unknown flag instead of silently running the default install', () => {
+    expect(warmupArgsError(['--embedding'])).toMatch(/--embedding/);
+    expect(warmupArgsError(['browser'])).toMatch(/browser/);
   });
 });

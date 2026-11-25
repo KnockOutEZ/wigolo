@@ -96,6 +96,24 @@ export async function runVerify(
 async function runRerankerProbe(
   reporter: WarmupReporter,
 ): Promise<{ state: 'ok' | 'missing'; error?: string }> {
+  const mode = getConfig().reranker;
+  if (mode === 'none' || mode === 'custom') {
+    reporter.note('Reranker: disabled');
+    return { state: 'ok' };
+  }
+  if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', RERANKER_LABEL);
+    try {
+      const provider = await getRerankProvider();
+      reporter.success('reranker', `remote configured (${provider.modelId})`);
+      return { state: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('reranker', message);
+      return { state: 'missing', error: message };
+    }
+  }
   reporter.start('reranker', RERANKER_LABEL);
   try {
     const provider = await getRerankProvider();

@@ -96,6 +96,16 @@ export interface FetchOutput {
   cached_at?: string;
   stale?: boolean;
   js_required?: boolean;
+  /**
+   * Non-fatal advisory from the router about how this response was produced.
+   * Today the only producer is the lazy browser-acquisition budget: when a
+   * browser-tier escalation cannot acquire the engine in time, the router
+   * returns the best lower-tier content it already had and attaches a note
+   * saying the engine is still installing. Without this field the caller
+   * receives a plain 200 and cannot tell a placeholder body from a real page.
+   * Absent on responses that have nothing to report.
+   */
+  warning?: string;
   error?: string;
   action_results?: ActionResult[];
   changed?: boolean;
@@ -163,6 +173,18 @@ export interface FetchOutput {
    * Absent when no challenge was involved.
    */
   solve_method?: SolveMethod | null;
+  /**
+   * Set when the returned body is a block page rather than the real content:
+   * a bot challenge, a "you've been blocked" banner, or an "enable JavaScript"
+   * stub served with an error status. The content is still returned — this
+   * only tells the caller not to trust it. Absent on normal pages.
+   */
+  blocked?: BlockedInfo;
+}
+
+/** Why a fetched body was flagged as a block page — see FetchOutput.blocked. */
+export interface BlockedInfo {
+  reason: 'challenge' | 'block_page' | 'js_required';
 }
 
 /**
@@ -220,6 +242,12 @@ export interface RawFetchResult {
   html: string;
   contentType: string;
   statusCode: number;
+  /**
+   * True when `statusCode` is a placeholder because the tier never observed the
+   * origin's status (the stealth escalation and the direct CDP rung report 200).
+   * A 2xx here does not mean the origin answered OK.
+   */
+  statusUnknown?: boolean;
   /**
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch

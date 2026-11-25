@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - target: node22-macos-arm64
-            runner: macos-14
+            runner: macos-15
             artifact: wigolo-macos-arm64
             # VERIFIED locally (macOS arm64).
             assets: >-
@@ -44,7 +44,7 @@ jobs:
               node_modules/@img/sharp-darwin-arm64/**/*
               node_modules/@img/sharp-libvips-darwin-arm64/**/*
           - target: node22-macos-x64
-            runner: macos-13
+            runner: macos-15-intel
             artifact: wigolo-macos-x64
             # UNVERIFIED-until-CI.
             assets: >-

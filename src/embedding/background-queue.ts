@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
+import { explainNativeLoadError } from '../util/native-abi.js';
 import {
   getEmbedProvider,
   type EmbedProvider,
@@ -62,7 +63,11 @@ export class BackgroundIndexQueue {
 
   constructor(opts: BackgroundIndexQueueOptions) {
     mkdirSync(dirname(opts.dbPath), { recursive: true });
-    this.db = new Database(opts.dbPath);
+    try {
+      this.db = new Database(opts.dbPath);
+    } catch (err) {
+      throw explainNativeLoadError(err);
+    }
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS index_jobs (

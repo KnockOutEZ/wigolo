@@ -26,7 +26,11 @@ export function buildCitationGraph(
 ): CitationGraphEntry[] {
   if (!synthesisText || synthesisText.trim().length === 0) return [];
 
-  const sentenceMatches = synthesisText.match(/[^.!?]+[.!?]+(?:\s|$)/g);
+  // Do not treat '.' flanked by digits (e.g. $62.3) as a sentence boundary.
+  // Abbreviations ("e.g.", "U.S.") remain a known limitation of this splitter.
+  const sentenceMatches = synthesisText.match(
+    /(?:[^.!?]|(?<=\d)\.(?=\d))+[.!?]+(?:\s|$)/g,
+  );
   const sentences = sentenceMatches && sentenceMatches.length > 0
     ? sentenceMatches.map((s) => s.trim())
     : [synthesisText.trim()];

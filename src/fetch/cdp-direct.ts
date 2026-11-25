@@ -1112,6 +1112,7 @@ export async function cdpDirectFetch(
       html,
       contentType: 'text/html',
       statusCode: 200,
+      statusUnknown: true,
       method: 'browser',
       headers: {},
     };

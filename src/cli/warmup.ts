@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { getConfig } from '../config.js';
+import { getConfig, type Config } from '../config.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { probeBrowser, type BrowserName } from '../fetch/browser-probe.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
@@ -203,7 +203,7 @@ export async function installBrowser(
 }
 
 export interface WarmupResult {
-  playwright: 'ok' | 'failed';
+  playwright: 'ok' | 'failed' | 'skipped';
   playwrightError?: string;
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python' | 'no_venv' | 'skipped';
   searxngError?: string;
@@ -301,6 +301,24 @@ async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupR
 async function installReranker(
   reporter: WarmupReporter,
 ): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  const mode = getConfig().reranker;
+  if (mode === 'none' || mode === 'custom') {
+    reporter.note('Reranker: skipped (disabled)');
+    return {};
+  }
+  if (mode === 'remote') {
+    // The TUI reporter drops success/fail for a step that was never started.
+    reporter.start('reranker', 'Checking remote reranker');
+    try {
+      const provider = await getRerankProvider();
+      reporter.success('reranker', `remote configured (${provider.modelId}); no local model warmup needed`);
+      return { reranker: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('reranker', message);
+      return { reranker: 'failed', rerankerError: message };
+    }
+  }
   reporter.start('reranker', 'Downloading ML reranker model (cross-encoder)');
   try {
     const provider = await getRerankProvider();
@@ -348,6 +366,23 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
 }
 
 export async function installEmbeddings(reporter: WarmupReporter = noopReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
+  const config = getConfig();
+  if (config.embeddingApiBase) {
+    reporter.start('embeddings', 'Checking remote embeddings endpoint');
+    try {
+      const { RemoteEmbedProvider } = await import('../embedding/remote-embed-provider.js');
+      const provider = new RemoteEmbedProvider(config);
+      // The remote model needs no download. One probe proves the URL and the
+      // model name, and it verifies the 384-dimension contract.
+      await provider.warmup();
+      reporter.success('embeddings', `remote model ${provider.modelId} ready`);
+      return { embeddings: 'ok' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reporter.fail('embeddings', message);
+      return { embeddings: 'failed', embeddingsError: message };
+    }
+  }
   reporter.start('embeddings', 'Downloading semantic embeddings model (fastembed)');
   try {
     const { FastembedEmbedProvider } = await import('../embedding/fastembed-provider.js');
@@ -367,12 +402,27 @@ export async function installEmbeddings(reporter: WarmupReporter = noopReporter)
   }
 }
 
-async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+async function runSearxngPhase(
+  config: Pick<Config, 'dataDir' | 'searxngUrl' | 'searxngMode'>,
+  reporter: WarmupReporter,
+): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+  const { dataDir } = config;
   const state = getBootstrapState(dataDir);
   if (state?.status === 'ready') {
     reporter.start('searxng', 'Checking search engine (searxng)');
     reporter.success('searxng', 'already set up');
     return { searxng: 'ready' };
+  }
+
+  // An external instance or docker mode needs no local Python install, so the
+  // Python gate (and the native bootstrap behind it) does not apply.
+  if (config.searxngUrl || config.searxngMode === 'docker') {
+    reporter.start('searxng', 'Checking search engine (searxng)');
+    reporter.success(
+      'searxng',
+      config.searxngUrl ? 'using external instance — nothing to install' : 'docker mode — started on demand',
+    );
+    return { searxng: 'skipped' };
   }
 
   if (!checkPythonAvailable()) {
@@ -415,6 +465,45 @@ async function runVerify(dataDir: string, reporter: WarmupReporter): Promise<voi
   reporter.note('  claude mcp add wigolo --scope user -- npx wigolo');
 }
 
+export const WARMUP_USAGE = `Usage: wigolo warmup [components] [options]
+
+Pre-downloads components so the first tool call doesn't. With no component
+flag, installs the browser engine only.
+
+Components:
+  --browser        Browser engine (Chromium)
+  --reranker       ML reranker model
+  --embeddings     Embedding model
+  --firefox        Firefox browser engine
+  --webkit         WebKit browser engine
+  --searxng        Search engine sidecar
+  --all            Every component (the sidecar only when it is configured)
+
+Options:
+  --no-searxng     Never touch the search engine sidecar
+  --force          Reset the search engine sidecar's state first
+  --json           Print the result as JSON on stdout
+  --plain          Plain progress output
+  --verify         Run the post-install verification
+  -h, --help       Print this help
+`;
+
+const COMPONENT_FLAGS = ['--browser', '--reranker', '--embeddings', '--firefox', '--webkit', '--searxng', '--all'];
+const KNOWN_FLAGS = new Set([
+  ...COMPONENT_FLAGS,
+  '--no-searxng', '--force', '--json', '--plain', '--verify', '--skip-verify', '--help', '-h',
+]);
+
+export function isWarmupHelp(args: string[]): boolean {
+  return args.includes('--help') || args.includes('-h');
+}
+
+/** An error message for the first unrecognised argument, or null when all are known. */
+export function warmupArgsError(args: string[]): string | null {
+  const unknown = args.find((a) => !KNOWN_FLAGS.has(a));
+  return unknown === undefined ? null : `unknown warmup option '${unknown}' (see \`wigolo warmup --help\`)`;
+}
+
 export async function runWarmup(
   flags: string[] = [],
   reporter?: WarmupReporter,
@@ -434,7 +523,19 @@ export async function runWarmup(
 
   reporterImpl.note('Starting wigolo warmup');
 
-  const pwResult = await installPlaywright(reporterImpl);
+  // The browser engine is the default component; naming other components
+  // without --browser installs only those (#672). --no-searxng cancels
+  // --searxng, so that pair alone still means the default.
+  const anyComponent = COMPONENT_FLAGS.some(
+    (f) => flagSet.has(f) && !(f === '--searxng' && flagSet.has('--no-searxng')),
+  );
+  const wantBrowser = !anyComponent || flagSet.has('--browser') || flagSet.has('--all');
+  let pwResult: Pick<WarmupResult, 'playwright' | 'playwrightError'>;
+  if (wantBrowser) {
+    pwResult = await installPlaywright(reporterImpl);
+  } else {
+    pwResult = { playwright: 'skipped' };
+  }
 
   // D1: the search-engine sidecar is opt-in. The searxng phase runs only when
   // explicitly requested (`--searxng`), or with `--all` when the sidecar is
@@ -448,7 +549,7 @@ export async function runWarmup(
     searxngResult = { searxng: 'skipped' };
     reporterImpl.note('Search engine sidecar: skipped — using multi-engine core backend');
   } else {
-    searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
+    searxngResult = await runSearxngPhase(config, reporterImpl);
   }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};

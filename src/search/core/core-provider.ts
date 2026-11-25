@@ -203,6 +203,7 @@ export class CoreSearchProvider implements SearchProvider {
       exact_match: input.exact_match,
       search_depth: depth,
       reranker: getConfig().reranker,
+      search_engines: input.search_engines,
     });
 
     let items: SearchResultItem[] = [];
@@ -395,7 +396,7 @@ export class CoreSearchProvider implements SearchProvider {
             country: input.country,
             timeRange: input.time_range,
             exactMatch: input.exact_match,
-            searchEngines: input.search_engines,
+            engineFilter: input.search_engines,
           }),
         ),
       );
@@ -453,7 +454,7 @@ export class CoreSearchProvider implements SearchProvider {
             country: input.country,
             timeRange: input.time_range,
             exactMatch: input.exact_match,
-            searchEngines: input.search_engines,
+            engineFilter: input.search_engines,
           });
           // RRF-merge the retry results on top of the initial dispatch so
           // we keep ranking signal from both passes.
@@ -575,12 +576,12 @@ export class CoreSearchProvider implements SearchProvider {
 
       // Cross-encoder rerank-fold: the LAST reorder, after
       // all cross-query merges + context-rank. Balanced/deep only; images skip
-      // (snippet rerank on image results is noise); gated on the same onnx
-      // reranker config the evidence path uses. The helper is failure-safe.
+      // (snippet rerank on image results is noise); gated on the configured
+      // reranker backend. The helper is failure-safe.
       if (
         (depth === 'balanced' || depth === 'deep') &&
         !isImagesCategory &&
-        getConfig().reranker === 'onnx'
+        (getConfig().reranker === 'onnx' || getConfig().reranker === 'remote')
       ) {
         processed = await foldRerankIntoOrdering(processed, {
           queries,

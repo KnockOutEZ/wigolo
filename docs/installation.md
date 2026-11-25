@@ -1,6 +1,6 @@
 # Installation
 
-wigolo runs anywhere Node.js 20+ runs. npm is the primary channel; Docker images are published for container setups. A few more channels (single-file binary, Homebrew, hosted install script) are packaged in the repo and publish with an upcoming release — they're listed at the bottom so you don't chase an artifact that isn't live yet.
+wigolo runs anywhere Node.js 22+ runs. npm is the primary channel; Docker images are published for container setups, and single-file binaries (no Node.js needed) are attached to each GitHub Release. Homebrew and a hosted install script are packaged in the repo and publish with an upcoming release — they're listed at the bottom so you don't chase an artifact that isn't live yet.
 
 ## npm / npx (primary)
 
@@ -18,6 +18,42 @@ wigolo init
 ```
 
 `init` performs a complete setup by default (browser engine + on-device models + verification, with a per-component report). Pass `--no-warmup` to defer downloads to first use. See [getting started](./getting-started.md) for the init walkthrough.
+
+### Linux x64: `Failed to download the binaries: 404`
+
+On Linux x64 the on-device model runtime tries to download optional GPU files during install. Their download location currently returns 404, which stops `npx` and `npm install -g`. wigolo runs its models on the CPU and does not need those files. Skip the download once per machine, then install as above:
+
+```bash
+echo "onnxruntime-node-install-cuda=skip" >> ~/.npmrc
+```
+
+To skip it for a single command instead, prefix it with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`, for example `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g wigolo`.
+
+## Single-file binary
+
+Each [GitHub Release](https://github.com/KnockOutEZ/wigolo/releases/latest) attaches a self-contained executable per platform — no Node.js install required:
+
+| Platform | Asset |
+|----------|-------|
+| macOS (Apple silicon) | `wigolo-macos-arm64` |
+| macOS (Intel) | `wigolo-macos-x64` |
+| Linux x64 | `wigolo-linux-x64` |
+| Linux arm64 | `wigolo-linux-arm64` |
+| Windows x64 | `wigolo-win-x64.exe` |
+
+Every asset has a matching `.sha256` file, and `SHA256SUMS.txt` lists them all. Download, verify, and run (macOS Apple silicon shown):
+
+```bash
+curl -LO https://github.com/KnockOutEZ/wigolo/releases/latest/download/wigolo-macos-arm64
+curl -LO https://github.com/KnockOutEZ/wigolo/releases/latest/download/wigolo-macos-arm64.sha256
+shasum -a 256 -c wigolo-macos-arm64.sha256
+chmod +x wigolo-macos-arm64
+./wigolo-macos-arm64 init
+```
+
+On Linux use `sha256sum -c` instead of `shasum -a 256 -c`. The binary takes the same subcommands as the npm package; with no arguments it starts the MCP server on stdio, so point your MCP client at the binary's path.
+
+The binaries are not yet code-signed. If you download one in a browser, macOS may block it on first run (allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine wigolo-macos-arm64`), and Windows SmartScreen may warn before running it.
 
 ## Docker
 
@@ -43,7 +79,13 @@ docker compose -f packaging/compose.serve.yml up
 
 The compose file binds `0.0.0.0` inside the container, which is a non-loopback bind: the daemon **fails closed** and refuses to start until you set `WIGOLO_API_TOKEN` (uncomment the line in the file) or explicitly opt into open access. Details in [self-hosting](./self-hosting.md).
 
-The repo's `Dockerfile` also has a `full` build target with the browser engine preinstalled at build time — useful for `--rm`/no-volume runs where first-use downloads would repeat:
+The published browser-preloaded image is `ghcr.io/knockoutez/wigolo:latest-full`; versioned releases use the same `-full` suffix (for example, `0.3.3-full`). It is useful for `--rm`/no-volume runs where first-use browser downloads would repeat:
+
+```bash
+docker run -i --rm ghcr.io/knockoutez/wigolo:latest-full
+```
+
+For local builds, the repo's `Dockerfile` exposes the corresponding `full` build target:
 
 ```bash
 docker build --target full -t wigolo:full .
@@ -78,6 +120,8 @@ wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.j
 ```bash
 npx wigolo init --agents=claude-code,cursor
 ```
+
+If your agent prompts for permission on every wigolo tool call after wiring, see [troubleshooting](./troubleshooting.md#your-agent-keeps-asking-permission).
 
 For OpenCode, wigolo writes the global `~/.config/opencode/opencode.json` entry in OpenCode's local MCP format:
 
@@ -130,6 +174,5 @@ These channels exist as source in [`packaging/`](../packaging/) but their publis
 
 - **Install script** — `packaging/install.sh`, a POSIX bootstrap that installs under `~/.wigolo` with a pinned, checksum-verified runtime (no root, no system packages).
 - **Homebrew** — a formula at `packaging/homebrew/wigolo.rb`; the public tap is not yet published.
-- **Single-file binary** — bundling scripts at `packaging/binary/`; no binary assets are attached to releases yet.
 
 [← Docs index](./README.md) · [Next: Configuration](./configuration.md)

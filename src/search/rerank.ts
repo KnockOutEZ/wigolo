@@ -18,7 +18,7 @@ export async function rerankResults(
   const config = getConfig();
   if (results.length === 0) return results;
 
-  if (config.reranker === 'onnx') {
+  if (config.reranker === 'onnx' || config.reranker === 'remote') {
     try {
       const provider = await getRerankProvider();
       const candidates = results.map((r, i) => ({

@@ -185,3 +185,63 @@ describe('probeHealth — sidecar NOT configured (default core backend, D1)', ()
     expect(report.searxng).toBe('not_configured');
   });
 });
+
+describe('probeHealth — browser engine not installed (#673)', () => {
+  it('reports browsers=not_installed when the pool exists but no engine is on disk', () => {
+    // WHY: the pool object is created at startup whether or not an engine is
+    // installed, so pool presence alone reported "ready" on a broken install.
+    const report = probeHealth(makeInput({
+      browserPool: {} as any,
+      browserInstalled: false,
+    }));
+    expect(report.browsers).toBe('not_installed');
+  });
+
+  it('reports browsers=ready when the pool exists and the engine is installed', () => {
+    const report = probeHealth(makeInput({
+      browserPool: {} as any,
+      browserInstalled: true,
+    }));
+    expect(report.browsers).toBe('ready');
+  });
+
+  it('keeps the pool-presence semantics when no on-disk probe is supplied', () => {
+    // Callers that cannot probe must not regress to a false "not installed".
+    const report = probeHealth(makeInput({ browserPool: {} as any }));
+    expect(report.browsers).toBe('ready');
+  });
+
+  it('reports not_initialized, not not_installed, when the pool is missing', () => {
+    // A missing pool is a different failure from a missing engine.
+    const report = probeHealth(makeInput({
+      browserPool: null,
+      browserInstalled: false,
+    }));
+    expect(report.browsers).toBe('not_initialized');
+  });
+
+  it('a core daemon without an installed engine stays healthy but reports not_installed', () => {
+    // WHY: the engine installs lazily on first use, so a fresh install is a
+    // supported state. Only the `browsers` field changes; `wigolo health` must
+    // still exit 0 for a default core daemon (D1).
+    const report = probeHealth(makeInput({
+      searxngConfigured: false,
+      browserPool: {} as any,
+      browserInstalled: false,
+    }));
+    expect(report.status).toBe('healthy');
+    expect(report.browsers).toBe('not_installed');
+  });
+
+  it('a sidecar-backed daemon stays healthy when the sidecar is active and no engine is installed', () => {
+    const report = probeHealth(makeInput({
+      searxngConfigured: true,
+      backendStatus: { isActive: true } as any,
+      browserPool: {} as any,
+      browserInstalled: false,
+    }));
+    expect(report.status).toBe('healthy');
+    expect(report.searxng).toBe('active');
+    expect(report.browsers).toBe('not_installed');
+  });
+});

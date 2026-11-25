@@ -101,6 +101,13 @@ describe('readPersistedConfig — current version file', () => {
 // ---------------------------------------------------------------------------
 
 describe('writePersistedConfig', () => {
+  it('never persists a remote rerank token', () => {
+    const path = join(dir, 'config.json');
+    writePersistedConfig(path, { settings: { rerankApiBase: 'http://localhost:8082/v1', rerankApiKey: 'secret' } });
+    const raw = JSON.parse(readFileSync(path, 'utf-8'));
+    expect(raw.settings.rerankApiBase).toBe('http://localhost:8082/v1');
+    expect(raw.settings.rerankApiKey).toBeUndefined();
+  });
   it('creates the file with versioned envelope', () => {
     const path = join(dir, 'config.json');
     writePersistedConfig(path, { settings: { defaultBrowser: 'chromium' } });

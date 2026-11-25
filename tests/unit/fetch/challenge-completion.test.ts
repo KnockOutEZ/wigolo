@@ -108,6 +108,35 @@ describe('pollUntilCleared', () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
+  it('a pre-aborted signal rejects with its reason and leaves no unhandled rejection', async () => {
+    // WHY: building the abort rejection before the pre-aborted check left an
+    // already-rejected promise nobody awaited — an unhandled rejection that
+    // crashed the daemon (#630).
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const controller = new AbortController();
+      controller.abort(new DOMException('pre-aborted', 'AbortError'));
+      const readContent = vi.fn(() => Promise.resolve(CHALLENGE));
+      const err = await pollUntilCleared(PAGE, {
+        deadlineMs: 5000,
+        intervalMs: 10,
+        isStillChallenge: () => true,
+        readContent,
+        readCookies: () => Promise.resolve([]),
+        signal: controller.signal,
+      }).catch((e) => e);
+      expect((err as Error).name).toBe('AbortError');
+      expect(readContent).not.toHaveBeenCalled();
+      // Let any stray rejection reach the process-level handler.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('a tiny deadline stops the loop immediately with no hang', async () => {
     // WHY: min() may cap the deadline to a near-zero remaining budget; the loop
     // must terminate, not spin.

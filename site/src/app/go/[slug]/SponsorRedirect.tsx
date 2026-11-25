@@ -2,13 +2,8 @@
 
 import { useEffect } from "react";
 import { useSearchParams } from "next/navigation";
-import { countHit } from "@/lib/goatcounter";
-import {
-  type Sponsor,
-  normalizePlacement,
-  sponsorCountPath,
-  sponsorTargetUrl,
-} from "@/lib/sponsors";
+import { track } from "@/lib/analytics";
+import { type Sponsor, normalizePlacement, sponsorTargetUrl } from "@/lib/sponsors";
 import SponsorCard from "./SponsorCard";
 
 export default function SponsorRedirect({ sponsor }: { sponsor: Sponsor }) {
@@ -21,7 +16,7 @@ export default function SponsorRedirect({ sponsor }: { sponsor: Sponsor }) {
 
   useEffect(() => {
     let cancelled = false;
-    countHit(sponsorCountPath(sponsor.slug, placement), sponsor.name).then(() => {
+    track("sponsor_click", { sponsor: sponsor.slug, placement }).then(() => {
       // `replace` keeps the hop out of history, so Back returns the visitor to
       // wherever they clicked from rather than bouncing them forward again.
       if (!cancelled) window.location.replace(target);
@@ -29,7 +24,7 @@ export default function SponsorRedirect({ sponsor }: { sponsor: Sponsor }) {
     return () => {
       cancelled = true;
     };
-  }, [sponsor.slug, sponsor.name, placement, target]);
+  }, [sponsor.slug, placement, target]);
 
   return <SponsorCard sponsor={sponsor} target={target} />;
 }

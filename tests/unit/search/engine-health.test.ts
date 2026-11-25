@@ -106,12 +106,13 @@ describe('getEngineHealthSummary', () => {
     expect(braveImg!.vertical).toBe('images');
   });
 
-  it('flags github-code as needs-key when WIGOLO_GITHUB_TOKEN is missing (engine still in pool)', () => {
+  it('flags github-code as disabled when WIGOLO_GITHUB_TOKEN is missing (gated out of the pool)', () => {
     const summary = getEngineHealthSummary();
-    const gh = summary.find((e) => e.name === 'github-code');
-    expect(gh).toBeDefined();
-    expect(gh!.status).toBe('needs-key');
-    expect(gh!.hint).toMatch(/WIGOLO_GITHUB_TOKEN/);
+    const gh = summary.filter((e) => e.name === 'github-code');
+    expect(gh).toHaveLength(1);
+    expect(gh[0].status).toBe('disabled');
+    expect(gh[0].vertical).toBe('code');
+    expect(gh[0].hint).toMatch(/WIGOLO_GITHUB_TOKEN/);
   });
 
   it('marks brave as ok when BRAVE_API_KEY is set', () => {
@@ -129,6 +130,8 @@ describe('getEngineHealthSummary', () => {
 
   it('marks github-code as ok when WIGOLO_GITHUB_TOKEN is set', () => {
     process.env.WIGOLO_GITHUB_TOKEN = 'test-token';
+    resetConfig();
+    _resetCodeEnginesForTest();
     const summary = getEngineHealthSummary();
     const gh = summary.find((e) => e.name === 'github-code');
     expect(gh?.status).toBe('ok');

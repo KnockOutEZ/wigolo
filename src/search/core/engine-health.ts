@@ -55,7 +55,7 @@ interface KeyRequirement {
 const KEY_REQUIRED: Record<string, KeyRequirement> = {
   brave: { envVar: 'BRAVE_API_KEY', registeredWithoutKey: false },
   'brave-image': { envVar: 'BRAVE_API_KEY', registeredWithoutKey: false },
-  'github-code': { envVar: 'WIGOLO_GITHUB_TOKEN', registeredWithoutKey: true },
+  'github-code': { envVar: 'WIGOLO_GITHUB_TOKEN', registeredWithoutKey: false },
 };
 
 // Known per-engine limitations that
@@ -81,6 +81,7 @@ function isKeyAvailable(engineName: string): boolean {
   if (!req) return true;
   // Brave uses BRAVE_API_KEY which the config layer surfaces as braveApiKey.
   if (req.envVar === 'BRAVE_API_KEY') return !!getConfig().braveApiKey;
+  if (req.envVar === 'WIGOLO_GITHUB_TOKEN') return !!getConfig().githubToken;
   // Generic env-var check for everything else.
   return typeof process.env[req.envVar] === 'string' && process.env[req.envVar]!.length > 0;
 }
@@ -167,7 +168,7 @@ export function getEngineHealthSummary(): EngineHealthEntry[] {
     if (!isKeyAvailable(name)) {
       out.push({
         name,
-        vertical: name === 'brave-image' ? 'images' : 'general',
+        vertical: name === 'brave-image' ? 'images' : name === 'github-code' ? 'code' : 'general',
         status: 'disabled',
         hint: hintFor(name),
       });

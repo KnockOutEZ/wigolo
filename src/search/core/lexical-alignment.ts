@@ -6,6 +6,8 @@
 // (typical brand-collision pattern: query about a technology, result is
 // a retail homepage with no technical tokens).
 
+import { tokenizeRankingText } from './text-tokenizer.js';
+
 const STOPWORDS: ReadonlySet<string> = new Set([
   'the', 'a', 'an',
   'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
@@ -22,11 +24,7 @@ const STOPWORDS: ReadonlySet<string> = new Set([
 ]);
 
 function tokenize(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+  return tokenizeRankingText(s).filter((t) => t.length >= 2 && !STOPWORDS.has(t));
 }
 
 /**
