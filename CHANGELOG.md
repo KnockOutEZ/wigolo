@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
+
 ## v0.3.3 — 2026-11-24
 
 Single-file binaries on the release again, clean links for `crawl` with `bfs`, and an honest browser status in `/health`.
