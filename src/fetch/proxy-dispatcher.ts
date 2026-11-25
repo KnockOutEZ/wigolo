@@ -3,11 +3,11 @@ import {
   getGlobalDispatcher,
   setGlobalDispatcher,
   type Dispatcher,
-} from "undici";
-import { getConfig } from "../config.js";
-import { createLogger } from "../logger.js";
+} from 'undici';
+import { getConfig } from '../config.js';
+import { createLogger } from '../logger.js';
 
-const log = createLogger("fetch");
+const log = createLogger('fetch');
 
 /**
  * The proxy settings the installed dispatcher was built from. `shouldProxyHop`
@@ -26,9 +26,9 @@ interface NoProxyEntry {
 }
 
 /** Loopback stays direct under an explicit proxy, so local daemon checks work. */
-const LOOPBACK_NO_PROXY = "localhost,127.0.0.1,[::1]";
+const LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,[::1]';
 
-const DEFAULT_PORTS: Record<string, number> = { "http:": 80, "https:": 443 };
+const DEFAULT_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443 };
 
 let installed: Dispatcher | null = null;
 let previous: Dispatcher | null = null;
@@ -53,7 +53,7 @@ function resolveProxySettings(): { settings: ProxySettings; source: string } | n
   if (config.useProxy && config.proxyUrl) {
     return {
       settings: { http: config.proxyUrl, https: config.proxyUrl, noProxy: LOOPBACK_NO_PROXY },
-      source: "PROXY_URL",
+      source: 'PROXY_URL',
     };
   }
 
@@ -61,8 +61,8 @@ function resolveProxySettings(): { settings: ProxySettings; source: string } | n
   const https = nonEmpty(process.env.https_proxy ?? process.env.HTTPS_PROXY);
   if (http || https) {
     return {
-      settings: { http, https, noProxy: process.env.no_proxy ?? process.env.NO_PROXY ?? "" },
-      source: "HTTP(S)_PROXY",
+      settings: { http, https, noProxy: process.env.no_proxy ?? process.env.NO_PROXY ?? '' },
+      source: 'HTTP(S)_PROXY',
     };
   }
 
@@ -70,7 +70,7 @@ function resolveProxySettings(): { settings: ProxySettings; source: string } | n
   if (all) {
     return {
       settings: { http: all, https: all, noProxy: LOOPBACK_NO_PROXY },
-      source: "ALL_PROXY",
+      source: 'ALL_PROXY',
     };
   }
   return null;
@@ -83,7 +83,7 @@ function parseNoProxy(value: string): NoProxyEntry[] {
     if (!entry) continue;
     const parsed = entry.match(/^(.+):(\d+)$/);
     entries.push({
-      hostname: (parsed ? parsed[1] : entry).replace(/^\*?\./, "").toLowerCase(),
+      hostname: (parsed ? parsed[1] : entry).replace(/^\*?\./, '').toLowerCase(),
       port: parsed ? Number.parseInt(parsed[2], 10) : 0,
     });
   }
@@ -111,12 +111,12 @@ export function installProxyDispatcher(): Dispatcher | null {
   try {
     // Explicit values (empty string = none) stop undici from re-reading the environment.
     dispatcher = new EnvHttpProxyAgent({
-      httpProxy: resolved.settings.http ?? "",
-      httpsProxy: resolved.settings.https ?? "",
+      httpProxy: resolved.settings.http ?? '',
+      httpsProxy: resolved.settings.https ?? '',
       noProxy: resolved.settings.noProxy,
     });
   } catch (err) {
-    log.warn("ignoring an invalid proxy setting; outbound fetch goes direct", {
+    log.warn('ignoring an invalid proxy setting; outbound fetch goes direct', {
       source: resolved.source,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -128,7 +128,7 @@ export function installProxyDispatcher(): Dispatcher | null {
   installed = dispatcher;
   settings = resolved.settings;
   noProxyEntries = parseNoProxy(resolved.settings.noProxy);
-  log.info("installed an outbound proxy dispatcher", { source: resolved.source });
+  log.info('installed an outbound proxy dispatcher', { source: resolved.source });
   return dispatcher;
 }
 
@@ -149,17 +149,17 @@ export function shouldProxyHop(target: string | URL): boolean {
 
   let url: URL;
   try {
-    url = typeof target === "string" ? new URL(target) : target;
+    url = typeof target === 'string' ? new URL(target) : target;
   } catch {
     return true;
   }
 
   // Same host and port derivation as undici: IPv6 brackets are kept.
-  const hostname = url.host.replace(/:\d*$/, "").toLowerCase();
+  const hostname = url.host.replace(/:\d*$/, '').toLowerCase();
   const port = Number.parseInt(url.port, 10) || DEFAULT_PORTS[url.protocol] || 0;
 
   if (noProxyEntries.length > 0) {
-    if (settings.noProxy === "*") return false;
+    if (settings.noProxy === '*') return false;
     for (const entry of noProxyEntries) {
       if (entry.port && entry.port !== port) continue;
       if (hostname === entry.hostname) return false;
@@ -168,7 +168,7 @@ export function shouldProxyHop(target: string | URL): boolean {
   }
 
   // undici sends https through the https proxy, else the http proxy.
-  if (url.protocol === "https:") return (settings.https ?? settings.http) !== null;
+  if (url.protocol === 'https:') return (settings.https ?? settings.http) !== null;
   return settings.http !== null;
 }
 

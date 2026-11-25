@@ -1,15 +1,15 @@
-import { createServer, type Server } from "node:http";
-import { connect } from "node:net";
-import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resetConfig } from "../../../src/config.js";
+import { createServer, type Server } from 'node:http';
+import { connect } from 'node:net';
+import type { AddressInfo } from 'node:net';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resetConfig } from '../../../src/config.js';
 import {
   hasProxyDispatcher,
   installProxyDispatcher,
   resetProxyDispatcher,
   shouldProxyHop,
-} from "../../../src/fetch/proxy-dispatcher.js";
-import { httpFetch } from "../../../src/fetch/http-client.js";
+} from '../../../src/fetch/proxy-dispatcher.js';
+import { httpFetch } from '../../../src/fetch/http-client.js';
 
 // The search engines and the HTTP client call the global `fetch` without a dispatcher, so behind
 // a proxy they went direct: every non-Bing engine timed out and page fetches returned empty
@@ -20,18 +20,18 @@ import { httpFetch } from "../../../src/fetch/http-client.js";
 // targets) and forwards every tunnel to a local origin server, so no request leaves the machine.
 
 const UNRESOLVABLE =
-  "http://does-not-resolve.wigolo-test.invalid/through-proxy";
+  'http://does-not-resolve.wigolo-test.invalid/through-proxy';
 const PROXY_ENV = [
-  "USE_PROXY",
-  "PROXY_URL",
-  "HTTPS_PROXY",
-  "https_proxy",
-  "HTTP_PROXY",
-  "http_proxy",
-  "ALL_PROXY",
-  "all_proxy",
-  "NO_PROXY",
-  "no_proxy",
+  'USE_PROXY',
+  'PROXY_URL',
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
 ];
 
 let origin: Server;
@@ -44,7 +44,7 @@ function clearProxyEnv(): void {
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () =>
+    server.listen(0, '127.0.0.1', () =>
       resolve((server.address() as AddressInfo).port),
     );
   });
@@ -59,28 +59,28 @@ beforeEach(async () => {
   clearProxyEnv();
   seen = [];
   origin = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end("origin-ok");
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('origin-ok');
   });
   const originPort = await listen(origin);
 
   proxy = createServer((req, res) => {
     // Not used by ProxyAgent (it tunnels), kept so an absolute-form request is still answered.
-    seen.push(`plain ${req.url ?? ""}`);
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end("plain-proxied");
+    seen.push(`plain ${req.url ?? ''}`);
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('plain-proxied');
   });
-  proxy.on("connect", (req, socket) => {
-    seen.push(`connect ${req.url ?? ""}`);
-    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-    const upstream = connect(originPort, "127.0.0.1");
+  proxy.on('connect', (req, socket) => {
+    seen.push(`connect ${req.url ?? ''}`);
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    const upstream = connect(originPort, '127.0.0.1');
     socket.pipe(upstream);
     upstream.pipe(socket);
-    upstream.on("error", () => socket.destroy());
+    upstream.on('error', () => socket.destroy());
   });
   const proxyPort = await listen(proxy);
 
-  process.env.USE_PROXY = "1";
+  process.env.USE_PROXY = '1';
   process.env.PROXY_URL = `http://127.0.0.1:${proxyPort}`;
   resetConfig();
 });
@@ -93,28 +93,28 @@ afterEach(async () => {
   await stop(origin);
 });
 
-describe("proxy dispatcher", () => {
-  it("routes the global fetch (search engines) through the configured proxy", async () => {
+describe('proxy dispatcher', () => {
+  it('routes the global fetch (search engines) through the configured proxy', async () => {
     expect(hasProxyDispatcher()).toBe(false);
     installProxyDispatcher();
     expect(hasProxyDispatcher()).toBe(true);
 
     const res = await fetch(UNRESOLVABLE);
 
-    expect(await res.text()).toBe("origin-ok");
-    expect(seen).toEqual(["connect does-not-resolve.wigolo-test.invalid:80"]);
+    expect(await res.text()).toBe('origin-ok');
+    expect(seen).toEqual(['connect does-not-resolve.wigolo-test.invalid:80']);
   });
 
-  it("lets httpFetch use the proxy for a host it cannot resolve locally", async () => {
+  it('lets httpFetch use the proxy for a host it cannot resolve locally', async () => {
     installProxyDispatcher();
 
     const result = await httpFetch(UNRESOLVABLE, { timeoutMs: 5000 });
 
-    expect(result.html).toBe("origin-ok");
+    expect(result.html).toBe('origin-ok');
     expect(seen).toHaveLength(1);
   });
 
-  it("reports no proxy when neither PROXY_URL nor the environment is set", () => {
+  it('reports no proxy when neither PROXY_URL nor the environment is set', () => {
     clearProxyEnv();
     resetConfig();
 
@@ -122,7 +122,7 @@ describe("proxy dispatcher", () => {
     expect(hasProxyDispatcher()).toBe(false);
   });
 
-  it("still fails closed without a proxy when the host does not resolve", async () => {
+  it('still fails closed without a proxy when the host does not resolve', async () => {
     clearProxyEnv();
     resetConfig();
     expect(installProxyDispatcher()).toBeNull();
@@ -133,9 +133,9 @@ describe("proxy dispatcher", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("falls back to the standard proxy environment variables", () => {
+  it('falls back to the standard proxy environment variables', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     delete process.env.PROXY_URL;
     delete process.env.USE_PROXY;
     resetConfig();
@@ -145,120 +145,120 @@ describe("proxy dispatcher", () => {
   });
 });
 
-describe("per-hop proxy decision", () => {
-  it("proxies https hops only when only HTTPS_PROXY is set", () => {
+describe('per-hop proxy decision', () => {
+  it('proxies https hops only when only HTTPS_PROXY is set', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://example.com/page")).toBe(true);
+    expect(shouldProxyHop('https://example.com/page')).toBe(true);
     // EnvHttpProxyAgent sends plain-http hops direct, so this one is not proxied.
-    expect(shouldProxyHop("http://example.com/page")).toBe(false);
+    expect(shouldProxyHop('http://example.com/page')).toBe(false);
   });
 
-  it("honours NO_PROXY for exact hosts, suffixes and ports", () => {
+  it('honours NO_PROXY for exact hosts, suffixes and ports', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     process.env.NO_PROXY =
-      "internal.example.com,.corp.example.com,api.example.com:8443";
+      'internal.example.com,.corp.example.com,api.example.com:8443';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://internal.example.com/x")).toBe(false);
-    expect(shouldProxyHop("https://deep.corp.example.com/x")).toBe(false);
-    expect(shouldProxyHop("https://api.example.com:8443/x")).toBe(false);
+    expect(shouldProxyHop('https://internal.example.com/x')).toBe(false);
+    expect(shouldProxyHop('https://deep.corp.example.com/x')).toBe(false);
+    expect(shouldProxyHop('https://api.example.com:8443/x')).toBe(false);
     // Port does not match the NO_PROXY entry, so this hop is proxied.
-    expect(shouldProxyHop("https://api.example.com/x")).toBe(true);
+    expect(shouldProxyHop('https://api.example.com/x')).toBe(true);
   });
 
   it('treats a "*" NO_PROXY entry as "never proxy"', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
-    process.env.NO_PROXY = "*";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+    process.env.NO_PROXY = '*';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://elsewhere.test/x")).toBe(false);
+    expect(shouldProxyHop('https://elsewhere.test/x')).toBe(false);
   });
 
-  it("treats every hop as proxied when PROXY_URL is explicit", () => {
+  it('treats every hop as proxied when PROXY_URL is explicit', () => {
     // beforeEach configured USE_PROXY + PROXY_URL.
     installProxyDispatcher();
 
-    expect(shouldProxyHop("http://example.com/x")).toBe(true);
-    expect(shouldProxyHop("https://example.com/x")).toBe(true);
+    expect(shouldProxyHop('http://example.com/x')).toBe(true);
+    expect(shouldProxyHop('https://example.com/x')).toBe(true);
   });
 
-  it("proxies https hops through HTTP_PROXY when HTTPS_PROXY is unset", () => {
+  it('proxies https hops through HTTP_PROXY when HTTPS_PROXY is unset', () => {
     clearProxyEnv();
-    process.env.HTTP_PROXY = "http://127.0.0.1:9";
+    process.env.HTTP_PROXY = 'http://127.0.0.1:9';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://example.com/page")).toBe(true);
-    expect(shouldProxyHop("http://example.com/page")).toBe(true);
+    expect(shouldProxyHop('https://example.com/page')).toBe(true);
+    expect(shouldProxyHop('http://example.com/page')).toBe(true);
   });
 
-  it("matches a *.domain NO_PROXY entry against its subdomains", () => {
+  it('matches a *.domain NO_PROXY entry against its subdomains', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
-    process.env.NO_PROXY = "*.example.com";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+    process.env.NO_PROXY = '*.example.com';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://api.example.com/x")).toBe(false);
-    expect(shouldProxyHop("https://example.org/x")).toBe(true);
+    expect(shouldProxyHop('https://api.example.com/x')).toBe(false);
+    expect(shouldProxyHop('https://example.org/x')).toBe(true);
   });
 
-  it("reads lowercase no_proxy before NO_PROXY, like undici", () => {
+  it('reads lowercase no_proxy before NO_PROXY, like undici', () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
-    process.env.NO_PROXY = "internal.example";
-    process.env.no_proxy = "*";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+    process.env.NO_PROXY = 'internal.example';
+    process.env.no_proxy = '*';
     resetConfig();
     installProxyDispatcher();
 
-    expect(shouldProxyHop("https://elsewhere.test/x")).toBe(false);
+    expect(shouldProxyHop('https://elsewhere.test/x')).toBe(false);
   });
 
-  it("lets a set but empty https_proxy win over HTTPS_PROXY, like undici", () => {
+  it('lets a set but empty https_proxy win over HTTPS_PROXY, like undici', () => {
     clearProxyEnv();
-    process.env.https_proxy = "";
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.https_proxy = '';
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     resetConfig();
 
     expect(installProxyDispatcher()).toBeNull();
-    expect(shouldProxyHop("https://example.com/x")).toBe(false);
+    expect(shouldProxyHop('https://example.com/x')).toBe(false);
   });
 
-  it("sends loopback direct when PROXY_URL is explicit", async () => {
+  it('sends loopback direct when PROXY_URL is explicit', async () => {
     // beforeEach configured USE_PROXY + PROXY_URL.
     installProxyDispatcher();
 
-    expect(shouldProxyHop("http://127.0.0.1:3333/health")).toBe(false);
-    expect(shouldProxyHop("http://localhost:3333/health")).toBe(false);
-    expect(shouldProxyHop("http://[::1]:3333/health")).toBe(false);
+    expect(shouldProxyHop('http://127.0.0.1:3333/health')).toBe(false);
+    expect(shouldProxyHop('http://localhost:3333/health')).toBe(false);
+    expect(shouldProxyHop('http://[::1]:3333/health')).toBe(false);
 
     const port = (origin.address() as AddressInfo).port;
     const res = await fetch(`http://127.0.0.1:${port}/`);
-    expect(await res.text()).toBe("origin-ok");
+    expect(await res.text()).toBe('origin-ok');
     expect(seen).toHaveLength(0);
   });
 
-  it("skips an invalid proxy setting instead of throwing", () => {
+  it('skips an invalid proxy setting instead of throwing', () => {
     clearProxyEnv();
-    process.env.USE_PROXY = "1";
-    process.env.PROXY_URL = "not a proxy url";
+    process.env.USE_PROXY = '1';
+    process.env.PROXY_URL = 'not a proxy url';
     resetConfig();
 
     expect(() => installProxyDispatcher()).not.toThrow();
     expect(hasProxyDispatcher()).toBe(false);
   });
 
-  it("still fails closed on a hop the proxy agent sends direct", async () => {
+  it('still fails closed on a hop the proxy agent sends direct', async () => {
     clearProxyEnv();
-    process.env.HTTPS_PROXY = "http://127.0.0.1:9";
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
     resetConfig();
     installProxyDispatcher();
 
