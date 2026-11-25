@@ -45,7 +45,18 @@ jobs:
           rm -f server.json
           ./mcp-publisher init
           ./mcp-publisher login github-oidc
+          # A publish the registry accepted but whose response was lost leaves
+          # the version listed, and a retry of an immutable version is refused,
+          # so a listed version counts as done.
+          listed() {
+            curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.KnockOutEZ/wigolo&version=latest" \
+              | jq -e --arg v "$VERSION" '[.servers[].server.version] | index($v) != null' >/dev/null
+          }
           for i in 1 2 3 4 5; do
+            if listed; then
+              echo "io.github.KnockOutEZ/wigolo@$VERSION is already listed"
+              exit 0
+            fi
             if ./mcp-publisher publish; then
               exit 0
             fi
