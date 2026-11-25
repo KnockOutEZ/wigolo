@@ -32,18 +32,22 @@ function legacyMcpConfigPath(home: string = homedir()): string {
   return join(home, '.antigravity', 'mcp.json');
 }
 
-/** Drop a wigolo entry from the legacy file. Returns true when one was removed. */
+/**
+ * Drop a wigolo entry from the legacy file. Returns true when one was removed.
+ * Best effort: a file that cannot be read or written is left alone, so it never
+ * fails an install or uninstall of the active config.
+ */
 function removeLegacyEntry(): boolean {
   const legacyPath = legacyMcpConfigPath();
   if (!existsSync(legacyPath)) return false;
   try {
     const root = JSON.parse(readFileSync(legacyPath, 'utf-8')) as { mcpServers?: Record<string, unknown> };
     if (!root?.mcpServers || !('wigolo' in root.mcpServers)) return false;
+    removeMcpJson(legacyPath, MCP_KEY_PATH);
+    return true;
   } catch {
     return false;
   }
-  removeMcpJson(legacyPath, MCP_KEY_PATH);
-  return true;
 }
 
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {

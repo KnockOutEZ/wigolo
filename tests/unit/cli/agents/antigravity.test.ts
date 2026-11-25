@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -131,5 +131,18 @@ describe('antigravity legacy config cleanup', () => {
     const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
     await antigravityHandler.installMcp({ command: 'npx', args: ['-y', 'wigolo'] });
     expect(readFileSync(legacy, 'utf-8')).toBe(before);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an unwritable legacy file does not fail install or uninstall', async () => {
+    const legacy = writeLegacy({ wigolo: { command: 'npx' } });
+    chmodSync(legacy, 0o444);
+    try {
+      const { antigravityHandler } = await import('../../../../src/cli/agents/antigravity.js');
+      await expect(antigravityHandler.installMcp({ command: 'npx', args: ['-y', 'wigolo'] })).resolves.toBeUndefined();
+      const result = await antigravityHandler.uninstall();
+      expect(result.removed).toEqual(['~/.gemini/config/mcp_config.json (wigolo entry)']);
+    } finally {
+      chmodSync(legacy, 0o644);
+    }
   });
 });
