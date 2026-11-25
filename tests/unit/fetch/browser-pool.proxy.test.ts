@@ -87,6 +87,17 @@ describe('browser-pool proxy launch option', () => {
     expect(proxy.server).toContain('proxy.example.com:8080');
   });
 
+  it('launches with the proxy when its password holds a stray %', async () => {
+    process.env.USE_PROXY = 'true';
+    process.env.PROXY_URL = 'http://alice:s3%cret@proxy.example.com:8080';
+    resetConfig();
+    const pool = new MultiBrowserPool();
+    await pool.fetchWithBrowser('https://example.com', {});
+    const withProxy = launchCalls.find((c) => c.proxy !== undefined);
+    expect(withProxy).toBeDefined();
+    expect((withProxy!.proxy as { password?: string }).password).toBe('s3%cret');
+  });
+
   it('forceNoProxy launches the dedicated stealth browser WITHOUT a proxy even when one is configured', async () => {
     process.env.USE_PROXY = 'true';
     process.env.PROXY_URL = 'http://alice:s3cret@proxy.example.com:8080';

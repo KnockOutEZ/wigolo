@@ -4,6 +4,7 @@
 
 ### Fixed
 - `crawl` emits a page once when two URLs redirect to it, in both traversal and sitemap crawls. A sitemap crawl fetches at most twice `max_pages` URLs.
+- A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 
 ## v0.3.3 — 2026-11-24
 
