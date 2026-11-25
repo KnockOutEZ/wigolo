@@ -88,6 +88,26 @@ describe('playwrightProxyOption', () => {
     expect(opt!.server).toContain('proxy.example.com:8080');
   });
 
+  it('does not throw on a stray % in the credentials and keeps them as typed', () => {
+    const opt = playwrightProxyOption('http://al%zz:pa%ss@proxy.example.com:8080', true);
+    expect(opt).toBeDefined();
+    expect(opt!.username).toBe('al%zz');
+    expect(opt!.password).toBe('pa%ss');
+    expect(opt!.server).not.toContain('pa%ss');
+  });
+
+  it('keeps a stray % next to characters the URL parser escapes', () => {
+    const opt = playwrightProxyOption('http://日1%2:pä ss"%@proxy.example.com:8080', true);
+    expect(opt!.username).toBe('日1%2');
+    expect(opt!.password).toBe('pä ss"%');
+  });
+
+  it('still decodes valid percent-encoding in the credentials', () => {
+    const opt = playwrightProxyOption('http://al%40ice:p%3Ass%25@proxy.example.com:8080', true);
+    expect(opt!.username).toBe('al@ice');
+    expect(opt!.password).toBe('p:ss%');
+  });
+
   it('returns a server-only option for a credential-free proxy', () => {
     const opt = playwrightProxyOption('http://proxy.example.com:8080', true);
     expect(opt).toBeDefined();
