@@ -86,6 +86,40 @@ export function isAllEnginesFailed(
   return { fires: true, reason: 'core returned no results; engines failed or empty' };
 }
 
+const DEGRADED_LOW_LEXICAL_MAX_RESULTS = 1;
+const DEGRADED_LOW_LEXICAL_SCORE = 0.4;
+
+export function isDegradedPoolLowLexical(
+  _input: SearchInput,
+  output: SearchOutput,
+): SignalResult {
+  const pool = output.engine_pool;
+  const collapsed =
+    pool?.degraded === true &&
+    (pool.reasons?.includes('pool_collapsed') === true ||
+      pool.reasons?.includes('no_lexical_match') === true);
+  if (!collapsed) return { fires: false, reason: '' };
+  if (output.results.length === 0) {
+    return {
+      fires: true,
+      reason: 'engine pool collapsed and core returned no results',
+    };
+  }
+  if (output.results.length > DEGRADED_LOW_LEXICAL_MAX_RESULTS) {
+    return { fires: false, reason: '' };
+  }
+  const top = output.results[0];
+  const lex = top.evidence_score?.components.lexical_alignment;
+  const weak =
+    top.relevance_score < DEGRADED_LOW_LEXICAL_SCORE ||
+    (typeof lex === 'number' && lex < DEGRADED_LOW_LEXICAL_SCORE);
+  if (!weak) return { fires: false, reason: '' };
+  return {
+    fires: true,
+    reason: `engine pool collapsed to ${output.results.length} low-confidence result(s)`,
+  };
+}
+
 export function isTop1HighScoreLowOverlap(
   input: SearchInput,
   output: SearchOutput,
@@ -112,6 +146,7 @@ const SIGNALS: readonly NamedSignal[] = [
   { name: 'include_domains_over_filter', predicate: isIncludeDomainsOverFilter },
   { name: 'all_engines_failed', predicate: isAllEnginesFailed },
   { name: 'top1_high_score_low_overlap', predicate: isTop1HighScoreLowOverlap },
+  { name: 'degraded_pool_low_lexical', predicate: isDegradedPoolLowLexical },
 ];
 
 export const SIGNAL_NAMES: readonly string[] = SIGNALS.map((s) => s.name);

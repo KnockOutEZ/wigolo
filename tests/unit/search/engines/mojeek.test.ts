@@ -87,5 +87,27 @@ describe('MojeekEngine', () => {
       expect(headers['Accept-Language']).toBeTruthy();
       expect(headers['User-Agent']).toMatch(/Mozilla/);
     });
+
+    it('throws when a 200 body is a captcha page, not ok/0', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            '<html><head><title>Captcha</title></head><body>Please verify you are human</body></html>',
+            { status: 200 },
+          ),
+        ),
+      );
+      await expect(new MojeekEngine().search('q', { timeoutMs: 1000 })).rejects.toThrow(
+        /captcha|challenge/i,
+      );
+    });
+
+    it('returns results when a result page mentions a captcha widget', async () => {
+      const html = SAMPLE_HTML.replace('</body>', '<p>Please verify you are human with hcaptcha</p></body>');
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(html, { status: 200 })));
+      const results = await new MojeekEngine().search('q', { timeoutMs: 1000 });
+      expect(results.length).toBeGreaterThan(0);
+    });
   });
 });

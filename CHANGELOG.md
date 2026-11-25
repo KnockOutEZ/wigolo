@@ -10,6 +10,9 @@
 - Search engines and HTTP page fetches now go through the configured proxy: `PROXY_URL` with `USE_PROXY`, else `HTTP_PROXY`/`HTTPS_PROXY` with `NO_PROXY`, else `ALL_PROXY`. Only the browser tier used it before. Loopback stays direct under `PROXY_URL` and `ALL_PROXY`, and an invalid proxy setting is logged and skipped. (fixes #629)
 - A browser launch no longer fails with `URIError: URI malformed` when the proxy username or password holds a `%` that is not a valid escape (for example `PROXY_URL=http://user:50%off@proxy:8080`). The credentials now reach the browser as typed. Valid escapes such as `%40` still decode as before. (fixes #695)
 - `init --agents=antigravity` writes the MCP entry to `~/.gemini/config/mcp_config.json`, the global config Antigravity reads, and detects Antigravity by its `~/.gemini/antigravity` data folder or the `agy` command. It wrote `~/.antigravity/mcp.json` before, which Antigravity does not read; install and uninstall now remove a wigolo entry left there. (fixes #258)
+- DuckDuckGo and Mojeek captcha pages now count as engine errors, not as a healthy engine with no results. A page that still parses to results is kept.
+- On a degraded engine pool, a below-floor result with little query overlap no longer survives as the top result. The best aligned result keeps the top-1 slot instead.
+- `WIGOLO_SEARCH=hybrid` also falls back when the engine pool collapsed to at most one weak result (`degraded_pool_low_lexical`).
 
 ## v0.3.3 — 2026-11-24
 

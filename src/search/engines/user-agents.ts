@@ -34,10 +34,32 @@ export function nextUserAgent(previous?: string): string {
 
 /**
  * True when an engine error looks like a block the client can retry against
- * with a fresh fingerprint — an upstream 403 (forbidden / reputation) or 429
- * (rate limit). Keyed on error class, never on a specific engine.
+ * with a fresh fingerprint — an upstream 403 (forbidden / reputation), 429
+ * (rate limit), 202, or a captcha/challenge interstitial. Keyed on error
+ * class, never on a specific engine.
  */
 export function isBlockedError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /\b(403|429)\b/.test(message) || /forbidden|blocked|rate.?limit/i.test(message);
+  return (
+    /\b(202|403|429)\b/.test(message) ||
+    /forbidden|blocked|rate.?limit|captcha|challenge/i.test(message)
+  );
+}
+
+/**
+ * True when an HTML search response is a captcha / bot-check interstitial
+ * rather than a result page. Captcha bodies used to parse as zero results
+ * with outcome=ok, which made the pool look healthy while only Bing scored.
+ */
+export function isCaptchaHtml(html: string): boolean {
+  if (!html) return false;
+  const sample = html.slice(0, 8000).toLowerCase();
+  return (
+    /<title>\s*captcha\s*<\/title>/.test(sample) ||
+    /select all squares containing/.test(sample) ||
+    /please verify you are (a )?human/.test(sample) ||
+    // A widget or form on the page, not the words in a title or snippet.
+    /<(?:iframe|script)[^>]+src=["'][^"']*(?:hcaptcha\.com|google\.com\/recaptcha|challenges\.cloudflare\.com)/.test(sample) ||
+    /<(?:div|form)[^>]+(?:class|id)=["'][^"']*\b(?:h-captcha|g-recaptcha|cf-challenge|challenge-form)\b/.test(sample)
+  );
 }

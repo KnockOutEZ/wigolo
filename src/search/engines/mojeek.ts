@@ -1,7 +1,7 @@
 import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
-import { nextUserAgent, isBlockedError } from './user-agents.js';
+import { nextUserAgent, isBlockedError, isCaptchaHtml } from './user-agents.js';
 
 const log = createLogger('search');
 
@@ -44,7 +44,13 @@ export class MojeekEngine implements SearchEngine {
     if (!response.ok) throw new Error(`Mojeek returned ${response.status}`);
 
     const html = await response.text();
-    return this.parseResults(html, maxResults);
+    const results = this.parseResults(html, maxResults);
+    // A page that parsed to results is a result page, even if a title or
+    // snippet mentions a captcha widget.
+    if (results.length === 0 && isCaptchaHtml(html)) {
+      throw new Error('Mojeek returned captcha challenge');
+    }
+    return results;
   }
 
   parseResults(html: string, maxResults: number): RawSearchResult[] {

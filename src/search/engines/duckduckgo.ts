@@ -2,7 +2,7 @@ import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { normalizeResultUrl } from '../url-unwrap.js';
-import { nextUserAgent, isBlockedError } from './user-agents.js';
+import { nextUserAgent, isBlockedError, isCaptchaHtml } from './user-agents.js';
 
 const log = createLogger('search');
 
@@ -43,9 +43,21 @@ export class DuckDuckGoEngine implements SearchEngine {
     });
 
     if (!response.ok) throw new Error(`DDG returned ${response.status}`);
+    // 202 is technically "ok" (2xx) but DDG Lite uses it for the duck captcha.
+    // Treat it as a block so the breaker/UA-rotation path runs instead of
+    // recording outcome=ok with 0 results.
+    if (response.status === 202) {
+      throw new Error('DDG returned 202 captcha challenge');
+    }
 
     const html = await response.text();
-    return this.parseResults(html, maxResults);
+    const results = this.parseResults(html, maxResults);
+    // A page that parsed to results is a result page, even if a title or
+    // snippet mentions a captcha widget.
+    if (results.length === 0 && isCaptchaHtml(html)) {
+      throw new Error('DDG returned captcha challenge');
+    }
+    return results;
   }
 
   parseResults(html: string, maxResults: number): RawSearchResult[] {

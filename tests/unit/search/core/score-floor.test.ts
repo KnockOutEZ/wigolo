@@ -165,4 +165,66 @@ describe('applyScoreFloor — degraded-pool lexical gate', () => {
     const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, { degraded: true });
     expect(kept.map((r) => r.url)).toEqual(['a']);
   });
+
+  it('a degraded pool drops a below-floor brand-homepage (lex 0.17), not only lex === 0', () => {
+    // Live incident: Bing's only survivor was nist.gov / michigan.org with
+    // lexical_alignment ~0.17 and relevance ~0.02. The previous gate required
+    // lex === 0, so the top-1 exemption kept the homepage. Low-but-nonzero
+    // overlap on a collapsed pool is still junk.
+    const results = [sl('https://www.nist.gov/', 0.021, 0.17, 'bing')];
+    const { kept, dropped } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+    });
+    expect(kept).toHaveLength(0);
+    expect(dropped.map((r) => r.url)).toEqual(['https://www.nist.gov/']);
+  });
+
+  it('MUST-NOT-FIRE: a degraded pool still keeps a lexically-aligned below-floor top-1', () => {
+    const results = [sl('https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf', 0.03, 0.55)];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+    });
+    expect(kept).toHaveLength(1);
+  });
+
+  it('gives the top-1 exemption to the best aligned result when the top scorer is low-lexical', () => {
+    const results = [
+      sl('https://junk.example/', 0.04, 0.17, 'bing'),
+      sl('https://aligned.example/doc', 0.03, 0.55, 'bing'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://aligned.example/doc']);
+  });
+
+  it('rescues the next result of an engine when its best below-floor result is zero-lexical', () => {
+    const results = [
+      sl('https://top.example/', 0.9, 0.8, 'bing'),
+      sl('https://junk.example/', 0.04, 0, 'duckduckgo'),
+      sl('https://aligned.example/doc', 0.03, 0.55, 'duckduckgo'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+      perEngineKeep: 1,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://top.example/', 'https://aligned.example/doc']);
+  });
+
+  it('MUST-NOT-FIRE: a degraded pool still rescues a low-but-nonzero lexical result', () => {
+    const results = [
+      sl('https://top.example/', 0.9, 0.8, 'bing'),
+      sl('https://partial.example/', 0.04, 0.17, 'duckduckgo'),
+    ];
+    const { kept } = applyScoreFloor(results, DEFAULT_SEARCH_SCORE_FLOOR, {
+      degraded: true,
+      lexicalAlignmentOf: laOf,
+      perEngineKeep: 1,
+    });
+    expect(kept.map((r) => r.url)).toEqual(['https://top.example/', 'https://partial.example/']);
+  });
 });

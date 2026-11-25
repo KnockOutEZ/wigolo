@@ -4,6 +4,7 @@ import {
   isIncludeDomainsOverFilter,
   isAllEnginesFailed,
   isTop1HighScoreLowOverlap,
+  isDegradedPoolLowLexical,
   evaluateSignals,
   SIGNAL_NAMES,
 } from '../../../../src/search/hybrid/signals.js';
@@ -211,6 +212,52 @@ describe('isTop1HighScoreLowOverlap', () => {
   });
 });
 
+describe('isDegradedPoolLowLexical', () => {
+  it('fires when the pool collapsed to one low-lex homepage', () => {
+    const input: SearchInput = { query: 'NIST AI RMF Generative AI Profile NIST AI 600-1' };
+    const output = makeOutput({
+      results: [makeResult('NIST', 'https://www.nist.gov/', 0.021)],
+      engine_pool: { healthy: 1, total: 5, degraded: true, reasons: ['pool_collapsed'] },
+    });
+    expect(isDegradedPoolLowLexical(input, output).fires).toBe(true);
+  });
+
+  it('fires when core returned empty after a collapsed pool emptied the floor', () => {
+    const input: SearchInput = { query: 'Michigan Wolverines 2026 football schedule official' };
+    const output = makeOutput({
+      results: [],
+      engine_pool: {
+        healthy: 1,
+        total: 5,
+        degraded: true,
+        reasons: ['pool_collapsed', 'no_lexical_match'],
+      },
+    });
+    expect(isDegradedPoolLowLexical(input, output).fires).toBe(true);
+  });
+
+  it('does not fire on a healthy pool', () => {
+    const input: SearchInput = { query: 'NIST AI 600-1' };
+    const output = makeOutput({
+      results: [makeResult('NIST AI 600-1', 'https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf', 0.8)],
+      engine_pool: { healthy: 4, total: 5, degraded: false },
+    });
+    expect(isDegradedPoolLowLexical(input, output).fires).toBe(false);
+  });
+
+  it('does not fire when a collapsed pool still has two on-topic results', () => {
+    const input: SearchInput = { query: 'NIST AI 600-1' };
+    const output = makeOutput({
+      results: [
+        makeResult('NIST AI 600-1', 'https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf', 0.8),
+        makeResult('Profile', 'https://www.nist.gov/publications/generative', 0.6),
+      ],
+      engine_pool: { healthy: 1, total: 5, degraded: true, reasons: ['pool_collapsed'] },
+    });
+    expect(isDegradedPoolLowLexical(input, output).fires).toBe(false);
+  });
+});
+
 describe('evaluateSignals', () => {
   it('returns all fired signal names', () => {
     const input: SearchInput = { query: 'next', include_domains: ['next.co.uk'] };
@@ -246,6 +293,7 @@ describe('evaluateSignals', () => {
       'include_domains_over_filter',
       'all_engines_failed',
       'top1_high_score_low_overlap',
+      'degraded_pool_low_lexical',
     ]);
   });
 });
