@@ -138,6 +138,18 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
   const history = loadHistory(historyPath);
   let failures = 0;
 
+  // A piped/scripted session can end while a command is still running, so the
+  // interface may be closed by the time the loop asks for the next prompt.
+  // Node 24 throws `readline was closed` from prompt() in that window (Node 22
+  // silently ignored it), which turned every NDJSON unit test red on Node 24.
+  let closed = false;
+  rl.on('close', () => {
+    closed = true;
+  });
+  const prompt = (): void => {
+    if (!closed) rl.prompt();
+  };
+
   // Result/data → stdout; everything human-facing → stderr. This keeps NDJSON
   // stdout parseable (one JSON doc per line, zero human text interleaved).
   const emit = (text: string): void => {
@@ -158,13 +170,13 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
 
   log.info('shell started', { jsonMode, historyPath, isTty });
   say('wigolo interactive shell. Type "help" for commands, "exit" to quit.');
-  rl.prompt();
+  prompt();
 
   for await (const line of rl) {
     const trimmed = line.trim();
 
     if (!trimmed) {
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -185,7 +197,7 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
 
     if (parsed.command === 'help' || parsed.command === '.help') {
       say(getHelpText());
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -195,11 +207,11 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
       else if (arg === 'off') jsonMode = false;
       else {
         say('Usage: .json on|off');
-        rl.prompt();
+        prompt();
         continue;
       }
       say(`JSON output ${jsonMode ? 'on' : 'off'}.`);
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -208,13 +220,13 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
       for (const entry of recent) {
         say(`  ${entry}`);
       }
-      rl.prompt();
+      prompt();
       continue;
     }
 
     if (parsed.command === '.clear') {
       say('');
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -293,7 +305,7 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
       say(`Error: ${msg}`);
     }
 
-    rl.prompt();
+    prompt();
   }
 
   log.info('shell input stream ended', { failures });

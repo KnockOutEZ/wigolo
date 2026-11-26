@@ -355,6 +355,8 @@ export interface SearchCacheFilters {
   search_depth?: string | null;
   reranker?: string | null;
   search_engines?: string[] | null;
+  /** Dispatch-mode marker: a single-input call may run extra variants. */
+  single_query_dispatch?: boolean | null;
 }
 
 function normaliseDomainList(list?: string[] | null): string[] | null {
@@ -382,7 +384,8 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.exact_match != null ||
     filters.search_depth != null ||
     filters.reranker != null ||
-    normaliseEngineList(filters.search_engines) != null
+    normaliseEngineList(filters.search_engines) != null ||
+    filters.single_query_dispatch != null
   );
 }
 
@@ -408,6 +411,7 @@ export function buildSearchCacheKey(
     search_depth: filters!.search_depth ?? null,
     reranker: filters!.reranker ?? null,
     search_engines: normaliseEngineList(filters!.search_engines),
+    single_query_dispatch: filters!.single_query_dispatch ?? null,
   };
   return `${query} ${JSON.stringify(fingerprint)}`;
 }
