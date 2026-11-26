@@ -708,12 +708,15 @@ export class SmartRouter {
 
     const { fallback, ...browserOptions } = options;
     const acquired = await this.browserAcquirer.ensureBrowser();
-    if (acquired !== 'ready') {
+    // External routes (options.cdpUrl, scrapingBrowserWss) connect to a browser
+    // this process does not launch, so under WIGOLO_BROWSER=off the local
+    // readiness check does not apply to them: skip the entire not-ready block
+    // so dispatch reaches the pool (connectOverCDP / hosted connector).
+    // Local-only requests still fail with browser_disabled inside the block.
+    const externalRoute = Boolean(browserOptions.cdpUrl) || Boolean(getConfig().scrapingBrowserWss);
+    if (acquired !== 'ready' && !(getConfig().browserTier === 'off' && externalRoute)) {
       const logger = createLogger('fetch');
-      // External CDP (options.cdpUrl, e.g. WIGOLO_CDP_URL via auth) connects
-      // to an already-running browser and needs no local engine — the off
-      // gate must not block dispatch. Every local-launch path stays guarded.
-      if (getConfig().browserTier === 'off' && !browserOptions.cdpUrl) {
+      if (getConfig().browserTier === 'off') {
         // WIGOLO_BROWSER=off: the engine will never be acquired. Do not dress
         // this up as a transient install delay and do not hand back the
         // lower-tier body — an escalation only happens because that body was
