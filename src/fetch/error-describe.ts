@@ -47,6 +47,18 @@ export function describeFetchError(err: unknown): DescribedError {
     };
   }
 
+  // Browser tier switched off (WIGOLO_BROWSER=off) — the pool/playwright
+  // guards throw this code; duck-typed like the two errors above.
+  if (
+    err instanceof Error &&
+    (err as Error & { code?: unknown }).code === 'browser_disabled'
+  ) {
+    return {
+      reason: err.message,
+      hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+    };
+  }
+
   // Over WIGOLO_MAX_RESPONSE_BYTES (ResponseTooLargeError) — duck-typed like
   // the challenge error above.
   if (

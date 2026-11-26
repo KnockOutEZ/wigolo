@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import { getConfig } from '../config.js';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
@@ -56,6 +57,14 @@ export async function probeBrowser(
   name: BrowserName,
   opts: { launchTimeoutMs?: number } = {},
 ): Promise<BrowserProbeResult> {
+  if (getConfig().browserTier === 'off') {
+    return {
+      onDisk: false,
+      launchable: false,
+      execPath: '',
+      error: 'browser engine is disabled on this host (WIGOLO_BROWSER=off)',
+    };
+  }
   const api = BROWSER_API[name];
 
   let execPath = '';

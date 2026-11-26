@@ -367,6 +367,11 @@ export class MultiBrowserPool {
   }
 
   private async launchBrowser(type: BrowserType): Promise<Browser> {
+    if (getConfig().browserTier === 'off') {
+      throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      });
+    }
     const typePool = this.pools.get(type)!;
     if (!typePool.browser) {
       const launcher = getLauncher(type);
@@ -523,6 +528,11 @@ export class MultiBrowserPool {
    * falls back to the standard launcher silently.
    */
   private async launchDedicatedStealthBrowser(type: BrowserType, forceNoProxy = false): Promise<Browser> {
+    if (getConfig().browserTier === 'off') {
+      throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      });
+    }
     const cfg = getConfig();
     const standard = getLauncher(type);
     // `resolveStealthLauncher` proves the hardened driver IMPORTS — never that
@@ -669,7 +679,7 @@ export class MultiBrowserPool {
     // abort) fall through to the normal browser tier UNCHANGED. The rung makes no
     // claim to beat the existing stealth/patchright tier — it is a live-evaluation
     // escalation only, and never hard-fails a fetch.
-    if (config.cdpDirect !== 'off') {
+    if (config.cdpDirect !== 'off' && config.browserTier !== 'off') {
       const contentOnly =
         !options.actions?.length &&
         !options.cdpUrl &&

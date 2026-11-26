@@ -143,6 +143,9 @@ async function checkPlaywright(): Promise<{ installed: boolean; version?: string
  */
 export function browserStatusLabel(probe: BrowserProbeResult): string {
   if (probe.launchable) return 'OK';
+  // WIGOLO_BROWSER=off short-circuits the probe before any launch attempt, so
+  // onDisk/launchable are both false by construction — say why, not 'missing'.
+  if (getConfig().browserTier === 'off') return 'disabled';
   return probe.onDisk ? 'installed, failed to launch' : 'not installed';
 }
 
@@ -549,15 +552,20 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
   const checks: DoctorCheck[] = [];
 
   const pw = await checkPlaywright();
+  const browserOff = getConfig().browserTier === 'off';
   checks.push({
     name: 'browser',
-    status: pw.browsers.chromium ? 'ok' : 'failed',
+    // 'skipped' (not 'failed') when the tier is off by config: a failed check
+    // would offer --fix (which installs the engine) and mark the report degraded.
+    status: browserOff ? 'skipped' : pw.browsers.chromium ? 'ok' : 'failed',
     fixable: true,
-    detail: pw.browsers.chromium
-      ? 'chromium launchable'
-      : pw.chromiumOnDisk
-        ? `chromium installed but failed to launch: ${errorLine(pw.chromiumError ?? 'unknown error')}`
-        : 'chromium not installed',
+    detail: browserOff
+      ? 'browser tier disabled (WIGOLO_BROWSER=off)'
+      : pw.browsers.chromium
+        ? 'chromium launchable'
+        : pw.chromiumOnDisk
+          ? `chromium installed but failed to launch: ${errorLine(pw.chromiumError ?? 'unknown error')}`
+          : 'chromium not installed',
   });
 
   const embedCfg = getConfig();

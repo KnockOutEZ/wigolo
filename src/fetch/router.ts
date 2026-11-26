@@ -710,6 +710,19 @@ export class SmartRouter {
     const acquired = await this.browserAcquirer.ensureBrowser();
     if (acquired !== 'ready') {
       const logger = createLogger('fetch');
+      if (getConfig().browserTier === 'off') {
+        // WIGOLO_BROWSER=off: the engine will never be acquired. Do not dress
+        // this up as a transient install delay and do not hand back the
+        // lower-tier body — an escalation only happens because that body was
+        // a challenge shell / empty SPA / needed rendering.
+        logger.info('browser tier disabled by WIGOLO_BROWSER=off — failing with browser_disabled', { url });
+        return {
+          error: 'browser_disabled',
+          error_reason: 'browser tier is disabled on this host (WIGOLO_BROWSER=off)',
+          stage: 'fetch',
+          hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+        };
+      }
       if (fallback) {
         logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
         // The browser was the escalation target because the lower tier returned
@@ -1019,6 +1032,15 @@ export class SmartRouter {
       // hard failure or a minutes-long block.
       const acquired = await this.browserAcquirer.ensureBrowser();
       if (acquired !== 'ready') {
+        if (getConfig().browserTier === 'off') {
+          logger.info('stealth escalation: browser tier disabled by WIGOLO_BROWSER=off — failing with browser_disabled', { url });
+          return {
+            error: 'browser_disabled',
+            error_reason: 'browser tier is disabled on this host (WIGOLO_BROWSER=off)',
+            stage: 'fetch',
+            hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+          };
+        }
         logger.info('stealth escalation: browser engine not ready within budget — returning static content with note', { url });
         // If the static body is itself a challenge shell we cannot fall back to
         // returning it — surface the structured challenge error instead of the

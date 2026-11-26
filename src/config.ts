@@ -200,6 +200,15 @@ export interface Config {
    */
   tlsTier: 'off' | 'auto' | 'on';
   /**
+   * Browser-tier mode:
+   *   - 'auto' : the engine is downloaded on first use and launched when a
+   *              fetch needs JavaScript rendering (DEFAULT)
+   *   - 'off'  : never downloaded and never launched. A fetch that needs
+   *              rendering fails with `browser_disabled` instead of pulling
+   *              ~530 MB of Chromium onto a host that must not run a browser.
+   */
+  browserTier: 'off' | 'auto';
+  /**
    * Anti-bot fingerprint hardening / challenge-handling mode for the browser
    * tier:
    *   - 'off'  : never harden — the browser tier always uses the pooled default
@@ -782,6 +791,12 @@ export function getConfig(): Config {
     tlsTier: (() => {
       const raw = (envStr('WIGOLO_TLS_TIER', 'off', settings, 'tlsTier') ?? 'off').toLowerCase();
       return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    browserTier: (() => {
+      const raw = (envStr('WIGOLO_BROWSER', 'auto', settings, 'browserTier') ?? 'auto').toLowerCase();
+      return raw === 'off' || raw === 'none' || raw === 'disabled' || raw === 'false' || raw === '0'
+        ? 'off'
+        : 'auto';
     })(),
     stealth: (() => {
       const raw = (envStr('WIGOLO_STEALTH', 'auto', settings, 'stealth') ?? 'auto').toLowerCase();

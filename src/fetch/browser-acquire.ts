@@ -174,6 +174,11 @@ export class BrowserAcquirer {
    *    running in the background so a later call joins the same promise).
    */
   async ensureBrowser(): Promise<AcquireOutcome> {
+    if (getConfig().browserTier === 'off') {
+      // Not installing, not launching, not even memoizing an attempt.
+      this.log.debug('browser tier disabled by WIGOLO_BROWSER=off — skipping acquisition');
+      return 'unavailable';
+    }
     if (this.confirmedInstalled) return 'ready';
     if (this.isInstalled()) {
       this.confirmedInstalled = true;

@@ -65,6 +65,7 @@ The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use 
 | `WIGOLO_MAX_RESPONSE_BYTES` | `20971520` (20 MB) | Largest response body the HTTP and TLS fetch tiers will buffer. Bigger responses fail with `response_too_large` instead of exhausting memory. `0` disables the cap. Browser-rendered pages, the Reddit API and escape-hatch fetchers, and redirect-body drains aren't covered by this cap. |
 | `MAX_BROWSERS` | `3` | Browser-engine pool size for JS-rendered pages. |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list of browser families to pool. |
+| `WIGOLO_BROWSER` | `auto` | `auto` downloads and launches the browser engine on demand; `off` never downloads and never launches it — fetches that need JS rendering fail with `browser_disabled` instead of pulling Chromium onto the host. |
 | `BROWSER_IDLE_TIMEOUT` | `60000` | Idle ms before a pooled browser is released. |
 | `USER_AGENT` | unset | Override the outgoing user agent. |
 | `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt on crawls (on by default; be a good citizen). |
