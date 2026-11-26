@@ -55,9 +55,11 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  */
 export async function probeBrowser(
   name: BrowserName,
-  opts: { launchTimeoutMs?: number } = {},
+  opts: { launchTimeoutMs?: number; ignoreTierGate?: boolean } = {},
 ): Promise<BrowserProbeResult> {
-  if (getConfig().browserTier === 'off') {
+  // ignoreTierGate: explicit `warmup --browser` installs even with the tier
+  // off — its post-install smoke test must see the real disk/launch state.
+  if (getConfig().browserTier === 'off' && !opts.ignoreTierGate) {
     return {
       onDisk: false,
       launchable: false,

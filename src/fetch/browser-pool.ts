@@ -427,11 +427,19 @@ export class MultiBrowserPool {
 
     if (typePool.activeCount < maxBrowsers) {
       typePool.activeCount++;
-      const browser = await this.launchBrowser(type);
-      // acceptDownloads lets a PDF (or other binary) response be captured as a
-      // download rather than triggering an unhandled navigation error. Harmless
-      // for normal navigations — no download event fires.
-      return browser.newContext({ acceptDownloads: true });
+      try {
+        const browser = await this.launchBrowser(type);
+        // acceptDownloads lets a PDF (or other binary) response be captured as a
+        // download rather than triggering an unhandled navigation error. Harmless
+        // for normal navigations — no download event fires.
+        return await browser.newContext({ acceptDownloads: true });
+      } catch (err) {
+        // launchBrowser throws browser_disabled (tier off) before any context
+        // exists — without this rollback the slot leaks and the pool wedges
+        // after maxBrowsers such throws.
+        typePool.activeCount = Math.max(0, typePool.activeCount - 1);
+        throw err;
+      }
     }
 
     return new Promise<BrowserContext>((resolve) => {

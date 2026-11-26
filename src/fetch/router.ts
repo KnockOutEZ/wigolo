@@ -710,7 +710,10 @@ export class SmartRouter {
     const acquired = await this.browserAcquirer.ensureBrowser();
     if (acquired !== 'ready') {
       const logger = createLogger('fetch');
-      if (getConfig().browserTier === 'off') {
+      // External CDP (options.cdpUrl, e.g. WIGOLO_CDP_URL via auth) connects
+      // to an already-running browser and needs no local engine — the off
+      // gate must not block dispatch. Every local-launch path stays guarded.
+      if (getConfig().browserTier === 'off' && !browserOptions.cdpUrl) {
         // WIGOLO_BROWSER=off: the engine will never be acquired. Do not dress
         // this up as a transient install delay and do not hand back the
         // lower-tier body — an escalation only happens because that body was

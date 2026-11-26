@@ -180,7 +180,9 @@ export async function installBrowser(
   const deps = await installLinuxDeps(browser, cli);
 
   // Launch smoke-test via the shared probe — same result doctor reports.
-  const probe = await probeBrowser(browser);
+  // Explicit warmup runs even with WIGOLO_BROWSER=off, so bypass the
+  // disabled-tier gate: otherwise a successful install reads as 'missing'.
+  const probe = await probeBrowser(browser, { ignoreTierGate: true });
   if (probe.launchable) return { ok: true };
 
   if (!probe.onDisk) {
