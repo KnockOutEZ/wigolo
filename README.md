@@ -317,6 +317,7 @@ export WIGOLO_GITHUB_TOKEN=...                      # GitHub code search 10 → 
 
 # 3. Land more fetches, stay warm
 export WIGOLO_TLS_TIER=auto                         # per-domain learned fetch hardening
+export WIGOLO_BROWSER=off                           # never download or launch the browser engine
 export WIGOLO_EAGER_WARMUP=1                        # pay the ~1s model load up front
 ```
 

@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import { getConfig } from '../config.js';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
@@ -54,8 +55,18 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  */
 export async function probeBrowser(
   name: BrowserName,
-  opts: { launchTimeoutMs?: number } = {},
+  opts: { launchTimeoutMs?: number; ignoreTierGate?: boolean } = {},
 ): Promise<BrowserProbeResult> {
+  // ignoreTierGate: explicit `warmup --browser` installs even with the tier
+  // off — its post-install smoke test must see the real disk/launch state.
+  if (getConfig().browserTier === 'off' && !opts.ignoreTierGate) {
+    return {
+      onDisk: false,
+      launchable: false,
+      execPath: '',
+      error: 'browser engine is disabled on this host (WIGOLO_BROWSER=off)',
+    };
+  }
   const api = BROWSER_API[name];
 
   let execPath = '';

@@ -274,7 +274,7 @@ interface TypePool {
   browser: Browser | null;
   pool: BrowserContext[];
   activeCount: number;
-  waitQueue: Array<(ctx: BrowserContext) => void>;
+  waitQueue: Array<{ resolve: (ctx: BrowserContext) => void; reject: (err: unknown) => void }>;
   idleTimers: Map<BrowserContext, ReturnType<typeof setTimeout>>;
 }
 
@@ -367,6 +367,11 @@ export class MultiBrowserPool {
   }
 
   private async launchBrowser(type: BrowserType): Promise<Browser> {
+    if (getConfig().browserTier === 'off') {
+      throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      });
+    }
     const typePool = this.pools.get(type)!;
     if (!typePool.browser) {
       const launcher = getLauncher(type);
@@ -410,6 +415,23 @@ export class MultiBrowserPool {
     const maxBrowsers = config.maxBrowsers;
     const typePool = this.pools.get(type)!;
 
+    // WIGOLO_BROWSER=off: reject BEFORE reserving a slot or queueing, so a
+    // disabled burst can never fill the pool or leave waiters with nobody to
+    // settle them. External CDP / hosted-WSS routes never reach this method.
+    if (config.browserTier === 'off') {
+      throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      });
+    }
+
+    // shutdown() may already have run (the re-entrant waiter retry from a
+    // failed launch can be in flight while the pool tears down): fail fast
+    // with the same error shutdown's queue-rejection uses, instead of
+    // launching a fresh browser into a dead pool.
+    if (this.shutdownCalled) {
+      throw new Error('browser pool shut down');
+    }
+
     if (typePool.pool.length > 0) {
       const ctx = typePool.pool.pop()!;
       const timer = typePool.idleTimers.get(ctx);
@@ -422,15 +444,41 @@ export class MultiBrowserPool {
 
     if (typePool.activeCount < maxBrowsers) {
       typePool.activeCount++;
-      const browser = await this.launchBrowser(type);
-      // acceptDownloads lets a PDF (or other binary) response be captured as a
-      // download rather than triggering an unhandled navigation error. Harmless
-      // for normal navigations — no download event fires.
-      return browser.newContext({ acceptDownloads: true });
+      try {
+        const browser = await this.launchBrowser(type);
+        // acceptDownloads lets a PDF (or other binary) response be captured as a
+        // download rather than triggering an unhandled navigation error. Harmless
+        // for normal navigations — no download event fires.
+        const ctx = await browser.newContext({ acceptDownloads: true });
+        // shutdown() may have raced this launch: close what we just created so
+        // the fresh browser cannot outlive the pool, and fail with shutdown's
+        // error — the catch below settles any waiter instead of resolving it
+        // from a pool that no longer exists.
+        if (this.shutdownCalled) {
+          await ctx.close().catch(() => {});
+          if (typePool.browser === browser) {
+            await browser.close().catch(() => {});
+            typePool.browser = null;
+          }
+          throw new Error('browser pool shut down');
+        }
+        return ctx;
+      } catch (err) {
+        // A failed reservation must not leak the slot AND must settle the
+        // queue: hand the freed slot to the head waiter (it re-runs this
+        // method), so every waiter ends with a context or an error instead of
+        // waiting forever for a release that will never come.
+        typePool.activeCount = Math.max(0, typePool.activeCount - 1);
+        const waiter = typePool.waitQueue.shift();
+        if (waiter) {
+          this.acquireForType(type).then(waiter.resolve, waiter.reject);
+        }
+        throw err;
+      }
     }
 
-    return new Promise<BrowserContext>((resolve) => {
-      typePool.waitQueue.push(resolve);
+    return new Promise<BrowserContext>((resolve, reject) => {
+      typePool.waitQueue.push({ resolve, reject });
     });
   }
 
@@ -440,8 +488,8 @@ export class MultiBrowserPool {
     const typePool = this.pools.get(type)!;
 
     if (typePool.waitQueue.length > 0) {
-      const resolve = typePool.waitQueue.shift()!;
-      resolve(ctx);
+      const waiter = typePool.waitQueue.shift()!;
+      waiter.resolve(ctx);
       return;
     }
 
@@ -523,6 +571,11 @@ export class MultiBrowserPool {
    * falls back to the standard launcher silently.
    */
   private async launchDedicatedStealthBrowser(type: BrowserType, forceNoProxy = false): Promise<Browser> {
+    if (getConfig().browserTier === 'off') {
+      throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      });
+    }
     const cfg = getConfig();
     const standard = getLauncher(type);
     // `resolveStealthLauncher` proves the hardened driver IMPORTS — never that
@@ -669,7 +722,7 @@ export class MultiBrowserPool {
     // abort) fall through to the normal browser tier UNCHANGED. The rung makes no
     // claim to beat the existing stealth/patchright tier — it is a live-evaluation
     // escalation only, and never hard-fails a fetch.
-    if (config.cdpDirect !== 'off') {
+    if (config.cdpDirect !== 'off' && config.browserTier !== 'off') {
       const contentOnly =
         !options.actions?.length &&
         !options.cdpUrl &&
@@ -1716,6 +1769,10 @@ export class MultiBrowserPool {
         typePool.browser = null;
       }
 
+      const pending = typePool.waitQueue.splice(0);
+      for (const waiter of pending) {
+        waiter.reject(new Error('browser pool shut down'));
+      }
       typePool.activeCount = 0;
       log.debug('browser pool shut down', { type });
     }

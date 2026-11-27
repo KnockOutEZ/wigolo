@@ -110,7 +110,7 @@ export function routeTimeout(tool: string): HttpError {
 // ── StageResult status mapping ──────────────────────────────────────────────
 
 /** Exact unavailability reason codes → 503. */
-const UNAVAILABILITY_REASONS = new Set(['browser_engine_unavailable', 'search_backend_unavailable']);
+const UNAVAILABILITY_REASONS = new Set(['browser_engine_unavailable', 'browser_disabled', 'search_backend_unavailable']);
 
 /** Exact fetch-stage upstream failure reason codes → 502. */
 const FETCH_UPSTREAM_REASONS = new Set(['blocked_by_challenge', 'fetch_failed', 'upstream_error', 'http_error', 'response_too_large']);

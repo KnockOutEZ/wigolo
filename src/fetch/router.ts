@@ -708,8 +708,27 @@ export class SmartRouter {
 
     const { fallback, ...browserOptions } = options;
     const acquired = await this.browserAcquirer.ensureBrowser();
-    if (acquired !== 'ready') {
+    // External routes (options.cdpUrl, scrapingBrowserWss) connect to a browser
+    // this process does not launch, so under WIGOLO_BROWSER=off the local
+    // readiness check does not apply to them: skip the entire not-ready block
+    // so dispatch reaches the pool (connectOverCDP / hosted connector).
+    // Local-only requests still fail with browser_disabled inside the block.
+    const externalRoute = Boolean(browserOptions.cdpUrl) || Boolean(getConfig().scrapingBrowserWss);
+    if (acquired !== 'ready' && !(getConfig().browserTier === 'off' && externalRoute)) {
       const logger = createLogger('fetch');
+      if (getConfig().browserTier === 'off') {
+        // WIGOLO_BROWSER=off: the engine will never be acquired. Do not dress
+        // this up as a transient install delay and do not hand back the
+        // lower-tier body — an escalation only happens because that body was
+        // a challenge shell / empty SPA / needed rendering.
+        logger.info('browser tier disabled by WIGOLO_BROWSER=off — failing with browser_disabled', { url });
+        return {
+          error: 'browser_disabled',
+          error_reason: 'browser tier is disabled on this host (WIGOLO_BROWSER=off)',
+          stage: 'fetch',
+          hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+        };
+      }
       if (fallback) {
         logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
         // The browser was the escalation target because the lower tier returned
@@ -797,6 +816,18 @@ export class SmartRouter {
           // solve method (no rung cleared it — the honest block).
           ...(err.challengeClass !== undefined ? { challenge_class: err.challengeClass } : {}),
           solve_method: null,
+        };
+      }
+      // WIGOLO_BROWSER=off can still surface here as a bare pool exception
+      // (e.g. the CDP-fallback local launch after an external connector
+      // failed). Map it to the same structured stage error the pre-call gate
+      // returns so callers get a consistent contract, not an unhandled throw.
+      if (err instanceof Error && (err as Error & { code?: unknown }).code === 'browser_disabled') {
+        return {
+          error: 'browser_disabled',
+          error_reason: err.message,
+          stage: 'fetch',
+          hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
         };
       }
       throw err;
@@ -1019,6 +1050,15 @@ export class SmartRouter {
       // hard failure or a minutes-long block.
       const acquired = await this.browserAcquirer.ensureBrowser();
       if (acquired !== 'ready') {
+        if (getConfig().browserTier === 'off') {
+          logger.info('stealth escalation: browser tier disabled by WIGOLO_BROWSER=off — failing with browser_disabled', { url });
+          return {
+            error: 'browser_disabled',
+            error_reason: 'browser tier is disabled on this host (WIGOLO_BROWSER=off)',
+            stage: 'fetch',
+            hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+          };
+        }
         logger.info('stealth escalation: browser engine not ready within budget — returning static content with note', { url });
         // If the static body is itself a challenge shell we cannot fall back to
         // returning it — surface the structured challenge error instead of the

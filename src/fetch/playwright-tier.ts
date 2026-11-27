@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { createLogger } from '../logger.js';
 import { abortRejection } from '../util/abort.js';
 import { settlePage, POST_GOTO_CAP_MS } from './settle.js';
+import { getConfig } from '../config.js';
 import type { ContentCompleteness } from '../types.js';
 
 const log = createLogger('playwright-tier');
@@ -34,6 +35,11 @@ let _ctx: BrowserContext | null = null;
 let _launching: Promise<{ browser: Browser; context: BrowserContext }> | null = null;
 
 export async function getDaemonBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+  if (getConfig().browserTier === 'off') {
+    throw Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+      code: 'browser_disabled',
+    });
+  }
   if (_browser && _ctx) return { browser: _browser, context: _ctx };
   if (_launching) return _launching;
   _launching = (async () => {
