@@ -97,4 +97,24 @@ describe('browser-pool acquire queue: disabled burst + launch failure (PR #724)'
     await expect(p2).rejects.toThrow('launch boom');
     expect(pool.getStats()[0].activeCount).toBe(0); // slot rolled back, no leak
   });
+
+  it('shutdown racing an in-flight launch: the fresh browser is closed, the waiter rejects', async () => {
+    const fakeBrowser = makeBrowser();
+    let completeLaunch!: (b: unknown) => void;
+    launchGate = new Promise<never>(resolve => {
+      completeLaunch = resolve as unknown as (b: unknown) => void;
+    });
+    const pool = new AcquireProbe();
+
+    const p1 = pool.acquire(); // reserves the single slot, blocks inside launch
+    const shutdownDone = pool.shutdown(); // browser still null -> nothing for shutdown to close
+    completeLaunch(fakeBrowser); // launch resolves AFTER shutdown began
+
+    // Without the shutdownCalled check this resolves a context backed by a
+    // post-shutdown browser (leak); it must reject with shutdown's own error.
+    await expect(p1).rejects.toThrow('browser pool shut down');
+    await shutdownDone;
+    expect(fakeBrowser.close).toHaveBeenCalled(); // no leaked browser
+    expect(pool.getStats()[0].activeCount).toBe(0);
+  });
 });

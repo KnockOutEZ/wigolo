@@ -818,6 +818,18 @@ export class SmartRouter {
           solve_method: null,
         };
       }
+      // WIGOLO_BROWSER=off can still surface here as a bare pool exception
+      // (e.g. the CDP-fallback local launch after an external connector
+      // failed). Map it to the same structured stage error the pre-call gate
+      // returns so callers get a consistent contract, not an unhandled throw.
+      if (err instanceof Error && (err as Error & { code?: unknown }).code === 'browser_disabled') {
+        return {
+          error: 'browser_disabled',
+          error_reason: err.message,
+          stage: 'fetch',
+          hint: 'unset WIGOLO_BROWSER (or set it to auto) to enable the browser tier',
+        };
+      }
       throw err;
     }
   }

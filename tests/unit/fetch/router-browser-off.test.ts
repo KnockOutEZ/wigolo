@@ -108,4 +108,27 @@ describe('SmartRouter — WIGOLO_BROWSER=off vs external CDP route', () => {
     expect(err.error).toBe('browser_disabled');
     expect(err.stage).toBe('fetch');
   });
+
+  it('off + external route where the pool throws bare browser_disabled -> structured stage error', async () => {
+    vi.mocked(getAuthOptions).mockResolvedValue({ cdpUrl: 'http://127.0.0.1:9222' });
+    // Simulates the CDP-fallback local launch (CodeRabbit 4712165809): the
+    // not-ready gate was skipped for the external route, but the pool's own
+    // off-guard threw a bare Error(code=browser_disabled) out of fetchWithBrowser.
+    vi.mocked(browserPool.fetchWithBrowser).mockRejectedValue(
+      Object.assign(new Error('browser tier is off on this host (WIGOLO_BROWSER=off)'), {
+        code: 'browser_disabled',
+      }),
+    );
+    const { acquirer } = makeAcquirer('unavailable');
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer });
+
+    const result = await router.fetch('https://example.com/protected', { useAuth: true });
+
+    expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
+    const err = result as { error?: string; error_reason?: string; stage?: string; hint?: string };
+    expect(err.error).toBe('browser_disabled');
+    expect(err.stage).toBe('fetch');
+    expect(err.error_reason).toMatch(/WIGOLO_BROWSER/);
+    expect(`${err.hint ?? ''}`).toMatch(/WIGOLO_BROWSER/);
+  });
 });

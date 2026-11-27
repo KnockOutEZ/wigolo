@@ -424,6 +424,14 @@ export class MultiBrowserPool {
       });
     }
 
+    // shutdown() may already have run (the re-entrant waiter retry from a
+    // failed launch can be in flight while the pool tears down): fail fast
+    // with the same error shutdown's queue-rejection uses, instead of
+    // launching a fresh browser into a dead pool.
+    if (this.shutdownCalled) {
+      throw new Error('browser pool shut down');
+    }
+
     if (typePool.pool.length > 0) {
       const ctx = typePool.pool.pop()!;
       const timer = typePool.idleTimers.get(ctx);
@@ -441,7 +449,20 @@ export class MultiBrowserPool {
         // acceptDownloads lets a PDF (or other binary) response be captured as a
         // download rather than triggering an unhandled navigation error. Harmless
         // for normal navigations — no download event fires.
-        return await browser.newContext({ acceptDownloads: true });
+        const ctx = await browser.newContext({ acceptDownloads: true });
+        // shutdown() may have raced this launch: close what we just created so
+        // the fresh browser cannot outlive the pool, and fail with shutdown's
+        // error — the catch below settles any waiter instead of resolving it
+        // from a pool that no longer exists.
+        if (this.shutdownCalled) {
+          await ctx.close().catch(() => {});
+          if (typePool.browser === browser) {
+            await browser.close().catch(() => {});
+            typePool.browser = null;
+          }
+          throw new Error('browser pool shut down');
+        }
+        return ctx;
       } catch (err) {
         // A failed reservation must not leak the slot AND must settle the
         // queue: hand the freed slot to the head waiter (it re-runs this
