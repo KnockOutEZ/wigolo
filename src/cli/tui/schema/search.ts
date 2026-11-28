@@ -40,6 +40,16 @@ export const searchCategory: CategoryDef = {
       help: 'Remote rerank model name (ONNX uses its bundled model)',
     },
     {
+      key: 'WIGOLO_RERANKER_READY_TIMEOUT_MS',
+      settingsPath: 'rerankerReadyTimeoutMs',
+      label: 'Reranker ready timeout (ms)',
+      kind: 'number',
+      default: 60000,
+      min: 1000,
+      max: 600000,
+      help: 'How long the bundled reranker may take to load before the search fails.',
+    },
+    {
       key: 'WIGOLO_RERANK_API_BASE',
       settingsPath: 'rerankApiBase',
       label: 'Remote rerank base URL',

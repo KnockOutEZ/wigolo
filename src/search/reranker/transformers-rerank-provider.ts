@@ -52,6 +52,10 @@ export class TransformersRerankProvider implements RerankProvider {
   private tokenizer: Tokenizer | null = null;
   private model: Model | null = null;
   private loadPromise: Promise<{ tokenizer: Tokenizer; model: Model }> | null = null;
+  /** Bumped by `dispose()`; a load that resolves late must not store weights. */
+  private loadGeneration = 0;
+  /** Generation of the in-flight load in `loadPromise`. */
+  private loadPromiseGeneration = -1;
   readonly modelId: string;
   /** Token cap per (query, document) pair, from `rerankerMaxLength`. */
   private readonly maxLength: number;
@@ -66,6 +70,20 @@ export class TransformersRerankProvider implements RerankProvider {
     await this.load();
   }
 
+  /**
+   * Release the ONNX session behind a loaded model. Best-effort: a failed
+   * release is logged and never thrown.
+   */
+  private async releaseModel(model: Model | null): Promise<void> {
+    if (!model) return;
+    try {
+      const m = model as unknown as { dispose?: () => Promise<unknown> };
+      if (typeof m.dispose === 'function') await m.dispose();
+    } catch (err) {
+      log.debug('reranker dispose failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   private load(): Promise<{ tokenizer: Tokenizer; model: Model }> {
     if (this.tokenizer && this.model) {
       return Promise.resolve({ tokenizer: this.tokenizer, model: this.model });
@@ -78,20 +96,35 @@ export class TransformersRerankProvider implements RerankProvider {
     // models don't end up in a user home cache the daemon can't manage.
     env.cacheDir = cacheDir;
 
+    const generation = this.loadGeneration;
     this.loadPromise = Promise.all([
       AutoTokenizer.from_pretrained(this.modelId),
       AutoModelForSequenceClassification.from_pretrained(this.modelId),
     ])
-      .then(([tokenizer, model]) => {
+      .then(async ([tokenizer, model]) => {
+        if (generation !== this.loadGeneration) {
+          // A dispose landed while this load was in flight — the readiness
+          // timeout, most often. Publishing the model now would leave the
+          // weights resident with no owner to release them, so release them
+          // here instead and report the load as abandoned.
+          await this.releaseModel(model);
+          throw new Error('reranker disposed during initialization');
+        }
         this.tokenizer = tokenizer;
         this.model = model;
         return { tokenizer, model };
       })
       .catch((err: unknown) => {
-        this.loadPromise = null;
+        // Only clear the promise this load owns: a newer load may have
+        // replaced it while this one was in flight.
+        if (this.loadPromiseGeneration === generation) {
+          this.loadPromise = null;
+          this.loadPromiseGeneration = -1;
+        }
         throw wrapLoadError(err);
       });
 
+    this.loadPromiseGeneration = generation;
     return this.loadPromise;
   }
 
@@ -138,16 +171,14 @@ export class TransformersRerankProvider implements RerankProvider {
   // the runtime's worker threads race during C++ destructor teardown and
   // surface as `mutex lock failed: Invalid argument` on macOS.
   async dispose(): Promise<void> {
+    // Bump the generation first: a load that is still in flight must not
+    // publish its model after this release.
+    this.loadGeneration += 1;
     const model = this.model;
     this.model = null;
     this.tokenizer = null;
     this.loadPromise = null;
-    if (!model) return;
-    try {
-      const m = model as unknown as { dispose?: () => Promise<unknown> };
-      if (typeof m.dispose === 'function') await m.dispose();
-    } catch (err) {
-      log.debug('reranker dispose failed', { error: err instanceof Error ? err.message : String(err) });
-    }
+    this.loadPromiseGeneration = -1;
+    await this.releaseModel(model);
   }
 }

@@ -4,6 +4,8 @@ import {
   _resetRerankProviderForTest,
   isTransientFetchError,
   withFetchRetry,
+  withReadyTimeout,
+  ReadyTimeoutError,
 } from '../../../src/providers/rerank-provider.js';
 import { TransformersRerankProvider } from '../../../src/search/reranker/transformers-rerank-provider.js';
 import { RemoteRerankProvider } from '../../../src/search/reranker/remote-rerank-provider.js';
@@ -25,7 +27,7 @@ vi.mock('../../../src/search/reranker/transformers-rerank-provider.js', () => {
 
 describe('getRerankProvider', () => {
   beforeEach(() => { vi.mocked(TransformersRerankProvider).mockClear(); process.env.WIGOLO_RERANKER = 'onnx'; resetConfig(); _resetRerankProviderForTest(); });
-  afterEach(() => { process.env.WIGOLO_RERANKER = 'none'; delete process.env.WIGOLO_RERANK_API_BASE; resetConfig(); _resetRerankProviderForTest(); });
+  afterEach(() => { process.env.WIGOLO_RERANKER = 'none'; delete process.env.WIGOLO_RERANK_API_BASE; delete process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS; resetConfig(); _resetRerankProviderForTest(); });
 
   it('returns TransformersRerankProvider', async () => {
     expect(await getRerankProvider()).toBeInstanceOf(TransformersRerankProvider);
@@ -66,6 +68,101 @@ describe('getRerankProvider', () => {
 
     expect(p).toBeInstanceOf(TransformersRerankProvider);
     expect(n).toBe(2);
+  });
+
+  it('fails the factory when the warmup outlives WIGOLO_RERANKER_READY_TIMEOUT_MS', async () => {
+    // WHY: `rerankerReadyTimeoutMs` was declared in config.ts and had NO
+    // consumer — a model download that HANGS (a blackholed network, not a
+    // refused one) never rejects, so the warmup waited forever and every
+    // search hung with it. The setting must bound that wait.
+    vi.useFakeTimers();
+    process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS = '5000';
+    resetConfig();
+    vi.mocked(TransformersRerankProvider).mockImplementationOnce(function (
+      this: Record<string, unknown>,
+    ) {
+      this.modelId = 'Xenova/ms-marco-MiniLM-L-6-v2';
+      this.rerank = vi.fn().mockResolvedValue([]);
+      // Never settles: the hang the timeout exists for.
+      this.warmup = vi.fn(() => new Promise<void>(() => {}));
+      this.dispose = vi.fn(async () => {});
+    } as unknown as () => void);
+
+    const outcome = getRerankProvider().then(
+      (r) => ({ ok: true as const, r }),
+      (e) => ({ ok: false as const, e }),
+    );
+    await vi.advanceTimersByTimeAsync(5001);
+    const o = await outcome;
+    expect(o.ok).toBe(false);
+    if (!o.ok) {
+      expect(o.e).toBeInstanceOf(ReadyTimeoutError);
+      expect((o.e as Error).message).toMatch(/WIGOLO_RERANKER_READY_TIMEOUT_MS/);
+    }
+    vi.useRealTimers();
+  });
+
+  it('releases the provider when the readiness budget expires', async () => {
+    // The warmup may still be in flight when the budget expires; the provider
+    // must be released so a late resolve cannot leave the model resident with
+    // nobody to unload it.
+    vi.useFakeTimers();
+    process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS = '5000';
+    resetConfig();
+    const dispose = vi.fn(async () => {});
+    vi.mocked(TransformersRerankProvider).mockImplementationOnce(function (
+      this: Record<string, unknown>,
+    ) {
+      this.modelId = 'Xenova/ms-marco-MiniLM-L-6-v2';
+      this.rerank = vi.fn().mockResolvedValue([]);
+      this.warmup = vi.fn(() => new Promise<void>(() => {}));
+      this.dispose = dispose;
+    } as unknown as () => void);
+
+    const outcome = getRerankProvider().catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(5001);
+    await outcome;
+    expect(dispose).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('a warmup that finishes inside the budget resolves normally', async () => {
+    vi.useFakeTimers();
+    process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS = '5000';
+    resetConfig();
+    const p = getRerankProvider();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await p).toBeInstanceOf(TransformersRerankProvider);
+    vi.useRealTimers();
+  });
+});
+
+describe('withReadyTimeout (rerankerReadyTimeoutMs)', () => {
+  it('fails with ReadyTimeoutError when the op outlives the budget', async () => {
+    vi.useFakeTimers();
+    const op = vi.fn(() => new Promise<string>(() => {}));
+    const outcome = withReadyTimeout(op, 1000).then(
+      (r) => ({ ok: true as const, r }),
+      (e) => ({ ok: false as const, e }),
+    );
+    await vi.advanceTimersByTimeAsync(1001);
+    const o = await outcome;
+    expect(o.ok).toBe(false);
+    if (!o.ok) expect(o.e).toBeInstanceOf(ReadyTimeoutError);
+    vi.useRealTimers();
+  });
+
+  it('returns the op result when it finishes inside the budget', async () => {
+    await expect(withReadyTimeout(async () => 'ok', 1000)).resolves.toBe('ok');
+  });
+
+  it('a non-positive timeout disables the bound', async () => {
+    await expect(withReadyTimeout(async () => 'ok', 0)).resolves.toBe('ok');
+    await expect(withReadyTimeout(async () => 'ok', -1)).resolves.toBe('ok');
+  });
+
+  it('a rejection from the op propagates unchanged', async () => {
+    await expect(withReadyTimeout(async () => { throw new Error('boom'); }, 1000)).rejects.toThrow('boom');
   });
 });
 

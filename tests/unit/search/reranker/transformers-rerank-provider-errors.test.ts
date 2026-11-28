@@ -69,4 +69,27 @@ describe('TransformersRerankProvider error wrapping', () => {
     mdl.mockRejectedValueOnce(new RangeError('different failure'));
     await expect(provider.warmup()).rejects.toThrow(/different failure/);
   });
+
+  it('a load that resolves after dispose() releases the model instead of publishing it', async () => {
+    // WHY: the reranker readiness budget can expire while the model download is
+    // still in flight. The provider is then disposed, and the load resolves
+    // late. Publishing that model would leave the weights resident with no
+    // owner to release them, so the late resolve must release it instead.
+    const model = { dispose: vi.fn(async () => undefined) };
+    const tokenizer = { some: 'tokenizer' };
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    tk.mockImplementation(() => gate.then(() => tokenizer) as never);
+    mdl.mockImplementation(() => gate.then(() => model) as never);
+
+    const provider = new TransformersRerankProvider();
+    const warmup = provider.warmup();
+    // Dispose while the load is still in flight.
+    await provider.dispose();
+    release();
+
+    await expect(warmup).rejects.toThrow(/disposed during initialization/);
+    // The late-resolved model was released, not kept resident.
+    expect(model.dispose).toHaveBeenCalledTimes(1);
+  });
 });

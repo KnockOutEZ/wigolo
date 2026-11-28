@@ -1,6 +1,7 @@
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { existsSync } from 'node:fs';
 import { createLogger } from '../logger.js';
+import { getConfig } from '../config.js';
 import { abortRejection } from '../util/abort.js';
 import { settlePage, POST_GOTO_CAP_MS } from './settle.js';
 import type { ContentCompleteness } from '../types.js';
@@ -87,7 +88,12 @@ export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: numbe
     // bail before entering the post-goto waits so a never-idling SPA can't
     // hold the slot past the budget.
     if (opts.signal?.aborted) throw opts.signal.reason;
-    const settle = await settlePage(page, { budgetMs: Math.min(overall, POST_GOTO_CAP_MS), signal: opts.signal, url });
+    const settle = await settlePage(page, {
+      budgetMs: Math.min(overall, POST_GOTO_CAP_MS),
+      loadTimeoutMs: getConfig().playwrightLoadTimeoutMs,
+      signal: opts.signal,
+      url,
+    });
     if (opts.signal?.aborted) throw opts.signal.reason;
     const html = await page.content();
     const text = await page.evaluate(() => document.body?.innerText ?? '');
