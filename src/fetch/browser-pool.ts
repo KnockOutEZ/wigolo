@@ -1268,7 +1268,12 @@ export class MultiBrowserPool {
         options.timeoutMs !== undefined
           ? Math.max(0, options.timeoutMs - (Date.now() - fetchStartMs))
           : undefined;
-      const settle = await settlePage(page, { budgetMs: remainingBudgetMs, signal: options.signal, url });
+      const settle = await settlePage(page, {
+        budgetMs: remainingBudgetMs,
+        loadTimeoutMs: config.playwrightLoadTimeoutMs,
+        signal: options.signal,
+        url,
+      });
       if (options.signal?.aborted) throw options.signal.reason;
 
       // Human-like INTERACTION pass (behavioral realism). Runs AFTER the page

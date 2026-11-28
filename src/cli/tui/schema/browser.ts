@@ -34,5 +34,15 @@ export const browserCategory: CategoryDef = {
       min: 1000,
       max: 600000,
     },
+    {
+      key: 'PLAYWRIGHT_LOAD_TIMEOUT_MS',
+      settingsPath: 'playwrightLoadTimeoutMs',
+      label: 'Page load timeout (ms)',
+      kind: 'number',
+      default: 15000,
+      min: 1000,
+      max: 120000,
+      help: 'How long the browser tier waits for a page to reach network idle after navigation.',
+    },
   ],
 };

@@ -66,6 +66,8 @@ The legacy sidecar has its own knobs when you opt in: `WIGOLO_SEARXNG_URL` (use 
 | `MAX_BROWSERS` | `3` | Browser-engine pool size for JS-rendered pages. |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list of browser families to pool. |
 | `BROWSER_IDLE_TIMEOUT` | `60000` | Idle ms before a pooled browser is released. |
+| `PLAYWRIGHT_NAV_TIMEOUT_MS` | `30000` | Navigation timeout for the browser tier, in milliseconds. |
+| `PLAYWRIGHT_LOAD_TIMEOUT_MS` | `15000` | How long the browser tier waits for a page to reach network idle after navigation, in milliseconds. The wait is also capped by the fetch budget and by the shared post-goto settle window, so raising it never pushes a fetch past its own budget. |
 | `USER_AGENT` | unset | Override the outgoing user agent. |
 | `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt on crawls (on by default; be a good citizen). |
 | `CRAWL_CONCURRENCY` | `2` | Parallel fetches per crawl. |

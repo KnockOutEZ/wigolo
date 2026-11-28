@@ -4,6 +4,7 @@ import {
   toCompleteness,
   POST_GOTO_CAP_MS,
   STABILITY_TICK_MS,
+  NETWORKIDLE_SLICE_MS,
 } from '../../../src/fetch/settle.js';
 import { CONTENT_METRICS_SOURCE, DOM_VERDICT_SOURCE, type DomVerdict } from '../../../src/fetch/hydration-probe.js';
 
@@ -299,6 +300,60 @@ describe('settlePage — hybrid probe + stability gate', () => {
     if (!o.resolved) expect(o.e).toBe(reason);
     // The abort during networkidle short-circuited before any gate work.
     expect(gateEntered).toBe(false);
+  });
+});
+
+describe('settlePage — load timeout wiring (playwrightLoadTimeoutMs)', () => {
+  // WHY: `playwrightLoadTimeoutMs` was consumed by browser-pool until commit
+  // f87fd9a replaced that wait with the shared settle, which hard-coded a
+  // 2s networkidle slice. The setting had no consumer since. These cases pin
+  // the wiring back: the configured load timeout bounds the networkidle wait,
+  // and the settle budget still caps it.
+  it('the networkidle wait uses the configured load timeout when one is given', async () => {
+    vi.useFakeTimers();
+    const page = makeFakePage({ probeResolvesAtMs: 0, metrics: [{ textLen: 1000, nodes: 20 }] });
+    const p = settlePage(page, { loadTimeoutMs: 5000 });
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 5000 });
+  });
+
+  it('falls back to the shared slice when no load timeout is given', async () => {
+    vi.useFakeTimers();
+    const page = makeFakePage({ probeResolvesAtMs: 0, metrics: [{ textLen: 1000, nodes: 20 }] });
+    const p = settlePage(page, {});
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: NETWORKIDLE_SLICE_MS });
+  });
+
+  it('a non-positive load timeout falls back to the shared slice', async () => {
+    vi.useFakeTimers();
+    const page = makeFakePage({ probeResolvesAtMs: 0, metrics: [{ textLen: 1000, nodes: 20 }] });
+    const p = settlePage(page, { loadTimeoutMs: 0 });
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: NETWORKIDLE_SLICE_MS });
+  });
+
+  it('the settle budget still caps the networkidle wait', async () => {
+    vi.useFakeTimers();
+    const page = makeFakePage({ probeResolvesAtMs: 0, metrics: [{ textLen: 1000, nodes: 20 }] });
+    const p = settlePage(page, { budgetMs: 1200, loadTimeoutMs: 5000 });
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    // min(caller budget, load timeout) — a load timeout can lengthen the wait
+    // but never push it past the settle budget.
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 1200 });
+  });
+
+  it('a long load timeout is still capped by the shared post-goto cap', async () => {
+    vi.useFakeTimers();
+    const page = makeFakePage({ probeResolvesAtMs: 0, metrics: [{ textLen: 1000, nodes: 20 }] });
+    const p = settlePage(page, { loadTimeoutMs: 600000 });
+    await vi.advanceTimersByTimeAsync(10);
+    await p;
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: POST_GOTO_CAP_MS });
   });
 });
 

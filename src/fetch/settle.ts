@@ -79,17 +79,24 @@ function isStable(prev: ContentMetrics, cur: ContentMetrics): boolean {
 
 export async function settlePage(
   page: SettlePageHandle,
-  opts: { budgetMs?: number; signal?: AbortSignal; url?: string },
+  opts: { budgetMs?: number; loadTimeoutMs?: number; signal?: AbortSignal; url?: string },
 ): Promise<SettleResult> {
   const deadline = Date.now() + Math.min(opts.budgetMs ?? POST_GOTO_CAP_MS, POST_GOTO_CAP_MS);
   const remaining = () => Math.max(0, deadline - Date.now());
   const url = opts.url ?? '';
 
+  // The networkidle wait is bounded by the configured load timeout when the
+  // caller supplies one (`playwrightLoadTimeoutMs`), and by the shared slice
+  // otherwise. The settle deadline still caps it: a load timeout can lengthen
+  // the wait, never push it past the settle budget.
+  const loadTimeoutMs =
+    opts.loadTimeoutMs !== undefined && opts.loadTimeoutMs > 0 ? opts.loadTimeoutMs : NETWORKIDLE_SLICE_MS;
+
   // Best-effort network settle; bounded slice, never fatal. Abort still wins.
   if (remaining() > 0) {
     await Promise.race([
       page
-        .waitForLoadState('networkidle', { timeout: Math.min(remaining(), NETWORKIDLE_SLICE_MS) })
+        .waitForLoadState('networkidle', { timeout: Math.min(remaining(), loadTimeoutMs) })
         .catch(() => undefined),
       abortRejection(opts.signal),
     ]);
