@@ -66,6 +66,50 @@ export interface FetchRetryOptions {
 }
 
 /**
+ * The bundled reranker did not finish loading inside its readiness budget.
+ */
+export class ReadyTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `Reranker did not become ready within ${timeoutMs}ms (WIGOLO_RERANKER_READY_TIMEOUT_MS). ` +
+        `The model download or the ONNX session did not finish — check the network and the model cache, ` +
+        `or raise WIGOLO_RERANKER_READY_TIMEOUT_MS.`,
+    );
+    this.name = 'ReadyTimeoutError';
+  }
+}
+
+/**
+ * Bound how long the bundled reranker may take to become ready.
+ *
+ * The cross-encoder model is downloaded and its ONNX session opened on the
+ * first search. A download that HANGS (a blackholed network rather than a
+ * refused one) never rejects, so the warmup would wait forever and every
+ * search would hang with it. `rerankerReadyTimeoutMs` is the ceiling on that
+ * wait: past it the factory fails with an actionable error instead of hanging.
+ *
+ * A non-positive timeout disables the bound, matching the idle-unload
+ * convention. The timer is unref'd, so a pending readiness check can never keep
+ * the process alive.
+ */
+export function withReadyTimeout<T>(op: () => Promise<T>, timeoutMs: number): Promise<T> {
+  if (!(timeoutMs > 0)) return op();
+  let timer: NodeJS.Timeout | null = null;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new ReadyTimeoutError(timeoutMs)), timeoutMs);
+    timer.unref?.();
+  });
+  // The race attaches a handler to `op` as well, so a rejection that lands
+  // after the timeout won is never an unhandled rejection.
+  return Promise.race([op(), expiry]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  });
+}
+
+/**
  * Run an async op, retrying ONLY transient fetch failures with a linear backoff.
  * A deterministic error, or exhausting the attempt budget, throws immediately.
  * `sleep` is injectable so the retry is tested without real delays.
@@ -109,7 +153,17 @@ export function getRerankProvider(): Promise<RerankProvider> {
     } else {
       const { TransformersRerankProvider } = await import('../search/reranker/transformers-rerank-provider.js');
       provider = new TransformersRerankProvider();
-      await withFetchRetry(() => (provider as unknown as { warmup(): Promise<void> }).warmup());
+      try {
+        await withReadyTimeout(
+          () => withFetchRetry(() => (provider as unknown as { warmup(): Promise<void> }).warmup()),
+          config.rerankerReadyTimeoutMs,
+        );
+      } catch (err) {
+        // The warmup may still be in flight: release the provider so a late
+        // resolve cannot leave the model resident with nobody to unload it.
+        await releaseRerankProvider(provider);
+        throw err;
+      }
       log.info('rerank provider ready', {
         provider: 'rerank',
         impl: 'transformers',
